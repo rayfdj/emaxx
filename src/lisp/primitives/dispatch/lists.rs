@@ -1208,30 +1208,9 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── List operations ──
-            "cons" => {
-                need_args(name, args, 2)?;
-                Ok(Value::cons(args[0].clone(), args[1].clone()))
-            }
-            "car" => {
-                need_args(name, args, 1)?;
-                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-                    view.car()
-                } else {
-                    args[0]
-                        .car()
-                        .map_err(|_| wrong_type_argument("listp", args[0].clone()))
-                }
-            }
-            "cdr" => {
-                need_args(name, args, 1)?;
-                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-                    view.cdr()
-                } else {
-                    args[0]
-                        .cdr()
-                        .map_err(|_| wrong_type_argument("listp", args[0].clone()))
-                }
-            }
+            "cons" => direct_cons(interp, args, env),
+            "car" => direct_car(interp, args, env),
+            "cdr" => direct_cdr(interp, args, env),
             "car-safe" => direct_car_safe(interp, args, env),
             "cdr-safe" => direct_cdr_safe(interp, args, env),
             "identity" => {
@@ -2605,4 +2584,52 @@ pub(super) fn direct_rassq(
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     direct_assq_family(interp, args, env, "rassq")
+}
+
+/// The subr behind `cons', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_cons(
+    _interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "cons";
+    need_args(name, args, 2)?;
+    Ok(Value::cons(args[0].clone(), args[1].clone()))
+}
+
+/// The subr behind `car', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_car(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "car";
+    need_args(name, args, 1)?;
+    if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+        view.car()
+    } else {
+        args[0]
+            .car()
+            .map_err(|_| wrong_type_argument("listp", args[0].clone()))
+    }
+}
+
+/// The subr behind `cdr', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_cdr(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "cdr";
+    need_args(name, args, 1)?;
+    if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+        view.cdr()
+    } else {
+        args[0]
+            .cdr()
+            .map_err(|_| wrong_type_argument("listp", args[0].clone()))
+    }
 }

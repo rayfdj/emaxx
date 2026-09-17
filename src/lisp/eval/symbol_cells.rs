@@ -46,6 +46,14 @@ struct SymbolCell {
     /// enumeration can name it.
     symbol: Option<SymbolName>,
     value: Option<Value>,
+    /// lisp.h's `u.s.function': the function cell, read by id as
+    /// eval_sub reads `XSYMBOL (fun)->u.s.function' (the name-keyed
+    /// function index is written alongside; see `set_function').
+    function: Option<Value>,
+    /// The subr behind the name, as lisp.h keeps it in the symbol: the
+    /// manifest's facts and the evaluator's arm, learned on first use.
+    facts: Cell<Option<crate::lisp::primitives::NameFacts>>,
+    native_form: Cell<Option<Option<super::core::NativeForm>>>,
     /// `SYMBOL_VARALIAS': the alias target.
     alias: Option<SymbolName>,
     flags: u8,
@@ -274,6 +282,75 @@ impl SymbolCells {
             .filter_map(|cell| cell.value.as_mut())
     }
 
+    // --- the function cell --------------------------------------------
+
+    /// The symbol's function cell, by id.
+    pub(crate) fn function(&self, symbol: &SymbolName) -> Option<&Value> {
+        self.cell(symbol.id())
+            .and_then(|cell| cell.function.as_ref())
+    }
+
+    /// Write (or void) the symbol's function cell.
+    pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
+        match function {
+            Some(function) => self.cell_mut(symbol).function = Some(function),
+            None => {
+                if let Some(cell) = self.existing_cell_mut(symbol.id()) {
+                    cell.function = None;
+                }
+            }
+        }
+    }
+
+    /// The name facts kept in the symbol's cell, computed by COMPUTE on
+    /// first use (a symbol without a cell yet is computed each time).
+    #[inline]
+    pub(crate) fn facts_or(
+        &self,
+        symbol: &SymbolName,
+        compute: impl FnOnce() -> crate::lisp::primitives::NameFacts,
+    ) -> crate::lisp::primitives::NameFacts {
+        match self.cell(symbol.id()) {
+            Some(cell) => match cell.facts.get() {
+                Some(facts) => facts,
+                None => {
+                    let facts = compute();
+                    cell.facts.set(Some(facts));
+                    facts
+                }
+            },
+            None => compute(),
+        }
+    }
+
+    /// The evaluator's arm for the symbol, likewise.
+    #[inline]
+    pub(crate) fn native_form_or(
+        &self,
+        symbol: &SymbolName,
+        compute: impl FnOnce() -> Option<super::core::NativeForm>,
+    ) -> Option<super::core::NativeForm> {
+        match self.cell(symbol.id()) {
+            Some(cell) => match cell.native_form.get() {
+                Some(native_form) => native_form,
+                None => {
+                    let native_form = compute();
+                    cell.native_form.set(Some(native_form));
+                    native_form
+                }
+            },
+            None => compute(),
+        }
+    }
+
+    /// Every function cell, for the image copier.
+    pub(crate) fn functions_mut(&mut self) -> impl Iterator<Item = &mut Value> {
+        self.cells
+            .iter_mut()
+            .chain(self.uninterned.values_mut())
+            .filter_map(|cell| cell.function.as_mut())
+    }
+
     // --- redirect: alias -------------------------------------------------
 
     pub(crate) fn alias(&self, symbol: &SymbolName) -> Option<&SymbolName> {
@@ -373,6 +450,11 @@ impl SymbolCells {
     pub(crate) fn has_flag(&self, symbol: &SymbolName, flag: u8) -> bool {
         self.cell(symbol.id())
             .is_some_and(|cell| cell.flags & flag != 0)
+    }
+
+    /// `has_flag' by a symbol's id.
+    pub(crate) fn has_flag_id(&self, id: u32, flag: u8) -> bool {
+        self.cell(id).is_some_and(|cell| cell.flags & flag != 0)
     }
 
     pub(crate) fn has_flag_by_name(&self, name: &str, flag: u8) -> bool {

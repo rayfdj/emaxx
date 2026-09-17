@@ -11448,3 +11448,138 @@ and 5 in 522 s), 2,718 scheduled and observed; fmt and strict clippy
 exit 0 before and after.  The first launch of the gate on this
 checkpoint stopped at its clippy pre-check (the lints recorded under
 *Verified.*); this run is on the amended commit.
+
+## 2026-09-17 Checkpoint 20a: the source interpreter as eval_sub
+
+*What prompted it.*  19z's audit named two deviations from eval.c
+that the source interpreter paid on every form: each form was
+flattened into a vector and the vector cached against the form's cons
+identity with a mutation watch over its spine (eval_sub walks the
+conses), and a builtin's function cell held no subr, so a call
+resolved the name through the manifest and synthesized the value
+(eval_sub reads `XSYMBOL (fun)->u.s.function').  The analysis cache
+and its memos -- the evaluated-once note, the per-symbol arm, the
+per-site macro verdict and call resolution -- were compensations for
+those two.  The direction for this checkpoint: remove the deviations
+that cost, in C's structure, before any further tuning of the
+compensations.  The interpreted loop that measures it, a dynamic
+`while' over `let*', `if', `setq', `<', `+', `1+', ran 3.1 s against
+GNU's 0.47.
+
+*Done.*  (1) The function cell is a slot in the symbol's own cell,
+read by id (`SymbolCells::function'), written alongside the name-keyed
+index at its five writers and copied by the image copier; the name
+facts (the manifest's arity, the module, the pointer) are kept per
+symbol id in a vector; a call's resolution is those two reads and no
+memo (the generation-stamped resolution cache and the per-site entry
+are gone).  (2) eval_sub's shape for the cons arm: XCAR read for its
+symbol (copied only when it is something else), XCDR held by its
+cell, CHECK_LIST, the UNEVALLED subr by the symbol's arm with
+`numargs < min_args' signaled before the form runs (see the control
+below), the macro arm entered only when the cell holds a cons or an
+alias (a void cell, a builtin's or an undefined name's, is no macro),
+then the call.  The special forms take their argument list and walk
+it in place (`Fif' reads XCAR and Fcar of XCDR; `Fsetq' its pairs;
+`Fprogn' its body); the flattened vector, the analysis cache, its
+mutation watch, the seen-once set and the evaluated-once cons flag
+are removed.  (3) One backtrace frame per interpreted subr call:
+record_in_backtrace before the arguments are evaluated, then
+set_backtrace_args on that same frame and the subr under it (a second
+evald frame was pushed and popped around every primitive before);
+the arguments in eval_sub's argvals, an inline vector of eight on the
+stack.  (4) A list is walked by its cells: the cell held by its
+shared pointer, the element copied out inline (`Value::clone' now
+copies a cons or symbol reference in line; the general copy is an
+out-of-line function).  This is what refcounting costs where GNU's
+tagged word costs nothing, and the first version of (2) without it
+was slower than the cache it replaced -- the drop glue, the clone and
+the walk were a fifth of the run.  (5) `setq' as Fsetq then
+set_internal: the lexical alist compared by symbol identity (Fassq),
+then, for a plain untrapped symbol, the store alone; the general path
+tested the name against every dedicated store and the watcher list
+on each assignment.  (6) lisp.h's maybe_gc as one compare: the total
+past which `consing_until_gc' turns negative is published whenever
+the counters change, and the counters are consumed only past it (they
+were synchronized on every form).  (7) Function pointers for the
+primitives of interpreted loops -- `+', `-', `*', `=', `<', `>',
+`<=', `>=', `1+', `1-', `eq', `cons', `car', `cdr' -- as the sixty
+already had (the module's string match ran per call).  (8) The
+edebug probe on every call by a process-wide symbol id (a
+thread-local handle was fetched per call); `let*' no longer collects
+a vector of every frame's identity per form.  (9) The name facts and
+the evaluator's arm live in the symbol's cell beside the function
+cell, learned on first use (lisp.h keeps the subr in the symbol; a
+thread-local table indexed by id stood in for the field, and a call
+through an alias searched the manifest by name for a special form on
+every call).  (10) No frame is walked for a function cell until a
+function-namespace frame (cl-flet's) has been made in the process:
+every resolution walked the environment's frames before (eval.c
+walks none).  (11) The `min_args' test walks the argument list no
+further than min_args cells: its first version counted the whole
+list with a value copy per element on every special form, and
+measured as a regression on lexical code (ucs-names 12.1 to 13.0 s)
+before it was bounded.
+
+*Fidelity, from the oracle.*  eval_sub signals
+`wrong-number-of-arguments' for an UNEVALLED subr below its
+`min_args' before the form runs: `(if)', `(quote)', `(function)',
+`(prog1)' and `(condition-case)' returned nil here.  Fsetq signals on
+a symbol without its value form (`(setq x)' returned nil, `(setq x 1
+y)' set x and returned nil).  Both in
+`special_forms_signal_their_min_args_as_eval_sub_does', with the
+oracle's list.
+
+*Measured.*  A/B on an idle box after the focused tests, GNU on
+the same machine, min / median of the rounds (three for the probes,
+two for the test files):
+
+| Probe | 19z | 20a | GNU |
+|---|---|---|---|
+| dynamic interpreted loop (`while' over `let*', `if', `setq', `<', `+', `1+'; two million iterations) | 3.07 / 3.08 s | 2.47 / 2.50 s | 0.46 / 0.46 s |
+| the same loop under lexical binding | 3.33 / 3.39 s | 3.12 / 3.15 s | 1.13 / 1.16 s |
+| a million calls of an interpreted defun | 1.81 / 1.81 s | 1.58 / 1.61 s | 0.75 / 0.77 s |
+| `when-let' in an interpreted loop, 200,000 iterations, the raw form through `eval' | 2.65 / 2.66 s | 2.16 / 2.17 s | 1.06 / 1.17 s |
+| the same, pre-expanded | 0.43 / 0.43 s | 0.41 / 0.41 s | 0.18 / 0.20 s |
+| ucs-names (mule-tests) | 12.00 / 12.04 s | 11.98 / 12.08 s | 2.38 / 2.39 s |
+| semantic-utest-C | 6.69 / 6.77 s | 6.87 / 6.91 s | 0.76 / 0.77 s |
+| bindat-test--sint | 4.20 / 4.23 s | 3.96 / 3.96 s | 0.75 / 0.76 s |
+| undo-test4 | 5.05 / 5.05 s | 4.91 / 4.96 s | 1.02 / 1.04 s |
+| fns-tests-sort | 5.43 / 5.43 s | 5.32 / 5.33 s | 1.30 / 1.31 s |
+| pcase-tests-macro | 0.51 / 0.52 s | 0.51 / 0.52 s | 0.09 / 0.10 s |
+| `ert-select-tests' floor (probe5) | 32.0 / 34.0 ms | 32.8 / 33.3 ms | -- |
+
+*What did not move, and what was learned.*  The dynamic loop stands at 5.4 times GNU and the
+lexical one at 2.7; the profile of the final build is flat: `eval''s
+prelude (the quit, collection and depth tests around the form) a
+tenth, `eval_call''s own work (the frame, the argument vector, the
+resolution, the settling of the result) a tenth, the drop glue of the
+values copied out of the form a fourteenth, the frame push a
+twentieth, the value lookup and the `setq' path a few percent each.
+Two structural differences are still paid on every form: a `Value'
+copy takes a reference count where a Lisp_Object copy is a word (the
+walk by cells keeps that to one copy per element), and every call
+carries a 48-byte `Result' where eval_sub returns a word and longjmps.
+ucs-names and pcase-tests-macro did not move; semantic-utest-C read
+0.1 s slower, inside its run-to-run band; the per-file floor did not
+move.  An intermediate build of this checkpoint measured slower than
+19z on lexical code, twice: first for the value copies of the naive
+walk, then for the unbounded min_args count; both are recorded above
+because a faithful structure that measures worse is not done.
+
+*Which of these mirror C.*  All of (1) to (11) restore eval.c's own
+structure or pay for its absence at the point where it is absent:
+(4) is the cost of the reference count per copy, which GNU does not
+have, and the analysis cache was a memo hiding it.  What remains
+Emaxx-only on this path: the lexical environment as a vector of
+frames with captured-cell bookkeeping (eval.c's is an alist of
+conses), the function-namespace frames for cl-flet, the reader's
+deferred literal resolution behind `quote', and the `Result' carried
+through every call (eval.c longjmps).  The lexical loop at 3.12 s
+against 1.0 is the first of those.
+
+*Verified.*  The focused set (455 tests: the special forms, let,
+macro, frame, watcher, buffer-local, byte-code, closure and search
+controls, the two new controls by name) passed on the committed
+sources, in the main tree; strict clippy and fmt exit 0.
+
+*Gate.*  «GATE»

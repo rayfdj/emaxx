@@ -64,19 +64,19 @@ impl Interpreter {
             .collect()
     }
 
-    pub(super) fn sf_while(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+    pub(super) fn sf_while(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         // GNU eval.c's Fwhile takes an unevalled `args' whose car is TEST;
         // `(while)' therefore signals wrong-number-of-arguments rather than
         // reading past the form.
-        let Some(test) = items.get(1) else {
+        let Some((test, body)) = super::core::list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("while".into(), 0));
         };
         loop {
-            let cond = self.eval(test, env)?;
+            let cond = self.eval(&test, env)?;
             if cond.is_nil() {
                 break;
             }
-            self.sf_progn(&items[2..], env)?;
+            self.progn_list(&body, env)?;
         }
         Ok(Value::Nil)
     }

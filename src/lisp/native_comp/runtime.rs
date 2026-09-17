@@ -705,10 +705,12 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
         maybe_gc_active();
         return;
     }
-    if ORDINARY_GC_IN_PROGRESS.with(Cell::get)
-        || !interpreter
-            .native_compiler
-            .garbage_collection_might_be_due()
+    // lisp.h:maybe_gc's `consing_until_gc < 0' first: one compare on the
+    // common path, the in-progress flag read only past it.
+    if !interpreter
+        .native_compiler
+        .garbage_collection_might_be_due()
+        || ORDINARY_GC_IN_PROGRESS.with(Cell::get)
     {
         return;
     }
@@ -3782,6 +3784,10 @@ struct NativeGcState {
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
+    /// The allocation total at which `consing_until_gc' turns negative:
+    /// lisp.h's maybe_gc is one compare against it, and the counters are
+    /// consumed only past it (they were synchronized on every form).
+    trigger_allocated_bytes: u64,
     /// Internal evidence for placement tests; not a Lisp-visible counter.
     collections: usize,
 }
@@ -3790,6 +3796,18 @@ impl NativeGcState {
     fn tally_consing(&mut self, bytes: usize) {
         let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
         self.consing_until_gc = self.consing_until_gc.saturating_sub(bytes);
+        self.publish_trigger();
+    }
+
+    /// The total past which a collection might be due, from the counters
+    /// as they stand.
+    fn publish_trigger(&mut self) {
+        self.trigger_allocated_bytes = if self.consing_until_gc < 0 {
+            0
+        } else {
+            self.observed_allocated_bytes
+                .saturating_add(self.consing_until_gc as u64)
+        };
     }
 
     fn synchronize_allocations(&mut self) {
@@ -3810,11 +3828,18 @@ impl NativeGcState {
         self.gc_threshold = 0;
         self.live_bytes = 0;
         self.observed_allocated_bytes = lisp_allocated_bytes();
+        self.publish_trigger();
     }
 
     /// lisp.h:maybe_gc's inline fast guard.  Threshold Lisp variables are
     /// consulted only after this counter becomes negative.
-    fn collection_might_be_due(&self) -> bool {
+    fn collection_might_be_due(&mut self) -> bool {
+        // lisp.h:maybe_gc's `consing_until_gc < 0': one compare on the
+        // common path; the counters are consumed only when it may hold.
+        if lisp_allocated_bytes() < self.trigger_allocated_bytes {
+            return false;
+        }
+        self.synchronize_allocations();
         self.consing_until_gc < 0
     }
 
@@ -3845,6 +3870,7 @@ impl NativeGcState {
             .consing_until_gc
             .saturating_add(new_gc_threshold.saturating_sub(self.gc_threshold));
         self.gc_threshold = new_gc_threshold;
+        self.publish_trigger();
         self.consing_until_gc
     }
 
@@ -3860,6 +3886,7 @@ impl NativeGcState {
         self.live_bytes = live_bytes;
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
         self.consing_until_gc = self.gc_threshold;
+        self.publish_trigger();
     }
 }
 
@@ -4255,7 +4282,6 @@ impl NativeHeap {
     }
 
     fn collection_might_be_due(&mut self) -> bool {
-        self.gc.synchronize_allocations();
         self.gc.collection_might_be_due()
     }
 

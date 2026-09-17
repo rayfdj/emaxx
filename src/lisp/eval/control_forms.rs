@@ -1,16 +1,17 @@
+use super::core::{list_cdr, list_forms, list_next};
 use super::*;
 use crate::lisp::reader;
 impl Interpreter {
-    pub(super) fn sf_quote(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 2 {
+    pub(super) fn sf_quote(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let Some((template, _)) = list_next(args) else {
             return Ok(Value::Nil);
-        }
+        };
         // GNU's quote returns its argument as-is, sharing structure.  The
         // emaxx reader leaves marker forms (circular labels, `#s(hash-table
         // ...)' literals) that must be resolved first, but marker-free
         // templates — the common case — are returned directly.  The verdict
         // is cached per template so hot code doesn't rescan large constants.
-        if let Value::Cons(cell) = &items[1] {
+        if let Value::Cons(cell) = &template {
             let key = crate::lisp::types::ConsCell::identity(cell);
             if self
                 .plain_quote_templates
@@ -18,44 +19,46 @@ impl Interpreter {
                 .and_then(ConsMutationStamped::current)
                 .is_some()
             {
-                return Ok(items[1].clone());
+                return Ok(template);
             }
-            if !reader::quote_template_needs_resolution(&items[1]) {
+            if !reader::quote_template_needs_resolution(&template) {
                 if self.plain_quote_templates.len() >= (1 << 20) {
                     self.plain_quote_templates.clear();
                 }
                 self.plain_quote_templates.insert(
                     key,
                     ConsMutationStamped::new(
-                        crate::lisp::types::ConsMutationSnapshot::tree(&items[1]),
-                        items[1].clone(),
+                        crate::lisp::types::ConsMutationSnapshot::tree(&template),
+                        template.clone(),
                     ),
                 );
-                return Ok(items[1].clone());
+                return Ok(template);
             }
-        } else if !reader::quote_template_needs_resolution(&items[1]) {
-            return Ok(items[1].clone());
+        } else if !reader::quote_template_needs_resolution(&template) {
+            return Ok(template);
         }
-        self.materialize_read_object_literals(items[1].clone(), env)
+        self.materialize_read_object_literals(template, env)
     }
 
-    pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let Some(test_form) = items.get(1) else {
+    pub(super) fn sf_if(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        // Fif: eval_sub (XCAR (args)); then Fcar (XCDR (args)) or Fprogn
+        // (Fcdr (XCDR (args))).
+        let Some((test_form, rest)) = list_next(args) else {
             return Ok(Value::Nil);
         };
-        let cond = self.eval(test_form, env)?;
+        let cond = self.eval(&test_form, env)?;
         if cond.is_truthy() {
-            items
-                .get(2)
-                .map_or(Ok(Value::Nil), |then_form| self.eval(then_form, env))
+            match list_next(&rest) {
+                Some((then_form, _)) => self.eval(&then_form, env),
+                None => Ok(Value::Nil),
+            }
         } else {
-            // else branches
-            self.sf_progn(items.get(3..).unwrap_or(&[]), env)
+            self.progn_list(&list_cdr(&rest), env)
         }
     }
 
-    pub(super) fn sf_cond(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        for clause in items[1..].iter() {
+    pub(super) fn sf_cond(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        for clause in list_forms(args) {
             let clause_items = clause.to_vec()?;
             if clause_items.is_empty() {
                 continue;
@@ -71,10 +74,10 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    pub(super) fn sf_and(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+    pub(super) fn sf_and(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         let mut result = Value::T;
-        for item in &items[1..] {
-            result = self.eval(item, env)?;
+        for form in list_forms(args) {
+            result = self.eval(&form, env)?;
             if result.is_nil() {
                 return Ok(Value::Nil);
             }
@@ -82,14 +85,24 @@ impl Interpreter {
         Ok(result)
     }
 
-    pub(super) fn sf_or(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        for item in &items[1..] {
-            let val = self.eval(item, env)?;
+    pub(super) fn sf_or(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        for form in list_forms(args) {
+            let val = self.eval(&form, env)?;
             if val.is_truthy() {
                 return Ok(val);
             }
         }
         Ok(Value::Nil)
+    }
+
+    /// Fprogn over a body list: each form evaluated in place, the last
+    /// one's value returned.
+    pub(super) fn progn_list(&mut self, body: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let mut result = Value::Nil;
+        for form in list_forms(body) {
+            result = self.eval(&form, env)?;
+        }
+        Ok(result)
     }
 
     pub(super) fn sf_progn(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -100,14 +113,14 @@ impl Interpreter {
         Ok(result)
     }
 
-    pub(super) fn sf_catch(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 2 {
+    pub(super) fn sf_catch(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let Some((tag_form, body)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("catch".into(), 0));
-        }
-        let tag = self.eval(&items[1], env)?;
+        };
+        let tag = self.eval(&tag_form, env)?;
         let depth = env.len();
         self.active_catch_tags.push(tag.clone());
-        let result = self.sf_progn(&items[2..], env);
+        let result = self.progn_list(&body, env);
         self.active_catch_tags.pop();
         // A non-local exit unwinds any binding frames pushed between the
         // catch and the throw, like GNU's unbind_to at the catch point.
@@ -158,14 +171,14 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn sf_prog1(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 2 {
+    pub(super) fn sf_prog1(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let Some((first, rest)) = list_next(args) else {
             return Ok(Value::Nil);
-        }
-        let result = self.eval(&items[1], env)?;
-        let tracked_symbol = items[1].as_symbol().ok().map(str::to_string);
-        for expr in &items[2..] {
-            self.eval(expr, env)?;
+        };
+        let result = self.eval(&first, env)?;
+        let tracked_symbol = first.as_symbol().ok().map(str::to_string);
+        for form in list_forms(&rest) {
+            self.eval(&form, env)?;
         }
         if let Some(symbol) = tracked_symbol
             && crate::lisp::primitives::is_vector_like_value(self, &result)
@@ -234,20 +247,23 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn sf_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+    pub(super) fn sf_let(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         // eval.c Flet: list_length (varlist) -- a vector or any other
         // non-list signals wrong-type-argument listp (a vector read as a
         // sequence bound its elements to nil before).  The varlist and
         // each element are read in place; a vector of copies of every
         // binding per evaluation was a share of every interpreted `let'.
-        if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
-            return Err(wrong_type_argument("listp", items[1].clone()));
+        let Some((varlist, body)) = list_next(args) else {
+            return Err(LispError::WrongNumberOfArgs("let".into(), 0));
+        };
+        if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
+            return Err(wrong_type_argument("listp", varlist.clone()));
         }
         let mut frame = Vec::new();
         let mut special_bindings = Vec::new();
 
-        let mut tail = items[1].clone();
-        while let Some((binding, next)) = Self::next_let_binding(&tail, &items[1])? {
+        let mut tail = varlist.clone();
+        while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
             tail = next;
             match &binding {
                 Value::Symbol(name) => {
@@ -304,7 +320,7 @@ impl Interpreter {
         if has_lexical_scope {
             Self::push_marked_frame(env, frame);
         }
-        let result = self.sf_progn(&items[2..], env);
+        let result = self.progn_list(&body, env);
         if has_lexical_scope {
             env.truncate(lexical_scope_depth);
         }
@@ -314,26 +330,34 @@ impl Interpreter {
         result
     }
 
-    pub(super) fn sf_letstar(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
+    pub(super) fn sf_letstar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         // eval.c FletX: FOR_EACH_TAIL (varlist) -- a non-list signals
         // wrong-type-argument listp.
-        if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
-            return Err(wrong_type_argument("listp", items[1].clone()));
+        let Some((varlist, body)) = list_next(args) else {
+            return Err(LispError::WrongNumberOfArgs("let*".into(), 0));
+        };
+        if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
+            return Err(wrong_type_argument("listp", varlist.clone()));
         }
         let original_depth = env.len();
-        let original_frame_identities = env.iter().map(Self::frame_identity).collect::<Vec<_>>();
+        // The environment at entry, by its depth and its innermost frame's
+        // identity (a marked frame's identity is unique; only an unmarked
+        // innermost frame needs every identity compared): a vector of
+        // every frame's identity was collected per `let*' before.
+        let original_innermost = env.last().map(Self::frame_identity);
+        let original_frame_identities = if matches!(original_innermost, Some(None)) {
+            Some(env.iter().map(Self::frame_identity).collect::<Vec<_>>())
+        } else {
+            None
+        };
         let mut lexical_binding_seen = false;
         let mut lexical_restore_depth = None;
         let mut restores = Vec::new();
         let setup = (|| -> Result<(), LispError> {
             // The varlist and each element read in place (FletX's
             // FOR_EACH_TAIL).
-            let mut tail = items[1].clone();
-            while let Some((binding, next)) = Self::next_let_binding(&tail, &items[1])? {
+            let mut tail = varlist.clone();
+            while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
                 tail = next;
                 let (name, value) = match &binding {
                     Value::Symbol(name) => {
@@ -378,10 +402,13 @@ impl Interpreter {
                     // interpreter scope.
                     if !lexical_binding_seen {
                         let original_environment_is_current = env.len() == original_depth
-                            && env
-                                .iter()
-                                .map(Self::frame_identity)
-                                .eq(original_frame_identities.iter().copied());
+                            && match &original_frame_identities {
+                                Some(identities) => env
+                                    .iter()
+                                    .map(Self::frame_identity)
+                                    .eq(identities.iter().copied()),
+                                None => env.last().map(Self::frame_identity) == original_innermost,
+                            };
                         if original_environment_is_current {
                             lexical_restore_depth = Some(original_depth);
                         }
@@ -394,7 +421,7 @@ impl Interpreter {
         })();
 
         let result = match setup {
-            Ok(()) => self.sf_progn(&items[2..], env),
+            Ok(()) => self.progn_list(&body, env),
             Err(error) => Err(error),
         };
         if let Some(depth) = lexical_restore_depth {

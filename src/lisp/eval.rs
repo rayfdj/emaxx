@@ -1915,8 +1915,7 @@ enum SavedRestrictionBounds {
     },
 }
 
-/// A memoized funcall resolution for a symbol callee (see
-/// `function_resolution_cache`).
+/// How a symbol callee resolved: eval_sub's reading of the function cell.
 #[derive(Clone)]
 pub(crate) enum FunctionResolution {
     /// Direct native dispatch by name is valid; carries the name facts so
@@ -4658,6 +4657,9 @@ impl Interpreter {
             for value in clone.globals.values_mut() {
                 *value = c.copy(value);
             }
+            for function in clone.globals.functions_mut() {
+                *function = c.copy(function);
+            }
             for (_, function) in &mut clone.finalizer_functions {
                 *function = c.copy(function);
             }
@@ -4927,9 +4929,7 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         clone.plain_quote_templates.clear();
-        clone.source_form_items_cache.clear();
         clone.lambda_source_bodies.clear();
-        clone.function_resolution_cache.clear();
         clone.file_name_handler_match_cache.clear();
         clone.file_name_handler_alist_watch = None;
         crate::lisp::primitives::forget_buffer_views();
@@ -5491,27 +5491,12 @@ pub struct InterpreterState {
     /// it does not cost them, as it did when they shared the generation
     /// above (cc-mode's constant `setcar's kept every call site cold).
     function_binding_generation: u64,
-    /// Per-name funcall resolutions stamped with the generation they were
-    /// computed at; consulted only when the env carries no
-    /// cl-flet/cl-labels frames, so repeat calls skip name-facts probes
-    /// and function-cell lookup entirely (see call_function_value_inner).
-    pub(crate) function_resolution_cache:
-        HashMap<u32, (u64, FunctionResolution, bool), crate::lisp::types::IdentityBuildHasher>,
     /// Names the macroexpansion probe determined are NOT macros, from
     /// GLOBAL state only (no cl-flet frame involved), stamped with the
     /// generation that verdict was computed at.  Skips the whole probe on
     /// the hot per-form path while any definition change invalidates all
     /// verdicts at once.
     not_macro_names: HashMap<String, u64, crate::lisp::primitives::FnvBuildHasher>,
-    /// Flattened source forms keyed by their car-cell identity.  Entries are
-    /// derived snapshots stamped with the global cons-mutation epoch and a
-    /// weak source witness, never a second syntax authority.
-    source_form_items_cache: HashMap<
-        usize,
-        ConsMutationStamped<SourceFormCacheEntry>,
-        crate::lisp::primitives::FnvBuildHasher,
-    >,
-    /// Cons ids of the forms analyzed once without an entry above.
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
@@ -5725,64 +5710,6 @@ impl<T> ConsMutationStamped<T> {
         self.mutations.is_current().then_some(&self.value)
     }
 }
-
-struct SourceFunctionCallCacheEntry {
-    function_binding_generation: u64,
-    resolution: FunctionResolution,
-}
-
-#[derive(Default)]
-struct SourceMacroCallCache {
-    not_macro_generation: Option<u64>,
-}
-
-#[derive(Clone)]
-struct SourceFormCacheEntry {
-    source: WeakConsSlot,
-    analysis: SourceFormAnalysis,
-}
-
-/// Immutable decisions derived from one source cons tree.
-///
-/// The enclosing `ConsMutationStamped` entry is the only validity authority:
-/// mutation of a cons field used by this source form invalidates the
-/// flattened items and every classification below together.
-/// One shared allocation per analyzed form: a lookup hands out one
-/// reference count, where four (the items, the macro verdict, the call
-/// resolution, the alias verdict) were taken and released per evaluation.
-#[derive(Clone)]
-struct SourceFormAnalysis(Rc<SourceFormAnalysisData>);
-
-impl std::ops::Deref for SourceFormAnalysis {
-    type Target = SourceFormAnalysisData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-struct SourceFormAnalysisData {
-    items: Vec<Value>,
-    native_form: Option<core::NativeForm>,
-    /// The generation-stamped non-macro verdict shares the source-analysis
-    /// lifetime.  Actual macro expansions are deliberately never cached:
-    /// GNU's interpreted evaluator invokes the macro expander on every
-    /// evaluation, and expanders may depend on state or create fresh objects.
-    macro_calls: RefCell<SourceMacroCallCache>,
-    /// Generation-stamped function-cell resolution for this exact callsite.
-    /// Local cl-flet/cl-labels frames bypass it before lookup.
-    function_call: RefCell<Option<SourceFunctionCallCacheEntry>>,
-    /// Whether a bare-symbol head names a function alias of a special form
-    /// (`(defalias 'inline 'progn)'), stamped with the function-binding
-    /// generation: deciding it on every evaluation resolved the head's
-    /// function cell and searched the C manifest for every ordinary call.
-    special_alias: SpecialAliasVerdict,
-}
-
-/// The cached alias-of-a-special-form verdict of a call site: the
-/// function-binding generation it was decided under, and the special form
-/// the head resolved to, if any.
-type SpecialAliasVerdict = Cell<Option<(u64, Option<core::NativeForm>)>>;
 
 #[derive(Clone)]
 struct LambdaSourceBodyCacheEntry {
@@ -6431,9 +6358,7 @@ impl Interpreter {
             network_connect_counter: 0,
             definition_generation: 0,
             function_binding_generation: 0,
-            function_resolution_cache: HashMap::default(),
             not_macro_names: HashMap::default(),
-            source_form_items_cache: HashMap::default(),
             lambda_source_bodies: HashMap::new(),
             provided_features: STARTUP_FEATURES
                 .iter()

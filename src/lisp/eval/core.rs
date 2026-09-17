@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::SharedCons;
 use crate::lisp::types::SymbolName;
 
 fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
@@ -29,22 +30,6 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     static PROFILE_DUMP_COUNTDOWN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
-
-const EVAL_VALUE_BUFFER_POOL_LIMIT: usize = 128;
-const EVAL_VALUE_BUFFER_CAPACITY_LIMIT: usize = 256;
-const SOURCE_FORM_ITEMS_CACHE_LIMIT: usize = 1 << 18;
-
-thread_local! {
-    static EVAL_VALUE_BUFFER_POOL: std::cell::RefCell<Vec<Vec<Value>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// One temporary evaluated-argument vector.
-///
-/// Evaluation has many early-return paths for special forms and errors. RAII
-/// guarantees that every path clears the vector before recycling its storage,
-/// without making the evaluator's control flow responsible for pool hygiene.
-struct EvalValueBuffer(Vec<Value>);
 
 /// The Lisp identity of a named call when the caller still has it.
 ///
@@ -80,40 +65,6 @@ impl<'a> CallName<'a> {
         match self {
             Self::Symbol(name) => Value::Symbol(name.clone()),
             Self::Text(name) => Value::Symbol(name.into()),
-        }
-    }
-}
-
-impl EvalValueBuffer {
-    fn take() -> Self {
-        Self(EVAL_VALUE_BUFFER_POOL.with_borrow_mut(|pool| pool.pop().unwrap_or_default()))
-    }
-}
-
-impl std::ops::Deref for EvalValueBuffer {
-    type Target = Vec<Value>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for EvalValueBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for EvalValueBuffer {
-    fn drop(&mut self) {
-        let mut buffer = std::mem::take(&mut self.0);
-        buffer.clear();
-        if buffer.capacity() <= EVAL_VALUE_BUFFER_CAPACITY_LIMIT {
-            EVAL_VALUE_BUFFER_POOL.with_borrow_mut(|pool| {
-                if pool.len() < EVAL_VALUE_BUFFER_POOL_LIMIT {
-                    pool.push(buffer);
-                }
-            });
         }
     }
 }
@@ -181,7 +132,7 @@ fn profile_leave(name: Option<&str>, elapsed: std::time::Duration, path: &str) {
 macro_rules! define_native_forms {
     ($($variant:ident => $($name:literal)|+;)+) => {
         #[derive(Clone, Copy)]
-        pub(super) enum NativeForm {
+        pub(crate) enum NativeForm {
             $($variant,)+
         }
 
@@ -194,6 +145,34 @@ macro_rules! define_native_forms {
             }
         }
     };
+}
+
+impl NativeForm {
+    /// The subr's `min_args' (eval.c's DEFUNs): eval_sub signals
+    /// wrong-number-of-arguments below it before the form runs.
+    fn min_args(self) -> usize {
+        match self {
+            Self::Quote
+            | Self::Prog1
+            | Self::Let
+            | Self::LetStar
+            | Self::Defvar
+            | Self::Function
+            | Self::While
+            | Self::UnwindProtect
+            | Self::Catch => 1,
+            Self::If | Self::Defconst | Self::ConditionCase => 2,
+            Self::And
+            | Self::Or
+            | Self::Cond
+            | Self::Progn
+            | Self::Setq
+            | Self::Interactive
+            | Self::SaveCurrentBuffer
+            | Self::SaveExcursion
+            | Self::SaveRestriction => 0,
+        }
+    }
 }
 
 define_native_forms! {
@@ -220,6 +199,137 @@ define_native_forms! {
     SaveRestriction => "save-restriction";
 }
 
+/// The cell after CELL, when its cdr is one (`CONSP (XCDR (tail))').
+#[inline]
+pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
+    match &*cell.cdr.borrow() {
+        Value::Cons(next) => Some(Rc::clone(next)),
+        _ => None,
+    }
+}
+
+/// A walk over a list's elements by its cells (eval_sub's `while (CONSP
+/// (args_left))'): each cell is held by its shared pointer while its
+/// element is copied out, so the walk itself takes no value copies.
+pub(super) struct ListForms(Option<SharedCons>);
+
+/// The elements of LIST, from its first cell.
+#[inline]
+pub(super) fn list_forms(list: &Value) -> ListForms {
+    ListForms(match list {
+        Value::Cons(cell) => Some(Rc::clone(cell)),
+        _ => None,
+    })
+}
+
+impl ListForms {
+    #[inline]
+    pub(super) fn from_cell(cell: Option<SharedCons>) -> Self {
+        Self(cell)
+    }
+}
+
+impl Iterator for ListForms {
+    type Item = Value;
+
+    #[inline]
+    fn next(&mut self) -> Option<Value> {
+        let cell = self.0.take()?;
+        let form = cell.car.borrow().clone();
+        self.0 = next_cons(&cell);
+        Some(form)
+    }
+}
+
+/// XCAR and XCDR of a list cell: the element and the rest, or None at
+/// the end of the list (a non-cons tail ends the walk, as `CONSP (tail)'
+/// loops do).
+#[inline]
+pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
+    match tail {
+        Value::Cons(cell) => Some((cell.car.borrow().clone(), cell.cdr.borrow().clone())),
+        _ => None,
+    }
+}
+
+/// Fcar of a list: the first element, nil for nil.
+#[inline]
+pub(super) fn list_car(list: &Value) -> Value {
+    match list {
+        Value::Cons(cell) => cell.car.borrow().clone(),
+        _ => Value::Nil,
+    }
+}
+
+/// Fcdr of a list: the rest, nil for nil.
+#[inline]
+pub(super) fn list_cdr(list: &Value) -> Value {
+    match list {
+        Value::Cons(cell) => cell.cdr.borrow().clone(),
+        _ => Value::Nil,
+    }
+}
+
+/// Fnth: the Nth element, nil past the end.
+pub(super) fn list_nth(list: &Value, n: usize) -> Value {
+    let mut tail = list.clone();
+    for _ in 0..n {
+        tail = list_cdr(&tail);
+    }
+    list_car(&tail)
+}
+
+/// Whether LIST has at least N cells: eval_sub's `numargs < min_args'
+/// test, walking no further than N cells (by their shared pointers, no
+/// element copied).
+#[inline]
+pub(super) fn list_has_at_least(list: &Value, n: usize) -> bool {
+    if n == 0 {
+        return true;
+    }
+    let Value::Cons(first) = list else {
+        return false;
+    };
+    let mut cur = Rc::clone(first);
+    for _ in 1..n {
+        match next_cons(&cur) {
+            Some(next) => cur = next,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The number of conses in LIST (list_length without the circularity
+/// check; the walks here read what they count).
+pub(super) fn list_cons_count(list: &Value) -> usize {
+    let mut count = 0;
+    let mut tail = list.clone();
+    while let Some((_, next)) = list_next(&tail) {
+        count += 1;
+        tail = next;
+    }
+    count
+}
+
+/// The elements of a proper list as a vector (apply1's spread of an
+/// argument list); a dotted tail signals listp.
+pub(super) fn list_to_vector(list: &Value) -> Result<smallvec::SmallVec<[Value; 8]>, LispError> {
+    let mut items = smallvec::SmallVec::new();
+    let mut tail = list.clone();
+    loop {
+        match &tail {
+            Value::Nil => return Ok(items),
+            Value::Cons(cell) => {
+                items.push(cell.car.borrow().clone());
+                let next = cell.cdr.borrow().clone();
+                tail = next;
+            }
+            other => return Err(LispError::WrongTypeArgument("listp".into(), other.clone())),
+        }
+    }
+}
+
 pub(crate) fn is_special_form_name(name: &str) -> bool {
     crate::lisp::primitives::generated_gnu_c_primitive_special_form(name)
 }
@@ -231,30 +341,33 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
 /// reused, so a verdict stays the symbol's.
 fn native_form_for_symbol(name: &SymbolName) -> Option<NativeForm> {
     thread_local! {
-        static BY_SYMBOL: std::cell::RefCell<
-            std::collections::HashMap<
-                u32,
-                Option<NativeForm>,
-                crate::lisp::types::IdentityBuildHasher,
-            >,
-        > = std::cell::RefCell::new(std::collections::HashMap::default());
+        static BY_SYMBOL: std::cell::RefCell<Vec<Option<Option<NativeForm>>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
-    if let Some(known) = BY_SYMBOL.with_borrow(|cache| cache.get(&name.id()).copied()) {
+    let id = name.id();
+    let compute = || {
+        // A Lisp symbol may select a Rust evaluator arm only when the
+        // generated GNU C manifest owns that native surface.  In
+        // particular, an Emaxx-private prefix is not an ownership
+        // boundary and cannot turn an Elisp macro into a host fallback.
+        crate::lisp::primitives::generated_gnu_c_primitive_available(name)
+            .is_some_and(|available| available)
+            .then(|| NativeForm::for_name(name))
+            .flatten()
+    };
+    if id & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0 {
+        return compute();
+    }
+    let index = id as usize;
+    if let Some(known) = BY_SYMBOL.with_borrow(|table| table.get(index).copied().flatten()) {
         return known;
     }
-    // A Lisp symbol may select a Rust evaluator arm only when the
-    // generated GNU C manifest owns that native surface.  In particular,
-    // an Emaxx-private prefix is not an ownership boundary and cannot
-    // turn an Elisp macro into a host fallback.
-    let native_form = crate::lisp::primitives::generated_gnu_c_primitive_available(name)
-        .is_some_and(|available| available)
-        .then(|| NativeForm::for_name(name))
-        .flatten();
-    BY_SYMBOL.with_borrow_mut(|cache| {
-        if cache.len() >= 1 << 16 {
-            cache.clear();
+    let native_form = compute();
+    BY_SYMBOL.with_borrow_mut(|table| {
+        if table.len() <= index {
+            table.resize(index + 1, None);
         }
-        cache.insert(name.id(), native_form);
+        table[index] = Some(native_form);
     });
     native_form
 }
@@ -275,68 +388,6 @@ impl Interpreter {
             return Some(name.into());
         }
         None
-    }
-
-    fn source_form_analysis(&mut self, source: &Value) -> Result<SourceFormAnalysis, LispError> {
-        let Some((source_anchor, _)) = source.cons_cells() else {
-            return Err(LispError::WrongTypeArgument("listp".into(), source.clone()));
-        };
-        let source_id = source_anchor.cell_id();
-        if let Some(cached) = self
-            .source_form_items_cache
-            .get(&source_id)
-            .and_then(ConsMutationStamped::current)
-            && cached
-                .source
-                .upgrade()
-                .is_some_and(|cached| cached.ptr_eq(&source_anchor))
-        {
-            return Ok(cached.analysis.clone());
-        }
-
-        let items = source.to_vec()?;
-        let mut native_form = None;
-        if let Some(Value::Symbol(name)) = items.first() {
-            native_form = native_form_for_symbol(name);
-        }
-        let analysis = SourceFormAnalysis(Rc::new(SourceFormAnalysisData {
-            items,
-            native_form,
-            macro_calls: RefCell::new(SourceMacroCallCache::default()),
-            special_alias: Cell::new(None),
-            function_call: RefCell::new(None),
-        }));
-        // A form evaluated once -- each macro expansion of interpreted
-        // code is a fresh one -- is analyzed and forgotten; the entry with
-        // its mutation watch over the spine (a registration per cons, and
-        // a release of all of them when the table fills) is made on the
-        // form's second evaluation, which a loop body reaches at once.
-        // The note is the cons cell's own: a set of addresses seen once
-        // counted a freed cell's address coming back under the next
-        // iteration's expansion as a second evaluation, and registered
-        // the watch for every one.
-        if !source_anchor.note_evaluated() {
-            return Ok(analysis);
-        }
-        // Flattening and head classification depend on this list's spine,
-        // not on every mutable cons in the process.  `if' additionally
-        // caches a bounded recursive property of its test form, so include
-        // that subtree in the same validity snapshot.
-        let mutations = crate::lisp::types::ConsMutationSnapshot::list_spine(source);
-        if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
-            self.source_form_items_cache.clear();
-        }
-        self.source_form_items_cache.insert(
-            source_id,
-            ConsMutationStamped::new(
-                mutations,
-                SourceFormCacheEntry {
-                    source: source_anchor.downgrade(),
-                    analysis: analysis.clone(),
-                },
-            ),
-        );
-        Ok(analysis)
     }
 
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -489,168 +540,157 @@ impl Interpreter {
 
             Value::Symbol(name) => self.lookup_symbol(name, env),
 
-            Value::Cons(_) => {
-                let analysis = self.source_form_analysis(expr)?;
-                let items: &[Value] = &analysis.items;
-                let native_form = analysis.native_form;
-                let macro_calls = &analysis.macro_calls;
-                let function_call = &analysis.function_call;
-                let special_alias = &analysis.special_alias;
-                if items.is_empty() {
-                    return Ok(Value::Nil);
-                }
-
-                let callable_name = self.callable_symbol_name(&items[0], env);
-
-                // Check for special forms first.  Source analysis can cache
-                // this classification only for a bare symbol; positioned
-                // symbols depend on the current dynamic mode and are handled
-                // here on every evaluation.
+            Value::Cons(cell) => {
+                // eval_sub: XCAR (form) read for its symbol (copied only
+                // when it is something else), XCDR (form) held by its
+                // cell, CHECK_LIST (original_args).
+                let (head_symbol, head_value) = match &*cell.car.borrow() {
+                    Value::Symbol(name) => (Some(name.clone()), None),
+                    other => (None, Some(other.clone())),
+                };
+                let args_cell: Option<SharedCons> = match &*cell.cdr.borrow() {
+                    Value::Cons(args) => Some(Rc::clone(args)),
+                    Value::Nil => None,
+                    other => {
+                        return Err(LispError::WrongTypeArgument("listp".into(), other.clone()));
+                    }
+                };
+                let callable_name = match head_value.as_ref() {
+                    None => head_symbol,
+                    Some(value) => self.callable_symbol_name(value, env),
+                };
                 if let Some(ref name) = callable_name {
-                    let direct_native_form = native_form.or_else(|| {
-                        (!matches!(items[0], Value::Symbol(_))
-                            && crate::lisp::primitives::generated_gnu_c_primitive_available(name)
-                                .is_some_and(|available| available))
-                        .then(|| NativeForm::for_name(name))
-                        .flatten()
-                    });
-                    // Function aliases to special forms retain the target's
-                    // unevaluated-argument calling convention.  GNU's
-                    // `(defalias 'inline 'progn)' is the common case: treating
-                    // INLINE as an ordinary function evaluates its forms and
-                    // then attempts an invalid funcall of PROGN.
-                    let effective_native_form = direct_native_form.or_else(|| {
-                        let cacheable = matches!(items[0], Value::Symbol(_))
-                            && !Self::env_may_affect_function_resolution(env);
-                        if cacheable
-                            && let Some((generation, verdict)) = special_alias.get()
-                            && generation == self.function_binding_generation
-                        {
-                            return verdict;
-                        }
-                        let verdict = (|| {
+                    // The subr whose max_args is UNEVALLED, by the symbol.
+                    // A function alias of a special form (GNU's `(defalias
+                    // 'inline 'progn)') keeps the target's calling
+                    // convention: a cell holding a symbol (or a subr) is
+                    // followed to the target.
+                    let effective_native_form = self
+                        .globals
+                        .native_form_or(name, || native_form_for_symbol(name))
+                        .or_else(|| {
+                            if !matches!(
+                                self.globals.function(name),
+                                Some(Value::Symbol(_) | Value::BuiltinFunc(_))
+                            ) {
+                                return None;
+                            }
                             let Value::BuiltinFunc(target) =
-                                self.lookup_function(name, env).ok()?
+                                self.lookup_function_symbol(name, env).ok()?
                             else {
                                 return None;
                             };
-                            if !is_special_form_name(&target) {
-                                return None;
-                            }
-                            NativeForm::for_name(&target)
-                        })();
-                        if cacheable {
-                            special_alias.set(Some((self.function_binding_generation, verdict)));
-                        }
-                        verdict
-                    });
+                            // The target's arm by its symbol (every special
+                            // form has one; the manifest was searched by
+                            // name per call through an alias before).
+                            self.globals
+                                .native_form_or(&target, || native_form_for_symbol(&target))
+                        });
                     if let Some(native_form) = effective_native_form {
+                        let args_value = match &args_cell {
+                            Some(args) => Value::Cons(Rc::clone(args)),
+                            None => Value::Nil,
+                        };
+                        let args = &args_value;
+                        // eval_sub's `numargs < XSUBR (fun)->min_args' for
+                        // the UNEVALLED subr: the list walked only as far as
+                        // min_args (the count itself only when it signals).
+                        let min_args = native_form.min_args();
+                        if !list_has_at_least(args, min_args) {
+                            return Err(LispError::WrongNumberOfArgs(
+                                name.as_str().to_string(),
+                                list_cons_count(args),
+                            ));
+                        }
                         match native_form {
-                            NativeForm::Quote => return self.sf_quote(items, env),
-                            NativeForm::If => return self.sf_if(items, env),
-                            NativeForm::And => return self.sf_and(items, env),
-                            NativeForm::Or => return self.sf_or(items, env),
+                            NativeForm::Quote => return self.sf_quote(args, env),
+                            NativeForm::If => return self.sf_if(args, env),
+                            NativeForm::And => return self.sf_and(args, env),
+                            NativeForm::Or => return self.sf_or(args, env),
                             NativeForm::Cond => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_cond(items, env);
+                                let result = self.sf_cond(args, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
-                            NativeForm::Progn => return self.sf_progn(&items[1..], env),
-                            NativeForm::Prog1 => return self.sf_prog1(items, env),
+                            NativeForm::Progn => return self.progn_list(args, env),
+                            NativeForm::Prog1 => return self.sf_prog1(args, env),
                             NativeForm::Let => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_let(items, env);
+                                let result = self.sf_let(args, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::LetStar => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_letstar(items, env);
+                                let result = self.sf_letstar(args, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::Setq => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_setq(items, env);
+                                let result = self.sf_setq(args, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
-                            NativeForm::Defvar => return self.sf_defvar(items, env),
-                            NativeForm::Defconst => return self.sf_defconst(items, env),
-                            NativeForm::Function => {
-                                if items.len() >= 2 {
-                                    if let Value::Symbol(name) = &items[1] {
-                                        return Ok(Value::Symbol(name.clone()));
-                                    }
-                                    if let Ok(name) = function_name_from_binding_form(&items[1]) {
-                                        return Ok(Value::Symbol(name.into()));
-                                    }
-                                    if matches!(
-                                        items[1].car(),
-                                        Ok(Value::Symbol(ref head)) if head == "lambda"
-                                    ) {
-                                        let lambda_items = items[1].to_vec()?;
-                                        return self.sf_lambda_from_source(
-                                            &items[1],
-                                            &lambda_items,
-                                            env,
-                                        );
-                                    }
-                                    return Ok(items[1].clone());
-                                }
-                                return Ok(Value::Nil);
-                            }
+                            NativeForm::Defvar => return self.sf_defvar(args, env),
+                            NativeForm::Defconst => return self.sf_defconst(args, env),
+                            NativeForm::Function => return self.sf_function(args, env),
                             NativeForm::Interactive => return Ok(Value::Nil),
                             NativeForm::While => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_while(items, env);
+                                let result = self.sf_while(args, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::UnwindProtect => {
-                                return self.sf_unwind_protect(items, env);
+                                return self.sf_unwind_protect(args, env);
                             }
                             NativeForm::ConditionCase => {
-                                return self.sf_condition_case(items, env);
+                                return self.sf_condition_case(args, env);
                             }
-                            NativeForm::Catch => return self.sf_catch(items, env),
+                            NativeForm::Catch => return self.sf_catch(args, env),
                             NativeForm::SaveCurrentBuffer => {
-                                return self.sf_save_current_buffer(items, env);
+                                return self.sf_save_current_buffer(args, env);
                             }
                             NativeForm::SaveExcursion => {
-                                return self.sf_save_excursion(items, env);
+                                return self.sf_save_excursion(args, env);
                             }
                             NativeForm::SaveRestriction => {
-                                return self.sf_save_restriction(items, env);
+                                return self.sf_save_restriction(args, env);
                             }
+                        }
+                    }
+
+                    // eval_sub's macro arm: the function cell holds
+                    // `(macro . EXPANDER)', an alias to one, or an autoload
+                    // of one -- read by id; a void cell (a builtin's, or
+                    // an undefined name's) is no macro.  The expander runs
+                    // on every evaluation: it can inspect state, perform
+                    // side effects, or create fresh uninterned symbols.
+                    if matches!(
+                        self.globals.function(name),
+                        Some(Value::Cons(_) | Value::Symbol(_))
+                    ) {
+                        // apply1's spread of the unevaluated forms.
+                        let args_value = match &args_cell {
+                            Some(args) => Value::Cons(Rc::clone(args)),
+                            None => Value::Nil,
+                        };
+                        let args = list_to_vector(&args_value)?;
+                        if let Some(expanded) = self.try_macroexpand(name, &args, env)? {
+                            return self.eval(&expanded, env);
                         }
                     }
                 }
 
-                // GNU's interpreted evaluator invokes a macro expander on
-                // every evaluation.  Do not cache the resulting form: an
-                // expander can inspect state, perform side effects, or create
-                // fresh uninterned symbols.  Only the generation-stamped
-                // negative "not a macro" verdict is reusable here.
-                if let Some(name) = callable_name.as_ref()
-                    && !self.source_call_known_not_macro(macro_calls)
-                {
-                    if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
-                        return self.eval(&expanded, env);
-                    }
-                    if self.macro_nonexpansion_is_callsite_cacheable(name) {
-                        self.cache_source_not_macro(macro_calls);
-                    }
-                }
-
                 // Regular function call
-                self.eval_call(expr, items, function_call, env)
+                self.eval_call(expr, head_value.as_ref(), callable_name, args_cell, env)
             }
         }
     }
@@ -658,25 +698,28 @@ impl Interpreter {
     pub(super) fn eval_call(
         &mut self,
         source_form: &Value,
-        items: &[Value],
-        source_resolution: &RefCell<Option<SourceFunctionCallCacheEntry>>,
+        head: Option<&Value>,
+        callable_name: Option<SymbolName>,
+        args_list: Option<SharedCons>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         // GNU resolves the function cell before evaluating any argument.
         // Keep that observable ordering while retaining a direct native
         // verdict instead of materializing `BuiltinFunc' and throwing away
         // the name-facts cache on every ordinary source call.
-        let callable_name = self.callable_symbol_name(&items[0], env);
+        //
         // eval_sub records the call, with its unevaluated argument forms,
         // before it resolves the function cell and while the arguments
         // evaluate: a void function or an error inside an argument reaches
         // `handler-bind' handlers and backtraces with this frame innermost.
+        let depth = self.backtrace_frames.len();
         let unevald_frame = callable_name.is_some();
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
         let prepared = if let Some(name) = callable_name.as_ref() {
-            match self.resolve_source_symbol_call(name, env, source_resolution) {
+            let local_context = Self::env_may_affect_function_resolution(env);
+            match self.resolve_symbol_call_with_frame_state(name, env, local_context) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let result = self.settle_frame_result(Err(error), env);
@@ -685,12 +728,15 @@ impl Interpreter {
                 }
             }
         } else {
-            FunctionResolution::Resolved(self.eval(&items[0], env)?)
+            let head = head.expect("a callee that is no symbol is held as a value");
+            FunctionResolution::Resolved(self.eval(head, env)?)
         };
-        let mut args = EvalValueBuffer::take();
+        // eval_sub's argvals[8]: the evaluated arguments on the stack, the
+        // forms read off the list cell by cell.
+        let mut args = smallvec::SmallVec::<[Value; 8]>::new();
         let mut arg_error = None;
-        for item in &items[1..] {
-            match self.eval(item, env) {
+        for form in ListForms::from_cell(args_list) {
+            match self.eval(&form, env) {
                 Ok(value) => args.push(value),
                 Err(error) => {
                     arg_error = Some(error);
@@ -698,32 +744,39 @@ impl Interpreter {
                 }
             }
         }
-        if unevald_frame {
-            if let Some(error) = arg_error {
+        if let Some(error) = arg_error {
+            if unevald_frame {
                 let result = self.settle_frame_result(Err(error), env);
-                self.pop_backtrace_frame();
+                self.truncate_backtrace_frames(depth);
                 return result;
             }
-            self.pop_backtrace_frame();
-        } else if let Some(error) = arg_error {
             return Err(error);
         }
         match (callable_name.as_ref(), prepared) {
-            (Some(name), FunctionResolution::DirectBuiltin(facts)) => self.dispatch_named_builtin(
-                name,
-                facts,
-                Some(CallName::Symbol(name)),
-                &args,
-                env,
-                false,
-            ),
-            (Some(name), FunctionResolution::Resolved(func)) => self.call_function_value_named(
-                func,
-                Some(CallName::Symbol(name)),
-                &args,
-                env,
-                false,
-            ),
+            (Some(name), FunctionResolution::DirectBuiltin(facts)) => {
+                // eval_sub's SUBRP arm: the frame recorded before the
+                // arguments were evaluated names the subr and holds them
+                // now (set_backtrace_args), and the subr runs under that
+                // one frame -- a second frame was pushed and popped around
+                // every primitive call before.
+                self.set_backtrace_args(Value::Symbol(name.clone()), &args);
+                self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+                let result = primitives::call_with_facts(self, name, facts, &args, env)
+                    .map_err(|error| Self::builtin_call_error(name, args.len(), false, error));
+                let result = self.settle_frame_result(result, env);
+                self.truncate_backtrace_frames(depth);
+                result
+            }
+            (Some(name), FunctionResolution::Resolved(func)) => {
+                self.pop_backtrace_frame();
+                self.call_function_value_named(
+                    func,
+                    Some(CallName::Symbol(name)),
+                    &args,
+                    env,
+                    false,
+                )
+            }
             (None, FunctionResolution::Resolved(func)) => {
                 self.call_function_value_named(func, None, &args, env, false)
             }
@@ -996,80 +1049,34 @@ impl Interpreter {
     /// Resolve an ordinary source call through its callsite-local verdict.
     /// Symbolic `funcall' retains the global name cache above; both paths use
     /// the same generation and uncached resolution authority below.
-    fn resolve_source_symbol_call(
-        &mut self,
-        name: &SymbolName,
-        env: &Env,
-        source_resolution: &RefCell<Option<SourceFunctionCallCacheEntry>>,
-    ) -> Result<FunctionResolution, LispError> {
-        let local_context = Self::env_may_affect_function_resolution(env);
-        if !local_context
-            && let Some(cached) = source_resolution.borrow().as_ref()
-            && cached.function_binding_generation == self.function_binding_generation
-        {
-            return Ok(cached.resolution.clone());
-        }
-
-        let resolution = self.resolve_symbol_call_with_frame_state(name, env, local_context)?;
-        if !local_context {
-            *source_resolution.borrow_mut() = Some(SourceFunctionCallCacheEntry {
-                function_binding_generation: self.function_binding_generation,
-                resolution: resolution.clone(),
-            });
-        }
-        Ok(resolution)
-    }
-
     fn resolve_symbol_call_with_frame_state(
         &mut self,
         name: &SymbolName,
         env: &Env,
         local_context: bool,
     ) -> Result<FunctionResolution, LispError> {
-        // Keyed by the symbol's id, as GNU reads the function cell off the
-        // Lisp_Symbol: no hash of the name per call.  Under a frame that
-        // holds a callable, the cached global resolution still stands
-        // unless a frame binds this very name, or the cell is an alias
-        // (whose target a frame could bind): a test body holding one
-        // closure in a `let' resolved every call under it by name.
-        if let Some((generation, resolution, through_alias)) =
-            self.function_resolution_cache.get(&name.id())
-            && *generation == self.function_binding_generation
-            && (!local_context || (!*through_alias && !Self::frame_binds_callable(name, env)))
-        {
-            return Ok(resolution.clone());
-        }
-
-        let facts = crate::lisp::primitives::name_facts(name);
+        // eval_sub reads the function cell off the symbol (`XSYMBOL
+        // (fun)->u.s.function'): the facts and the cell by id, with no
+        // hash of the name and no memo in front of a field read.  Under a
+        // frame that holds a callable (cl-flet), only a frame binding
+        // this very name changes the answer.
+        let facts = self
+            .globals
+            .facts_or(name, || crate::lisp::primitives::name_facts_symbol(name));
         let global = !local_context || !Self::frame_binds_callable(name, env);
-        let resolution = if name != "selected-window"
+        // `selected-window' keeps its own arm; its id read once.
+        static SELECTED_WINDOW_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        let selected_window =
+            *SELECTED_WINDOW_ID.get_or_init(|| SymbolName::intern_str("selected-window").id());
+        let resolution = if name.id() != selected_window
             && (facts.prefer_override
-                || (facts.builtin && !facts.special_form && !self.function_index_has(name)))
+                || (facts.builtin && !facts.special_form && self.globals.function(name).is_none()))
             && global
         {
             FunctionResolution::DirectBuiltin(facts)
         } else {
-            FunctionResolution::Resolved(self.lookup_function(name, env)?)
+            FunctionResolution::Resolved(self.lookup_function_symbol(name, env)?)
         };
-        if global {
-            let state = &mut **self;
-            let through_alias = matches!(
-                state.functions_index.get(name.as_str()),
-                Some(Value::Symbol(_))
-            );
-            // Resolved through an alias under a callable-holding frame:
-            // the chain may have passed through a frame binding.
-            if !local_context || !through_alias {
-                state.function_resolution_cache.insert(
-                    name.id(),
-                    (
-                        state.function_binding_generation,
-                        resolution.clone(),
-                        through_alias,
-                    ),
-                );
-            }
-        }
         Ok(resolution)
     }
 
@@ -2505,26 +2512,5 @@ mod eval_value_buffer_tests {
         .expect("mutate copied C graph");
         assert_eq!(c_value, Value::cons(Value::Integer(1), Value::Nil));
         assert_eq!(copied_plain, plain);
-    }
-
-    #[test]
-    fn scratch_buffers_are_cleared_and_oversized_storage_is_not_retained() {
-        EVAL_VALUE_BUFFER_POOL.with_borrow_mut(Vec::clear);
-
-        {
-            let mut buffer = EvalValueBuffer::take();
-            buffer.extend([Value::string("temporary"), Value::symbol("value")]);
-        }
-        EVAL_VALUE_BUFFER_POOL.with_borrow(|pool| {
-            assert_eq!(pool.len(), 1);
-            assert!(pool[0].is_empty());
-        });
-
-        {
-            let mut buffer = EvalValueBuffer::take();
-            assert!(buffer.is_empty());
-            buffer.reserve(EVAL_VALUE_BUFFER_CAPACITY_LIMIT + 1);
-        }
-        EVAL_VALUE_BUFFER_POOL.with_borrow(|pool| assert!(pool.is_empty()));
     }
 }

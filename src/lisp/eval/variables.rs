@@ -2578,6 +2578,17 @@ impl Interpreter {
         self.push_plain_backtrace_frame(function, FrameArgs::Owned(args), evald);
     }
 
+    /// eval.c's set_backtrace_args on the frame eval_sub recorded before
+    /// the arguments were evaluated: the frame now names the function and
+    /// holds the evaluated arguments (nargs no longer UNEVALLED).
+    pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
+        if let Some(frame) = self.backtrace_frames.last_mut() {
+            frame.function = function;
+            frame.args = FrameArgs::borrowed(args);
+            frame.evald = true;
+        }
+    }
+
     pub(super) fn push_unevaluated_backtrace_frame(&mut self, source_form: &Value) {
         // eval.c's eval_sub records the form itself (nargs UNEVALLED):
         // the four-word frame holds it, and the debugger's projections
@@ -2611,10 +2622,12 @@ impl Interpreter {
         // the symbol interned once per thread, is the whole cost until
         // edebug is actually loaded (it ran on every function call, and
         // hashed the name each time).
-        thread_local! {
-            static EDEBUG_ENTERED: SymbolName = SymbolName::intern_str("edebug-entered");
-        }
-        EDEBUG_ENTERED.with(|symbol| self.globals.has_flag(symbol, SPECIAL))
+        // Symbol ids are process-wide: the id read once, then one flag
+        // test per call (a thread-local symbol handle was fetched on
+        // every call before).
+        static EDEBUG_ENTERED_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        let id = *EDEBUG_ENTERED_ID.get_or_init(|| SymbolName::intern_str("edebug-entered").id());
+        self.globals.has_flag_id(id, SPECIAL)
             && self
                 .lookup_var("edebug-entered", env)
                 .is_some_and(|value| value.is_truthy())

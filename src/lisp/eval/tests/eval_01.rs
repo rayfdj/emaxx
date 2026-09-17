@@ -4025,6 +4025,27 @@ fn watchers_hear_a_let_of_lexical_binding_as_data_c_reports_it() {
 }
 
 #[test]
+fn special_forms_signal_their_min_args_as_eval_sub_does() {
+    // eval_sub checks `numargs < XSUBR (fun)->min_args' for an UNEVALLED
+    // subr before it runs (`(if)', `(quote)', `(function)', `(prog1)' and
+    // `(condition-case)' returned nil here); Fsetq signals on a symbol
+    // without its value form; the arithmetic, comparison and list
+    // primitives called through their pointers.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(mapcar (lambda (form) (condition-case e (eval form t) (error e)))
+  '((setq x) (setq) (let) (let*) (catch) (while) (unwind-protect) (defvar) (defconst x) (if) (quote) (function) (progn) (prog1) (cond) (and) (or) (condition-case) (save-excursion) (setq x 1 y) (let ((x 1)) (setq x 2 y)) (interactive)
+    (let ((x 1)) (setq x (1+ x)) (list x (eq x 2) (car (cons 1 2)) (cdr (cons 1 2)) (- 5) (- 5 3) (* 2 3) (= 1 1 1) (< 1 2 3) (> 3 2 1) (<= 1 1 2) (>= 2 2 1) (1- 3) (+)))
+    (let ((y 5)) (setq y 6) (list y (boundp 'zz-unbound-20a)))))",
+        )
+        .to_string(),
+        "((wrong-number-of-arguments setq 1) nil (wrong-number-of-arguments let 0) (wrong-number-of-arguments let* 0) (wrong-number-of-arguments catch 0) (wrong-number-of-arguments while 0) (wrong-number-of-arguments unwind-protect 0) (wrong-number-of-arguments defvar 0) (wrong-number-of-arguments defconst 1) (wrong-number-of-arguments if 0) (wrong-number-of-arguments quote 0) (wrong-number-of-arguments function 0) nil (wrong-number-of-arguments prog1 0) nil t nil (wrong-number-of-arguments condition-case 0) nil (wrong-number-of-arguments setq 3) (wrong-number-of-arguments setq 3) nil (2 t 1 2 -5 2 6 t t t t t 2 0) (6 nil))",
+    );
+}
+
+#[test]
 fn newline_scans_cross_the_rope_chunks() {
     // find_newline over a buffer longer than one rope chunk, with
     // multibyte text so byte and character offsets differ inside a

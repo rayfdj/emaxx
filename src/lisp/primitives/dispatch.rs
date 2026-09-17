@@ -123,6 +123,22 @@ fn direct_primitive(name: &str) -> Option<DirectPrimitive> {
         "match-end" => search_coding::direct_match_end,
         "following-char" => display::direct_following_char,
         "preceding-char" => display::direct_preceding_char,
+        // The arithmetic, comparison and list primitives of interpreted
+        // loops (data.c's arith_driver family, Fcons, Fcar, Fcdr, Feq).
+        "+" => numeric::direct_plus,
+        "-" => numeric::direct_minus,
+        "*" => numeric::direct_times,
+        "=" => numeric::direct_num_eq,
+        "<" => numeric::direct_lt,
+        ">" => numeric::direct_gt,
+        "<=" => numeric::direct_le,
+        ">=" => numeric::direct_ge,
+        "1+" => numeric::direct_add1,
+        "1-" => numeric::direct_sub1,
+        "eq" => numeric::direct_eq,
+        "cons" => lists::direct_cons,
+        "car" => lists::direct_car,
+        "cdr" => lists::direct_cdr,
         _ => return None,
     })
 }
@@ -296,6 +312,33 @@ impl std::hash::Hasher for FnvHasher {
 }
 
 pub(crate) type FnvBuildHasher = std::hash::BuildHasherDefault<FnvHasher>;
+
+/// `name_facts' for the symbol in hand: the facts kept per symbol id
+/// (lisp.h keeps the subr in the symbol's function cell; a hash of the
+/// name per resolution stood in for that field read).  Symbol ids are
+/// never reused; an uninterned symbol (the high bit set) goes by name.
+pub(crate) fn name_facts_symbol(symbol: &crate::lisp::types::SymbolName) -> NameFacts {
+    thread_local! {
+        static BY_SYMBOL: std::cell::RefCell<Vec<Option<NameFacts>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let id = symbol.id();
+    if id & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0 {
+        return name_facts(symbol.as_str());
+    }
+    let index = id as usize;
+    if let Some(facts) = BY_SYMBOL.with_borrow(|table| table.get(index).copied().flatten()) {
+        return facts;
+    }
+    let facts = name_facts(symbol.as_str());
+    BY_SYMBOL.with_borrow_mut(|table| {
+        if table.len() <= index {
+            table.resize(index + 1, None);
+        }
+        table[index] = Some(facts);
+    });
+    facts
+}
 
 pub(crate) fn name_facts(name: &str) -> NameFacts {
     thread_local! {

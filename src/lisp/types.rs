@@ -1564,10 +1564,6 @@ pub struct ConsCell {
     pub(crate) car: ConsValueCell,
     pub(crate) cdr: ConsValueCell,
     pub(crate) mark: MarkBit,
-    /// Whether the evaluator has already seen the form this cell heads:
-    /// the cell's own note (in the word's padding), so a freed cell's
-    /// address coming back under a fresh form starts over.
-    evaluated: Cell<bool>,
 }
 
 /// One tracked field of a cons cell.
@@ -1853,7 +1849,6 @@ impl ConsCell {
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
             mark: MarkBit::default(),
-            evaluated: Cell::new(false),
         }
     }
 
@@ -1864,18 +1859,11 @@ impl ConsCell {
             car: ConsValueCell::new(Value::Nil),
             cdr: ConsValueCell::new(Value::Nil),
             mark: MarkBit::default(),
-            evaluated: Cell::new(false),
         })
     }
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
         Rc::as_ptr(cell) as usize
-    }
-
-    /// Note an evaluation of the form this cell heads; true when the cell
-    /// had already been evaluated.
-    pub(crate) fn note_evaluated(&self) -> bool {
-        self.evaluated.replace(true)
     }
 
     pub(crate) fn native_words(cell: &SharedCons) -> *mut ConsWords {
@@ -2034,11 +2022,6 @@ impl ConsSlot {
 
     pub fn cell_id(&self) -> usize {
         ConsCell::identity(&self.cell)
-    }
-
-    /// See `ConsCell::note_evaluated'.
-    pub(crate) fn note_evaluated(&self) -> bool {
-        self.cell.note_evaluated()
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
@@ -2292,6 +2275,12 @@ impl Clone for Value {
             // SAFETY: an immediate owns nothing, so a bitwise copy is the
             // same value with nothing to account for.
             unsafe { std::ptr::read(self) }
+        } else if let Value::Cons(cell) = self {
+            // The evaluator's reads of a form's cells: the count taken in
+            // line, not through the general copy.
+            Value::Cons(Rc::clone(cell))
+        } else if let Value::Symbol(name) = self {
+            Value::Symbol(name.clone())
         } else {
             self.clone_shared()
         }
@@ -2314,6 +2303,25 @@ thread_local! {
 /// copies of derived snapshots.
 #[derive(Clone, Debug)]
 pub struct EnvFrame(Rc<EnvFrameData>);
+
+/// Whether a function-namespace frame (cl-flet's) was ever made in this
+/// process: until one is, no frame can shadow a function cell, and the
+/// resolution of a call reads the cell without a walk over the frames
+/// (eval.c walks none; every call walked them here).
+static FUNCTION_NAMESPACE_FRAMES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn note_function_namespace_frame(function_bindings: bool) {
+    if function_bindings {
+        FUNCTION_NAMESPACE_FRAMES.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline]
+pub(crate) fn function_namespace_frames_exist() -> bool {
+    FUNCTION_NAMESPACE_FRAMES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[derive(Debug, Default)]
 struct LexicalFrameState {
@@ -2420,6 +2428,7 @@ impl EnvFrame {
     }
 
     pub fn with_function_bindings(bindings: Vec<(SymbolName, Value)>, identity: i64) -> Self {
+        note_function_namespace_frame(true);
         Self(Rc::new(EnvFrameData {
             bindings,
             identity: Some(identity),
@@ -2451,6 +2460,7 @@ impl EnvFrame {
         function_bindings: bool,
         local_special_declarations: Vec<(usize, String)>,
     ) -> Self {
+        note_function_namespace_frame(function_bindings);
         Self(Rc::new(EnvFrameData {
             bindings,
             identity,

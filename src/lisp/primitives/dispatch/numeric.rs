@@ -43,88 +43,9 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Arithmetic ──
-            "+" => {
-                if has_float(args) {
-                    // data.c arith_driver: the accumulator starts from the
-                    // FIRST argument, not from 0.0 -- (+ -0.0) is -0.0,
-                    // while seeding with 0.0 turns it into +0.0 (IEEE
-                    // 0.0 + -0.0 = +0.0).  Exposed by the bytecomp
-                    // signed-zero cases once `equal' stopped conflating
-                    // the zero signs.
-                    let mut sum = numeric_to_f64(interp, &args[0])?;
-                    for a in &args[1..] {
-                        sum += numeric_to_f64(interp, a)?;
-                    }
-                    Ok(Value::float(sum))
-                } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
-                    Ok(normalize_integer_value(sum))
-                } else {
-                    let mut sum = BigInt::zero();
-                    for a in args {
-                        sum += integer_like_bigint(interp, a)?;
-                    }
-                    Ok(normalize_bigint_value(sum))
-                }
-            }
-            "-" => {
-                if args.is_empty() {
-                    return Ok(Value::Integer(0));
-                }
-                if has_float(args) {
-                    if args.len() == 1 {
-                        return Ok(Value::float(-numeric_to_f64(interp, &args[0])?));
-                    }
-                    let mut result = numeric_to_f64(interp, &args[0])?;
-                    for a in &args[1..] {
-                        result -= numeric_to_f64(interp, a)?;
-                    }
-                    Ok(Value::float(result))
-                } else {
-                    if args.len() == 1 {
-                        if !matches!(args[0], Value::BigInteger(_)) {
-                            let value = integer_like_i64(interp, &args[0])?;
-                            if let Some(result) = value.checked_neg() {
-                                return Ok(normalize_integer_value(result));
-                            }
-                        }
-                        return Ok(normalize_bigint_value(-integer_like_bigint(
-                            interp, &args[0],
-                        )?));
-                    }
-                    if !matches!(args[0], Value::BigInteger(_)) {
-                        let first = integer_like_i64(interp, &args[0])?;
-                        if let Some(result) =
-                            checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
-                        {
-                            return Ok(normalize_integer_value(result));
-                        }
-                    }
-                    let mut result = integer_like_bigint(interp, &args[0])?;
-                    for a in &args[1..] {
-                        result -= integer_like_bigint(interp, a)?;
-                    }
-                    Ok(normalize_bigint_value(result))
-                }
-            }
-            "*" => {
-                if has_float(args) {
-                    let mut product = 1.0;
-                    for a in args {
-                        product *= numeric_to_f64(interp, a)?;
-                    }
-                    Ok(Value::float(product))
-                } else if let Some(product) =
-                    checked_integer_fold(interp, args, 1, i64::checked_mul)?
-                {
-                    Ok(normalize_integer_value(product))
-                } else {
-                    let mut product = BigInt::from(1u8);
-                    for a in args {
-                        product *= integer_like_bigint(interp, a)?;
-                    }
-                    Ok(normalize_bigint_value(product))
-                }
-            }
+            "+" => direct_plus(interp, args, env),
+            "-" => direct_minus(interp, args, env),
+            "*" => direct_times(interp, args, env),
             "/" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs("/".into(), args.len()));
@@ -219,34 +140,8 @@ define_dispatch!(
                     a % b
                 }))
             }
-            "1+" => {
-                need_args(name, args, 1)?;
-                if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::float(numeric_to_f64(interp, &args[0])? + 1.0))
-                } else if !matches!(args[0], Value::BigInteger(_))
-                    && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
-                {
-                    Ok(normalize_integer_value(value))
-                } else {
-                    Ok(normalize_bigint_value(
-                        integer_like_bigint(interp, &args[0])? + 1,
-                    ))
-                }
-            }
-            "1-" => {
-                need_args(name, args, 1)?;
-                if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::float(numeric_to_f64(interp, &args[0])? - 1.0))
-                } else if !matches!(args[0], Value::BigInteger(_))
-                    && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
-                {
-                    Ok(normalize_integer_value(value))
-                } else {
-                    Ok(normalize_bigint_value(
-                        integer_like_bigint(interp, &args[0])? - 1,
-                    ))
-                }
-            }
+            "1+" => direct_add1(interp, args, env),
+            "1-" => direct_sub1(interp, args, env),
             "max" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs("max".into(), 0));
@@ -508,61 +403,11 @@ define_dispatch!(
             }
 
             // ── Comparison ──
-            "=" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                for pair in args.windows(2) {
-                    if !numeric_eq(interp, &pair[0], &pair[1])? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
-            "<" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                for pair in args.windows(2) {
-                    if !numeric_lt(interp, &pair[0], &pair[1])? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
-            ">" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                for pair in args.windows(2) {
-                    if !numeric_gt(interp, &pair[0], &pair[1])? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
-            "<=" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                for pair in args.windows(2) {
-                    if !numeric_lte(interp, &pair[0], &pair[1])? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
-            ">=" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                for pair in args.windows(2) {
-                    if !numeric_gte(interp, &pair[0], &pair[1])? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
+            "=" => direct_num_eq(interp, args, env),
+            "<" => direct_lt(interp, args, env),
+            ">" => direct_gt(interp, args, env),
+            "<=" => direct_le(interp, args, env),
+            ">=" => direct_ge(interp, args, env),
             "/=" => {
                 need_args(name, args, 2)?;
                 for index in 0..args.len() {
@@ -584,11 +429,7 @@ define_dispatch!(
             }
 
             // ── Equality ──
-            "eq" => {
-                need_args(name, args, 2)?;
-                let equal = values_eq_in_env(interp, &args[0], &args[1], env);
-                Ok(if equal { Value::T } else { Value::Nil })
-            }
+            "eq" => direct_eq(interp, args, env),
             "eql" => {
                 need_args(name, args, 2)?;
                 Ok(if values_eql_in_env(interp, &args[0], &args[1], env) {
@@ -816,5 +657,257 @@ pub(super) fn direct_equal(
         Some(equal) => equal,
         None => super::super::values::values_equal_signaling(interp, &args[0], &args[1], env)?,
     };
+    Ok(if equal { Value::T } else { Value::Nil })
+}
+
+/// The subr behind `+', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_plus(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if has_float(args) {
+        // data.c arith_driver: the accumulator starts from the
+        // FIRST argument, not from 0.0 -- (+ -0.0) is -0.0,
+        // while seeding with 0.0 turns it into +0.0 (IEEE
+        // 0.0 + -0.0 = +0.0).  Exposed by the bytecomp
+        // signed-zero cases once `equal' stopped conflating
+        // the zero signs.
+        let mut sum = numeric_to_f64(interp, &args[0])?;
+        for a in &args[1..] {
+            sum += numeric_to_f64(interp, a)?;
+        }
+        Ok(Value::float(sum))
+    } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
+        Ok(normalize_integer_value(sum))
+    } else {
+        let mut sum = BigInt::zero();
+        for a in args {
+            sum += integer_like_bigint(interp, a)?;
+        }
+        Ok(normalize_bigint_value(sum))
+    }
+}
+
+/// The subr behind `-', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_minus(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Ok(Value::Integer(0));
+    }
+    if has_float(args) {
+        if args.len() == 1 {
+            return Ok(Value::float(-numeric_to_f64(interp, &args[0])?));
+        }
+        let mut result = numeric_to_f64(interp, &args[0])?;
+        for a in &args[1..] {
+            result -= numeric_to_f64(interp, a)?;
+        }
+        Ok(Value::float(result))
+    } else {
+        if args.len() == 1 {
+            if !matches!(args[0], Value::BigInteger(_)) {
+                let value = integer_like_i64(interp, &args[0])?;
+                if let Some(result) = value.checked_neg() {
+                    return Ok(normalize_integer_value(result));
+                }
+            }
+            return Ok(normalize_bigint_value(-integer_like_bigint(
+                interp, &args[0],
+            )?));
+        }
+        if !matches!(args[0], Value::BigInteger(_)) {
+            let first = integer_like_i64(interp, &args[0])?;
+            if let Some(result) = checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
+            {
+                return Ok(normalize_integer_value(result));
+            }
+        }
+        let mut result = integer_like_bigint(interp, &args[0])?;
+        for a in &args[1..] {
+            result -= integer_like_bigint(interp, a)?;
+        }
+        Ok(normalize_bigint_value(result))
+    }
+}
+
+/// The subr behind `*', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_times(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if has_float(args) {
+        let mut product = 1.0;
+        for a in args {
+            product *= numeric_to_f64(interp, a)?;
+        }
+        Ok(Value::float(product))
+    } else if let Some(product) = checked_integer_fold(interp, args, 1, i64::checked_mul)? {
+        Ok(normalize_integer_value(product))
+    } else {
+        let mut product = BigInt::from(1u8);
+        for a in args {
+            product *= integer_like_bigint(interp, a)?;
+        }
+        Ok(normalize_bigint_value(product))
+    }
+}
+
+/// The subr behind `=', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_num_eq(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "=";
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+    }
+    for pair in args.windows(2) {
+        if !numeric_eq(interp, &pair[0], &pair[1])? {
+            return Ok(Value::Nil);
+        }
+    }
+    Ok(Value::T)
+}
+
+/// The subr behind `<', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_lt(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "<";
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+    }
+    for pair in args.windows(2) {
+        if !numeric_lt(interp, &pair[0], &pair[1])? {
+            return Ok(Value::Nil);
+        }
+    }
+    Ok(Value::T)
+}
+
+/// The subr behind `>', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_gt(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = ">";
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+    }
+    for pair in args.windows(2) {
+        if !numeric_gt(interp, &pair[0], &pair[1])? {
+            return Ok(Value::Nil);
+        }
+    }
+    Ok(Value::T)
+}
+
+/// The subr behind `<=', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_le(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "<=";
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+    }
+    for pair in args.windows(2) {
+        if !numeric_lte(interp, &pair[0], &pair[1])? {
+            return Ok(Value::Nil);
+        }
+    }
+    Ok(Value::T)
+}
+
+/// The subr behind `>=', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_ge(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = ">=";
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+    }
+    for pair in args.windows(2) {
+        if !numeric_gte(interp, &pair[0], &pair[1])? {
+            return Ok(Value::Nil);
+        }
+    }
+    Ok(Value::T)
+}
+
+/// The subr behind `1+', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_add1(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "1+";
+    need_args(name, args, 1)?;
+    if matches!(args[0], Value::Float(_)) {
+        Ok(Value::float(numeric_to_f64(interp, &args[0])? + 1.0))
+    } else if !matches!(args[0], Value::BigInteger(_))
+        && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
+    {
+        Ok(normalize_integer_value(value))
+    } else {
+        Ok(normalize_bigint_value(
+            integer_like_bigint(interp, &args[0])? + 1,
+        ))
+    }
+}
+
+/// The subr behind `1-', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_sub1(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "1-";
+    need_args(name, args, 1)?;
+    if matches!(args[0], Value::Float(_)) {
+        Ok(Value::float(numeric_to_f64(interp, &args[0])? - 1.0))
+    } else if !matches!(args[0], Value::BigInteger(_))
+        && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
+    {
+        Ok(normalize_integer_value(value))
+    } else {
+        Ok(normalize_bigint_value(
+            integer_like_bigint(interp, &args[0])? - 1,
+        ))
+    }
+}
+
+/// The subr behind `eq', by pointer (data.c/fns.c: called through
+/// the function cell).
+pub(super) fn direct_eq(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "eq";
+    need_args(name, args, 2)?;
+    let equal = values_eq_in_env(interp, &args[0], &args[1], env);
     Ok(if equal { Value::T } else { Value::Nil })
 }

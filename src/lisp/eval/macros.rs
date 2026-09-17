@@ -634,11 +634,6 @@ impl Interpreter {
         self.try_macroexpand_with_environment(name, args, None, MacroCaller::EvalSub, env)
     }
 
-    pub(super) fn macro_nonexpansion_is_callsite_cacheable(&self, name: &str) -> bool {
-        let _ = name;
-        true
-    }
-
     /// Invoke a macro-environment expander (from cl-flet/cl-labels/
     /// cl-macrolet and friends) in a fresh environment.  Expanders are
     /// closures over their own captured bindings; running them inside the

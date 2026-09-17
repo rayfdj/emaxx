@@ -1,3 +1,4 @@
+use super::core::{list_car, list_cons_count, list_next, list_nth, next_cons};
 use super::*;
 
 type NormalizedClosureBody = (Option<Value>, Option<Value>, Vec<Value>);
@@ -62,8 +63,8 @@ impl Interpreter {
         Ok((documentation, interactive_form, body))
     }
 
-    pub(super) fn sf_setq(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        self.sf_setq_internal(items, env, false)
+    pub(super) fn sf_setq(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        self.sf_setq_internal(args, env, false)
     }
 
     pub fn set_custom_option(
@@ -93,15 +94,29 @@ impl Interpreter {
 
     pub(super) fn sf_setq_internal(
         &mut self,
-        items: &[Value],
+        args: &Value,
         env: &mut Env,
         local_only: bool,
     ) -> Result<Value, LispError> {
+        // Fsetq: the pairs read off the list in place; a symbol without
+        // its value form signals wrong-number-of-arguments with the count
+        // read so far.
         let mut result = Value::Nil;
-        let mut i = 1;
-        while i + 1 < items.len() {
+        let mut cur = match args {
+            Value::Cons(cell) => Some(Rc::clone(cell)),
+            _ => None,
+        };
+        let mut nargs = 0usize;
+        while let Some(symbol_cell) = cur {
+            let sym = symbol_cell.car.borrow().clone();
+            let Some(value_cell) = next_cons(&symbol_cell) else {
+                return Err(LispError::WrongNumberOfArgs("setq".into(), nargs + 1));
+            };
+            let value_form = value_cell.car.borrow().clone();
+            cur = next_cons(&value_cell);
+            nargs += 2;
             // The symbol itself, resolved and assigned by its id.
-            let symbol = match &items[i] {
+            let symbol = match &sym {
                 Value::Symbol(symbol) => symbol.clone(),
                 Value::Nil => SymbolName::intern_str("nil"),
                 Value::T => SymbolName::intern_str("t"),
@@ -112,8 +127,25 @@ impl Interpreter {
                     ));
                 }
             };
+            // Fsetq: the value, then the lexical alist, then Fset -- for
+            // a plain untrapped symbol (no alias, no constant: a constant
+            // never learns the plain store) set_internal's store is the
+            // whole of Fset.
+            if !local_only && self.globals.plain_store(&symbol) {
+                let val = self.eval(&value_form, env)?;
+                result = val.clone();
+                if self.set_lexical_variable_checked_symbol(&symbol, val.clone(), env)? {
+                    continue;
+                }
+                if let Some(existing) = self.globals.value_mut(&symbol) {
+                    *existing = Self::stored_value(val);
+                    continue;
+                }
+                self.setq_variable_symbol(&symbol, val, env)?;
+                continue;
+            }
             let resolved = self.resolve_variable_symbol(&symbol)?;
-            let evaluated = self.eval(&items[i + 1], env)?;
+            let evaluated = self.eval(&value_form, env)?;
             let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
             result = val.clone();
             if local_only {
@@ -128,21 +160,22 @@ impl Interpreter {
             } else {
                 self.setq_variable_symbol(&resolved, val, env)?;
             }
-            i += 2;
         }
         Ok(result)
     }
 
-    pub(super) fn sf_defvar(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 2 {
+    pub(super) fn sf_defvar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let nargs = list_cons_count(args);
+        if nargs < 1 {
             return Err(LispError::WrongNumberOfArgs("defvar".into(), 0));
         }
         // eval.c:Fdefvar uses CHECK_SYMBOL/XSYMBOL.  While source-position
         // symbols are enabled, that means the definition is installed on
         // the underlying bare symbol while the original object is returned.
-        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
+        let name_value = list_car(args);
+        let name = crate::lisp::primitives::checked_symbol_name(self, &name_value, env)?;
         let resolved = self.resolve_variable_name(&name)?;
-        if items.len() > 4 {
+        if nargs > 3 {
             return Err(LispError::Signal("Too many arguments".into()));
         }
         // GNU: a bare one-arg `defvar' NOT at top level only makes the
@@ -152,10 +185,11 @@ impl Interpreter {
         // (erc-send-input relies on this for its obsolete dynamic `str').
         // The local specialness is recorded as a frame marker scoped to the
         // current activation so `let's in the SAME scope bind dynamically.
-        if items.len() > 2 {
+        if nargs > 1 {
             self.mark_special_variable(&resolved);
-            if let Some(doc) = items.get(3).filter(|value| !value.is_nil()) {
-                let doc = crate::lisp::primitives::purecopy_value(self, doc, env)?;
+            let doc = list_nth(args, 2);
+            if !doc.is_nil() {
+                let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
                 self.put_symbol_property(&resolved, "variable-documentation", doc);
             }
             self.record_definition_in_load_history("defvar", &resolved);
@@ -171,42 +205,58 @@ impl Interpreter {
         // The lazily synthesized builtin fallback table must not count:
         // treating it as a binding silently discarded the init forms of
         // genuinely loaded GNU defvars (mode-line-modes, user-emacs-directory).
-        if !self.global_default_binding_exists(&resolved) && items.len() > 2 {
-            let val = self.eval(&items[2], env)?;
+        if !self.global_default_binding_exists(&resolved) && nargs > 1 {
+            let val = self.eval(&list_nth(args, 1), env)?;
             self.set_default_toplevel_value(&resolved, val);
         }
-        Ok(items[1].clone())
+        Ok(name_value)
     }
 
-    pub(super) fn sf_defconst(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "defconst".into(),
-                items.len().saturating_sub(1),
-            ));
+    pub(super) fn sf_defconst(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let nargs = list_cons_count(args);
+        if nargs < 2 {
+            return Err(LispError::WrongNumberOfArgs("defconst".into(), nargs));
         }
         // eval.c:Fdefconst has the same CHECK_SYMBOL/XSYMBOL contract as
         // defvar for source-position symbols.
-        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
+        let name_value = list_car(args);
+        let name = crate::lisp::primitives::checked_symbol_name(self, &name_value, env)?;
         let resolved = self.resolve_variable_name(&name)?;
-        if items.len() > 4 {
+        if nargs > 3 {
             return Err(LispError::Signal("Too many arguments".into()));
         }
-        let value = self.eval(&items[2], env)?;
+        let value = self.eval(&list_nth(args, 1), env)?;
         self.mark_special_variable(&resolved);
-        if let Some(doc) = items.get(3).filter(|value| !value.is_nil()) {
-            let doc = crate::lisp::primitives::purecopy_value(self, doc, env)?;
+        let doc = list_nth(args, 2);
+        if !doc.is_nil() {
+            let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
             self.put_symbol_property(&resolved, "variable-documentation", doc);
         }
         let value = crate::lisp::primitives::purecopy_value(self, &value, env)?;
         self.set_default_toplevel_value(&resolved, value);
         self.put_symbol_property(&resolved, "risky-local-variable", Value::T);
         self.record_definition_in_load_history("defvar", &resolved);
-        Ok(items[1].clone())
+        Ok(name_value)
+    }
+
+    /// Ffunction: a symbol names itself; a `(setf NAME)' form its
+    /// function name; a lambda form becomes the interpreted closure; any
+    /// other object is returned as it is.
+    pub(super) fn sf_function(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let Some((quoted, _)) = list_next(args) else {
+            return Ok(Value::Nil);
+        };
+        if let Value::Symbol(name) = &quoted {
+            return Ok(Value::Symbol(name.clone()));
+        }
+        if let Ok(name) = super::function_name_from_binding_form(&quoted) {
+            return Ok(Value::Symbol(name.into()));
+        }
+        if matches!(quoted.car(), Ok(Value::Symbol(ref head)) if head == "lambda") {
+            let lambda_items = quoted.to_vec()?;
+            return self.sf_lambda_from_source(&quoted, &lambda_items, env);
+        }
+        Ok(quoted)
     }
 
     // Expand registered `cl-generic-define-context-rewriter' heads inside a

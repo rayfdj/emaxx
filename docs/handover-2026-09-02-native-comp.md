@@ -821,6 +821,18 @@ ucs-names 14.3 to 12.0 s (GNU 2.4), semantic-utest-C 7.2 to 6.9
 (GNU 0.76).  Open: the interpreted call's frame and argument vector,
 the fancy VM for matches the superset passes, the mark word per object,
 the byte-code call.
+Checkpoint 20a (2026-09-17, for main): the source interpreter as
+eval_sub -- the function cell a slot in the symbol's cell read by id,
+the form walked by its cells with no analysis cache, the UNEVALLED
+subr's min_args signaled first (the oracle's values), one frame per
+interpreted subr call, `setq` as Fsetq then set_internal, maybe_gc as
+one compare, pointers for the loop primitives: a dynamic interpreted
+loop (two million iterations) 3.07 to 2.47 s (GNU 0.46), the lexical
+one 3.33 to 3.12 (GNU 1.13), the `when-let` loop 2.65 to 2.16 s
+(GNU 1.06).  Open: the lexical environment
+as a vector of frames (eval.c's alist), the function-namespace frames,
+the reader's deferred literals behind `quote`, the Result through
+every call, the byte-code call.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
