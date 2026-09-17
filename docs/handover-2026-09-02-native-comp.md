@@ -806,6 +806,21 @@ cell (eval.c's namespaces; the oracle's values): `looking-at`
 to 5.3 (1.04), fns-tests-sort 7.0 to 5.2 (1.31).  Open: patterns
 with lookaround (fancy-regex's VM scans), the mark word per object,
 the byte-code call.
+Checkpoint 19z (2026-09-17, for main): the source interpreter's
+per-form floor (the unevaluated frame in the frame word, one shared
+analysis allocation made on a form's second evaluation, `let`/`let*`
+in place with Flet's checks, the specialness verdict per symbol, macro
+expanders under their symbol with `lexical-binding` bound by symbol,
+the evaluated-once note in the cons cell, decoded code shared by a
+prototype's closures, the watcher table left at exit; Fmacroexpand
+binds nothing and a let of a localized symbol without a cell is
+SPECPDL_LET_DEFAULT, per the oracle) and the lookaround-free
+superset refusing backtracking patterns at point: a `when-let`
+expansion in an interpreted loop 46 to 11 us (GNU 4.3),
+ucs-names 14.3 to 12.0 s (GNU 2.4), semantic-utest-C 7.2 to 6.9
+(GNU 0.76).  Open: the interpreted call's frame and argument vector,
+the fancy VM for matches the superset passes, the mark word per object,
+the byte-code call.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

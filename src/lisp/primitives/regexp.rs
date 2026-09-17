@@ -2492,8 +2492,102 @@ enum RegexEngine {
         regex: regex_automata::meta::Regex,
         captures: RefCell<regex_automata::util::captures::Captures>,
     },
-    /// Lookaround or backreferences: fancy-regex's backtracking VM.
-    Fancy(FancyRegex),
+    /// Lookaround or backreferences: fancy-regex's backtracking VM, whose
+    /// program always begins with a scan of the text.  Beside it, when
+    /// regex-syntax accepts the pattern with its lookarounds removed, that
+    /// superset of the language on the meta engine: a match required at a
+    /// position is refused there in one anchored run before the VM is
+    /// asked (a token pattern semantic's lexer tries at every position
+    /// scanned to the next candidate anywhere ahead on each refusal).
+    Fancy {
+        regex: FancyRegex,
+        coarse: Option<regex_automata::meta::Regex>,
+    },
+}
+
+/// RENDERED with every lookaround group replaced by the empty group, a
+/// superset of its language: None when it has no lookaround.  Classes
+/// and escapes are skipped as the regex syntax reads them.
+fn lookaround_free(rendered: &str) -> Option<String> {
+    let bytes = rendered.as_bytes();
+    let mut out = String::with_capacity(rendered.len());
+    let mut index = 0;
+    let mut removed = false;
+    let mut copied_to = 0;
+    // The end of the class starting at INDEX (its `[').
+    fn class_end(bytes: &[u8], mut index: usize) -> usize {
+        index += 1;
+        if bytes.get(index) == Some(&b'^') {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b']') {
+            index += 1;
+        }
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\\' => index += 2,
+                b'[' if bytes.get(index + 1) == Some(&b':') => {
+                    // A POSIX class name: to its `:]'.
+                    let mut end = index + 2;
+                    while end + 1 < bytes.len() && !(bytes[end] == b':' && bytes[end + 1] == b']') {
+                        end += 1;
+                    }
+                    index = end + 2;
+                }
+                b'[' => index = class_end(bytes, index),
+                b']' => return index + 1,
+                _ => index += 1,
+            }
+        }
+        bytes.len()
+    }
+    // The index past the group starting at INDEX (its `(').
+    fn group_end(bytes: &[u8], mut index: usize) -> usize {
+        let mut depth = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\\' => index += 2,
+                b'[' => index = class_end(bytes, index),
+                b'(' => {
+                    depth += 1;
+                    index += 1;
+                }
+                b')' => {
+                    depth -= 1;
+                    index += 1;
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => index += 1,
+            }
+        }
+        bytes.len()
+    }
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'[' => index = class_end(bytes, index),
+            b'(' if bytes[index..].starts_with(b"(?=")
+                || bytes[index..].starts_with(b"(?!")
+                || bytes[index..].starts_with(b"(?<=")
+                || bytes[index..].starts_with(b"(?<!") =>
+            {
+                let end = group_end(bytes, index);
+                out.push_str(&rendered[copied_to..index]);
+                out.push_str("(?:)");
+                copied_to = end;
+                index = end;
+                removed = true;
+            }
+            _ => index += 1,
+        }
+    }
+    if !removed {
+        return None;
+    }
+    out.push_str(&rendered[copied_to..]);
+    Some(out)
 }
 
 /// One match's group spans in bytes of the haystack (search.c's
@@ -2622,7 +2716,7 @@ impl CompiledElispRegex {
                     regex_automata::Anchored::No,
                 ));
             }
-            RegexEngine::Fancy(regex) => regex,
+            RegexEngine::Fancy { regex, .. } => regex,
         };
         let Some(prefilter) = &self.linear_boundary_prefilter else {
             return Ok(regex
@@ -2679,14 +2773,31 @@ impl CompiledElispRegex {
         haystack: &'h str,
         start: usize,
     ) -> Result<Option<RegexCaptures<'h>>, fancy_regex::Error> {
-        if let RegexEngine::Automata { regex, captures } = &self.engine {
-            return Ok(automata_search(
-                regex,
-                captures,
-                haystack,
-                start,
-                regex_automata::Anchored::Yes,
-            ));
+        match &self.engine {
+            RegexEngine::Automata { regex, captures } => {
+                return Ok(automata_search(
+                    regex,
+                    captures,
+                    haystack,
+                    start,
+                    regex_automata::Anchored::Yes,
+                ));
+            }
+            RegexEngine::Fancy {
+                coarse: Some(coarse),
+                ..
+            } if start <= haystack.len()
+                && !coarse.is_match(
+                    regex_automata::Input::new(haystack)
+                        .range(start..)
+                        .anchored(regex_automata::Anchored::Yes),
+                ) =>
+            {
+                // The superset cannot match at START: neither can the
+                // pattern.
+                return Ok(None);
+            }
+            RegexEngine::Fancy { .. } => {}
         }
         Ok(self.captures_from_pos(haystack, start)?.filter(|captures| {
             captures
@@ -2720,7 +2831,15 @@ fn build_regex_engine(rendered: &str) -> Result<RegexEngine, fancy_regex::Error>
         let captures = RefCell::new(regex.create_captures());
         return Ok(RegexEngine::Automata { regex, captures });
     }
-    build_fancy_regex(rendered).map(RegexEngine::Fancy)
+    let regex = build_fancy_regex(rendered)?;
+    let coarse = lookaround_free(rendered).and_then(|coarse| {
+        regex_automata::meta::Builder::new()
+            .configure(regex_automata::meta::Config::new().nfa_size_limit(Some(512 * 1024 * 1024)))
+            .syntax(regex_automata::util::syntax::Config::new())
+            .build(&coarse)
+            .ok()
+    });
+    Ok(RegexEngine::Fancy { regex, coarse })
 }
 
 fn build_fancy_regex(rendered: &str) -> Result<FancyRegex, fancy_regex::Error> {
@@ -6020,4 +6139,52 @@ pub(super) fn update_match_data_after_replace(
             Some((updated_start, updated_end))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod lookaround_free_tests {
+    use super::lookaround_free;
+
+    #[test]
+    fn a_boundary_pattern_gets_its_coarse_automaton() {
+        // `\\<[0-9]+\\>' renders with lookarounds (the backtracking VM);
+        // its lookaround-free superset builds on the meta engine and
+        // refuses a match at a position no digit starts.
+        let rendered = format!("(?m:{})", super::translate_elisp_regex(r"\<[0-9]+\>"));
+        let engine = super::build_regex_engine(&rendered).expect("the pattern compiles");
+        let super::RegexEngine::Fancy {
+            coarse: Some(coarse),
+            ..
+        } = engine
+        else {
+            panic!("a boundary pattern runs on the backtracking VM with a coarse automaton");
+        };
+        let at = |haystack: &str, start: usize| {
+            coarse.is_match(
+                regex_automata::Input::new(haystack)
+                    .range(start..)
+                    .anchored(regex_automata::Anchored::Yes),
+            )
+        };
+        assert!(at("x 12 y", 2));
+        assert!(!at("x 12 y", 0));
+    }
+
+    #[test]
+    fn lookarounds_are_cut_out_with_classes_and_escapes_read_as_syntax() {
+        // Each lookaround group becomes the empty group; classes holding
+        // parentheses, escaped parentheses and POSIX names are stepped
+        // over, nested groups inside a lookaround go with it, and a
+        // pattern without lookaround has no coarse form.
+        assert_eq!(
+            lookaround_free(r"(?m:(?<![\p{L}_])(?=[\p{L}_])[0-9]+(?<=[)])(?![:alpha:]))")
+                .as_deref(),
+            Some(r"(?m:(?:)(?:)[0-9]+(?:)(?:))")
+        );
+        assert_eq!(
+            lookaround_free(r"a(?=(?:b|c)\))d[(?=x]").as_deref(),
+            Some(r"a(?:)d[(?=x]")
+        );
+        assert_eq!(lookaround_free(r"(?:x)(?<name>y)\(z").as_deref(), None);
+    }
 }

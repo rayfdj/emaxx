@@ -305,7 +305,7 @@ impl Interpreter {
             }
         } else if !watchers.is_empty() {
             self.variable_watchers
-                .push((name.to_owned(), watchers.to_vec()));
+                .push((SymbolName::intern_str(name), watchers.to_vec()));
         }
     }
 

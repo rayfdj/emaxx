@@ -631,7 +631,7 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
-        self.try_macroexpand_with_environment(name, args, None, env)
+        self.try_macroexpand_with_environment(name, args, None, MacroCaller::EvalSub, env)
     }
 
     pub(super) fn macro_nonexpansion_is_callsite_cacheable(&self, name: &str) -> bool {
@@ -651,7 +651,22 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, LispError> {
         let mut expander_env = Env::new();
-        self.call_function_value(expander, Some(name), args, &mut expander_env)
+        self.call_expander(expander, name, args, &mut expander_env)
+    }
+
+    /// The expander called under the macro's name: by its symbol when the
+    /// name is an interned symbol's (no interning per expansion).
+    fn call_expander(
+        &mut self,
+        expander: Value,
+        name: &str,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match SymbolName::interned_cached(name) {
+            Some(symbol) => self.call_function_value_as(expander, &symbol, args, env),
+            None => self.call_function_value(expander, Some(name), args, env),
+        }
     }
 
     pub(super) fn try_macroexpand_with_environment(
@@ -659,6 +674,7 @@ impl Interpreter {
         name: &str,
         args: &[Value],
         macro_environment: Option<&Value>,
+        caller: MacroCaller,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
         // GNU resolves the function cell first and binds `lexical-binding'
@@ -670,7 +686,7 @@ impl Interpreter {
         if macro_environment.is_none() && self.known_not_macro(name) {
             return Ok(None);
         }
-        self.try_macroexpand_with_environment_inner(name, args, macro_environment, env)
+        self.try_macroexpand_with_environment_inner(name, args, macro_environment, caller, env)
     }
 
     /// Run only the macro expander itself with GNU's temporary
@@ -681,20 +697,27 @@ impl Interpreter {
     /// non-macro probes free of buffer-local writes and watcher events.
     fn with_macro_lexical_binding<T>(
         &mut self,
+        caller: MacroCaller,
         env: &mut Env,
         operation: impl FnOnce(&mut Self, &mut Env) -> Result<T, LispError>,
     ) -> Result<T, LispError> {
+        // Only eval_sub binds `lexical-binding' and `macroexp--dynvars'
+        // around the expander; Fmacroexpand applies it as it is (a
+        // watcher of `lexical-binding' hears nothing from `macroexpand',
+        // and the expander reads the variable's own value, which `load'
+        // binds to the file's cookie for the whole readevalloop).
+        if caller == MacroCaller::Macroexpand {
+            return operation(self, env);
+        }
         let lexical = self.interpreter_environment_is_lexical(env);
         // GNU eval.c always specbinds `lexical-binding' while invoking a
         // macro expander.  Binding only the lexical case leaks the loading
         // buffer's lexical-binding=t into `(eval FORM nil)', causing delayed
         // macro expansion inside a dynamic lambda to misclassify every
         // ordinary argument and local as lexical.
-        let restore = self.bind_special_variable(
-            "lexical-binding",
-            if lexical { Value::T } else { Value::Nil },
-            env,
-        )?;
+        let restore = cached_symbol!("lexical-binding").with(|symbol| {
+            self.bind_special_symbol(symbol, if lexical { Value::T } else { Value::Nil }, env)
+        })?;
         if !lexical {
             let result = operation(self, env);
             let restore_result = self.restore_special_binding(restore, env);
@@ -708,7 +731,7 @@ impl Interpreter {
         // macroexp--dynvars value.  Preserve live public closure environments
         // when present; typed frames carry the same declarations otherwise.
         let mut dynvars = self
-            .lookup_var("macroexp--dynvars", env)
+            .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
             .unwrap_or(Value::Nil);
         for frame in env.iter().skip(self.special_scan_floor).rev() {
             if let Some(environment) = frame.lisp_environment() {
@@ -745,11 +768,12 @@ impl Interpreter {
         name: &str,
         args: &[Value],
         macro_environment: Option<&Value>,
+        caller: MacroCaller,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
         if let Some(expander) = macro_environment_expander(macro_environment, name) {
             return self
-                .with_macro_lexical_binding(env, |interp, _env| {
+                .with_macro_lexical_binding(caller, env, |interp, _env| {
                     interp.call_macro_environment_expander(expander, name, args)
                 })
                 .map(Some);
@@ -770,8 +794,8 @@ impl Interpreter {
             // nadvice fsets advised macros (and advised macro ALIASES) that
             // way, so the cell wins over the native macro table.
             if let Some(expander) = self.function_cell_macro_expander(name, env) {
-                let expanded = self.with_macro_lexical_binding(env, |interp, env| {
-                    interp.call_function_value(expander, Some(name), args, env)
+                let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
+                    interp.call_expander(expander, name, args, env)
                 })?;
                 return Ok(Some(expanded));
             }
@@ -817,9 +841,24 @@ impl Interpreter {
             return Ok(form.clone());
         };
         Ok(self
-            .try_macroexpand_with_environment(name, &items[1..], macro_environment, env)?
+            .try_macroexpand_with_environment(
+                name,
+                &items[1..],
+                macro_environment,
+                MacroCaller::Macroexpand,
+                env,
+            )?
             .unwrap_or_else(|| form.clone()))
     }
+}
+
+/// Who applies a macro's expander: eval.c's eval_sub, which binds
+/// `lexical-binding' and `macroexp--dynvars' around it, or Fmacroexpand,
+/// which does not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MacroCaller {
+    EvalSub,
+    Macroexpand,
 }
 
 fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {

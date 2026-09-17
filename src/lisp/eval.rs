@@ -1667,6 +1667,11 @@ pub(crate) struct SpecialBindingRestore {
     keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
     previous_undo_state: Option<crate::buffer::UndoState>,
+    /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
+    /// per-buffer one) without a cell in the binding buffer, so the
+    /// binding wrote the default and the unbind writes it back through
+    /// set_default_internal, whose watchers hear `set' with no buffer.
+    let_default: bool,
     // `kill-all-local-variables' can remove a buffer-local value while a
     // dynamic binding of that value is active.  The binding then stops
     // participating in lookup and assignment.  On unwind GNU restores the
@@ -1777,6 +1782,12 @@ struct FrameDetail {
 
 impl BacktraceFrame {
     fn source_form(&self) -> Option<&Value> {
+        // An unevaluated frame (eval_sub's, nargs UNEVALLED) holds its
+        // form in the function word; the detail's copy is the older
+        // representation, kept for frames built that way.
+        if !self.evald && matches!(self.function, Value::Cons(_)) {
+            return Some(&self.function);
+        }
         self.detail.as_ref()?.source_form.as_ref()
     }
 
@@ -5198,7 +5209,7 @@ pub struct InterpreterState {
     /// indexes rather than duplicated in the record's storage slot.
     standard_obarray_id: u64,
     /// Variable watchers keyed by canonical variable name.
-    variable_watchers: Vec<(String, Vec<Value>)>,
+    variable_watchers: Vec<(SymbolName, Vec<Value>)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
@@ -5500,6 +5511,7 @@ pub struct InterpreterState {
         ConsMutationStamped<SourceFormCacheEntry>,
         crate::lisp::primitives::FnvBuildHasher,
     >,
+    /// Cons ids of the forms analyzed once without an entry above.
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
@@ -5735,18 +5747,31 @@ struct SourceFormCacheEntry {
 /// The enclosing `ConsMutationStamped` entry is the only validity authority:
 /// mutation of a cons field used by this source form invalidates the
 /// flattened items and every classification below together.
+/// One shared allocation per analyzed form: a lookup hands out one
+/// reference count, where four (the items, the macro verdict, the call
+/// resolution, the alias verdict) were taken and released per evaluation.
 #[derive(Clone)]
-struct SourceFormAnalysis {
-    items: Rc<Vec<Value>>,
+struct SourceFormAnalysis(Rc<SourceFormAnalysisData>);
+
+impl std::ops::Deref for SourceFormAnalysis {
+    type Target = SourceFormAnalysisData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+struct SourceFormAnalysisData {
+    items: Vec<Value>,
     native_form: Option<core::NativeForm>,
     /// The generation-stamped non-macro verdict shares the source-analysis
     /// lifetime.  Actual macro expansions are deliberately never cached:
     /// GNU's interpreted evaluator invokes the macro expander on every
     /// evaluation, and expanders may depend on state or create fresh objects.
-    macro_calls: Rc<RefCell<SourceMacroCallCache>>,
+    macro_calls: RefCell<SourceMacroCallCache>,
     /// Generation-stamped function-cell resolution for this exact callsite.
     /// Local cl-flet/cl-labels frames bypass it before lookup.
-    function_call: Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
+    function_call: RefCell<Option<SourceFunctionCallCacheEntry>>,
     /// Whether a bare-symbol head names a function alias of a special form
     /// (`(defalias 'inline 'progn)'), stamped with the function-binding
     /// generation: deciding it on every evaluation resolved the head's
@@ -5757,7 +5782,7 @@ struct SourceFormAnalysis {
 /// The cached alias-of-a-special-form verdict of a call site: the
 /// function-binding generation it was decided under, and the special form
 /// the head resolved to, if any.
-type SpecialAliasVerdict = Rc<Cell<Option<(u64, Option<core::NativeForm>)>>>;
+type SpecialAliasVerdict = Cell<Option<(u64, Option<core::NativeForm>)>>;
 
 #[derive(Clone)]
 struct LambdaSourceBodyCacheEntry {

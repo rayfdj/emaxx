@@ -249,6 +249,18 @@ fn retain_live_cons_mutation_watchers(watchers: &mut ConsMutationWatchers) {
     });
 }
 
+/// The process is exiting: the watcher table's entries (a weak count per
+/// watched cons, touched one by one on a drop) are left to the kernel,
+/// as exit() leaves C's heap.
+pub(crate) fn forget_cons_mutation_watchers_for_exit() {
+    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+        std::mem::forget(std::mem::take(watchers));
+    });
+    CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
+        std::mem::forget(bloom.take());
+    });
+}
+
 fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationWatch>) {
     if field_ids.is_empty() {
         return;
@@ -1552,6 +1564,10 @@ pub struct ConsCell {
     pub(crate) car: ConsValueCell,
     pub(crate) cdr: ConsValueCell,
     pub(crate) mark: MarkBit,
+    /// Whether the evaluator has already seen the form this cell heads:
+    /// the cell's own note (in the word's padding), so a freed cell's
+    /// address coming back under a fresh form starts over.
+    evaluated: Cell<bool>,
 }
 
 /// One tracked field of a cons cell.
@@ -1837,6 +1853,7 @@ impl ConsCell {
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
             mark: MarkBit::default(),
+            evaluated: Cell::new(false),
         }
     }
 
@@ -1847,11 +1864,18 @@ impl ConsCell {
             car: ConsValueCell::new(Value::Nil),
             cdr: ConsValueCell::new(Value::Nil),
             mark: MarkBit::default(),
+            evaluated: Cell::new(false),
         })
     }
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
         Rc::as_ptr(cell) as usize
+    }
+
+    /// Note an evaluation of the form this cell heads; true when the cell
+    /// had already been evaluated.
+    pub(crate) fn note_evaluated(&self) -> bool {
+        self.evaluated.replace(true)
     }
 
     pub(crate) fn native_words(cell: &SharedCons) -> *mut ConsWords {
@@ -2010,6 +2034,11 @@ impl ConsSlot {
 
     pub fn cell_id(&self) -> usize {
         ConsCell::identity(&self.cell)
+    }
+
+    /// See `ConsCell::note_evaluated'.
+    pub(crate) fn note_evaluated(&self) -> bool {
+        self.cell.note_evaluated()
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {

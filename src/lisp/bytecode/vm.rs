@@ -11,7 +11,7 @@ use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, Value, VectorValue};
-use super::{ArgSpec, ByteCodeObject, Instr, Op};
+use super::{ArgSpec, ByteCodeObject, Op};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -279,7 +279,7 @@ fn run_fast(
     pc: &mut usize,
     quitcounter: &mut u8,
 ) -> FastExit {
-    let instrs = &object.instrs;
+    let instrs = &object.decoded.instrs;
     let mut at = *pc;
     macro_rules! slow {
         () => {{
@@ -536,8 +536,7 @@ fn run_fast(
 /// remain the original live vector supplied by the reader or make-byte-code.
 pub struct CachedProgram {
     pub argspec: ArgSpec,
-    pub instrs: Vec<Instr>,
-    pub offset_index: Vec<u32>,
+    pub decoded: Rc<super::DecodedCode>,
     pub constants: Rc<VectorValue>,
     pub stack_depth: usize,
 }
@@ -554,7 +553,7 @@ impl TraceLispRoots for CachedProgram {
 impl CachedProgram {
     #[inline]
     fn instr_at(&self, byte_offset: usize) -> usize {
-        self.offset_index[byte_offset] as usize
+        self.decoded.offset_index[byte_offset] as usize
     }
 
     #[inline]
@@ -566,19 +565,13 @@ impl CachedProgram {
 }
 
 fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
-    let instrs = super::decode_program(&object.code, object.constants.slots().len())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let mut offset_index = vec![u32::MAX; object.code.len() + 1];
-    for (index, instr) in instrs.iter().enumerate() {
-        offset_index[instr.offset] = index as u32;
-    }
     // lread.c constructs reader objects before execution. The existing
     // reader boundary owns that work; the VM neither rebuilds its graph nor
-    // copies CLOSURE_CONSTANTS into another vector.
+    // copies CLOSURE_CONSTANTS into another vector, and the decoded code
+    // is the prototype's.
     Ok(CachedProgram {
         argspec: object.argspec.clone(),
-        instrs,
-        offset_index,
+        decoded: Rc::clone(&object.decoded),
         constants: Rc::clone(&object.constants),
         stack_depth: object.stack_depth,
     })
@@ -838,7 +831,7 @@ fn run_with_stack(
                 }
                 FastExit::Slow => {}
             }
-            let Some(instr) = object.instrs.get(pc) else {
+            let Some(instr) = object.decoded.instrs.get(pc) else {
                 return Err(LispError::Signal(
                     "byte code ran off the end of its program".into(),
                 ));
@@ -1974,7 +1967,7 @@ fn run_with_stack(
                     if trace_errors
                         && !matches!(error, LispError::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
-                        && let Some(instr) = object.instrs.get(pc.wrapping_sub(1))
+                        && let Some(instr) = object.decoded.instrs.get(pc.wrapping_sub(1))
                     {
                         eprintln!(
                             "bytecode operation {:?} failed at byte offset {}: {}",

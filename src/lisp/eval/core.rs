@@ -224,6 +224,41 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
     crate::lisp::primitives::generated_gnu_c_primitive_special_form(name)
 }
 
+/// The evaluator arm a symbol in function position selects, remembered
+/// per symbol: the manifest's ownership check is a binary search over
+/// the primitive names, which a fresh form (each macro expansion of
+/// interpreted code) paid on every evaluation.  Symbol ids are never
+/// reused, so a verdict stays the symbol's.
+fn native_form_for_symbol(name: &SymbolName) -> Option<NativeForm> {
+    thread_local! {
+        static BY_SYMBOL: std::cell::RefCell<
+            std::collections::HashMap<
+                u32,
+                Option<NativeForm>,
+                crate::lisp::types::IdentityBuildHasher,
+            >,
+        > = std::cell::RefCell::new(std::collections::HashMap::default());
+    }
+    if let Some(known) = BY_SYMBOL.with_borrow(|cache| cache.get(&name.id()).copied()) {
+        return known;
+    }
+    // A Lisp symbol may select a Rust evaluator arm only when the
+    // generated GNU C manifest owns that native surface.  In particular,
+    // an Emaxx-private prefix is not an ownership boundary and cannot
+    // turn an Elisp macro into a host fallback.
+    let native_form = crate::lisp::primitives::generated_gnu_c_primitive_available(name)
+        .is_some_and(|available| available)
+        .then(|| NativeForm::for_name(name))
+        .flatten();
+    BY_SYMBOL.with_borrow_mut(|cache| {
+        if cache.len() >= 1 << 16 {
+            cache.clear();
+        }
+        cache.insert(name.id(), native_form);
+    });
+    native_form
+}
+
 impl Interpreter {
     /// GNU treats a symbol-with-position in function position as its bare
     /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
@@ -259,30 +294,35 @@ impl Interpreter {
             return Ok(cached.analysis.clone());
         }
 
-        let items = Rc::new(source.to_vec()?);
+        let items = source.to_vec()?;
+        let mut native_form = None;
+        if let Some(Value::Symbol(name)) = items.first() {
+            native_form = native_form_for_symbol(name);
+        }
+        let analysis = SourceFormAnalysis(Rc::new(SourceFormAnalysisData {
+            items,
+            native_form,
+            macro_calls: RefCell::new(SourceMacroCallCache::default()),
+            special_alias: Cell::new(None),
+            function_call: RefCell::new(None),
+        }));
+        // A form evaluated once -- each macro expansion of interpreted
+        // code is a fresh one -- is analyzed and forgotten; the entry with
+        // its mutation watch over the spine (a registration per cons, and
+        // a release of all of them when the table fills) is made on the
+        // form's second evaluation, which a loop body reaches at once.
+        // The note is the cons cell's own: a set of addresses seen once
+        // counted a freed cell's address coming back under the next
+        // iteration's expansion as a second evaluation, and registered
+        // the watch for every one.
+        if !source_anchor.note_evaluated() {
+            return Ok(analysis);
+        }
         // Flattening and head classification depend on this list's spine,
         // not on every mutable cons in the process.  `if' additionally
         // caches a bounded recursive property of its test form, so include
         // that subtree in the same validity snapshot.
         let mutations = crate::lisp::types::ConsMutationSnapshot::list_spine(source);
-        let mut native_form = None;
-        if let Some(Value::Symbol(name)) = items.first() {
-            // A Lisp symbol may select a Rust evaluator arm only when the
-            // generated GNU C manifest owns that native surface.  In
-            // particular, an Emaxx-private prefix is not an ownership
-            // boundary and cannot turn an Elisp macro into a host fallback.
-            native_form = crate::lisp::primitives::generated_gnu_c_primitive_available(name)
-                .is_some_and(|available| available)
-                .then(|| NativeForm::for_name(name))
-                .flatten();
-        }
-        let analysis = SourceFormAnalysis {
-            items,
-            native_form,
-            macro_calls: Rc::new(RefCell::new(SourceMacroCallCache::default())),
-            special_alias: Rc::new(Cell::new(None)),
-            function_call: Rc::new(RefCell::new(None)),
-        };
         if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
             self.source_form_items_cache.clear();
         }
@@ -450,13 +490,12 @@ impl Interpreter {
             Value::Symbol(name) => self.lookup_symbol(name, env),
 
             Value::Cons(_) => {
-                let SourceFormAnalysis {
-                    items,
-                    native_form,
-                    macro_calls,
-                    function_call,
-                    special_alias,
-                } = self.source_form_analysis(expr)?;
+                let analysis = self.source_form_analysis(expr)?;
+                let items: &[Value] = &analysis.items;
+                let native_form = analysis.native_form;
+                let macro_calls = &analysis.macro_calls;
+                let function_call = &analysis.function_call;
+                let special_alias = &analysis.special_alias;
                 if items.is_empty() {
                     return Ok(Value::Nil);
                 }
@@ -507,42 +546,42 @@ impl Interpreter {
                     });
                     if let Some(native_form) = effective_native_form {
                         match native_form {
-                            NativeForm::Quote => return self.sf_quote(&items, env),
-                            NativeForm::If => return self.sf_if(&items, env),
-                            NativeForm::And => return self.sf_and(&items, env),
-                            NativeForm::Or => return self.sf_or(&items, env),
+                            NativeForm::Quote => return self.sf_quote(items, env),
+                            NativeForm::If => return self.sf_if(items, env),
+                            NativeForm::And => return self.sf_and(items, env),
+                            NativeForm::Or => return self.sf_or(items, env),
                             NativeForm::Cond => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_cond(&items, env);
+                                let result = self.sf_cond(items, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::Progn => return self.sf_progn(&items[1..], env),
-                            NativeForm::Prog1 => return self.sf_prog1(&items, env),
+                            NativeForm::Prog1 => return self.sf_prog1(items, env),
                             NativeForm::Let => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_let(&items, env);
+                                let result = self.sf_let(items, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::LetStar => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_letstar(&items, env);
+                                let result = self.sf_letstar(items, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::Setq => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_setq(&items, env);
+                                let result = self.sf_setq(items, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
-                            NativeForm::Defvar => return self.sf_defvar(&items, env),
-                            NativeForm::Defconst => return self.sf_defconst(&items, env),
+                            NativeForm::Defvar => return self.sf_defvar(items, env),
+                            NativeForm::Defconst => return self.sf_defconst(items, env),
                             NativeForm::Function => {
                                 if items.len() >= 2 {
                                     if let Value::Symbol(name) = &items[1] {
@@ -569,26 +608,26 @@ impl Interpreter {
                             NativeForm::Interactive => return Ok(Value::Nil),
                             NativeForm::While => {
                                 self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_while(&items, env);
+                                let result = self.sf_while(items, env);
                                 let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::UnwindProtect => {
-                                return self.sf_unwind_protect(&items, env);
+                                return self.sf_unwind_protect(items, env);
                             }
                             NativeForm::ConditionCase => {
-                                return self.sf_condition_case(&items, env);
+                                return self.sf_condition_case(items, env);
                             }
-                            NativeForm::Catch => return self.sf_catch(&items, env),
+                            NativeForm::Catch => return self.sf_catch(items, env),
                             NativeForm::SaveCurrentBuffer => {
-                                return self.sf_save_current_buffer(&items, env);
+                                return self.sf_save_current_buffer(items, env);
                             }
                             NativeForm::SaveExcursion => {
-                                return self.sf_save_excursion(&items, env);
+                                return self.sf_save_excursion(items, env);
                             }
                             NativeForm::SaveRestriction => {
-                                return self.sf_save_restriction(&items, env);
+                                return self.sf_save_restriction(items, env);
                             }
                         }
                     }
@@ -600,18 +639,18 @@ impl Interpreter {
                 // fresh uninterned symbols.  Only the generation-stamped
                 // negative "not a macro" verdict is reusable here.
                 if let Some(name) = callable_name.as_ref()
-                    && !self.source_call_known_not_macro(&macro_calls)
+                    && !self.source_call_known_not_macro(macro_calls)
                 {
                     if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
                         return self.eval(&expanded, env);
                     }
                     if self.macro_nonexpansion_is_callsite_cacheable(name) {
-                        self.cache_source_not_macro(&macro_calls);
+                        self.cache_source_not_macro(macro_calls);
                     }
                 }
 
                 // Regular function call
-                self.eval_call(expr, &items, &function_call, env)
+                self.eval_call(expr, items, function_call, env)
             }
         }
     }
@@ -620,7 +659,7 @@ impl Interpreter {
         &mut self,
         source_form: &Value,
         items: &[Value],
-        source_resolution: &Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
+        source_resolution: &RefCell<Option<SourceFunctionCallCacheEntry>>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         // GNU resolves the function cell before evaluating any argument.
@@ -709,6 +748,23 @@ impl Interpreter {
             env,
             true,
         );
+        self.end_funcall();
+        result
+    }
+
+    /// `call_function_value' with the call's name as a symbol in hand: the
+    /// frame records that symbol, where a text name was interned again
+    /// for every call (each macro expansion of interpreted code).
+    pub(crate) fn call_function_value_as(
+        &mut self,
+        func: Value,
+        name: &SymbolName,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.begin_funcall(env)?;
+        let result =
+            self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, true);
         self.end_funcall();
         result
     }
@@ -944,7 +1000,7 @@ impl Interpreter {
         &mut self,
         name: &SymbolName,
         env: &Env,
-        source_resolution: &Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
+        source_resolution: &RefCell<Option<SourceFunctionCallCacheEntry>>,
     ) -> Result<FunctionResolution, LispError> {
         let local_context = Self::env_may_affect_function_resolution(env);
         if !local_context

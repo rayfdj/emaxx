@@ -381,6 +381,16 @@ impl SymbolCells {
             .is_some_and(|cell| cell.flags & flag != 0)
     }
 
+    /// `set_flag_by_name' for the symbol in hand.
+    pub(crate) fn set_flag(&mut self, symbol: &SymbolName, flag: u8) -> bool {
+        let cell = self.cell_mut(symbol);
+        cell.native.set((0, 0));
+        cell.plain_store = false;
+        let was_clear = cell.flags & flag == 0;
+        cell.flags |= flag;
+        was_clear
+    }
+
     /// Set FLAG; true when it was not set before.
     pub(crate) fn set_flag_by_name(&mut self, name: &str, flag: u8) -> bool {
         let cell = self.cell_mut(&SymbolName::intern_str(name));

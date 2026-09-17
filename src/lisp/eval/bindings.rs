@@ -871,10 +871,20 @@ impl Interpreter {
         })
     }
 
+    /// A builtin's function cell as a value: `Value::BuiltinFunc' of the
+    /// symbol already interned under NAME (a string copy interned per
+    /// resolution before).
+    fn builtin_function_value(name: &str) -> Value {
+        match SymbolName::interned_cached(name) {
+            Some(symbol) => Value::BuiltinFunc(symbol),
+            None => Value::BuiltinFunc(name.to_string().into()),
+        }
+    }
+
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
-            return Some(Value::BuiltinFunc(name.to_string().into()));
+            return Some(Self::builtin_function_value(name));
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         for frame in env.iter().rev() {
@@ -898,7 +908,7 @@ impl Interpreter {
         // indirection (indirect-function, fboundp, macrop) must resolve them
         // instead of signaling a void-function error.
         if name_is_builtin {
-            return Some(Value::BuiltinFunc(name.to_string().into()));
+            return Some(Self::builtin_function_value(name));
         }
         None
     }
@@ -927,7 +937,7 @@ impl Interpreter {
     fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
-            return Some((Value::BuiltinFunc(name.to_string().into()), false));
+            return Some((Self::builtin_function_value(name), false));
         }
         for frame in env.iter().rev() {
             if !frame.has_function_bindings() {
@@ -943,7 +953,7 @@ impl Interpreter {
             return Some((value.clone(), false));
         }
         if facts.builtin || facts.special_form {
-            return Some((Value::BuiltinFunc(name.to_string().into()), false));
+            return Some((Self::builtin_function_value(name), false));
         }
         None
     }
@@ -1206,12 +1216,12 @@ impl Interpreter {
 
     pub(super) fn source_call_known_not_macro(
         &self,
-        cache: &Rc<RefCell<SourceMacroCallCache>>,
+        cache: &RefCell<SourceMacroCallCache>,
     ) -> bool {
         cache.borrow().not_macro_generation == Some(self.definition_generation)
     }
 
-    pub(super) fn cache_source_not_macro(&self, cache: &Rc<RefCell<SourceMacroCallCache>>) {
+    pub(super) fn cache_source_not_macro(&self, cache: &RefCell<SourceMacroCallCache>) {
         cache.borrow_mut().not_macro_generation = Some(self.definition_generation);
     }
 
@@ -1391,11 +1401,12 @@ impl Interpreter {
     // Follow the function cell (through symbol aliases) to a
     // (macro . EXPANDER) cons; nadvice installs advised macros that way.
     pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
-        let mut current = name.to_string();
+        let mut current: Option<SymbolName> = None;
         for _ in 0..10 {
-            let (binding, _) = self.macro_position_binding(&current, env)?;
+            let (binding, _) = self
+                .macro_position_binding(current.as_ref().map_or(name, SymbolName::as_str), env)?;
             match binding {
-                Value::Symbol(next) => current = next.to_string(),
+                Value::Symbol(next) => current = Some(next),
                 Value::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;

@@ -147,6 +147,7 @@ impl Interpreter {
     /// The OS reclaims Lisp storage; embedded callers still drop it normally.
     pub(crate) fn release_external_resources_for_exit(&mut self) {
         self.unwind_suspended_threads_for_shutdown();
+        crate::lisp::types::forget_cons_mutation_watchers_for_exit();
         if self.state.is_some() {
             #[cfg(unix)]
             for process in &mut self.process_states {

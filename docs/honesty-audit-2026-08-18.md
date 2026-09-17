@@ -11289,3 +11289,153 @@ clippy exit 0 before and after.  The first run of the gate on the
 checkpoint (run-1789635885827841610-10928) stopped at eval_03's one
 failure recorded above; the amended commit carries the corrected
 control and the two items of (9).
+
+## 2026-09-17 Checkpoint 19z: the source interpreter's per-form floor and the backtracking patterns at point
+
+*What prompted it.*  19y left semantic-utest-C at 7.4 s against 0.75
+(the boundary patterns on fancy-regex's VM, which always scans), and
+mule-tests' ucs-names cases at 14.6 s against 2.5: an interpreted loop
+over every code point, whose profile is the source interpreter itself
+(`eval_inner' and the `let*' form a third, value copies and their
+release a tenth, a heap allocation per interpreted call).
+
+*Done.*  (1) A backtracking pattern (lookaround) carries beside it the
+meta engine's automaton of the same pattern with every lookaround
+group cut out -- a superset of its language, built when regex-syntax
+accepts the cut pattern -- and a match required at a position is
+refused by one anchored run of that superset before the VM is asked;
+the cut reads the syntax (classes, POSIX names, escapes, nested
+groups), with a unit control.  (2) The unevaluated frame of an
+interpreted call holds its form in the frame's function word, as
+eval_sub's frame does (nargs UNEVALLED), instead of a boxed detail
+allocated and released per call; the debugger's projections read the
+head and tail as before.  (3) A form's analysis (its items, the macro
+verdict, the call resolution, the alias verdict) is one shared
+allocation: a lookup takes one reference count where it took four.
+(4) `let' and `let*' walk the varlist and each binding in place
+(FOR_EACH_TAIL), and with the walk two of Flet's checks the oracle
+shows: a second value form signals `error' with the element's own
+elements as the data (`(let ((x 1 2)) x)' evaluated to 1 before), a
+dotted varlist signals `listp' with the whole varlist.  (5) The
+specialness test of a `let' binding keeps per symbol the verdict that
+a name is outside the C-variable registry (a match over every name,
+walked per binding before), and probes the name-keyed dlet and
+local-special tables only when they hold anything.  (6) A macro
+expander is called under the macro's symbol (an interning of the
+name per expansion of interpreted code before).  (7) A form's
+analysis entry -- with its mutation watch over the spine, a
+registration per cons and a release of all of them when the table
+fills -- is made on the form's second evaluation; a form evaluated
+once (each macro expansion of interpreted code is a fresh one) is
+analyzed and forgotten.  (8) The decoded instructions of a code string
+are shared by every closure made from the same prototype (`make-closure'
+copies the prototype's slots, so the closures share the code string
+object, as bytecode.c executes its bytes in place for each of them):
+each new closure (every `mapcar' with a lambda in compiled code)
+decoded the string again before.  (9) At exit the cons-mutation watcher
+table is left to the kernel, as exit() leaves C's heap: dropping its
+entries touched a weak count per watched cons, half a second of wall time
+(the run's own work 10.4 s and its wall 11.0 before; 5.40 and 5.66
+after, the remainder the boot) of a
+macro-expanding run.  (10) The note that a form has been evaluated
+once is the cons cell's own (a bit in the cell's padding) instead of
+a set of addresses: an interpreted loop frees each iteration's
+expansion and the next iteration's lands on the same addresses, so
+the set counted every expansion as a second evaluation and registered
+the spine watch for each -- a fifth of the macro probe.  (11) The
+evaluator arm a symbol in function position selects is kept per
+symbol (the manifest's binary search over the primitive names ran
+per fresh form).  (12) `lexical-binding' and `macroexp--dynvars' are
+bound and read by symbol around an expander; a builtin's function
+cell is the interned symbol's `BuiltinFunc' (a string copy interned
+per resolution before); the macro-position alias walk copies no
+names.  (13) The specbind of a localized symbol tests
+SYMBOL_TRAPPED_WRITE by id (the watcher list was scanned comparing
+names on every bind and unbind; the preloaded files register
+watchers), writes the buffer's cell by symbol and consults the
+forwarded C cell only for a symbol that has one.  (14) Two fidelity
+findings from the watcher control, with the oracle's values:
+Fmacroexpand applies an expander as it is -- eval_sub alone binds
+`lexical-binding' and `macroexp--dynvars' around one -- where a
+watcher heard a let/unlet pair from every `macroexpand' and from
+load's eager expansion; and a let of a localized symbol without a
+cell in the buffer is SPECPDL_LET_DEFAULT (eval.c:specbind), whose
+watchers hear `let' in the current buffer (data.c's
+notify_variable_watchers names it when the symbol is local if set
+there) and `set' with no buffer from the unbind through
+set_default_internal, where they heard `let' and `unlet' with no
+buffer.
+
+*Which of these mirror C and which do not.*  (2), (4), (6), (12),
+(13) and (14) restore eval.c's and data.c's own structure.  (3), (7),
+(10) and (11) are Emaxx-only machinery, and they exist because the
+source interpreter deviates from eval_sub in two ways that cost on
+every form: it flattens each form into a vector (eval_sub walks the
+conses, and specbinds nothing to remember them by), and a builtin's
+function cell holds no subr object (eval_sub reads the symbol's
+function cell; Emaxx resolves the name through the manifest and
+synthesizes the value).  The analysis cache with its mutation watch,
+the seen-once note and the per-symbol arm are compensations for those
+two deviations, not features GNU has.  The next checkpoint should
+remove the deviations -- the evaluator over the conses in place, and
+subr objects in function cells -- rather than tune the compensations
+further; measured here because each cut a measured share of the
+probe, and each is small.
+
+*Measured.*  A/B interleaved on an idle box, GNU on the same
+machine, min / median of the rounds (three for the probes, two for
+the test files; the failing-pattern rows from the three-round run of
+the search build, which the later edits do not touch):
+
+| Probe | 19y | 19z | GNU |
+|---|---|---|---|
+| `when-let' in an interpreted loop, 200,000 iterations, the raw form through `eval' | 9.77 / 10.01 s | 2.64 / 2.69 s | 1.03 / 1.06 s |
+| the same, pre-expanded | 0.49 / 0.50 s | 0.42 / 0.43 s | 0.17 / 0.17 s |
+| expansion per iteration (three expanders) | 46 us | 11 us | 4.3 us |
+| failing boundary `looking-at' (`\\<zzz\\>') | 59.0 / 59.1 us | 0.41 / 0.41 us | 83 ns |
+| `looking-at' of a number pattern failing at a word | 2.68 / 2.72 us | 0.43 / 0.43 us | 89 ns |
+| ucs-names (mule-tests) | 14.43 / 14.45 s | 11.94 / 12.01 s | 2.36 / 2.41 s |
+| semantic-utest-C | 7.18 / 7.29 s | 6.85 / 6.94 s | 0.74 / 0.77 s |
+| undo-test4 | 5.24 / 5.27 s | 4.94 / 4.99 s | 1.01 / 1.02 s |
+| bindat-test--sint | 4.10 / 4.15 s | 4.08 / 4.13 s | 0.72 / 0.74 s |
+| track-changes-tests--random | 3.69 / 3.70 s | 3.73 / 3.74 s | 0.73 / 0.75 s |
+| fns-tests-sort | 5.33 / 5.38 s | 5.26 / 5.35 s | 1.25 / 1.27 s |
+| `ert-select-tests' floor (probe5) | 33.4 / 33.4 ms | 34.8 / 35.3 ms | -- |
+
+*What did not move, and what was learned.*  The macro probe's expansion is 11 us an
+iteration against 4.3: profiled on the final build, the expanders'
+own byte code is a third of the run (the VM's call, its consing and
+the frame push), the specbind and unbind of `lexical-binding' a
+tenth, the resolution of the macro's cell (name facts and the
+function index hashed by name) a twentieth; the evaluation of the
+expansion itself is 0.42 s against 0.17 pre-expanded, the source
+interpreter's own floor.  ucs-names at 12 s against 2.4 is that
+floor over every code point.  semantic-utest-C at 6.9 against 0.74
+was not re-profiled at this checkpoint (19y's profile stood at the
+search and edit paths; the boundary prefilter took what the failing
+patterns cost).  bindat, track-changes and fns-tests-sort did not
+move: the VM, the bignum consing and the sort are untouched.  The
+per-file floor did not move.  The expansion cache with its mutation
+watch, and the compensations listed above, remain Emaxx-only
+machinery; see the paragraph on what mirrors C.
+
+*Verified.*  Controls `let_varlists_are_read_as_flet_reads_them' (the
+oracle's values) and `lookarounds_are_cut_out_with_classes_and_escapes_read_as_syntax';
+`looking_at_matches_at_point_only' covers the boundary patterns at
+point through the new prefilter;
+`watchers_hear_a_let_of_lexical_binding_as_data_c_reports_it' is the
+oracle's event list for (14) through `eval', and the same form loaded
+from a file agreed with the oracle by hand.  A correction first: the focused "worktree" test and
+clippy runs kept during this work had compiled the main tree, not
+the worktree -- `target/gate-env.sh' changes directory to the main
+tree after setting the environment -- so they exercised 19y's sources
+and could not see this checkpoint's code; the gate's clippy pre-check
+on the committed tree was the first strict run of it, and it found a
+derive that had landed on the neighbouring struct, one complex type
+and the needless borrows the flattened-form change left, all fixed in
+the amended commit.  The focused set (the let, macro, frame, watcher,
+buffer-local, byte-code and search controls) was then run on the
+committed tree: 318 passed, the four new controls among them by
+name.
+
+*Gate.*  «GATE»

@@ -194,6 +194,35 @@ impl Interpreter {
             .insert(&symbol, value);
     }
 
+    /// `set_buffer_local_value' for the symbol in hand: the flag and the
+    /// buffer's cell by id, the forwarded C cell only for a symbol that
+    /// has one (the name path matched every store against the forwarded
+    /// names and interned the name for the cell).
+    pub(crate) fn set_buffer_local_value_symbol(
+        &mut self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+        value: Value,
+    ) {
+        self.globals.set_flag(symbol, LOCALIZED);
+        let value = if matches!(value, Value::Unbound) {
+            value
+        } else if self.has_c_slot_symbol(symbol) {
+            let value =
+                Self::stored_value(self.normalize_forwarded_eval_cell(symbol.as_str(), value));
+            if buffer_id == self.current_buffer_id() {
+                self.update_forwarded_eval_cell(symbol.as_str(), &value);
+            }
+            value
+        } else {
+            Self::stored_value(value)
+        };
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(symbol, value);
+    }
+
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
         let remove_buffer = self
             .buffer_locals
@@ -469,9 +498,7 @@ impl Interpreter {
     /// `is_special_variable' for a symbol in hand: the flag by id, the
     /// C-slot registry by name.
     pub(crate) fn is_special_variable_symbol(&self, symbol: &SymbolName) -> bool {
-        if self.globals.has_flag(symbol, SPECIAL)
-            || self.builtin_var_value(symbol.as_str()).is_some()
-        {
+        if self.globals.has_flag(symbol, SPECIAL) || self.has_c_slot_symbol(symbol) {
             return true;
         }
         if !self.globals.has_aliases() {
@@ -489,10 +516,44 @@ impl Interpreter {
     /// directly by FORM are dynamic even for undeclared symbols.  Existing
     /// lexical functions called by FORM mask this override at their boundary.
     pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
+        // The name-keyed tables are probed only when they hold anything
+        // (each probe hashed the name per `let' binding of interpreted
+        // code, over tables that are nearly always empty).
         self.lambda_capture_override() == Some(false)
-            || self.dlet_active_names.contains_key(symbol.as_str())
+            || (!self.dlet_active_names.is_empty()
+                && self.dlet_active_names.contains_key(symbol.as_str()))
             || self.is_special_variable_symbol(symbol)
-            || self.local_special_active(symbol.as_str(), env)
+            || (!self.local_special_names.is_empty()
+                && self.local_special_active(symbol.as_str(), env))
+    }
+
+    /// Whether SYMBOL names a C-owned value cell (`builtin_var_value'
+    /// synthesizes one).  The registry is a match over the names; a name
+    /// outside it is outside it for good, and that verdict is kept per
+    /// symbol id so an interpreted `let' of a lexical variable does not
+    /// walk the match on every binding (a fifth of mule-tests' ucs-names
+    /// cases).  A detached forwarded variable answers false without
+    /// entering the memo, as detachment is undone by a store.
+    pub(crate) fn has_c_slot_symbol(&self, symbol: &SymbolName) -> bool {
+        thread_local! {
+            static NO_C_SLOT: RefCell<HashSet<u32, crate::lisp::types::IdentityBuildHasher>> =
+                RefCell::new(HashSet::default());
+        }
+        if NO_C_SLOT.with_borrow(|known| known.contains(&symbol.id())) {
+            return false;
+        }
+        if self.builtin_var_value(symbol.as_str()).is_some() {
+            return true;
+        }
+        if !self
+            .detached_forwarded_variables
+            .contains_key(symbol.as_str())
+        {
+            NO_C_SLOT.with_borrow_mut(|known| {
+                known.insert(symbol.id());
+            });
+        }
+        false
     }
 
     pub fn is_special_variable(&self, name: &str) -> bool {
@@ -952,7 +1013,15 @@ impl Interpreter {
     pub(super) fn variable_watcher_index(&self, name: &str) -> Option<usize> {
         self.variable_watchers
             .iter()
-            .rposition(|(symbol, _)| symbol == name)
+            .rposition(|(symbol, _)| symbol.as_str() == name)
+    }
+
+    /// data.c's SYMBOL_TRAPPED_WRITE test for the symbol in hand: whether
+    /// any watcher is registered under it, by id.
+    fn variable_is_watched(&self, symbol: &SymbolName) -> bool {
+        self.variable_watchers
+            .iter()
+            .any(|(watched, _)| watched.id() == symbol.id())
     }
 
     pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
@@ -976,7 +1045,7 @@ impl Interpreter {
             }
         } else {
             self.variable_watchers
-                .push((resolved.clone(), vec![watcher.clone()]));
+                .push((SymbolName::intern_str(&resolved), vec![watcher.clone()]));
         }
         // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
         // symbol's stores notify from now on.
@@ -1006,6 +1075,22 @@ impl Interpreter {
         if let Some(index) = self.variable_watcher_index(name) {
             self.variable_watchers.remove(index);
         }
+    }
+
+    /// `notify_variable_watchers' for the symbol in hand: nothing to do,
+    /// decided by id, unless a watcher is registered under it.
+    pub(crate) fn notify_variable_watchers_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        action: &str,
+        buffer_id: Option<u64>,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if !self.variable_is_watched(symbol) {
+            return Ok(());
+        }
+        self.notify_variable_watchers(symbol.as_str(), value, action, buffer_id, env)
     }
 
     pub fn notify_variable_watchers(
@@ -2042,6 +2127,7 @@ impl Interpreter {
                 keyboard_terminal_id: None,
                 previous,
                 previous_undo_state: None,
+                let_default: false,
                 local_binding_killed: false,
             };
             self.active_special_restores.push(restore.clone());
@@ -2067,6 +2153,7 @@ impl Interpreter {
                 keyboard_terminal_id: None,
                 previous: Some(previous),
                 previous_undo_state: Some(previous_undo_state),
+                let_default: false,
                 local_binding_killed: false,
             };
             self.active_special_restores.push(restore.clone());
@@ -2076,8 +2163,14 @@ impl Interpreter {
         // bound or void, makes the let SPECPDL_LET_LOCAL.
         let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
             let previous = Some(local.unwrap_or(Value::Unbound));
-            self.notify_variable_watchers(name, value.clone(), "let", Some(buffer_id), env)?;
-            self.set_buffer_local_value(buffer_id, name, value);
+            self.notify_variable_watchers_symbol(
+                &resolved,
+                value.clone(),
+                "let",
+                Some(buffer_id),
+                env,
+            )?;
+            self.set_buffer_local_value_symbol(buffer_id, &resolved, value);
             SpecialBindingRestore {
                 binding_id,
                 name: resolved,
@@ -2086,6 +2179,7 @@ impl Interpreter {
                 keyboard_terminal_id: None,
                 previous,
                 previous_undo_state: None,
+                let_default: false,
                 local_binding_killed: false,
             }
         } else {
@@ -2095,7 +2189,26 @@ impl Interpreter {
             } else {
                 None
             };
-            self.notify_variable_watchers(name, value.clone(), "let", None, env)?;
+            // eval.c:specbind: a localized symbol (or a per-buffer one)
+            // without a cell here makes the let SPECPDL_LET_DEFAULT.  The
+            // store is set_internal's, whose watchers hear `let' in the
+            // current buffer when the symbol is local if set there
+            // (data.c:notify_variable_watchers).
+            let let_default = self.globals.has_flag(
+                &resolved,
+                LOCALIZED | LOCAL_IF_SET | ALWAYS_LOCAL | PER_BUFFER,
+            );
+            let where_heard = self
+                .globals
+                .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
+                .then_some(buffer_id);
+            self.notify_variable_watchers_symbol(
+                &resolved,
+                value.clone(),
+                "let",
+                where_heard,
+                env,
+            )?;
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
@@ -2109,6 +2222,7 @@ impl Interpreter {
                 binding_buffer_id,
                 previous,
                 previous_undo_state: None,
+                let_default,
                 local_binding_killed: false,
             }
         };
@@ -2321,11 +2435,25 @@ impl Interpreter {
         }
         match restore.scope {
             SpecialBindingScope::Global => {
-                self.notify_variable_watchers(
+                // eval.c:unbind_to: SPECPDL_LET_DEFAULT writes the default
+                // back through set_default_internal (watchers hear `set',
+                // no buffer); SPECPDL_LET through set_internal (`unlet',
+                // the current buffer when the symbol is local if set there).
+                let (action, where_heard) = if restore.let_default {
+                    ("set", None)
+                } else {
+                    (
+                        "unlet",
+                        self.globals
+                            .has_flag(&restore.name, LOCAL_IF_SET | PER_BUFFER)
+                            .then(|| self.current_buffer_id()),
+                    )
+                };
+                self.notify_variable_watchers_symbol(
                     &restore.name,
                     restore.previous.clone().unwrap_or(Value::Nil),
-                    "unlet",
-                    None,
+                    action,
+                    where_heard,
                     env,
                 )?;
                 if let Some(terminal) = restore.keyboard_terminal_id {
@@ -2341,7 +2469,7 @@ impl Interpreter {
                 }
             }
             SpecialBindingScope::BufferLocal(buffer_id) => {
-                self.notify_variable_watchers(
+                self.notify_variable_watchers_symbol(
                     &restore.name,
                     restore.previous.clone().unwrap_or(Value::Nil),
                     "unlet",
@@ -2349,7 +2477,7 @@ impl Interpreter {
                     env,
                 )?;
                 if let Some(value) = restore.previous {
-                    self.set_buffer_local_value(buffer_id, &restore.name, value);
+                    self.set_buffer_local_value_symbol(buffer_id, &restore.name, value);
                 } else {
                     self.remove_buffer_local_value(buffer_id, &restore.name);
                 }
@@ -2451,15 +2579,16 @@ impl Interpreter {
     }
 
     pub(super) fn push_unevaluated_backtrace_frame(&mut self, source_form: &Value) {
+        // eval.c's eval_sub records the form itself (nargs UNEVALLED):
+        // the four-word frame holds it, and the debugger's projections
+        // read its head and tail when asked.  A boxed detail per
+        // interpreted call was a heap allocation and release per call.
         self.backtrace_frames.push(BacktraceFrame {
-            function: Value::Nil,
+            function: source_form.clone(),
             args: FrameArgs::Owned(Vec::new()),
             evald: false,
             debug_on_exit: false,
-            detail: Some(Box::new(FrameDetail {
-                source_form: Some(source_form.clone()),
-                ..FrameDetail::default()
-            })),
+            detail: None,
         });
     }
 

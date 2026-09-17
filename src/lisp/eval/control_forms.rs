@@ -189,19 +189,67 @@ impl Interpreter {
         Ok(())
     }
 
+    /// eval.c's reading of one list element of a `let' varlist: the
+    /// symbol and its value form.  A second value form signals as
+    /// signal_error does (`error', the message, the element's own
+    /// elements); a dotted element signals listp on its tail, as Fcar of
+    /// Fcdr does.
+    fn let_binding_parts(binding: &Value) -> Result<(Value, Option<Value>), LispError> {
+        let Value::Cons(cell) = binding else {
+            return Err(wrong_type_argument("listp", binding.clone()));
+        };
+        let name = cell.car.borrow().clone();
+        let rest = cell.cdr.borrow().clone();
+        match &rest {
+            Value::Nil => Ok((name, None)),
+            Value::Cons(second) => {
+                if !second.cdr.borrow().is_nil() {
+                    return Err(LispError::SignalValue(Value::cons(
+                        Value::symbol("error"),
+                        Value::cons(
+                            Value::String(
+                                String::from("`let' bindings can have only one value-form").into(),
+                            ),
+                            binding.clone(),
+                        ),
+                    )));
+                }
+                Ok((name, Some(second.car.borrow().clone())))
+            }
+            other => Err(wrong_type_argument("listp", other.clone())),
+        }
+    }
+
+    /// The next element of a varlist walked in place (FOR_EACH_TAIL):
+    /// the element and the rest, None at the end; a dotted tail signals
+    /// listp with the whole varlist, as list_length and CHECK_LIST_END do.
+    fn next_let_binding(
+        tail: &Value,
+        varlist: &Value,
+    ) -> Result<Option<(Value, Value)>, LispError> {
+        match tail {
+            Value::Nil => Ok(None),
+            Value::Cons(cell) => Ok(Some((cell.car.borrow().clone(), cell.cdr.borrow().clone()))),
+            _ => Err(wrong_type_argument("listp", varlist.clone())),
+        }
+    }
+
     pub(super) fn sf_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         // eval.c Flet: list_length (varlist) -- a vector or any other
         // non-list signals wrong-type-argument listp (a vector read as a
-        // sequence bound its elements to nil before).
+        // sequence bound its elements to nil before).  The varlist and
+        // each element are read in place; a vector of copies of every
+        // binding per evaluation was a share of every interpreted `let'.
         if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
-        let bindings = items[1].to_vec()?;
         let mut frame = Vec::new();
         let mut special_bindings = Vec::new();
 
-        for binding in &bindings {
-            match binding {
+        let mut tail = items[1].clone();
+        while let Some((binding, next)) = Self::next_let_binding(&tail, &items[1])? {
+            tail = next;
+            match &binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
                     if self.binding_is_dynamic_symbol(name, env) {
@@ -212,11 +260,11 @@ impl Interpreter {
                 }
                 Value::Record(_)
                     if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-                        && crate::lisp::primitives::symbol_with_pos_parts(self, binding)
+                        && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                             .is_some() =>
                 {
                     let name =
-                        crate::lisp::primitives::checked_symbol_identity(self, binding, env)?;
+                        crate::lisp::primitives::checked_symbol_identity(self, &binding, env)?;
                     Self::check_let_binding_name(&name)?;
                     if self.binding_is_dynamic_symbol(&name, env) {
                         special_bindings.push((name, Value::Nil));
@@ -225,17 +273,13 @@ impl Interpreter {
                     }
                 }
                 Value::Cons(_) => {
-                    let parts = binding.to_vec()?;
-                    let Some(name_value) = parts.first() else {
-                        return Err(LispError::ReadError("bad let binding".into()));
-                    };
+                    let (name_value, init) = Self::let_binding_parts(&binding)?;
                     let name =
-                        crate::lisp::primitives::checked_symbol_identity(self, name_value, env)?;
+                        crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
                     Self::check_let_binding_name(&name)?;
-                    let val = if parts.len() > 1 {
-                        self.eval(&parts[1], env)?
-                    } else {
-                        Value::Nil
+                    let val = match init {
+                        Some(form) => self.eval(&form, env)?,
+                        None => Value::Nil,
                     };
                     if self.binding_is_dynamic_symbol(&name, env) {
                         special_bindings.push((name, val));
@@ -280,42 +324,43 @@ impl Interpreter {
         if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
-        let bindings = items[1].to_vec()?;
         let original_depth = env.len();
         let original_frame_identities = env.iter().map(Self::frame_identity).collect::<Vec<_>>();
         let mut lexical_binding_seen = false;
         let mut lexical_restore_depth = None;
         let mut restores = Vec::new();
         let setup = (|| -> Result<(), LispError> {
-            for binding in &bindings {
-                let (name, value) = match binding {
+            // The varlist and each element read in place (FletX's
+            // FOR_EACH_TAIL).
+            let mut tail = items[1].clone();
+            while let Some((binding, next)) = Self::next_let_binding(&tail, &items[1])? {
+                tail = next;
+                let (name, value) = match &binding {
                     Value::Symbol(name) => {
                         Self::check_let_binding_name(name)?;
                         (name.clone(), Value::Nil)
                     }
                     Value::Record(_)
                         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-                            && crate::lisp::primitives::symbol_with_pos_parts(self, binding)
+                            && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                                 .is_some() =>
                     {
                         let name =
-                            crate::lisp::primitives::checked_symbol_identity(self, binding, env)?;
+                            crate::lisp::primitives::checked_symbol_identity(self, &binding, env)?;
                         Self::check_let_binding_name(&name)?;
                         (name, Value::Nil)
                     }
                     Value::Cons(_) => {
-                        let parts = binding.to_vec()?;
-                        let Some(name_value) = parts.first() else {
-                            return Err(LispError::ReadError("bad let* binding".into()));
-                        };
+                        let (name_value, init) = Self::let_binding_parts(&binding)?;
                         let name = crate::lisp::primitives::checked_symbol_identity(
-                            self, name_value, env,
+                            self,
+                            &name_value,
+                            env,
                         )?;
                         Self::check_let_binding_name(&name)?;
-                        let value = if parts.len() > 1 {
-                            self.eval(&parts[1], env)?
-                        } else {
-                            Value::Nil
+                        let value = match init {
+                            Some(form) => self.eval(&form, env)?,
+                            None => Value::Nil,
                         };
                         (name, value)
                     }

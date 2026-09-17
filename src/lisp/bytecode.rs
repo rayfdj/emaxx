@@ -607,10 +607,85 @@ impl ArgSpec {
 
 /// A validated genuine GNU byte-code function: the CLOSURE_* slots of
 /// GNU's `Lisp_Closure` (lisp.h) with the opcode string decoded.
+/// One code string's decoded instructions, shared by every closure made
+/// from the same prototype: `make-closure' copies the prototype's slots,
+/// so the closures share the code string object, and bytecode.c executes
+/// its bytes in place for each of them; decoding the string again for
+/// each new closure (every `mapcar' with a lambda in compiled code) was a
+/// tenth of a macro-expanding loop.
+#[derive(Debug)]
+pub struct DecodedCode {
+    pub instrs: Vec<Instr>,
+    /// Instruction index by byte offset (u32::MAX between instructions).
+    pub offset_index: Vec<u32>,
+}
+
+impl DecodedCode {
+    fn new(code: &[u8], constants_len: usize) -> Result<Self, ByteCodeError> {
+        let instrs = decode_program(code, constants_len)?;
+        let mut offset_index = vec![u32::MAX; code.len() + 1];
+        for (index, instr) in instrs.iter().enumerate() {
+            offset_index[instr.offset] = index as u32;
+        }
+        Ok(Self {
+            instrs,
+            offset_index,
+        })
+    }
+}
+
+const DECODED_CODE_CACHE_LIMIT: usize = 8192;
+
+type DecodedCodeTable = std::collections::HashMap<
+    (usize, usize),
+    (crate::lisp::types::SharedText, Rc<DecodedCode>),
+    crate::lisp::primitives::FnvBuildHasher,
+>;
+
+thread_local! {
+    /// By the code string's identity and the constants vector's length
+    /// (the decoder checks constant indices against it); the text is
+    /// held so the identity stays this text's.
+    static DECODED_CODE: std::cell::RefCell<DecodedCodeTable> =
+        std::cell::RefCell::new(std::collections::HashMap::default());
+}
+
+/// The decoded program of CODE_SLOT (a string) for CONSTANTS_LEN
+/// constants, shared when the same string object was decoded before.
+fn decoded_code(
+    code_slot: &Value,
+    code: &[u8],
+    constants_len: usize,
+) -> Result<Rc<DecodedCode>, ByteCodeError> {
+    let Value::String(text) = code_slot else {
+        // A mutable string object may change: decoded afresh.
+        return Ok(Rc::new(DecodedCode::new(code, constants_len)?));
+    };
+    let key = (text.identity_ptr(), constants_len);
+    if let Some(decoded) = DECODED_CODE.with_borrow(|cache| {
+        cache
+            .get(&key)
+            .filter(|(held, _)| held.ptr_eq(text))
+            .map(|(_, decoded)| Rc::clone(decoded))
+    }) {
+        return Ok(decoded);
+    }
+    let decoded = Rc::new(DecodedCode::new(code, constants_len)?);
+    DECODED_CODE.with_borrow_mut(|cache| {
+        if cache.len() >= DECODED_CODE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, (text.clone(), Rc::clone(&decoded)));
+    });
+    Ok(decoded)
+}
+
 #[derive(Clone, Debug)]
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
     pub code: Vec<u8>,
+    /// The code decoded, shared with the other closures of its prototype.
+    pub decoded: Rc<DecodedCode>,
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
     pub constants: Rc<VectorValue>,
     pub stack_depth: usize,
@@ -693,10 +768,11 @@ impl ByteCodeObject {
                 "negative stack depth {depth}"
             )));
         }
-        decode_program(&code, constants.slots().len())?;
+        let decoded = decoded_code(&slots[1], &code, constants.slots().len())?;
         Ok(Some(ByteCodeObject {
             argspec,
             code,
+            decoded,
             constants,
             stack_depth: depth as usize,
             doc: slots.get(4).cloned(),

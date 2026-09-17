@@ -3961,6 +3961,70 @@ fn a_variable_holding_a_lambda_never_shadows_the_function_cell() {
 }
 
 #[test]
+fn let_varlists_are_read_as_flet_reads_them() {
+    // eval.c's Flet and FletX: a binding with a second value form
+    // signals `error' with the element's own elements as the data, a
+    // dotted element signals listp on its tail, a dotted varlist signals
+    // listp with the whole varlist, a bare non-symbol element listp, and
+    // a non-symbol name symbolp.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(list (condition-case e (let ((x 1 2)) x) (error e))
+               (condition-case e (let* ((x 1 2)) x) (error e))
+               (let ((x) y (z 3)) (list x y z))
+               (let* ((x 1) (y (1+ x))) (list x y))
+               (condition-case e (let (5) 1) (error e))
+               (condition-case e (let ((5 1)) 1) (error e))
+               (condition-case e (let ((x . 1)) x) (error e))
+               (condition-case e (let* ((x . 1)) x) (error e))
+               (condition-case e (let* (x . 1) x) (error e)))",
+        "((error \"`let' bindings can have only one value-form\" x 1 2) (error \"`let' bindings can have only one value-form\" x 1 2) (nil nil 3) (1 2) (wrong-type-argument listp 5) (wrong-type-argument symbolp 5) (wrong-type-argument listp 1) (wrong-type-argument listp 1) (wrong-type-argument listp (x . 1)))",
+    );
+}
+
+#[test]
+fn watchers_hear_a_let_of_lexical_binding_as_data_c_reports_it() {
+    // eval.c:specbind on a localized symbol: with a cell in the buffer
+    // the let is SPECPDL_LET_LOCAL (watchers hear `let' and `unlet' in
+    // that buffer); without one it is SPECPDL_LET_DEFAULT, whose store
+    // is set_internal's (`let', the current buffer, as the symbol is
+    // local if set there) and whose unbind is set_default_internal's
+    // (`set', no buffer).  eval_sub binds `lexical-binding' around a
+    // macro's expander; Fmacroexpand does not.  The oracle's value.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((log nil))
+  (defun ctl-watch (s n o w) (push (list s n o (and w (buffer-name w))) log))
+  (add-variable-watcher 'lexical-binding #'ctl-watch)
+  (with-temp-buffer
+    (let ((lexical-binding t)) (ignore))
+    (setq-local lexical-binding nil)
+    (let ((lexical-binding t)) (ignore)))
+  (let ((before (length log)))
+    (with-temp-buffer (eval '(when-let ((x 1)) (1+ x)) t))
+    (push (- (length log) before) log)
+    (setq before (length log))
+    (with-temp-buffer (macroexpand '(when-let ((x 1)) (1+ x))))
+    (push (list 'macroexpand (- (length log) before)) log))
+  (remove-variable-watcher 'lexical-binding #'ctl-watch)
+  (let ((lexical-binding t)) (ignore))
+  (nreverse log))",
+        )
+        .to_string(),
+        "((lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \" *temp*\") (lexical-binding nil set nil) (lexical-binding t let \" *temp*\") (lexical-binding nil set nil) (lexical-binding nil set \" *temp*\") (lexical-binding t let \" *temp*\") (lexical-binding nil unlet \" *temp*\") (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \" *temp*\") (lexical-binding nil set nil) (lexical-binding t let \" *temp*\") (lexical-binding nil set nil) (lexical-binding t let \" *temp*\") (lexical-binding nil set nil) (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") 12 (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (lexical-binding t let \"*scratch*\") (lexical-binding t unlet \"*scratch*\") (macroexpand 6))",
+    );
+}
+
+#[test]
 fn newline_scans_cross_the_rope_chunks() {
     // find_newline over a buffer longer than one rope chunk, with
     // multibyte text so byte and character offsets differ inside a
