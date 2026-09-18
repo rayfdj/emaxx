@@ -70,12 +70,12 @@ impl TraceLispRoots for ThreadExecutionContext {
             marker.value(&Value::Vector(Rc::clone(constants)));
         }
         for frame in &self.backtrace_frames {
-            marker.value(&frame.function);
+            frame.function.with_value(|function| marker.value(function));
             if let Some(arguments) = frame.args.lisp_values() {
                 arguments.trace_lisp_roots(marker);
             }
             if let Some(form) = frame.source_form() {
-                marker.value(form);
+                marker.value(&form);
             }
             for (_, value) in frame.locals() {
                 marker.value(value);

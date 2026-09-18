@@ -12170,3 +12170,74 @@ unwritable-directory tests among them; fmt and strict clippy exit 0
 before and after.  The first run (run-1789748237470755839-14603)
 failed the cli_parity test the paragraph above records; the tree was
 amended with the unwind-form rule and gated again.
+
+## 2026-09-18 Checkpoint 20f: the interpreted form's return as eval_sub's
+
+*What prompted it.*  The flat profile of the interpreted lexical loop
+on checkpoint 20e's binary: `eval' 24 percent, the unevaluated frame's
+push 6.3, the `Value' drop glue 6.0, `settle_frame_result' 5.1, the
+alist read 4.3, the form iterator 4.0, `let*' 3.6, the `FrameArgs'
+drop 1.2, `maybe_gc' 1.1.  Three of those are things eval.c does not
+do on a form's normal return: `settle_frame_result' ran on every
+`Ok' (it exists for the error path: `handler-bind' handlers and the
+batch backtrace snapshot at the innermost frame boundary), the
+unevaluated frame took a reference on the form it recorded and gave
+it back on the pop (`record_in_backtrace' stores the tagged pointer;
+the evaluating caller holds the form for the frame's whole life), and
+`maybe_gc' was a call whose first act was a thread-local read
+(lisp.h's is the `consing_until_gc < 0' compare inline).
+
+*Done.*  (1) `settle_frame_result' is an inline match: `Ok' passes
+through, the error path is a cold out-of-line function
+(`settle_frame_error').  (2) The frame's function word is a
+`FrameFunction': `Owned' for every call frame, `Form' -- the cons
+pointer, no reference -- for eval_sub's unevaluated frame; readers go
+through `value' (a reference taken for the caller) or `with_value'
+(read in place), the pop of a `Form' word releases nothing, a copy of
+the frame owns its word.  (3) `maybe_gc' is inline with the threshold
+compare first and `maybe_garbage_collect' cold behind it.  (4) The
+frame writers are forced inline so the frame's words are stored into
+the vector's slot directly (the annotated profile of the push put
+four fifths of its samples on one 16-byte store fed from a stack
+temporary: the enum built in a temporary and copied in).
+
+*Measured.*  Wall clock, three interleaved rounds, seconds (min /
+median), w16 is checkpoint 20e, w18 this one, GNU on the same
+machine; and callgrind instructions per iteration (boot and
+collections differenced out, `tools/perf/callgrind-diff.sh').
+
+| probe | w16 | w18 | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 1.660 / 1.740 | 1.471 / 1.686 | 0.753 / 0.773 |
+| interpreted dynamic loop, 2 M | 1.319 / 1.393 | 1.309 / 1.404 | 0.303 / 0.325 |
+| 1 M interpreted defun calls | 0.714 / 0.763 | 0.644 / 0.777 | 0.605 / 0.637 |
+| byte-code call loop, 10 M | 0.639 / 0.704 | 0.682 / 0.682 | 0.168 / 0.170 |
+| instructions / iteration, dynamic loop | CG1.319 / 1.393 | CG1.309 / 1.404 | CG0.303 / 0.325 |
+| instructions / iteration, lexical loop | CG1.660 / 1.740 | CG1.471 / 1.686 | CG0.753 / 0.773 |
+| instructions / call, byte-code call loop | CG0.639 / 0.704 | CG0.682 / 0.682 | CG0.168 / 0.170 |
+
+*What did not move, and what was learned.*  The wall clock does not resolve it: the three
+rounds of each loop overlap between w16 and w18 (the box's spread is
+ten percent and more).  The instruction counts do: the dynamic loop
+9,662 to 8,973 an iteration (7 percent), the lexical 11,246 to 10,664
+(5), the byte-code call 1,305 to 1,285 (1.5) -- against GNU's 3,234,
+5,477 and 330.  The remaining factor is three on the interpreted
+loops and four on the call, and the instruction profile of the loops
+(the next checkpoint's starting point) is the reference count and
+drop glue on every copy of a value, the RefCell borrow flags on every
+car and cdr, the 16-byte value and the 100-byte cons: the
+representation.
+
+*Which of these mirror C.*  All three: eval_sub's return does nothing
+but `unbind_to' and the frame pop; `bt.function' is a pointer the
+frame does not own; lisp.h's `maybe_gc' is the inline compare.  The
+`FrameFunction' enum is how a reference-counted representation
+expresses the unowned pointer; it goes with the representation.
+
+*Verified.*  The three controls (`ctl20e', `ctl20a', `ctl19z3')
+produce the oracle's output on the final build.  The library suite,
+single-threaded under the gate's environment in the worktree: 2,713
+passed, the three unwritable-directory tests failing under root as
+on every checkpoint.  Strict clippy and fmt exit 0.
+
+*Gate.*  (pending)

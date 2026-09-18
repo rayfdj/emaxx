@@ -887,6 +887,15 @@ ns a call against 19.  Open after it: the backtrace frame as
 record_in_backtrace's four words, the reference count per operand
 copy.
 
+Checkpoint 20f (2026-09-18, for main): the interpreted form's
+return as eval_sub's -- settling only on the error path, the
+unevaluated frame's word the caller's form borrowed as `bt.function`
+holds it, `maybe_gc` inline, the frame's words stored into the slot
+directly.  Callgrind instructions an iteration: the dynamic
+interpreted loop 9,662 to 8,973 (GNU 3,234), the lexical 11,246 to
+10,664 (GNU 5,477), the byte-code call 1,305 to 1,285 (GNU 330).
+What remains is the representation.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

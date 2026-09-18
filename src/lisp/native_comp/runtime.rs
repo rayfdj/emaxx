@@ -700,6 +700,9 @@ thread_local! {
 /// consing counter has gone negative, alloc.c:maybe_garbage_collect retunes
 /// it from the Lisp variables and collects if it is still negative.  An
 /// active native call takes the conservative trampoline instead.
+/// lisp.h:maybe_gc: the threshold compare inline at every call site, the
+/// collection itself out of line.
+#[inline(always)]
 pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
     if !ACTIVE_CALL.with(|active| active.get().is_null()) {
         maybe_gc_active();
@@ -710,8 +713,17 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
     if !interpreter
         .native_compiler
         .garbage_collection_might_be_due()
-        || ORDINARY_GC_IN_PROGRESS.with(Cell::get)
     {
+        return;
+    }
+    maybe_garbage_collect(interpreter, environment);
+}
+
+/// alloc.c:maybe_garbage_collect.
+#[cold]
+#[inline(never)]
+fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
+    if ORDINARY_GC_IN_PROGRESS.with(Cell::get) {
         return;
     }
     let (threshold, percentage) = gc_tuning(interpreter, environment);

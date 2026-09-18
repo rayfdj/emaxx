@@ -1153,15 +1153,31 @@ impl Interpreter {
     /// through here, so an error the evaluator itself signals -- a void
     /// function or variable, a wrong arity -- reaches the handlers with the
     /// same innermost frame GNU shows.
+    ///
+    /// A normal return settles nothing (eval_sub's `unbind_to' and the
+    /// frame pop are all that happen in C); the error path is out of line.
+    #[inline(always)]
     pub(crate) fn settle_frame_result(
         &mut self,
         result: Result<Value, LispError>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match result {
-            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-            Err(error) => self.dispatch_handler_bindings(error, env),
-            ok => ok,
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => self.settle_frame_error(error, env),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn settle_frame_error(
+        &mut self,
+        error: LispError,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let result = match error {
+            error @ (LispError::Throw(_, _) | LispError::Terminate(_)) => Err(error),
+            error => self.dispatch_handler_bindings(error, env),
         };
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);

@@ -14,7 +14,7 @@ impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
             .and_then(|form| form.car().ok())
-            .unwrap_or_else(|| self.function.clone())
+            .unwrap_or_else(|| self.function.value())
     }
 
     pub(super) fn args_snapshot(&self) -> Vec<Value> {
@@ -2581,9 +2581,14 @@ impl Interpreter {
     }
 
     /// The four-word frame record_in_backtrace writes.
-    #[inline]
+    #[inline(always)]
     fn push_plain_backtrace_frame(&mut self, function: Value, args: FrameArgs, evald: bool) {
-        Self::write_backtrace_frame(&mut self.backtrace_frames, function, args, evald);
+        Self::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            FrameFunction::Owned(function),
+            args,
+            evald,
+        );
     }
 
     /// record_in_backtrace's stores into `specpdl_ptr': the frame's words
@@ -2592,7 +2597,7 @@ impl Interpreter {
     #[inline(always)]
     fn write_backtrace_frame(
         frames: &mut Vec<BacktraceFrame>,
-        function: Value,
+        function: FrameFunction,
         args: FrameArgs,
         evald: bool,
     ) {
@@ -2642,7 +2647,7 @@ impl Interpreter {
 
     /// record_in_backtrace for a byte-code call whose arguments stay on
     /// the thread's bytecode stack: the frame holds them by address.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn push_backtrace_frame_borrowed(&mut self, function: Value, args: &[Value]) {
         self.push_plain_backtrace_frame(function, FrameArgs::borrowed(args), true);
     }
@@ -2652,20 +2657,28 @@ impl Interpreter {
     /// holds the evaluated arguments (nargs no longer UNEVALLED).
     pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
-            frame.function = function;
+            frame.function = FrameFunction::Owned(function);
             frame.args = FrameArgs::borrowed(args);
             frame.evald = true;
         }
     }
 
+    #[inline(always)]
     pub(super) fn push_unevaluated_backtrace_frame(&mut self, source_form: &Value) {
         // eval.c's eval_sub records the form itself (nargs UNEVALLED):
         // the four-word frame holds it, and the debugger's projections
         // read its head and tail when asked.  A boxed detail per
         // interpreted call was a heap allocation and release per call.
+        // The word is the caller's form, borrowed for the frame's life
+        // as `bt.function' holds it; a non-cons form (evaluated through
+        // a path that records it) is owned.
+        let function = match source_form {
+            Value::Cons(cell) => FrameFunction::Form(Rc::as_ptr(cell)),
+            other => FrameFunction::Owned(other.clone()),
+        };
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
-            source_form.clone(),
+            function,
             FrameArgs::borrowed(&[]),
             false,
         );

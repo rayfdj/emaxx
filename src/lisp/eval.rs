@@ -1706,6 +1706,7 @@ pub(crate) enum FrameArgs {
 }
 
 impl FrameArgs {
+    #[inline(always)]
     fn borrowed(args: &[Value]) -> Self {
         Self::Borrowed {
             ptr: args.as_ptr(),
@@ -1753,13 +1754,69 @@ impl Clone for FrameArgs {
     }
 }
 
+/// The frame's function word.  eval.c's `bt.function' is a tagged
+/// pointer with no reference of its own: for eval_sub's unevaluated
+/// frame it is the form the evaluating caller holds for the frame's whole
+/// life, so the frame borrows that cons instead of counting a reference
+/// on every interpreted form.  Every other frame owns its word.
+#[derive(Debug)]
+pub(crate) enum FrameFunction {
+    Owned(Value),
+    Form(*const ConsCell),
+}
+
+impl FrameFunction {
+    /// The word as a value of its own (a reference taken for the caller).
+    fn value(&self) -> Value {
+        match self {
+            Self::Owned(value) => value.clone(),
+            // SAFETY: the pointer came from a live `Rc<ConsCell>' the
+            // evaluating caller still holds (see the type comment); the
+            // count is raised before a handle is made from it.
+            Self::Form(cell) => unsafe {
+                Rc::increment_strong_count(*cell);
+                Value::Cons(Rc::from_raw(*cell))
+            },
+        }
+    }
+
+    /// The word read in place, without a reference taken.
+    fn with_value<R>(&self, read: impl FnOnce(&Value) -> R) -> R {
+        match self {
+            Self::Owned(value) => read(value),
+            // SAFETY: as in `value'; the handle is never dropped, so the
+            // count is untouched.
+            Self::Form(cell) => {
+                let value =
+                    std::mem::ManuallyDrop::new(unsafe { Value::Cons(Rc::from_raw(*cell)) });
+                read(&value)
+            }
+        }
+    }
+
+    /// True when popping the frame releases nothing.
+    fn is_immediate(&self) -> bool {
+        match self {
+            Self::Owned(value) => value.is_immediate(),
+            Self::Form(_) => true,
+        }
+    }
+}
+
+impl Clone for FrameFunction {
+    /// A copy of a frame may outlive the activation, so it owns its word.
+    fn clone(&self) -> Self {
+        Self::Owned(self.value())
+    }
+}
+
 /// eval.c's `union specbinding' backtrace member: function, args, nargs
 /// and the debug-on-exit flag.  Everything else a frame can carry lives
 /// behind `detail', so the frame of a byte-code or primitive call costs
 /// what GNU's does.
 #[derive(Clone, Debug)]
 struct BacktraceFrame {
-    function: Value,
+    function: FrameFunction,
     args: FrameArgs,
     evald: bool,
     debug_on_exit: bool,
@@ -1781,14 +1838,18 @@ struct FrameDetail {
 }
 
 impl BacktraceFrame {
-    fn source_form(&self) -> Option<&Value> {
+    fn source_form(&self) -> Option<Value> {
         // An unevaluated frame (eval_sub's, nargs UNEVALLED) holds its
         // form in the function word; the detail's copy is the older
         // representation, kept for frames built that way.
-        if !self.evald && matches!(self.function, Value::Cons(_)) {
-            return Some(&self.function);
+        if !self.evald {
+            match &self.function {
+                FrameFunction::Form(_) => return Some(self.function.value()),
+                FrameFunction::Owned(value @ Value::Cons(_)) => return Some(value.clone()),
+                FrameFunction::Owned(_) => {}
+            }
         }
-        self.detail.as_ref()?.source_form.as_ref()
+        self.detail.as_ref()?.source_form.clone()
     }
 
     fn locals(&self) -> &[(SymbolName, Value)] {
@@ -4248,12 +4309,12 @@ impl Interpreter {
             mark(&watch.callback);
         }
         for frame in &self.backtrace_frames {
-            mark(&frame.function);
+            frame.function.with_value(|function| mark(function));
             for argument in frame.args.lisp_values().unwrap_or(&[]) {
                 mark(argument);
             }
             if let Some(form) = frame.source_form() {
-                mark(form);
+                mark(&form);
             }
             for (symbol, value) in frame.locals() {
                 mark(&Value::Symbol(symbol.clone()));
@@ -4771,7 +4832,7 @@ impl Interpreter {
                 watch.callback = c.copy(&watch.callback.clone());
             }
             for frame in &mut clone.backtrace_frames {
-                frame.function = c.copy(&frame.function.clone());
+                frame.function = FrameFunction::Owned(c.copy(&frame.function.value()));
                 let mut args = frame.args.clone();
                 if let FrameArgs::Owned(values) = &mut args {
                     for arg in values {
