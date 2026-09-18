@@ -1574,7 +1574,10 @@ define_dispatch!(
                     // coding.c dynamically binds this around completing-read;
                     // all coding-system names are lower-case and completion is
                     // intentionally case-insensitive.
-                    env.push(vec![("completion-ignore-case".into(), Value::T)].into());
+                    Interpreter::push_bindings(
+                        env,
+                        vec![("completion-ignore-case".into(), Value::T)],
+                    );
                     let result = completing_read(interp, &completion_args, env);
                     env.pop();
                     let entered = string_text(&result?)?;

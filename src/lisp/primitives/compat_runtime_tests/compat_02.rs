@@ -1101,8 +1101,8 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     crate::test_support::eval_lisp(&mut interp, &mut Vec::new(), "(erase-buffer)")
         .expect("erase scratch");
-    let mut env = vec![
-        vec![(
+    let mut env = vec![crate::lisp::types::EnvFrame::bindings(
+        [(
             "process-coding-system-alist".into(),
             Value::list([Value::cons(
                 Value::String("sample\\'".into()),
@@ -1111,9 +1111,9 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
                     Value::Symbol("raw-text-unix".into()),
                 ),
             )]),
-        )]
-        .into(),
-    ];
+        )],
+        &Value::Nil,
+    )];
 
     write_process_output(
         &mut interp,
@@ -2188,10 +2188,10 @@ fn unicode_property_registry_uses_the_c_owned_symbol_value_cell() {
         Value::symbol("probe"),
         Value::String("wrong.el".into()),
     )]);
-    let mut env = vec![crate::lisp::types::EnvFrame::new(vec![(
-        "char-code-property-alist".into(),
-        lexical_registry,
-    )])];
+    let mut env = vec![crate::lisp::types::EnvFrame::bindings(
+        [("char-code-property-alist".into(), lexical_registry)],
+        &Value::Nil,
+    )];
     assert_eq!(
         call(
             &mut interp,

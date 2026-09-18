@@ -1015,11 +1015,7 @@ fn read_lisp_file_bytes(
     interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
-            vec![types::EnvFrame::with_lisp_environment_and_identity(
-                Vec::new(),
-                types::Value::list([types::Value::T]),
-                eval::Interpreter::fresh_frame_identity(),
-            )]
+            vec![types::EnvFrame::lexical()]
         } else {
             types::Env::new()
         };

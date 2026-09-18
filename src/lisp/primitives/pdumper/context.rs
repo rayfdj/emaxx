@@ -11,7 +11,7 @@
 use super::super::*;
 use super::image::*;
 use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
-use crate::lisp::types::{ConsCell, EnvFrame, SharedEnv, SymbolName};
+use crate::lisp::types::{ConsCell, SymbolName};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -1514,20 +1514,28 @@ impl DumpContext {
         lambda: &Rc<crate::lisp::types::LambdaValue>,
     ) -> Result<u32, DumpError> {
         let start = self.object_start()?;
+        // The environment (CLOSURE_CONSTANTS) is a value field: the alist
+        // whose conses the closure shares with every closure made under
+        // the same scope.
         let mut words = [
             FIXUP_PLACEHOLDER,
             WORD_UNBOUND,
             FIXUP_PLACEHOLDER,
-            FIXUP_PLACEHOLDER,
-            WORD_UNBOUND,
+            0,
             WORD_UNBOUND,
             WORD_UNBOUND,
         ];
+        self.field_lv(
+            start,
+            &mut words,
+            3,
+            &lambda.environment_value(),
+            WEIGHT_NORMAL,
+        );
         for (index, value) in [
             (1, lambda.public_parameters.as_ref()),
             (4, lambda.documentation.as_ref()),
             (5, lambda.interactive.as_ref()),
-            (6, lambda.public_environment.as_ref()),
         ] {
             if let Some(value) = value {
                 self.field_lv(start, &mut words, index, value, WEIGHT_NORMAL);
@@ -1538,8 +1546,6 @@ impl DumpContext {
         self.remember_fixup_ptr_raw(offset, params);
         let body = self.dump_lambda_body(&lambda.body)?;
         self.remember_fixup_ptr_raw(offset + 16, body);
-        let env = self.dump_lexical_environment(&lambda.env)?;
-        self.remember_fixup_ptr_raw(offset + 24, env);
         Ok(offset)
     }
 
@@ -1595,76 +1601,6 @@ impl DumpContext {
             self.field_lv(start, &mut words, index + 1, form, WEIGHT_STRONG);
         }
         self.aux_finish(pointer, &words, DumpType::LambdaBody)
-    }
-
-    /// A captured environment: its frames, dumped after it through
-    /// raw-pointer fixups so two closures over one environment share it.
-    fn dump_lexical_environment(&mut self, env: &SharedEnv) -> Result<u32, DumpError> {
-        let pointer = Rc::as_ptr(env) as usize;
-        if let Some(offset) = self.aux_start(pointer) {
-            return Ok(offset);
-        }
-        let frames = env.borrow().clone();
-        self.object_start()?;
-        let mut words = vec![frames.len() as u64];
-        words.resize(frames.len() + 1, FIXUP_PLACEHOLDER);
-        let offset = self.aux_finish(pointer, &words, DumpType::LexicalEnvironment)?;
-        for (index, frame) in frames.iter().enumerate() {
-            let frame_offset = self.dump_lexical_frame(frame)?;
-            self.remember_fixup_ptr_raw(offset + 8 * (index as u32 + 1), frame_offset);
-        }
-        Ok(offset)
-    }
-
-    /// One frame: its flags and identity, the (symbol . value) bindings,
-    /// the locally-special declarations by position, and the Lisp
-    /// environment alist that is authoritative for it, if any.
-    fn dump_lexical_frame(&mut self, frame: &EnvFrame) -> Result<u32, DumpError> {
-        let pointer = frame.identity_ptr();
-        if let Some(offset) = self.aux_start(pointer) {
-            return Ok(offset);
-        }
-        let start = self.object_start()?;
-        let mut flags = 0_u64;
-        if frame.has_function_bindings() {
-            flags |= FRAME_FUNCTION_BINDINGS;
-        }
-        if frame.identity().is_some() {
-            flags |= FRAME_HAS_IDENTITY;
-        }
-        if frame.is_captured() {
-            flags |= FRAME_CAPTURED;
-        }
-        let mut words = vec![
-            flags,
-            frame.identity().unwrap_or(0) as u64,
-            frame.len() as u64,
-        ];
-        let mut fields = Vec::new();
-        for (symbol, value) in frame.iter() {
-            fields.push((words.len(), Value::Symbol(symbol.clone())));
-            words.push(0);
-            fields.push((words.len(), value.clone()));
-            words.push(0);
-        }
-        let declarations = frame.local_special_declarations();
-        words.push(declarations.len() as u64);
-        for (position, name) in declarations {
-            words.push(*position as u64);
-            fields.push((words.len(), Value::symbol(name)));
-            words.push(0);
-        }
-        match frame.lisp_environment() {
-            Some(environment) => {
-                fields.push((words.len(), environment.clone()));
-                words.push(0);
-            }
-            None => words.push(WORD_UNBOUND),
-        }
-        for (index, value) in fields {
-            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
-        }
-        self.aux_finish(pointer, &words, DumpType::LexicalFrame)
     }
 
     /// A char-table as Emaxx keeps it: id, subtype, default, parent,
@@ -2535,11 +2471,6 @@ fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
     matches!(value, Value::Record(id)
         if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::BoolVector))
 }
-
-// The flag bits of a lexical frame record.
-pub(crate) const FRAME_FUNCTION_BINDINGS: u64 = 1;
-pub(crate) const FRAME_HAS_IDENTITY: u64 = 2;
-pub(crate) const FRAME_CAPTURED: u64 = 4;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_state_for_load(

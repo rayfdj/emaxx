@@ -178,11 +178,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "local_special_names",
         "eval.c's specpdl-scoped local specials of the running evaluation",
     ),
-    (
-        "dlet_active_names",
-        "dynamic bindings of the running evaluation",
-    ),
-    ("special_scan_floor", "an evaluation-scoped scan position"),
     ("lisp_eval_depth", "eval.c:init_eval resets lisp_eval_depth"),
     (
         "garbage_collection_inhibited",
@@ -389,25 +384,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "print_number_index",
         "print.c's print_number_index is per print",
-    ),
-    ("current_activation_id", "the running evaluation"),
-    ("next_activation_id", "the running evaluation"),
-    (
-        "closure_capture_cache",
-        "weak owners, re-registered as closures load",
-    ),
-    (
-        "captured_lexical_frames",
-        "weak owners, re-registered as closures load",
-    ),
-    ("captured_env_registrations", "a registration counter"),
-    (
-        "closure_eval_contexts",
-        "weak owners of running evaluations",
-    ),
-    (
-        "closure_eval_context_registrations",
-        "a registration counter",
     ),
     ("lossage_size", "carried in the remembered scalars"),
     ("interactive_call_depth", "the running command"),
@@ -807,26 +783,6 @@ impl Interpreter {
         groups.push((
             RootSlot::LastThreadError,
             self.last_thread_error.clone().unwrap_or(Value::Nil),
-        ));
-        // The captured lexical cells that were assigned to: GNU's storage
-        // is the (SYMBOL . VALUE) cons of the closure's environment;
-        // Emaxx keeps the current value per frame identity and name.
-        let mut frames = self.lexical_cell_updates.iter().collect::<Vec<_>>();
-        frames.sort_by_key(|(identity, _)| **identity);
-        groups.push((
-            RootSlot::LexicalCellUpdates,
-            Value::list(frames.into_iter().map(|(identity, updates)| {
-                let mut updates = updates.iter().collect::<Vec<_>>();
-                updates.sort_by(|a, b| a.0.cmp(b.0));
-                Value::vector([
-                    Value::Integer(*identity),
-                    Value::list(
-                        updates
-                            .into_iter()
-                            .map(|(name, value)| pair(Value::symbol(name), value.clone())),
-                    ),
-                ])
-            })),
         ));
         // PDUMPER_REMEMBER_SCALAR: the native state beside the Lisp
         // objects that a loaded session must start from -- the id
@@ -1440,22 +1396,6 @@ mod install {
                                 return Err(format!("unknown remembered scalar {other}"));
                             }
                         }
-                    }
-                }
-                RootSlot::LexicalCellUpdates => {
-                    self.lexical_cell_updates.clear();
-                    for entry in expect_list(value, "lexical cell updates")? {
-                        let fields = expect_vector(&entry, "lexical cell updates entry")?;
-                        if fields.len() != 2 {
-                            return Err("lexical cell updates entry: two fields expected".into());
-                        }
-                        let identity = expect_int(&fields[0], "frame identity")?;
-                        let mut updates = HashMap::new();
-                        for update in expect_list(&fields[1], "lexical cell updates")? {
-                            let (name, value) = expect_pair(&update, "lexical cell update")?;
-                            updates.insert(expect_symbol(&name, "lexical variable")?, value);
-                        }
-                        self.lexical_cell_updates.insert(identity, updates);
                     }
                 }
                 // The keymap records were installed by the loader as it

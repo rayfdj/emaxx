@@ -237,7 +237,7 @@ impl Interpreter {
             return self.sf_progn(body, env);
         };
         if self.interpreter_environment_is_lexical(env) {
-            Self::push_marked_frame(env, vec![(variable.clone(), value)]);
+            Self::push_bindings(env, vec![(variable.clone(), value)]);
             let result = self.sf_progn(body, env);
             env.pop();
             return result;

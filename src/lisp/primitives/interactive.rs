@@ -414,9 +414,15 @@ pub(crate) fn eval_callable_metadata_form(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if let Value::Lambda(lambda) = func {
-        interp.eval_with_closure_env(&lambda.env, env, |interp, call_env| {
-            interp.eval(form, call_env)
-        })
+        // The form under the closure's own environment, as a call of the
+        // closure would install it.
+        let depth = env.len();
+        env.push(crate::lisp::types::EnvFrame::from_alist(
+            lambda.environment_value(),
+        ));
+        let result = interp.eval(form, env);
+        env.truncate(depth);
+        result
     } else {
         interp.eval(form, env)
     }

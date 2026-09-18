@@ -726,8 +726,7 @@ impl Interpreter {
             self.push_unevaluated_backtrace_frame(source_form);
         }
         let prepared = if let Some(name) = callable_name.as_ref() {
-            let local_context = Self::env_may_affect_function_resolution(env);
-            match self.resolve_symbol_call_with_frame_state(name, env, local_context) {
+            match self.resolve_symbol_call_with_frame_state(name, env, false) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let result = self.settle_frame_result(Err(error), env);
@@ -1050,8 +1049,7 @@ impl Interpreter {
         name: &SymbolName,
         env: &Env,
     ) -> Result<FunctionResolution, LispError> {
-        let local_context = Self::env_may_affect_function_resolution(env);
-        self.resolve_symbol_call_with_frame_state(name, env, local_context)
+        self.resolve_symbol_call_with_frame_state(name, env, false)
     }
 
     /// Resolve an ordinary source call through its callsite-local verdict.
@@ -1071,7 +1069,7 @@ impl Interpreter {
         let facts = self
             .globals
             .facts_or(name, || crate::lisp::primitives::name_facts_symbol(name));
-        let global = !local_context || !Self::frame_binds_callable(name, env);
+        let global = !local_context;
         // `selected-window' keeps its own arm; its id read once.
         static SELECTED_WINDOW_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
         let selected_window =
@@ -1207,16 +1205,13 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        // A genuine byte-code function starts a new evaluator scope just as
-        // an interpreted lexical closure does.  Its Bvarbind opcodes update
-        // special value cells, so native calls made by the VM must not see a
-        // same-named lexical frame belonging to its caller first.  Advice
-        // wrappers happened to introduce this boundary, which is why merely
-        // advising `prin1' used to make package byte compilation work.
-        let previous_floor = self.special_scan_floor;
-        self.special_scan_floor = env.len();
+        // Byte code reads variables with Fsymbol_value, never through the
+        // interpreter environment (bytecode.c's Bvarref); a nil frame keeps
+        // the caller's lexical bindings out of the VM's reads.
+        let depth = env.len();
+        env.push(EnvFrame::dynamic());
         let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
-        self.special_scan_floor = previous_floor;
+        env.truncate(depth);
         result
     }
 
@@ -1457,7 +1452,6 @@ impl Interpreter {
             Value::Lambda(ref lambda) => {
                 let params = &lambda.params;
                 let body = &lambda.body;
-                let closure_env = &lambda.env;
                 let wrong_arity = || {
                     LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-number-of-arguments".into()),
@@ -1479,7 +1473,6 @@ impl Interpreter {
                             .unwrap_or_else(wrong_arity)
                     })
                 };
-                self.register_captured_lexical_frames(closure_env);
                 if params.len() != args.len() {
                     let min_params = params
                         .iter()
@@ -1549,145 +1542,60 @@ impl Interpreter {
                     .map(CallName::original_symbol_value)
                     .unwrap_or_else(|| func.clone());
                 self.with_backtrace_frame(backtrace_function, args, |interp| {
+                    // funcall_lambda: a closure's arguments are consed onto
+                    // its environment (lexically, whatever the names'
+                    // flags) and the result installed as one frame; a
+                    // dynamic lambda's are specbound under a nil frame, so
+                    // its body sees no caller's lexical binding.  The
+                    // context stack keeps the dialect for the `let's and
+                    // lambdas of the body.
+                    let lexical_closure = lambda.environment().is_some();
+                    let call_capture_override = (interp.lambda_capture_override()
+                        != Some(lexical_closure))
+                    .then_some(lexical_closure);
+                    if let Some(capture) = call_capture_override {
+                        interp.push_lambda_eval_context(capture);
+                    }
+                    let depth = env.len();
+                    let count = interp.specpdl_index();
+                    let setup = match lambda.environment() {
+                        Some(closure_env) => {
+                            let mut lexenv = closure_env.clone();
+                            for (name, value) in &frame {
+                                lexenv = Self::cons_binding(name.clone(), value.clone(), lexenv);
+                            }
+                            env.push(EnvFrame::from_alist(lexenv));
+                            Ok(())
+                        }
+                        None => {
+                            env.push(EnvFrame::dynamic());
+                            frame.iter().try_for_each(|(name, value)| {
+                                interp.specbind_symbol(name, value.clone(), env)
+                            })
+                        }
+                    };
                     interp
                         .backtrace_frames
                         .last_mut()
                         .expect("just pushed frame")
                         .detail_mut()
-                        .locals = frame.clone();
-                    let frame = EnvFrame::with_identity(frame, Self::fresh_frame_identity());
+                        .locals = frame;
                     interp.capture_current_backtrace_context(
                         original_name.map(CallName::as_str),
                         env,
-                        Some(&frame),
+                        None,
                     );
                     crate::lisp::native_comp::maybe_gc(interp, env);
-                    // An empty lexical capture is still a scope boundary.  Keep
-                    // that fact as closure metadata instead of an artificial
-                    // environment binding, since instrumentation and capture
-                    // analysis must see only real Lisp bindings.
-                    let closure_eval_context = interp.closure_eval_context(closure_env);
-                    let lexical_closure = closure_eval_context == Some(true);
-                    // A closure without a lexical environment is a GNU dynamic
-                    // lambda.  Calling it from lexical code must switch the
-                    // hidden interpreter environment to nil; otherwise it can
-                    // read the caller's lexical frames and create lexical nested
-                    // lambdas that GNU would keep dynamic.
-                    let call_context = closure_eval_context.unwrap_or(false);
-                    let call_capture_override = (interp.lambda_capture_override()
-                        != Some(call_context))
-                    .then_some(call_context);
-                    if let Some(capture) = call_capture_override {
-                        interp.push_lambda_eval_context(capture);
-                    }
-                    let previous_activation = interp.enter_activation();
-                    let result = if closure_env.borrow().is_empty() && !lexical_closure {
-                        // GNU funcall_lambda binds a dynamic lambda's arguments
-                        // with specbind and installs a nil interpreter
-                        // environment for its body.  No caller lexical frame is
-                        // visible, while ordinary dynamic lets remain visible
-                        // through their value-cell bindings.
-                        // The caller's lexical cells remain live even though
-                        // the dynamic callee cannot see them. Root the actual
-                        // parked environment across binding watchers and body.
-                        interp.with_lisp_stack_roots(&*env, |interp| {
-                            let mut call_env = Vec::new();
-                            let count = interp.specpdl_index();
-                            let setup = frame.iter().try_for_each(|(name, value)| {
-                                interp.specbind_symbol(name, value.clone(), &mut call_env)
-                            });
-                            let previous_floor = interp.special_scan_floor;
-                            interp.special_scan_floor = 0;
-                            let result = match setup {
-                                Ok(()) => {
-                                    interp.sf_progn(function_executable_body(body), &mut call_env)
-                                }
-                                Err(error) => Err(error),
-                            };
-                            interp.special_scan_floor = previous_floor;
-                            let unbind = interp.unbind_to(count, &mut call_env);
-                            match result {
-                                Ok(value) => unbind.map(|()| value),
-                                Err(error) => Err(error),
-                            }
-                        })
-                    } else if body_has_marker(body, ":closure-transparent-env") {
-                        // Advice wrappers are plumbing: run them on the caller's
-                        // environment chain with the wrapper's captured frames
-                        // appended, so lexical mutations made below the wrapper
-                        // still reach the calling scope.
-                        let caller_len = env.len();
-                        // A captured frame whose IDENTITY is live in the caller
-                        // env is the same binding frame: the caller's version is
-                        // current (the capture is a snapshot), so skip the stale
-                        // copy and let the live frame be seen and mutated.  Run
-                        // directly on the caller's chain (no full-chain clone).
-                        let captured_frames = closure_env.borrow().clone();
-                        let mut frame_sources: Vec<usize> =
-                            Vec::with_capacity(captured_frames.len());
-                        for captured_frame in &captured_frames {
-                            let live_position =
-                                Self::frame_identity(captured_frame).and_then(|id| {
-                                    env[..caller_len]
-                                        .iter()
-                                        .position(|frame| Self::frame_identity(frame) == Some(id))
-                                });
-                            match live_position {
-                                Some(position) => frame_sources.push(position),
-                                None => {
-                                    env.push(captured_frame.clone());
-                                    frame_sources.push(env.len() - 1);
-                                }
-                            }
-                        }
-                        let captured_len = env.len();
-                        env.push(frame.clone());
-                        let previous_floor = interp.special_scan_floor;
-                        interp.special_scan_floor = caller_len;
-                        let result = interp.sf_progn(function_executable_body(body), env);
-                        interp.special_scan_floor = previous_floor;
-                        env.truncate(captured_len);
-                        let refreshed: Vec<_> = frame_sources
-                            .iter()
-                            .map(|&position| env[position].clone())
-                            .collect();
-                        env.truncate(caller_len);
-                        {
-                            let mut stored = closure_env.borrow_mut();
-                            stored.clear();
-                            stored.extend(refreshed);
-                        }
-                        result
-                    } else if body_has_marker(body, ":closure-isolated-current-env") {
-                        let mut call_env = closure_env.borrow().clone();
-                        let captured_len = call_env.len();
-                        call_env
-                            .push(vec![("__closure-isolated-current-env".into(), Value::T)].into());
-                        call_env.push(frame.clone());
-                        let previous_floor = interp.special_scan_floor;
-                        interp.special_scan_floor = 0;
-                        let result = interp.with_lisp_stack_roots(&*env, |interp| {
-                            interp.sf_progn(function_executable_body(body), &mut call_env)
-                        });
-                        interp.special_scan_floor = previous_floor;
-                        call_env.truncate(captured_len);
-                        result
-                    } else {
-                        let previous_floor = interp.special_scan_floor;
-                        interp.special_scan_floor = 0;
-                        let result =
-                            interp.eval_with_closure_env(closure_env, env, |interp, call_env| {
-                                let depth = call_env.len();
-                                call_env.push(frame.clone());
-                                let result =
-                                    interp.sf_progn(function_executable_body(body), call_env);
-                                call_env.truncate(depth);
-                                result
-                            });
-                        interp.special_scan_floor = previous_floor;
-                        result
+                    let result = match setup {
+                        Ok(()) => interp.sf_progn(function_executable_body(body), env),
+                        Err(error) => Err(error),
                     };
-                    interp.leave_activation(previous_activation);
+                    env.truncate(depth);
+                    let unbind = interp.unbind_to(count, env);
+                    let result = match result {
+                        Ok(value) => unbind.map(|()| value),
+                        Err(error) => Err(error),
+                    };
                     if call_capture_override.is_some() {
                         interp.pop_lambda_capture_override();
                     }
@@ -2002,9 +1910,9 @@ mod eval_value_buffer_tests {
         let lisp_name = Value::string("binding");
         let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
         let key = Value::Symbol(name.clone());
-        let env = vec![EnvFrame::with_identity(
-            vec![(name.clone(), Value::Integer(7))],
-            Interpreter::fresh_frame_identity(),
+        let env = vec![EnvFrame::bindings(
+            [(name.clone(), Value::Integer(7))],
+            &Value::Nil,
         )];
         let mut marked = LispReachability::default();
         marked.mark_env(&interpreter, &env);
@@ -2014,11 +1922,7 @@ mod eval_value_buffer_tests {
         );
         assert!(marked.contains(&lisp_name), "alloc.c marks SYMBOL_NAME");
 
-        let function = Value::lambda(
-            vec![name].into(),
-            vec![Value::Nil].into(),
-            shared_env(Vec::new()),
-        );
+        let function = Value::lambda(vec![name].into(), vec![Value::Nil].into(), Value::Nil);
         let mut marked = LispReachability::default();
         marked.mark(&interpreter, &function);
         assert!(

@@ -81,67 +81,10 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    pub(super) fn same_frame_shape(left: &EnvFrame, right: &EnvFrame) -> bool {
-        // Identified frames are the same frame exactly when their typed IDs
-        // agree; a name-shape match between two unrelated `let's binding the
-        // same variable must not alias them.
-        match (Self::frame_identity(left), Self::frame_identity(right)) {
-            (Some(left_id), Some(right_id)) => return left_id == right_id,
-            (None, None) => {}
-            _ => return false,
-        }
-        left.len() <= right.len()
-            && left
-                .iter()
-                .zip(right.iter())
-                .all(|((left_name, _), (right_name, _))| left_name == right_name)
-    }
-
-    pub(crate) fn frame_identity(frame: &EnvFrame) -> Option<i64> {
-        frame.identity()
-    }
-
-    /// Push FRAME onto ENV with a fresh typed identity, so closure alignment
-    /// can tell it apart from other frames that happen to bind the same names.
-    pub(crate) fn push_marked_frame(env: &mut Env, frame: Vec<(SymbolName, Value)>) {
-        env.push(EnvFrame::with_identity(frame, Self::fresh_frame_identity()));
-    }
-
-    pub(crate) fn fresh_frame_identity() -> i64 {
-        use std::sync::atomic::{AtomicI64, Ordering};
-        static NEXT_FRAME_IDENTITY: AtomicI64 = AtomicI64::new(1);
-        NEXT_FRAME_IDENTITY.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(super) fn align_captured_frames(captured: &Env, current: &Env) -> Vec<Option<usize>> {
-        let mut mapping = vec![None; captured.len()];
-        let mut search_start = 0;
-        for captured_index in 0..captured.len() {
-            for (current_index, current_frame) in current.iter().enumerate().skip(search_start) {
-                if Self::same_frame_shape(&captured[captured_index], current_frame) {
-                    mapping[captured_index] = Some(current_index);
-                    search_start = current_index + 1;
-                    break;
-                }
-            }
-        }
-        mapping
-    }
-
-    pub(super) fn merge_lexical_lambda_env(
-        current: &Env,
-        captured: &Env,
-        mapping: &[Option<usize>],
-    ) -> Env {
-        let mut merged = captured.clone();
-        for (captured_index, current_index) in mapping.iter().enumerate() {
-            if let Some(current_index) = current_index
-                && captured_index < merged.len()
-                && *current_index < current.len()
-            {
-                merged[captured_index] = current[*current_index].clone();
-            }
-        }
-        merged
+    /// Flet's specbind of `internal-interpreter-environment': BINDINGS
+    /// consed onto the current environment, pushed as a frame.
+    pub(crate) fn push_bindings(env: &mut Env, bindings: Vec<(SymbolName, Value)>) {
+        let outer = crate::lisp::types::current_environment_value(env);
+        env.push(EnvFrame::bindings(bindings, &outer));
     }
 }

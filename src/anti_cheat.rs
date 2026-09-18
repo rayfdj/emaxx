@@ -588,7 +588,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let lambda = Value::lambda(
         std::rc::Rc::new(["vals", "start", "end"].map(Into::into).to_vec()),
         std::rc::Rc::new(Vec::new()),
-        std::rc::Rc::new(std::cell::RefCell::new(Env::new())),
+        Value::Nil,
     );
     let vector = Value::vector([
         Value::string("x"),

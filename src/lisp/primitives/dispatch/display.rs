@@ -6279,10 +6279,13 @@ mod tests {
             vec![Value::symbol("dont-clear-message")],
         );
         interp.set_variable("clear-message-function", callback, &mut env);
-        env.push(crate::lisp::types::EnvFrame::new(vec![
-            ("clear-message-function".into(), Value::Nil),
-            ("inhibit-eval-during-redisplay".into(), Value::T),
-        ]));
+        crate::lisp::eval::Interpreter::push_bindings(
+            &mut env,
+            vec![
+                ("clear-message-function".into(), Value::Nil),
+                ("inhibit-eval-during-redisplay".into(), Value::T),
+            ],
+        );
         for detached in [false, true] {
             if detached {
                 super::super::call(

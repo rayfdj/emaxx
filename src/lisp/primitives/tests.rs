@@ -581,7 +581,7 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
     let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
     let macro_function = Value::cons(
         macro_tag,
-        Value::lambda(Vec::new().into(), Vec::new().into(), shared_env(Vec::new())),
+        Value::lambda(Vec::new().into(), Vec::new().into(), Value::Nil),
     );
     assert_eq!(
         call(&mut interp, "func-arity", &[macro_function], &mut env)
@@ -8561,7 +8561,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
             Value::T,
         ]
         .into(),
-        shared_env(Vec::new()),
+        Value::Nil,
     );
 
     call_via_lisp(
@@ -8594,7 +8594,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
             Value::T,
         ]
         .into(),
-        shared_env(Vec::new()),
+        Value::Nil,
     );
 
     call_via_lisp(
@@ -9229,7 +9229,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
             Value::Symbol("event".into()),
         ])]
         .into(),
-        shared_env(Vec::new()),
+        Value::Nil,
     );
     let client = call(
         &mut interp,

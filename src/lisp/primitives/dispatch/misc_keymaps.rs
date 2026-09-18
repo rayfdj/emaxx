@@ -1371,15 +1371,11 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
                 let base = args.get(2).filter(|value| !value.is_nil());
-                let context = interp.backtrace_frame_context_env(index, base);
-                let shared_context = shared_env(context);
-                // Treat the suspended frames as captured lexical cells while the
-                // expression runs.  `setq' then records changes by frame
-                // identity, and the resumed activation observes them.
-                for frame in shared_context.borrow().iter() {
-                    frame.mark_captured();
-                }
-                interp.eval(&args[0], &mut shared_context.borrow_mut())
+                // The frame's environment is the alist itself: an
+                // assignment made here is a setcdr on the suspended
+                // activation's own binding cons.
+                let mut context = interp.backtrace_frame_context_env(index, base);
+                interp.eval(&args[0], &mut context)
             }
             "backtrace--locals" => {
                 need_args(name, args, 2)?;

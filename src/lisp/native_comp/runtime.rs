@@ -5547,7 +5547,7 @@ mod tests {
             let lambda = Value::lambda(
                 Rc::new(names.into_iter().map(SymbolName::from).collect()),
                 Rc::new(Vec::new()),
-                Rc::new(std::cell::RefCell::new(Env::new())),
+                Value::Nil,
             );
             classify(
                 &mut interpreter,
@@ -6576,17 +6576,18 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let first = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 1);
         let second = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 2);
-        let captured =
-            crate::lisp::types::shared_env(vec![crate::lisp::types::EnvFrame::with_identity(
-                vec![
-                    (first.clone(), Value::Integer(7)),
-                    (second.clone(), Value::Integer(8)),
-                ],
-                Interpreter::fresh_frame_identity(),
-            )]);
         let symbols_before = crate::lisp::types::census_live_uninterned_symbols();
-        let public = interpreter.materialize_public_interpreted_environment(&captured);
-        let sibling = interpreter.materialize_public_interpreted_environment(&captured);
+        // Flet's environment: the closure's slot two is this alist itself.
+        let public = crate::lisp::types::EnvFrame::bindings(
+            [
+                (first.clone(), Value::Integer(7)),
+                (second.clone(), Value::Integer(8)),
+            ],
+            &Value::Nil,
+        )
+        .environment()
+        .clone();
+        let sibling = public.clone();
         assert_eq!(
             crate::lisp::types::census_live_uninterned_symbols(),
             symbols_before
@@ -7045,10 +7046,10 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let global = Value::list([Value::Integer(7), Value::symbol("payload")]);
         interpreter.set_global_binding("native-hot-global", global.clone());
-        environment.push(crate::lisp::types::EnvFrame::new(vec![(
-            "native-hot-global".into(),
-            Value::Integer(99),
-        )]));
+        Interpreter::push_bindings(
+            &mut environment,
+            vec![("native-hot-global".into(), Value::Integer(99))],
+        );
 
         assert_eq!(
             runtime
@@ -7394,8 +7395,10 @@ mod tests {
             let mut interpreter = Interpreter::new();
             // An explicit lexical alist is not GNU's C slot. Real dynamic
             // bindings are exercised by the specbind controls above.
-            let mut environment =
-                vec![vec![("symbols-with-pos-enabled".into(), opposite.clone())].into()];
+            let mut environment = vec![crate::lisp::types::EnvFrame::bindings(
+                [("symbols-with-pos-enabled".into(), opposite.clone())],
+                &Value::Nil,
+            )];
             let mut runtime = NativeRuntime::default();
             let bare = Value::symbol("eq-position-probe");
             let positioned = crate::lisp::primitives::call(
@@ -7711,7 +7714,7 @@ mod tests {
         let lambda = Value::lambda(
             Rc::new(vec![SymbolName::from("value")]),
             Rc::new(vec![Value::symbol("value")]),
-            Rc::new(std::cell::RefCell::new(Env::new())),
+            Value::Nil,
         );
         assert_eq!(
             runtime
@@ -7815,11 +7818,7 @@ mod tests {
                 Value::Nil,
             ])];
             let cleanup = if function {
-                Value::lambda(
-                    Rc::new(Vec::new()),
-                    Rc::new(body),
-                    Rc::new(RefCell::new(Env::new())),
-                )
+                Value::lambda(Rc::new(Vec::new()), Rc::new(body), Value::Nil)
             } else {
                 Value::list(body)
             };

@@ -7,13 +7,10 @@ use super::*;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ThreadExecutionContext {
-    dlet_active_names: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
-    special_scan_floor: usize,
     lisp_eval_depth: usize,
     current_load_file: Option<String>,
     last_match_data: Option<Vec<Option<(usize, usize)>>>,
     last_match_data_buffer_id: Option<u64>,
-    current_activation_id: u64,
     interactive_call_depth: usize,
     lambda_capture_overrides: Vec<bool>,
     pub(super) active_special_restores: Vec<SpecialBindingRestore>,
@@ -34,13 +31,10 @@ impl ThreadExecutionContext {
             };
         }
         exchange!(
-            dlet_active_names,
-            special_scan_floor,
             lisp_eval_depth,
             current_load_file,
             last_match_data,
             last_match_data_buffer_id,
-            current_activation_id,
             interactive_call_depth,
             lambda_capture_overrides,
             active_special_restores,

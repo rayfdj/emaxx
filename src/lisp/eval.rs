@@ -11,7 +11,7 @@ use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
     ConsCell, EmacsTermination, Env, EnvFrame, LambdaValue, LispError, ReaderClosureKind,
-    ReaderForm, SharedEnv, SymbolName, Value, WeakConsSlot, shared_env,
+    ReaderForm, SymbolName, Value, WeakConsSlot,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -2944,12 +2944,6 @@ struct ImageGraphCopier {
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
     reader_forms: std::collections::HashMap<usize, Value>,
-    envs: std::collections::HashMap<usize, crate::lisp::types::SharedEnv>,
-    /// Old-env pointers whose shell has been (or is being) filled.  Marked
-    /// before the fill so a recursive closure (lambda -> captured env ->
-    /// same lambda) terminates: the inner visit sees the shell and stops.
-    envs_filled: std::collections::HashSet<usize>,
-    frames: std::collections::HashMap<usize, crate::lisp::types::EnvFrame>,
 }
 
 impl ImageGraphCopier {
@@ -2960,9 +2954,6 @@ impl ImageGraphCopier {
             strings: Default::default(),
             lambdas: Default::default(),
             reader_forms: Default::default(),
-            envs: Default::default(),
-            envs_filled: Default::default(),
-            frames: Default::default(),
         }
     }
 
@@ -3028,6 +3019,8 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.lambdas.get(&key) {
                     return copied.clone();
                 }
+                // The environment is copied after the closure is on
+                // record: a closure can reach itself through it.
                 let copied = Value::allocated_lambda(crate::lisp::types::LambdaValue {
                     params: lambda.params.clone(),
                     public_parameters: lambda
@@ -3037,7 +3030,7 @@ impl ImageGraphCopier {
                     body: std::rc::Rc::new(
                         lambda.body.iter().map(|form| self.copy(form)).collect(),
                     ),
-                    env: self.env_shell(&lambda.env),
+                    env: std::cell::OnceCell::new(),
                     documentation: lambda
                         .documentation
                         .as_ref()
@@ -3046,13 +3039,12 @@ impl ImageGraphCopier {
                         .interactive
                         .as_ref()
                         .map(|interactive| self.copy(interactive)),
-                    public_environment: lambda
-                        .public_environment
-                        .as_ref()
-                        .map(|environment| self.copy(environment)),
                 });
                 self.lambdas.insert(key, copied.clone());
-                self.fill_env(&lambda.env);
+                let environment = self.copy(&lambda.environment_value());
+                if let Value::Lambda(copied) = &copied {
+                    let _ = copied.env.set(environment);
+                }
                 copied
             }
             Value::ReaderForm(form) => {
@@ -3152,45 +3144,6 @@ impl ImageGraphCopier {
             }
         }
         self.copy(value)
-    }
-
-    /// Get or create the copy of ENV without filling its frames yet.  A
-    /// lambda memoizes itself between taking the shell and filling it, so
-    /// a recursive closure (lambda -> captured env -> same lambda) hits
-    /// the lambda memo instead of copying itself twice.
-    fn env_shell(&mut self, env: &crate::lisp::types::SharedEnv) -> crate::lisp::types::SharedEnv {
-        let key = std::rc::Rc::as_ptr(env) as usize;
-        if let Some(copied) = self.envs.get(&key) {
-            return copied.clone();
-        }
-        let shell: crate::lisp::types::SharedEnv =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        self.envs.insert(key, shell.clone());
-        shell
-    }
-
-    fn fill_env(&mut self, env: &crate::lisp::types::SharedEnv) {
-        let key = std::rc::Rc::as_ptr(env) as usize;
-        if !self.envs_filled.insert(key) {
-            return;
-        }
-        let copied = self.env_shell(env);
-        let frames = env.borrow().clone();
-        let copied_frames = frames
-            .iter()
-            .map(|frame| self.copy_frame(frame))
-            .collect::<Vec<_>>();
-        *copied.borrow_mut() = copied_frames;
-    }
-
-    fn copy_frame(&mut self, frame: &crate::lisp::types::EnvFrame) -> crate::lisp::types::EnvFrame {
-        let key = frame.identity_ptr();
-        if let Some(copied) = self.frames.get(&key) {
-            return copied.clone();
-        }
-        let copied = frame.deep_copy_with(&mut |value| self.copy(value));
-        self.frames.insert(key, copied.clone());
-        copied
     }
 }
 
@@ -3386,17 +3339,11 @@ impl LispReachability<'_, '_> {
         self.trace_pending(interp)
     }
 
+    /// The interpreter environments on the stack: each frame's alist (the
+    /// specpdl entries of `internal-interpreter-environment' are roots).
     fn enqueue_env(&mut self, env: &Env) {
         for frame in env {
-            for (symbol, value) in frame {
-                // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
-                // lexical binding, even before a closure captures it.
-                self.enqueue(&Value::Symbol(symbol.clone()));
-                self.enqueue(value);
-            }
-            if let Some(environment) = frame.lisp_environment() {
-                self.enqueue(environment);
-            }
+            self.enqueue(frame.environment());
         }
     }
 
@@ -3559,14 +3506,12 @@ impl LispReachability<'_, '_> {
                 for value in lambda.body.iter() {
                     self.enqueue(value);
                 }
-                self.enqueue_env(&lambda.env.borrow());
-                for value in [
-                    lambda.documentation.as_ref(),
-                    lambda.interactive.as_ref(),
-                    lambda.public_environment.as_ref(),
-                ]
-                .into_iter()
-                .flatten()
+                if let Some(environment) = lambda.env.get() {
+                    self.enqueue(environment);
+                }
+                for value in [lambda.documentation.as_ref(), lambda.interactive.as_ref()]
+                    .into_iter()
+                    .flatten()
                 {
                     self.enqueue(value);
                 }
@@ -4261,11 +4206,6 @@ impl Interpreter {
         for (_, function) in &self.functions {
             mark(function);
         }
-        for updates in self.lexical_cell_updates.values() {
-            for value in updates.values() {
-                mark(value);
-            }
-        }
         for frame in &self.frame_states {
             if let Some(value) = &frame.face_hash_table {
                 mark(value);
@@ -4310,13 +4250,7 @@ impl Interpreter {
             }
             if let Some(context) = frame.lexical_context() {
                 for lexical_frame in context {
-                    for (symbol, value) in lexical_frame {
-                        mark(&Value::Symbol(symbol.clone()));
-                        mark(value);
-                    }
-                    if let Some(environment) = lexical_frame.lisp_environment() {
-                        mark(environment);
-                    }
+                    mark(lexical_frame.environment());
                 }
             }
         }
@@ -4788,11 +4722,6 @@ impl Interpreter {
             for function in clone.functions_index.values_mut() {
                 *function = c.copy(function);
             }
-            for updates in clone.lexical_cell_updates.values_mut() {
-                for value in updates.values_mut() {
-                    *value = c.copy(value);
-                }
-            }
             for frame in &mut clone.frame_states {
                 if let Some(table) = &frame.face_hash_table {
                     frame.face_hash_table = Some(c.copy(table));
@@ -4966,47 +4895,6 @@ impl Interpreter {
         // rebuilds the record from its (copied) view on first use.
         clone.keymap_public_view_watch.clear();
 
-        // Weak closure-environment registries point at template envs (the
-        // template stays alive, so the weaks stay upgradable -- exactly the
-        // channel the deep copy exists to sever).  Remap each entry to the
-        // copied env; drop entries whose env the copy never reached.
-        let remap_weak = |copier: &ImageGraphCopier,
-                          weak: &std::rc::Weak<std::cell::RefCell<Env>>|
-         -> Option<std::rc::Weak<std::cell::RefCell<Env>>> {
-            copier
-                .envs
-                .get(&(weak.as_ptr() as usize))
-                .map(std::rc::Rc::downgrade)
-        };
-        clone.closure_capture_cache = clone
-            .closure_capture_cache
-            .drain(..)
-            .filter_map(|(id, weak)| remap_weak(&copier, &weak).map(|weak| (id, weak)))
-            .collect();
-        for owners in clone.captured_lexical_frames.values_mut() {
-            *owners = owners
-                .drain(..)
-                .filter_map(|weak| remap_weak(&copier, &weak))
-                .collect();
-        }
-        clone
-            .captured_lexical_frames
-            .retain(|_, owners| !owners.is_empty());
-        clone.registered_captured_envs = clone
-            .registered_captured_envs
-            .drain()
-            .filter_map(|(_, weak)| {
-                remap_weak(&copier, &weak).map(|weak| (weak.as_ptr() as usize, weak))
-            })
-            .collect();
-        clone.closure_eval_contexts = clone
-            .closure_eval_contexts
-            .drain()
-            .filter_map(|(_, (weak, lexical))| {
-                remap_weak(&copier, &weak).map(|weak| (weak.as_ptr() as usize, (weak, lexical)))
-            })
-            .collect();
-
         // `eq'/`eql' hash tables bucket conses and lambdas by cell
         // identity; the copies have new identities, so rebuild every
         // bucket index from the rewritten entries.
@@ -5125,16 +5013,6 @@ pub struct InterpreterState {
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
     local_special_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
-    /// Names currently bound by an active `dlet': treated as dynamic for
-    /// binding and reference resolution while the dlet body runs (counted,
-    /// since dlets nest).
-    dlet_active_names: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
-    /// Env index below which SPECIAL variable references must not resolve
-    /// through lexical frames: set to the caller boundary when a function
-    /// body runs on the caller's env chain, so a callee's reference to a
-    /// special name reads the dynamic value like GNU instead of a caller's
-    /// same-named lexical argument (bug#47552 semantics).
-    pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
@@ -5552,38 +5430,6 @@ pub struct InterpreterState {
     /// temporary table is later unwound, and continuous printer calls reuse
     /// it while their public table remains non-nil.
     pub(crate) print_number_index: usize,
-    /// Identity of the function activation currently being evaluated, plus
-    /// recently captured closure environments keyed by activation.  Sibling
-    /// lambdas captured in one activation with an unchanged lexical
-    /// environment share one environment cell, so a `setq' through one
-    /// closure is visible to the others like upstream lexical binding.
-    current_activation_id: u64,
-    next_activation_id: u64,
-    closure_capture_cache: Vec<(u64, std::rc::Weak<std::cell::RefCell<Env>>)>,
-    /// Canonical values for mutated captured lexical cells, keyed first by
-    /// the exact identity stamp of their frame and then by binding name.
-    /// Environments are still represented as cheap snapshots; this overlay
-    /// gives those snapshots GNU's shared-cell mutation semantics without
-    /// ever aliasing unrelated frames that merely have the same shape.
-    lexical_cell_updates: HashMap<i64, HashMap<String, Value>>,
-    /// Weak owners of captured frames.  This lets assignments distinguish a
-    /// genuinely captured lexical cell from an ordinary marked local without
-    /// retaining every closure ever created.
-    captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
-    /// Captured environments whose immutable frame-identity inventory has
-    /// already been added to `captured_lexical_frames'.  Pointer identity is
-    /// only a lookup accelerator: the weak witness rejects allocator-address
-    /// reuse, and periodic pruning bounds dead derived entries.
-    registered_captured_envs:
-        HashMap<usize, std::rc::Weak<std::cell::RefCell<Env>>, primitives::FnvBuildHasher>,
-    captured_env_registrations: usize,
-    /// Evaluation context belongs to the closure object, not to its captured
-    /// variable frames.  Keep weak identities here so metadata can never
-    /// affect environment lookup, emptiness, or frame merging.  Absence is
-    /// meaningful: Rust-generated dispatch lambdas inherit their caller,
-    /// while Lisp lambdas explicitly record lexical or dynamic evaluation.
-    closure_eval_contexts: HashMap<usize, (std::rc::Weak<std::cell::RefCell<Env>>, bool)>,
-    closure_eval_context_registrations: usize,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     pub(crate) lisp_face_states: Vec<LispFaceState>,
@@ -5962,8 +5808,6 @@ impl Interpreter {
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
             local_special_names: HashSet::default(),
-            dlet_active_names: HashMap::default(),
-            special_scan_floor: 0,
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
             kbd_macro_executions: Vec::new(),
@@ -6382,15 +6226,6 @@ impl Interpreter {
             batch_standard_output_last_char: None,
             batch_stdout_need_newline: false,
             print_number_index: 0,
-            current_activation_id: 0,
-            next_activation_id: 0,
-            closure_capture_cache: Vec::new(),
-            lexical_cell_updates: HashMap::new(),
-            captured_lexical_frames: HashMap::new(),
-            registered_captured_envs: HashMap::default(),
-            captured_env_registrations: 0,
-            closure_eval_contexts: HashMap::new(),
-            closure_eval_context_registrations: 0,
             lossage_size: 300,
             interactive_call_depth: 0,
             lisp_face_states: vec![LispFaceState {
@@ -7810,96 +7645,14 @@ impl Interpreter {
         self.lambda_capture_overrides.last().copied()
     }
 
-    pub(crate) fn mark_closure_eval_context(&mut self, env: &SharedEnv, lexical: bool) {
-        self.closure_eval_context_registrations =
-            self.closure_eval_context_registrations.wrapping_add(1);
-        if self.closure_eval_context_registrations.is_multiple_of(4096) {
-            self.closure_eval_contexts
-                .retain(|_, (owner, _)| owner.strong_count() > 0);
-        }
-        let identity = Rc::as_ptr(env) as usize;
-        self.closure_eval_contexts
-            .insert(identity, (Rc::downgrade(env), lexical));
-    }
-
-    pub(crate) fn mark_lexical_closure_env(&mut self, env: &SharedEnv) {
-        self.mark_closure_eval_context(env, true);
-    }
-
-    pub(crate) fn closure_eval_context(&self, env: &SharedEnv) -> Option<bool> {
-        let identity = Rc::as_ptr(env) as usize;
-        let (owner, lexical) = self.closure_eval_contexts.get(&identity)?;
-        owner
-            .upgrade()
-            .is_some_and(|owner| Rc::ptr_eq(&owner, env))
-            .then_some(*lexical)
-    }
-
-    pub(crate) fn closure_env_is_lexical(&self, env: &SharedEnv) -> bool {
-        self.closure_eval_context(env) == Some(true)
-    }
-
     /// Materialize the six GNU-visible interpreted-closure slots from the
     /// typed runtime representation.  Every Lisp-facing consumer (`aref',
     /// equality, hashing, documentation, and interactive metadata) must use
     /// this owner rather than reconstructing a partial slot layout.
     pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        let environment = if let Some(environment) = &lambda.public_environment {
-            // A captured variable mutated after a merge-path call can live
-            // only in `lexical_cell_updates' (the write-back replaced this
-            // closure's frames, detaching them from the alist).  Fold those
-            // updates into the cached alist's own conses, so `aref' and
-            // `byte-compile' see current values through GNU's cons
-            // identities (the alist conses ARE the storage in GNU).
-            for frame in lambda.env.borrow().iter() {
-                if let Some(updates) = Self::frame_identity(frame)
-                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
-                {
-                    for (name, value) in updates {
-                        bindings::set_lisp_environment_binding(environment, name, value.clone());
-                    }
-                }
-            }
-            environment.clone()
-        } else {
-            let mut environment = Vec::new();
-            for frame in lambda.env.borrow().iter().rev() {
-                let shared_updates = Self::frame_identity(frame)
-                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-                for position in (0..=frame.len()).rev() {
-                    for (_, name) in frame
-                        .local_special_declarations()
-                        .iter()
-                        .rev()
-                        .filter(|(declared_at, _)| *declared_at == position)
-                    {
-                        environment.push(Value::Symbol(name.clone().into()));
-                    }
-                    if position > 0 {
-                        let (name, value) = &frame[position - 1];
-                        environment.push(
-                            frame.canonical_lisp_binding(
-                                position - 1,
-                                name,
-                                shared_updates
-                                    .and_then(|updates| updates.get(name.as_str()))
-                                    .cloned()
-                                    .unwrap_or_else(|| value.clone()),
-                            ),
-                        );
-                    }
-                }
-            }
-            // GNU represents an EMPTY lexical environment as `(t)'.  A
-            // nonempty lexical environment is just its bindings; appending
-            // `t' there changes the public ENV supplied to
-            // `make-interpreted-closure'.
-            if environment.is_empty() && self.closure_env_is_lexical(&lambda.env) {
-                environment.push(Value::T);
-            }
-            Value::list(environment)
-        };
-
+        // Slot two is the environment itself: the alist whose conses are
+        // the closure's storage, `nil' for a dynamic lambda.
+        let environment = lambda.environment_value();
         let mut slots = vec![
             lambda.public_parameters.clone().unwrap_or_else(|| {
                 Value::list(
@@ -7922,63 +7675,6 @@ impl Interpreter {
         slots
     }
 
-    /// Build the GNU-visible lexical-environment alist for a source lambda
-    /// and attach its binding conses to the typed captured frames.  Each
-    /// closure gets its own alist spine, while sibling closures reuse the
-    /// same binding conses, matching GNU's observable `(nil t t ...)'
-    /// identity pattern for their two slot-two objects and first entries.
-    pub(crate) fn materialize_public_interpreted_environment(
-        &self,
-        closure_env: &SharedEnv,
-    ) -> Value {
-        let lexical = self.closure_env_is_lexical(closure_env);
-        let mut all_entries = Vec::new();
-        let mut frames = closure_env.borrow_mut();
-        for index in (0..frames.len()).rev() {
-            let bindings = frames[index].iter().cloned().collect::<Vec<_>>();
-            let entries = if let Some(environment) = frames[index].lisp_environment() {
-                lisp_environment_entries(environment)
-            } else {
-                let shared_updates = Self::frame_identity(&frames[index])
-                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-                let mut entries = Vec::new();
-                for position in (0..=bindings.len()).rev() {
-                    for (_, name) in frames[index]
-                        .local_special_declarations()
-                        .iter()
-                        .rev()
-                        .filter(|(declared_at, _)| *declared_at == position)
-                    {
-                        entries.push(Value::Symbol(name.clone().into()));
-                    }
-                    if position > 0 {
-                        let (name, value) = &bindings[position - 1];
-                        entries.push(
-                            frames[index].canonical_lisp_binding(
-                                position - 1,
-                                name,
-                                shared_updates
-                                    .and_then(|updates| updates.get(name.as_str()))
-                                    .cloned()
-                                    .unwrap_or_else(|| value.clone()),
-                            ),
-                        );
-                    }
-                }
-                entries
-            };
-            if frames[index].lisp_environment().is_none() {
-                frames[index].set_lisp_environment(Value::list(entries.iter().cloned()));
-            }
-            all_entries.extend(entries);
-        }
-        if all_entries.is_empty() && lexical {
-            Value::list([Value::T])
-        } else {
-            Value::list(all_entries)
-        }
-    }
-
     /// Register TAG as an active `catch' target for the extent of a native
     /// command-loop boundary (see GNU read_minibuf's `catch \='exit`).
     pub(crate) fn push_catch_tag(&mut self, tag: Value) {
@@ -7987,233 +7683,6 @@ impl Interpreter {
 
     pub(crate) fn pop_catch_tag(&mut self) {
         self.active_catch_tags.pop();
-    }
-
-    pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
-        let identity = Rc::as_ptr(closure_env) as usize;
-        if self
-            .registered_captured_envs
-            .get(&identity)
-            .and_then(Weak::upgrade)
-            .is_some_and(|registered| Rc::ptr_eq(&registered, closure_env))
-        {
-            return;
-        }
-
-        self.captured_env_registrations = self.captured_env_registrations.wrapping_add(1);
-        if self.captured_env_registrations.is_multiple_of(4096) {
-            self.registered_captured_envs
-                .retain(|_, owner| owner.strong_count() > 0);
-        }
-        let frame_ids = closure_env
-            .borrow()
-            .iter()
-            .filter_map(Self::frame_identity)
-            .collect::<Vec<_>>();
-        let owner = Rc::downgrade(closure_env);
-        for frame_id in frame_ids {
-            let owners = self.captured_lexical_frames.entry(frame_id).or_default();
-            owners.retain(|weak| weak.strong_count() > 0);
-            if !owners
-                .iter()
-                .any(|weak| weak.as_ptr() == Rc::as_ptr(closure_env))
-            {
-                owners.push(owner.clone());
-            }
-        }
-        self.registered_captured_envs.insert(identity, owner);
-    }
-
-    pub(crate) fn record_lexical_cell_update_if_captured(
-        &mut self,
-        frame_id: i64,
-        name: &str,
-        value: &Value,
-    ) {
-        let already_shared = self.lexical_cell_updates.contains_key(&frame_id);
-        let has_live_owner =
-            self.captured_lexical_frames
-                .get_mut(&frame_id)
-                .is_some_and(|owners| {
-                    owners.retain(|weak| weak.strong_count() > 0);
-                    !owners.is_empty()
-                });
-        if !has_live_owner {
-            self.captured_lexical_frames.remove(&frame_id);
-        }
-        if already_shared || has_live_owner {
-            self.lexical_cell_updates
-                .entry(frame_id)
-                .or_default()
-                .insert(name.to_string(), value.clone());
-            if let Some(owners) = self.captured_lexical_frames.get(&frame_id) {
-                for owner in owners.iter().filter_map(Weak::upgrade) {
-                    for frame in owner.borrow().iter() {
-                        if Self::frame_identity(frame) == Some(frame_id)
-                            && let Some(environment) = frame.lisp_environment()
-                        {
-                            bindings::set_lisp_environment_binding(
-                                environment,
-                                name,
-                                value.clone(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn refresh_captured_lexical_cells(&self, env: &mut Env) {
-        for frame in env {
-            let Some(updates) = Self::frame_identity(frame)
-                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
-            else {
-                continue;
-            };
-            for (name, value) in frame {
-                if let Some(updated) = updates.get(name.as_str()) {
-                    *value = updated.clone();
-                }
-            }
-        }
-    }
-
-    pub(crate) fn eval_with_closure_env<F>(
-        &mut self,
-        closure_env: &SharedEnv,
-        env: &mut Env,
-        evaluate: F,
-    ) -> Result<Value, LispError>
-    where
-        F: FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
-    {
-        self.register_captured_lexical_frames(closure_env);
-        self.refresh_captured_lexical_cells(env);
-
-        // The common immediately-invoked-closure case still has every
-        // captured lexical frame live in the caller.  Stable frame identities
-        // prove these are the same GNU lexical cells, so evaluating directly
-        // on the live environment avoids cloning and later republishing the
-        // entire capture.  Require an exact frame-for-frame match: trimmed,
-        // escaped, synthetic, and merely same-shaped environments retain the
-        // general isolated merge path below.
-        let captured_is_current = {
-            let captured = closure_env.borrow();
-            !captured.is_empty()
-                && captured.len() == env.len()
-                && captured.iter().zip(env.iter()).all(|(captured, current)| {
-                    let identity = Self::frame_identity(captured);
-                    identity.is_some() && identity == Self::frame_identity(current)
-                })
-        };
-        if captured_is_current {
-            return evaluate(self, env);
-        }
-
-        let mut captured_snapshot = closure_env.borrow().clone();
-        self.refresh_captured_lexical_cells(&mut captured_snapshot);
-        if captured_snapshot.is_empty() {
-            // Only lexical closures reach this path with an empty capture;
-            // dynamic closures are handled directly on the caller chain.
-            // Preserve the lexical scope boundary without manufacturing a
-            // fake binding that leaks into instrumentation/capture analysis.
-            return self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut Vec::new()));
-        }
-
-        if env_has_truthy_binding(env, "__closure-isolated-current-env") {
-            let mut call_env = captured_snapshot.clone();
-            let result =
-                self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut call_env));
-            self.refresh_captured_lexical_cells(&mut call_env);
-            {
-                let mut stored_env = closure_env.borrow_mut();
-                if stored_env.len() != captured_snapshot.len() {
-                    stored_env.clear();
-                    stored_env.extend(captured_snapshot.clone());
-                }
-                for (captured_index, updated) in call_env.iter().enumerate() {
-                    if captured_index >= stored_env.len() {
-                        break;
-                    }
-                    stored_env[captured_index] = updated.clone();
-                }
-            }
-            return result;
-        }
-
-        let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
-        let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
-        let result = self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut call_env));
-        self.refresh_captured_lexical_cells(&mut call_env);
-        {
-            let mut stored_env = closure_env.borrow_mut();
-            if stored_env.len() != captured_snapshot.len() {
-                stored_env.clear();
-                stored_env.extend(captured_snapshot.clone());
-            }
-            for (captured_index, updated) in call_env.iter().enumerate() {
-                if captured_index >= stored_env.len() {
-                    break;
-                }
-                stored_env[captured_index] = updated.clone();
-                if let Some(current_index) = frame_mapping[captured_index]
-                    && current_index < env.len()
-                {
-                    env[current_index] = updated.clone();
-                }
-            }
-        }
-        self.refresh_captured_lexical_cells(env);
-        // Lexical bindings are shared cells in GNU Emacs.  Two sibling
-        // closures can capture different snapshots of the surrounding
-        // environment (for example, consecutive `let*' initializers) while
-        // still sharing the frames that already existed.  Propagate updates
-        // by the frames' stable identity stamps so a mutation through one
-        // closure is immediately visible through the other.
-        let shared_frame_updates = call_env
-            .iter()
-            .take(captured_snapshot.len())
-            .filter(|frame| Self::frame_identity(frame).is_some())
-            .cloned()
-            .collect::<Vec<_>>();
-        self.sync_cached_closure_frames(&shared_frame_updates);
-        result
-    }
-
-    fn sync_cached_closure_frames(&mut self, updates: &[EnvFrame]) {
-        if updates.is_empty() {
-            return;
-        }
-        let mut retired_frame_ids = Vec::new();
-        for update in updates {
-            let Some(frame_id) = Self::frame_identity(update) else {
-                continue;
-            };
-            let Some(owners) = self.captured_lexical_frames.get_mut(&frame_id) else {
-                continue;
-            };
-            owners.retain(|weak| weak.strong_count() > 0);
-            if owners.is_empty() {
-                retired_frame_ids.push(frame_id);
-                continue;
-            }
-            for weak in owners.iter() {
-                let Some(shared) = weak.upgrade() else {
-                    continue;
-                };
-                let mut captured = shared.borrow_mut();
-                if let Some(frame) = captured
-                    .iter_mut()
-                    .find(|frame| Self::frame_identity(frame) == Some(frame_id))
-                {
-                    *frame = update.clone();
-                }
-            }
-        }
-        for frame_id in retired_frame_ids {
-            self.captured_lexical_frames.remove(&frame_id);
-        }
     }
 
     // Append echo-area output to the active `ert-with-message-capture'
@@ -8236,49 +7705,6 @@ impl Interpreter {
         }
     }
 
-    // Capture a lambda's lexical environment, sharing the environment cell
-    // with sibling closures from the same activation whose captured content
-    // is identical.
-    pub(crate) fn capture_closure_env(&mut self, mut captured: Env) -> SharedEnv {
-        self.refresh_captured_lexical_cells(&mut captured);
-        let activation = self.current_activation_id;
-        self.closure_capture_cache
-            .retain(|(_, weak)| weak.strong_count() > 0);
-        let mut matching = None;
-        for (id, weak) in self.closure_capture_cache.iter().rev() {
-            if *id == activation
-                && let Some(existing) = weak.upgrade()
-                && bounded_env_eq(&existing.borrow(), &captured, &mut 4096)
-            {
-                matching = Some(existing);
-                break;
-            }
-        }
-        if let Some(existing) = matching {
-            self.register_captured_lexical_frames(&existing);
-            return existing;
-        }
-        let shared = shared_env(captured);
-        self.closure_capture_cache
-            .push((activation, Rc::downgrade(&shared)));
-        if self.closure_capture_cache.len() > 128 {
-            self.closure_capture_cache.remove(0);
-        }
-        self.register_captured_lexical_frames(&shared);
-        shared
-    }
-
-    pub(crate) fn enter_activation(&mut self) -> u64 {
-        let previous = self.current_activation_id;
-        self.next_activation_id += 1;
-        self.current_activation_id = self.next_activation_id;
-        previous
-    }
-
-    pub(crate) fn leave_activation(&mut self, previous: u64) {
-        self.current_activation_id = previous;
-    }
-
     pub(crate) fn push_interactive_call(&mut self) {
         self.interactive_call_depth += 1;
     }
@@ -8289,48 +7715,6 @@ impl Interpreter {
 
     pub(crate) fn in_interactive_call(&self) -> bool {
         self.interactive_call_depth > 0
-    }
-}
-
-// Environment comparison for closure-cell sharing.  Cyclic or very deep
-// values must not recurse without bound; when the budget runs out the
-// environments simply count as different and each closure keeps its own
-// cell.
-fn bounded_env_eq(left: &Env, right: &Env, budget: &mut usize) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter().zip(right.iter()).all(|(a, b)| {
-        a.identity() == b.identity()
-            && a.has_function_bindings() == b.has_function_bindings()
-            && a.local_special_declarations() == b.local_special_declarations()
-            && a.len() == b.len()
-            && a.iter()
-                .zip(b.iter())
-                .all(|((an, av), (bn, bv))| an == bn && bounded_value_eq(av, bv, budget))
-    })
-}
-
-fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
-    if *budget == 0 {
-        return false;
-    }
-    *budget -= 1;
-    match (left, right) {
-        (Value::Cons(a), Value::Cons(b)) => {
-            bounded_value_eq(&a.car.borrow(), &b.car.borrow(), budget)
-                && bounded_value_eq(&a.cdr.borrow(), &b.cdr.borrow(), budget)
-        }
-        (Value::Lambda(a), Value::Lambda(b)) => {
-            a.params == b.params
-                && Rc::ptr_eq(&a.env, &b.env)
-                && a.body.len() == b.body.len()
-                && a.body
-                    .iter()
-                    .zip(b.body.iter())
-                    .all(|(a, b)| bounded_value_eq(a, b, budget))
-        }
-        _ => left == right,
     }
 }
 
@@ -8488,54 +7872,7 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
     {
         start += 1;
     }
-    if body.len().saturating_sub(start) > 1
-        && matches!(
-            body.get(start),
-            Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
-                || marker == ":closure-isolated-current-env"
-                || marker == ":closure-transparent-env"
-        )
-    {
-        start += 1;
-    }
     &body[start..]
-}
-
-fn lisp_environment_entries(environment: &Value) -> Vec<Value> {
-    let mut entries = Vec::new();
-    let mut cursor = environment.clone();
-    for _ in 0..65_536 {
-        let Value::Cons(list_cell) = cursor else {
-            break;
-        };
-        entries.push(list_cell.car.borrow().clone());
-        cursor = list_cell.cdr.borrow().clone();
-    }
-    entries
-}
-
-fn body_has_marker(body: &[Value], marker_name: &str) -> bool {
-    let mut start = 0usize;
-    if body.len() > 1
-        && matches!(
-            body.first(),
-            Some(Value::String(_) | Value::StringObject(_))
-        )
-    {
-        start = 1;
-    }
-    matches!(
-        body.get(start),
-        Some(Value::Symbol(marker)) if marker == marker_name
-    ) && body.len().saturating_sub(start) > 1
-}
-
-fn env_has_truthy_binding(env: &Env, name: &str) -> bool {
-    env.iter()
-        .rev()
-        .flat_map(|frame| frame.iter().rev())
-        .find(|(binding_name, _)| binding_name == name)
-        .is_some_and(|(_, value)| value.is_truthy())
 }
 
 /// Whether VALUE is a proper list whose head is the symbol NAME.  The

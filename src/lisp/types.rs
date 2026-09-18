@@ -9,7 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     path::Path,
     rc::{Rc, Weak},
 };
@@ -1351,7 +1351,6 @@ impl fmt::Display for SharedFloat {
 
 pub type SharedCons = Rc<ConsCell>;
 pub type ConsCells = (ConsSlot, ConsSlot);
-pub type SharedEnv = Rc<RefCell<Env>>;
 pub type SharedLambdaParams = Rc<Vec<SymbolName>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
 
@@ -1364,7 +1363,11 @@ pub struct LambdaValue {
     /// including source-position symbols.
     pub public_parameters: Option<Value>,
     pub body: SharedLambdaBody,
-    pub env: SharedEnv,
+    /// CLOSURE_CONSTANTS of an interpreted closure: the lexical environment
+    /// it was made under, `nil' for a dynamic lambda.  Set once; the image
+    /// loader and the copier fill it after the closure exists, as a closure
+    /// can reach itself through its environment.
+    pub env: std::cell::OnceCell<Value>,
     /// GNU closure slot four.  Unlike ordinary source docstrings, a
     /// `(:documentation FORM)' may evaluate to any Lisp object (oclosure.el
     /// deliberately stores its type symbol here).
@@ -1373,14 +1376,21 @@ pub struct LambdaValue {
     /// `(interactive)' still makes the closure a command and gives it length
     /// six.  A vector-valued slot preserves GNU's command-modes metadata.
     pub interactive: Option<Value>,
-    /// Exact Lisp object stored in GNU interpreted-closure slot two when the
-    /// closure was constructed by `make-interpreted-closure'.  The object is
-    /// observable and mutable: `aref' must return this same alist, and
-    /// mutations of its binding cells must affect subsequent calls.
-    pub public_environment: Option<Value>,
 }
 
 impl LambdaValue {
+    /// The closure's lexical environment, None for a dynamic lambda.
+    #[inline]
+    pub(crate) fn environment(&self) -> Option<&Value> {
+        self.env.get().filter(|environment| !environment.is_nil())
+    }
+
+    /// The environment slot as a value (`nil' for a dynamic lambda).
+    #[inline]
+    pub(crate) fn environment_value(&self) -> Value {
+        self.env.get().cloned().unwrap_or(Value::Nil)
+    }
+
     /// Convert GNU's `(interactive SPEC . MODES)' form into closure slot
     /// five.  Multiple command modes use the modern `[SPEC MODES]' layout.
     pub fn interactive_slot_from_form(form: &Value) -> Option<Value> {
@@ -2293,385 +2303,189 @@ thread_local! {
     static EMPTY_VECTOR_VALUE: Value = Value::Vector(VectorValue::static_zero());
 }
 
-/// One lexical environment frame.
+/// eval.c's `Vinternal_interpreter_environment' as one scope holds it:
+/// the head of the alist of `(SYMBOL . VALUE)' binding conses, with `t'
+/// for a lexical scope that binds nothing and a bare symbol for a
+/// variable declared locally special (Fdefvar without a value); `nil' is
+/// dynamic binding.
 ///
-/// Capturing or invoking a closure snapshots an environment far more often
-/// than it mutates one.  Share the frame's ordered binding vector across
-/// those snapshots and detach only the frame that is actually written.  The
-/// evaluator's exact frame/name overlay remains the authority for GNU's
-/// shared lexical-cell semantics; this type only removes redundant deep
-/// copies of derived snapshots.
+/// A frame on `Env' is one specbind of `internal-interpreter-environment'
+/// (Flet, FletX, funcall_lambda, Feval, readevalloop) and `Env::truncate'
+/// its unbind_to; the current environment is the last frame's.  A read is
+/// Fassq over it, an assignment XSETCDR on the binding found, and a
+/// closure holds the head it was made under (Ffunction), sharing the
+/// binding conses of every scope still live: that sharing is the whole of
+/// GNU's captured-variable semantics.
 #[derive(Clone, Debug)]
-pub struct EnvFrame(Rc<EnvFrameData>);
-
-/// Whether a function-namespace frame (cl-flet's) was ever made in this
-/// process: until one is, no frame can shadow a function cell, and the
-/// resolution of a call reads the cell without a walk over the frames
-/// (eval.c walks none; every call walked them here).
-static FUNCTION_NAMESPACE_FRAMES: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-#[inline]
-fn note_function_namespace_frame(function_bindings: bool) {
-    if function_bindings {
-        FUNCTION_NAMESPACE_FRAMES.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-#[inline]
-pub(crate) fn function_namespace_frames_exist() -> bool {
-    FUNCTION_NAMESPACE_FRAMES.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[derive(Debug, Default)]
-struct LexicalFrameState {
-    captured: Cell<bool>,
-    /// GNU closures share the `(SYMBOL . VALUE)` conses of their lexical
-    /// environment.  Keep weak references by binding position so differently
-    /// trimmed snapshots reuse the same cells without retaining dead
-    /// closures or conflating unrelated frames that bind the same name.
-    binding_cells: RefCell<Vec<Weak<ConsCell>>>,
-}
-
-#[derive(Clone, Debug)]
-struct EnvFrameData {
-    // eval.c:Flet, FletX and funcall_lambda retain the original symbol
-    // object. Re-interning its printed/internal name would split the
-    // identity of an uninterned lexical variable at closure capture.
-    bindings: Vec<(SymbolName, Value)>,
-    /// Stable identity used to align captured and live lexical frames.
-    /// This is evaluator bookkeeping, never a Lisp binding.
-    identity: Option<i64>,
-    /// Whether this frame belongs to the function namespace (for example a
-    /// cl-flet/cl-labels frame) rather than the value namespace.
-    function_bindings: bool,
-    /// GNU locally-special declarations, recorded at their position among
-    /// real bindings so closure environment serialization remains exact.
-    local_special_declarations: Vec<(usize, String)>,
-    /// A GNU interpreter environment whose binding conses are the authority
-    /// for this frame.  Keeping this typed metadata beside the bindings lets
-    /// copied frames and nested closures share the original Lisp cells
-    /// without a Lisp-visible marker or a process-global side table.
-    lisp_environment: Option<Value>,
-    state: Rc<LexicalFrameState>,
-}
+pub struct EnvFrame(Value);
 
 impl EnvFrame {
-    /// Stable pointer identity of the shared frame data (image-clone memo
-    /// key; see ImageGraphCopier in eval.rs).
-    pub(crate) fn identity_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+    /// ENVIRONMENT itself, as `Feval' installs its LEXICAL argument and
+    /// funcall_lambda a closure's.
+    #[inline]
+    pub fn from_alist(environment: Value) -> Self {
+        Self(environment)
     }
 
-    /// Rebuild this frame with every contained Lisp value mapped through
-    /// COPY, preserving the frame's evaluator metadata (identity,
-    /// namespace flag).  Frames shared between environments are
-    /// deduplicated by the caller via `identity_ptr'.
-    pub(crate) fn deep_copy_with(&self, copy: &mut impl FnMut(&Value) -> Value) -> Self {
-        let data = &self.0;
-        let bindings: Vec<(SymbolName, Value)> = data
-            .bindings
-            .iter()
-            .map(|(name, value)| (name.clone(), copy(value)))
-            .collect();
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity: data.identity,
-            function_bindings: data.function_bindings,
-            local_special_declarations: data.local_special_declarations.clone(),
-            lisp_environment: data.lisp_environment.as_ref().map(copy),
-            state: Rc::new(LexicalFrameState {
-                captured: Cell::new(data.state.captured.get()),
-                binding_cells: RefCell::new(Vec::new()),
-            }),
-        }))
+    /// `(t)': a lexical scope binding nothing (eval.c's `list_of_t').
+    pub fn lexical() -> Self {
+        Self(Value::list([Value::T]))
     }
 
-    pub fn new(bindings: Vec<(SymbolName, Value)>) -> Self {
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity: None,
-            function_bindings: false,
-            local_special_declarations: Vec::new(),
-            lisp_environment: None,
-            state: Rc::new(LexicalFrameState::default()),
-        }))
+    /// Dynamic binding: `nil'.
+    #[inline]
+    pub fn dynamic() -> Self {
+        Self(Value::Nil)
     }
 
-    pub fn with_identity(bindings: Vec<(SymbolName, Value)>, identity: i64) -> Self {
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity: Some(identity),
-            function_bindings: false,
-            local_special_declarations: Vec::new(),
-            lisp_environment: None,
-            state: Rc::new(LexicalFrameState::default()),
-        }))
-    }
-
-    pub fn with_lisp_environment_and_identity(
-        bindings: Vec<(SymbolName, Value)>,
-        lisp_environment: Value,
-        identity: i64,
+    /// BINDINGS consed onto OUTER in order, as Flet conses its varlist:
+    /// the last binding is the first entry, the one Fassq finds when a
+    /// name repeats.
+    pub fn bindings(
+        bindings: impl IntoIterator<Item = (SymbolName, Value)>,
+        outer: &Value,
     ) -> Self {
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity: Some(identity),
-            function_bindings: false,
-            local_special_declarations: Vec::new(),
-            lisp_environment: Some(lisp_environment),
-            state: Rc::new(LexicalFrameState {
-                captured: Cell::new(true),
-                binding_cells: RefCell::new(Vec::new()),
-            }),
-        }))
-    }
-
-    pub fn with_function_bindings(bindings: Vec<(SymbolName, Value)>, identity: i64) -> Self {
-        note_function_namespace_frame(true);
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity: Some(identity),
-            function_bindings: true,
-            local_special_declarations: Vec::new(),
-            lisp_environment: None,
-            state: Rc::new(LexicalFrameState::default()),
-        }))
-    }
-
-    pub fn with_local_special(name: impl Into<String>, identity: i64) -> Self {
-        Self::with_local_specials([name.into()], identity)
-    }
-
-    pub fn with_local_specials(names: impl IntoIterator<Item = String>, identity: i64) -> Self {
-        Self(Rc::new(EnvFrameData {
-            bindings: Vec::new(),
-            identity: Some(identity),
-            function_bindings: false,
-            local_special_declarations: names.into_iter().map(|name| (0, name)).collect(),
-            lisp_environment: None,
-            state: Rc::new(LexicalFrameState::default()),
-        }))
-    }
-
-    pub fn from_parts(
-        bindings: Vec<(SymbolName, Value)>,
-        identity: Option<i64>,
-        function_bindings: bool,
-        local_special_declarations: Vec<(usize, String)>,
-    ) -> Self {
-        note_function_namespace_frame(function_bindings);
-        Self(Rc::new(EnvFrameData {
-            bindings,
-            identity,
-            function_bindings,
-            local_special_declarations,
-            lisp_environment: None,
-            state: Rc::new(LexicalFrameState {
-                captured: Cell::new(true),
-                binding_cells: RefCell::new(Vec::new()),
-            }),
-        }))
-    }
-
-    pub(crate) fn mark_captured(&self) {
-        self.0.state.captured.set(true);
-    }
-
-    pub(crate) fn is_captured(&self) -> bool {
-        self.0.state.captured.get()
-    }
-
-    pub(crate) fn canonical_lisp_binding(
-        &self,
-        position: usize,
-        name: &SymbolName,
-        value: Value,
-    ) -> Value {
-        let mut cells = self.0.state.binding_cells.borrow_mut();
-        if cells.len() <= position {
-            cells.resize_with(position + 1, Weak::new);
+        let mut environment = outer.clone();
+        for (symbol, value) in bindings {
+            environment = Value::cons(Value::cons(Value::Symbol(symbol), value), environment);
         }
-        if let Some(cell) = cells[position].upgrade()
-            && cell
-                .car
-                .borrow()
-                .as_symbol()
-                .is_ok_and(|bound| bound == name)
-        {
-            return Value::Cons(cell);
-        }
-        let Value::Cons(cell) = Value::cons(Value::Symbol(name.clone()), value) else {
-            unreachable!("Value::cons constructs a cons")
-        };
-        cells[position] = Rc::downgrade(&cell);
-        Value::Cons(cell)
+        Self(environment)
     }
 
-    pub(crate) fn update_canonical_lisp_binding(&self, name: &str, value: Value) {
-        for cell in self
-            .0
-            .state
-            .binding_cells
-            .borrow()
-            .iter()
-            .rev()
-            .filter_map(Weak::upgrade)
-        {
-            if cell
-                .car
-                .borrow()
-                .as_symbol()
-                .is_ok_and(|bound| bound == name)
-            {
-                *cell.cdr.borrow_mut() = value;
-                break;
-            }
-        }
+    /// The environment alist.
+    #[inline]
+    pub fn environment(&self) -> &Value {
+        &self.0
     }
 
-    /// Read GNU's canonical `(SYMBOL . VALUE)` cell for this binding when a
-    /// closure environment has materialized it.  A filtered closure may wrap
-    /// the same cell in a different typed frame, so the cell—not either
-    /// frame's snapshot—remains the authoritative lexical value.
-    pub(crate) fn canonical_lisp_binding_value(
-        &self,
-        position: usize,
-        name: &str,
-    ) -> Option<Value> {
-        let cell = self
-            .0
-            .state
-            .binding_cells
-            .borrow()
-            .get(position)?
-            .upgrade()?;
-        if !cell
-            .car
-            .borrow()
-            .as_symbol()
-            .is_ok_and(|bound| bound == name)
-        {
-            return None;
-        }
-        Some(cell.cdr.borrow().clone())
+    /// A store into the variable without a new specpdl entry: FletX's
+    /// lexical bindings after its first, Fdefvar's local declaration.
+    #[inline]
+    pub fn set_environment(&mut self, environment: Value) {
+        self.0 = environment;
     }
 
-    pub fn identity(&self) -> Option<i64> {
-        self.0.identity
-    }
-
-    pub fn has_function_bindings(&self) -> bool {
-        self.0.function_bindings
-    }
-
-    pub fn declares_local_special(&self, name: &str) -> bool {
-        self.0
-            .local_special_declarations
-            .iter()
-            .any(|(_, declared)| declared == name)
-    }
-
-    pub fn local_special_declarations(&self) -> &[(usize, String)] {
-        &self.0.local_special_declarations
-    }
-
-    pub fn is_local_special_snapshot(&self) -> bool {
-        self.0.bindings.is_empty()
-            && !self.0.function_bindings
-            && !self.0.local_special_declarations.is_empty()
-            && self
-                .0
-                .local_special_declarations
-                .iter()
-                .all(|(position, _)| *position == 0)
-    }
-
-    pub fn set_lisp_environment(&mut self, environment: Value) {
-        Rc::make_mut(&mut self.0).lisp_environment = Some(environment);
-    }
-
-    pub fn lisp_environment(&self) -> Option<&Value> {
-        self.0.lisp_environment.as_ref()
+    /// Whether the scope binds lexically (its environment is non-nil).
+    #[inline]
+    pub fn is_lexical(&self) -> bool {
+        !self.0.is_nil()
     }
 }
 
-impl PartialEq for EnvFrame {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.bindings == other.0.bindings
-            && self.0.identity == other.0.identity
-            && self.0.function_bindings == other.0.function_bindings
-            && self.0.local_special_declarations == other.0.local_special_declarations
-    }
-}
-
-impl Default for EnvFrame {
-    fn default() -> Self {
-        Self::new(Vec::new())
-    }
-}
-
-impl From<Vec<(SymbolName, Value)>> for EnvFrame {
-    fn from(bindings: Vec<(SymbolName, Value)>) -> Self {
-        Self::new(bindings)
-    }
-}
-
-impl FromIterator<(SymbolName, Value)> for EnvFrame {
-    fn from_iter<T: IntoIterator<Item = (SymbolName, Value)>>(iter: T) -> Self {
-        Self::new(iter.into_iter().collect())
-    }
-}
-
-impl Deref for EnvFrame {
-    type Target = Vec<(SymbolName, Value)>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0.bindings
-    }
-}
-
-impl DerefMut for EnvFrame {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut Rc::make_mut(&mut self.0).bindings
-    }
-}
-
-impl IntoIterator for EnvFrame {
-    type Item = (SymbolName, Value);
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Rc::try_unwrap(self.0)
-            .map(|frame| frame.bindings)
-            .unwrap_or_else(|frame| frame.bindings.clone())
-            .into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a EnvFrame {
-    type Item = &'a (SymbolName, Value);
-    type IntoIter = std::slice::Iter<'a, (SymbolName, Value)>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.bindings.iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a mut EnvFrame {
-    type Item = &'a mut (SymbolName, Value);
-    type IntoIter = std::slice::IterMut<'a, (SymbolName, Value)>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Rc::make_mut(&mut self.0).bindings.iter_mut()
-    }
-}
-
-/// An environment is an ordered outer-to-inner list of lexical frames.
 pub type Env = Vec<EnvFrame>;
 
-pub fn shared_env(env: Env) -> SharedEnv {
-    Rc::new(RefCell::new(env))
+/// The current interpreter environment: the last frame's, or `nil' with
+/// no frame.
+#[inline]
+pub(crate) fn current_environment(env: &Env) -> Option<&Value> {
+    env.last()
+        .map(EnvFrame::environment)
+        .filter(|e| !e.is_nil())
+}
+
+/// The current interpreter environment as a value (`nil' with no frame).
+#[inline]
+pub(crate) fn current_environment_value(env: &Env) -> Value {
+    env.last()
+        .map_or(Value::Nil, |frame| frame.environment().clone())
+}
+
+/// Whether `Vinternal_interpreter_environment' is non-nil.
+#[inline]
+pub(crate) fn environment_is_lexical(env: &Env) -> bool {
+    env.last().is_some_and(EnvFrame::is_lexical)
+}
+
+/// eval.c's `Fassq (form, Vinternal_interpreter_environment)': the
+/// binding cons whose car is SYMBOL (by identity), entries that are not
+/// conses passed over.  An improper alist signals `listp' and a circular
+/// one `circular-list', as Fassq's FOR_EACH_TAIL does.
+pub(crate) fn assq_binding(
+    environment: &Value,
+    symbol: &SymbolName,
+) -> Result<Option<SharedCons>, LispError> {
+    assq_environment(environment, |bound| bound.id() == symbol.id())
+}
+
+/// `assq_binding' for a name in hand: the binding whose symbol has that
+/// text.
+pub(crate) fn assq_binding_named(
+    environment: &Value,
+    name: &str,
+) -> Result<Option<SharedCons>, LispError> {
+    assq_environment(environment, |bound| bound.as_str() == name)
+}
+
+#[inline]
+fn assq_environment(
+    environment: &Value,
+    matches: impl Fn(&SymbolName) -> bool,
+) -> Result<Option<SharedCons>, LispError> {
+    let mut tail = match environment {
+        Value::Cons(cell) => Rc::clone(cell),
+        Value::Nil => return Ok(None),
+        _ => return Err(improper_environment(environment, false)),
+    };
+    // FOR_EACH_TAIL's cycle check (Brent): the tortoise moves to the hare
+    // at every power of two.
+    let mut tortoise = Rc::as_ptr(&tail);
+    let mut steps = 0usize;
+    let mut lap = 2usize;
+    loop {
+        {
+            let entry = tail.car.borrow();
+            if let Value::Cons(binding) = &*entry
+                && matches!(&*binding.car.borrow(), Value::Symbol(bound) if matches(bound))
+            {
+                return Ok(Some(Rc::clone(binding)));
+            }
+        }
+        let next = match &*tail.cdr.borrow() {
+            Value::Cons(cell) => Rc::clone(cell),
+            Value::Nil => return Ok(None),
+            _ => return Err(improper_environment(environment, false)),
+        };
+        if Rc::as_ptr(&next) == tortoise {
+            return Err(improper_environment(environment, true));
+        }
+        steps += 1;
+        if steps == lap {
+            tortoise = Rc::as_ptr(&next);
+            lap <<= 1;
+        }
+        tail = next;
+    }
+}
+
+fn improper_environment(environment: &Value, circular: bool) -> LispError {
+    if circular {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("circular-list".into()),
+            environment.clone(),
+        ]))
+    } else {
+        LispError::WrongTypeArgument("listp".into(), environment.clone())
+    }
+}
+
+/// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether NAME
+/// is an entry of the environment itself, a bare symbol declared locally
+/// special.
+pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> bool {
+    let mut tail = match environment {
+        Value::Cons(cell) => Rc::clone(cell),
+        _ => return false,
+    };
+    loop {
+        if matches!(&*tail.car.borrow(), Value::Symbol(entry) if entry.as_str() == name) {
+            return true;
+        }
+        let next = match &*tail.cdr.borrow() {
+            Value::Cons(cell) => Rc::clone(cell),
+            _ => return false,
+        };
+        tail = next;
+    }
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
@@ -2865,14 +2679,14 @@ impl Value {
         }
     }
 
-    pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: SharedEnv) -> Self {
+    pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: Value) -> Self {
         Self::lambda_with_documentation(params, body, env, None)
     }
 
     pub fn lambda_with_documentation(
         params: SharedLambdaParams,
         body: SharedLambdaBody,
-        env: SharedEnv,
+        env: Value,
         documentation: Option<Value>,
     ) -> Self {
         Self::lambda_with_metadata(params, body, env, documentation, None)
@@ -2881,7 +2695,7 @@ impl Value {
     pub fn lambda_with_metadata(
         params: SharedLambdaParams,
         body: SharedLambdaBody,
-        env: SharedEnv,
+        env: Value,
         documentation: Option<Value>,
         interactive: Option<Value>,
     ) -> Self {
@@ -2889,30 +2703,28 @@ impl Value {
             params,
             public_parameters: None,
             body,
-            env,
+            env: std::cell::OnceCell::from(env),
             documentation,
             interactive,
-            public_environment: None,
         })
     }
 
-    pub fn lambda_with_public_environment(
+    /// Fmake_interpreted_closure: the slots as given.
+    pub fn lambda_with_public_parameters(
         params: SharedLambdaParams,
         public_parameters: Value,
         body: SharedLambdaBody,
-        env: SharedEnv,
+        env: Value,
         documentation: Option<Value>,
         interactive: Option<Value>,
-        public_environment: Value,
     ) -> Self {
         Self::allocated_lambda(LambdaValue {
             params,
             public_parameters: Some(public_parameters),
             body,
-            env,
+            env: std::cell::OnceCell::from(env),
             documentation,
             interactive,
-            public_environment: Some(public_environment),
         })
     }
 
@@ -3247,8 +3059,7 @@ fn values_equal_recursive(
                 && a.body == b.body
                 && a.documentation == b.documentation
                 && a.interactive == b.interactive
-                && a.public_environment == b.public_environment
-                && Rc::ptr_eq(&a.env, &b.env)
+                && values_equal_recursive(&a.environment_value(), &b.environment_value(), seen)
         }
         (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => a == b,
@@ -3660,8 +3471,9 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, LispError, SharedCons, SymbolName, Value, census_live_conses, census_live_floats,
-        census_live_vectors, make_uninterned_symbol_name, shared_env,
+        EnvFrame, LispError, SharedCons, SymbolName, Value, assq_binding, census_live_conses,
+        census_live_floats, census_live_vectors, environment_declares_special,
+        make_uninterned_symbol_name,
     };
     use std::rc::Rc;
 
@@ -3675,21 +3487,39 @@ mod tests {
     }
 
     #[test]
-    fn environment_frames_are_one_pointer_shallow_snapshots() {
+    fn environment_frames_are_the_alist_head_flet_conses() {
+        // Flet: `lexenv = Fcons (Fcons (var, tem), lexenv)' in varlist
+        // order, so the last binding is the first entry and a repeated
+        // name resolves to its later binding (the oracle's `(let ((x 1)
+        // (x 2)) x)' is 2).
+        let x: SymbolName = "cell".into();
+        let outer = EnvFrame::lexical();
+        let frame = EnvFrame::bindings(
+            [
+                (x.clone(), Value::Integer(1)),
+                (x.clone(), Value::Integer(2)),
+            ],
+            outer.environment(),
+        );
         assert_eq!(
             std::mem::size_of::<EnvFrame>(),
-            std::mem::size_of::<usize>(),
-            "environment snapshot traffic depends on a one-pointer frame",
+            std::mem::size_of::<Value>(),
+            "a frame is the environment word"
         );
-
-        let frame = EnvFrame::from(vec![("cell".into(), Value::Integer(1))]);
-        let mut snapshot = frame.clone();
-        assert!(Rc::ptr_eq(&frame.0, &snapshot.0));
-
-        snapshot[0].1 = Value::Integer(2);
-        assert!(!Rc::ptr_eq(&frame.0, &snapshot.0));
-        assert_eq!(frame[0].1, Value::Integer(1));
-        assert_eq!(snapshot[0].1, Value::Integer(2));
+        let binding = assq_binding(frame.environment(), &x)
+            .expect("proper alist")
+            .expect("bound");
+        assert_eq!(*binding.cdr.borrow(), Value::Integer(2));
+        // The head shares the outer scope's cells: the tail of the frame
+        // is the outer environment itself.
+        let mut tail = frame.environment().clone();
+        for _ in 0..2 {
+            tail = tail.cdr().expect("cons");
+        }
+        assert!(
+            matches!(&tail, Value::Cons(cell) if matches!(outer.environment(), Value::Cons(o) if Rc::ptr_eq(cell, o)))
+        );
+        assert!(!environment_declares_special(frame.environment(), "cell"));
     }
 
     #[test]
@@ -3800,7 +3630,7 @@ mod tests {
         let closure = Value::lambda(
             std::rc::Rc::new(Vec::new()),
             std::rc::Rc::new(vec![Value::Nil]),
-            shared_env(Vec::new()),
+            Value::Nil,
         );
         let after = census_live_vectors();
 
@@ -3894,11 +3724,7 @@ mod tests {
 
     #[test]
     fn cloning_lambda_shares_immutable_parameters() {
-        let lambda = Value::lambda(
-            vec!["value".into()].into(),
-            Vec::new().into(),
-            shared_env(Vec::new()),
-        );
+        let lambda = Value::lambda(vec!["value".into()].into(), Vec::new().into(), Value::Nil);
         let clone = lambda.clone();
 
         let (Value::Lambda(lambda), Value::Lambda(cloned_lambda)) = (&lambda, &clone) else {

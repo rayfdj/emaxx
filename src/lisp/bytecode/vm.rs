@@ -2152,7 +2152,7 @@ mod tests {
             &[Value::lambda(
                 Vec::new().into(),
                 std::rc::Rc::new(vec![Value::Integer(42)]),
-                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+                Value::Nil,
             )],
             &mut env,
         )
@@ -2166,7 +2166,7 @@ mod tests {
             &[Value::lambda(
                 Vec::new().into(),
                 std::rc::Rc::new(vec![Value::list([Value::symbol("car"), Value::Integer(9)])]),
-                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+                Value::Nil,
             )],
             &mut env,
         )

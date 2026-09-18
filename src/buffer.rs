@@ -2656,7 +2656,10 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Value::Lambda(left), Value::Lambda(right)) => {
             left.params == right.params
                 && left.body == right.body
-                && Rc::ptr_eq(&left.env, &right.env)
+                && crate::lisp::eval::Interpreter::same_environment(
+                    &left.environment_value(),
+                    &right.environment_value(),
+                )
         }
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left), Value::Marker(right))

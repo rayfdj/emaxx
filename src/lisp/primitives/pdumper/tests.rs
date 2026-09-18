@@ -11,7 +11,6 @@ use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
 use crate::lisp::types::{SymbolName, Value};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
     let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
@@ -572,7 +571,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         panic!("closures")
     };
     assert!(
-        Rc::ptr_eq(&first.env, &second.env),
+        Interpreter::same_environment(&first.environment_value(), &second.environment_value()),
         "one environment object"
     );
     assert_eq!(second.params.as_slice().len(), 1);

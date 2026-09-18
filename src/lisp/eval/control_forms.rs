@@ -259,7 +259,11 @@ impl Interpreter {
         if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", varlist.clone()));
         }
-        let mut frame = Vec::new();
+        // Flet: the values first (`temps'), then each variable bound --
+        // lexically by consing onto `lexenv', dynamically by specbind --
+        // and the new environment installed once, after the varlist.
+        let mut lexenv = crate::lisp::types::current_environment_value(env);
+        let mut lexical_bindings = false;
         let mut special_bindings = Vec::new();
 
         let mut tail = varlist.clone();
@@ -271,7 +275,8 @@ impl Interpreter {
                     if self.binding_is_dynamic_symbol(name, env) {
                         special_bindings.push((name.clone(), Value::Nil));
                     } else {
-                        frame.push((name.clone(), Value::Nil));
+                        lexenv = Self::cons_binding(name.clone(), Value::Nil, lexenv);
+                        lexical_bindings = true;
                     }
                 }
                 Value::Record(_)
@@ -285,7 +290,8 @@ impl Interpreter {
                     if self.binding_is_dynamic_symbol(&name, env) {
                         special_bindings.push((name, Value::Nil));
                     } else {
-                        frame.push((name, Value::Nil));
+                        lexenv = Self::cons_binding(name, Value::Nil, lexenv);
+                        lexical_bindings = true;
                     }
                 }
                 Value::Cons(_) => {
@@ -300,7 +306,8 @@ impl Interpreter {
                     if self.binding_is_dynamic_symbol(&name, env) {
                         special_bindings.push((name, val));
                     } else {
-                        frame.push((name, Self::stored_value(val)));
+                        lexenv = Self::cons_binding(name, Self::stored_value(val), lexenv);
+                        lexical_bindings = true;
                     }
                 }
                 _ => return Err(wrong_type_argument("listp", binding.clone())),
@@ -317,17 +324,16 @@ impl Interpreter {
                 return Err(error);
             }
         }
-        // GNU evaluates all parallel initializers before saving the lexical
-        // environment for the `let'.  Bare defvars in those initializers
-        // therefore remain in the enclosing scope, while declarations made
-        // after a real lexical binding are unwound with that binding.
+        // `specbind (Qinternal_interpreter_environment, lexenv)' once the
+        // varlist is bound: the values were computed under the enclosing
+        // environment, so a bare defvar in an initializer stays in the
+        // enclosing scope.
         let lexical_scope_depth = env.len();
-        let has_lexical_scope = !frame.is_empty();
-        if has_lexical_scope {
-            Self::push_marked_frame(env, frame);
+        if lexical_bindings {
+            env.push(EnvFrame::from_alist(lexenv));
         }
         let result = self.progn_list(&body, env);
-        if has_lexical_scope {
+        if lexical_bindings {
             env.truncate(lexical_scope_depth);
         }
         let unbind = self.unbind_to(count, env);
@@ -346,18 +352,11 @@ impl Interpreter {
         if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", varlist.clone()));
         }
+        // FletX: `lexenv' is the environment at entry; the first lexical
+        // binding saves it on the specpdl (a frame), the later ones store
+        // the extended alist into the variable.
         let original_depth = env.len();
-        // The environment at entry, by its depth and its innermost frame's
-        // identity (a marked frame's identity is unique; only an unmarked
-        // innermost frame needs every identity compared): a vector of
-        // every frame's identity was collected per `let*' before.
-        let original_innermost = env.last().map(Self::frame_identity);
-        let original_frame_identities = if matches!(original_innermost, Some(None)) {
-            Some(env.iter().map(Self::frame_identity).collect::<Vec<_>>())
-        } else {
-            None
-        };
-        let mut lexical_binding_seen = false;
+        let lexenv = crate::lisp::types::current_environment_value(env);
         let mut lexical_restore_depth = None;
         let count = self.specpdl_index();
         let setup = (|| -> Result<(), LispError> {
@@ -400,28 +399,32 @@ impl Interpreter {
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, value, env)?;
                 } else {
-                    // FletX saves the original interpreter environment only
-                    // when its first lexical binding is installed before an
-                    // initializer has replaced that environment.  Preserve
-                    // this unusual but observable GNU decision: a bare
-                    // defvar in the first initializer can make the following
-                    // lexical binding live for the rest of the enclosing
-                    // interpreter scope.
-                    if !lexical_binding_seen {
-                        let original_environment_is_current = env.len() == original_depth
-                            && match &original_frame_identities {
-                                Some(identities) => env
-                                    .iter()
-                                    .map(Self::frame_identity)
-                                    .eq(identities.iter().copied()),
-                                None => env.last().map(Self::frame_identity) == original_innermost,
-                            };
-                        if original_environment_is_current {
-                            lexical_restore_depth = Some(original_depth);
-                        }
-                        lexical_binding_seen = true;
+                    let newenv = Self::cons_binding(
+                        name,
+                        Self::stored_value(value),
+                        crate::lisp::types::current_environment_value(env),
+                    );
+                    // `EQ (Vinternal_interpreter_environment, lexenv)': the
+                    // environment is still the one at entry (no lexical
+                    // binding yet, no bare defvar in an initializer), so
+                    // this binding saves it on the specpdl; otherwise the
+                    // variable is stored into.  A bare defvar in the first
+                    // initializer thus makes the following bindings live
+                    // for the rest of the enclosing scope, as in GNU.
+                    if lexical_restore_depth.is_none()
+                        && env.len() == original_depth
+                        && Self::same_environment(
+                            &crate::lisp::types::current_environment_value(env),
+                            &lexenv,
+                        )
+                    {
+                        lexical_restore_depth = Some(original_depth);
+                        env.push(EnvFrame::from_alist(newenv));
+                    } else if let Some(frame) = env.last_mut() {
+                        frame.set_environment(newenv);
+                    } else {
+                        env.push(EnvFrame::from_alist(newenv));
                     }
-                    Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);
                 }
             }
             Ok(())
@@ -438,6 +441,20 @@ impl Interpreter {
         match result {
             Ok(value) => unbind.map(|()| value),
             Err(error) => Err(error),
+        }
+    }
+    /// Flet's `Fcons (Fcons (var, tem), lexenv)'.
+    #[inline]
+    pub(crate) fn cons_binding(symbol: SymbolName, value: Value, lexenv: Value) -> Value {
+        Value::cons(Value::cons(Value::Symbol(symbol), value), lexenv)
+    }
+
+    /// `EQ' of two environment heads: the same cons, or both nil.
+    pub(crate) fn same_environment(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Cons(a), Value::Cons(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Value::Nil, Value::Nil) => true,
+            _ => false,
         }
     }
 }

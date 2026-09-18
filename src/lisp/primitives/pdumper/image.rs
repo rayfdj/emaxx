@@ -228,10 +228,6 @@ pub(crate) enum DumpType {
     LambdaParams = 12,
     /// A closure's body forms, shared likewise.
     LambdaBody = 13,
-    /// A closure's captured lexical environment (`SharedEnv').
-    LexicalEnvironment = 14,
-    /// One frame of a lexical environment (`EnvFrame').
-    LexicalFrame = 15,
     CharTable = 16,
     /// A record or pseudovector kept as its slots (`Value::Record').
     Record = 17,
@@ -276,8 +272,6 @@ impl DumpType {
             11 => Self::Closure,
             12 => Self::LambdaParams,
             13 => Self::LambdaBody,
-            14 => Self::LexicalEnvironment,
-            15 => Self::LexicalFrame,
             16 => Self::CharTable,
             17 => Self::Record,
             18 => Self::BoolVector,
@@ -454,7 +448,6 @@ pub(crate) enum RootSlot {
     TimerList = 50,
     LastThreadError = 51,
     FontSelectionOrder = 52,
-    LexicalCellUpdates = 53,
     /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
     /// from (eval/dump_roots.rs).
     RememberedScalars = 54,
@@ -519,7 +512,6 @@ impl RootSlot {
             50 => Self::TimerList,
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,
-            53 => Self::LexicalCellUpdates,
             54 => Self::RememberedScalars,
             55 => Self::KeymapRecords,
             _ => return None,

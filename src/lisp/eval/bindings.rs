@@ -1,6 +1,6 @@
 use super::symbol_cells::LOCALIZED;
 use super::*;
-use crate::lisp::types::SymbolName;
+use crate::lisp::types::{SymbolName, assq_binding, assq_binding_named, current_environment};
 
 pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
@@ -23,123 +23,6 @@ fn module_file_suffix_value() -> Value {
     #[cfg(windows)]
     let suffix = ".dll";
     Value::String(suffix.into())
-}
-
-fn malformed_lisp_environment_error(environment: &Value, circular: bool) -> LispError {
-    let condition = if circular {
-        "circular-list"
-    } else {
-        "wrong-type-argument"
-    };
-    let mut data = vec![Value::Symbol(condition.into())];
-    if !circular {
-        data.push(Value::Symbol("listp".into()));
-    }
-    data.push(environment.clone());
-    LispError::SignalValue(Value::list(data))
-}
-
-/// Return the first ENV alist entry accepted by MATCHES.
-///
-/// GNU's evaluator uses `assq' directly on the live interpreted environment.
-/// Consequently, finding an entry before a malformed tail succeeds, while
-/// exhausting an improper or circular environment signals with the complete
-/// original ENV object.  Keep that decision table in one walker so reads,
-/// writes, and locally-special declarations cannot diverge.
-fn find_lisp_environment_entry(
-    environment: &Value,
-    mut matches: impl FnMut(&Value) -> bool,
-) -> Result<Option<Value>, LispError> {
-    let mut cursor = environment.clone();
-    let mut seen = HashSet::new();
-    loop {
-        match cursor {
-            Value::Nil => return Ok(None),
-            Value::Cons(list_cell) => {
-                if !seen.insert(ConsCell::identity(&list_cell)) {
-                    return Err(malformed_lisp_environment_error(environment, true));
-                }
-                let entry = list_cell.car.borrow().clone();
-                cursor = list_cell.cdr.borrow().clone();
-                if matches(&entry) {
-                    return Ok(Some(entry));
-                }
-            }
-            _ => return Err(malformed_lisp_environment_error(environment, false)),
-        }
-    }
-}
-
-pub(super) fn lisp_environment_binding_checked(
-    environment: &Value,
-    name: &str,
-) -> Result<Option<Value>, LispError> {
-    find_lisp_environment_entry(environment, |entry| {
-        let Value::Cons(binding) = entry else {
-            return false;
-        };
-        binding
-            .car
-            .borrow()
-            .as_symbol()
-            .is_ok_and(|symbol| symbol == name)
-    })
-    .map(|entry| entry.and_then(|entry| entry.cdr().ok()))
-}
-
-fn set_lisp_environment_binding_checked(
-    environment: &Value,
-    name: &str,
-    value: Value,
-) -> Result<bool, LispError> {
-    let entry = find_lisp_environment_entry(environment, |entry| {
-        let Value::Cons(binding) = entry else {
-            return false;
-        };
-        binding
-            .car
-            .borrow()
-            .as_symbol()
-            .is_ok_and(|symbol| symbol == name)
-    })?;
-    let Some(binding) = entry else {
-        return Ok(false);
-    };
-    binding.set_cdr(value)?;
-    Ok(true)
-}
-
-/// `set_lisp_environment_binding_checked' for the symbol in hand: Fassq
-/// compares the entry's symbol by identity, not its name.
-fn set_lisp_environment_binding_checked_symbol(
-    environment: &Value,
-    symbol: &SymbolName,
-    value: Value,
-) -> Result<bool, LispError> {
-    let entry = find_lisp_environment_entry(environment, |entry| {
-        let Value::Cons(binding) = entry else {
-            return false;
-        };
-        matches!(&*binding.car.borrow(), Value::Symbol(bound) if bound.id() == symbol.id())
-    })?;
-    let Some(binding) = entry else {
-        return Ok(false);
-    };
-    binding.set_cdr(value)?;
-    Ok(true)
-}
-
-pub(super) fn set_lisp_environment_binding(environment: &Value, name: &str, value: Value) -> bool {
-    set_lisp_environment_binding_checked(environment, name, value).unwrap_or(false)
-}
-
-pub(super) fn lisp_environment_declares_special(environment: &Value, name: &str) -> bool {
-    find_lisp_environment_entry(environment, |entry| {
-        entry.as_symbol().is_ok_and(|symbol| symbol == name)
-    })
-    .ok()
-    .flatten()
-    .is_some()
 }
 
 /// One entry of the obarray enumeration: a source holding the symbol
@@ -199,78 +82,25 @@ impl Interpreter {
     }
 
     /// eval_sub's `Fassq (form, Vinternal_interpreter_environment)': the
-    /// lexical environment's binding of NAME, innermost first, with the
-    /// caller boundary's rule for special variables.
+    /// current environment's binding of NAME, by symbol identity when the
+    /// symbol in hand is the name's (an alias is looked up under its own
+    /// name), by text otherwise.
     fn lexical_value(
         &self,
         name: &str,
-        resolved: &str,
         env: &Env,
-        resolved_symbol: Option<&SymbolName>,
+        symbol: Option<&SymbolName>,
     ) -> Result<Option<Value>, LispError> {
-        let mut special: Option<bool> = None;
-        for (index, frame) in env.iter().enumerate().rev() {
-            // Below the caller boundary, references to SPECIAL variables
-            // resolve dynamically like GNU rather than through a caller's
-            // same-named lexical binding (bug#47552 semantics).  A name made
-            // locally special by a `defvar' in THIS scope (marker above the
-            // floor) is dynamic here too, so it must likewise not resolve to
-            // a caller's same-named lexical binding — e.g. `erc--run-send-hooks'
-            // reads its own dynamic `str', never `erc-send-current-line's
-            // lexical one.
-            if index < self.special_scan_floor
-                && *special.get_or_insert_with(|| {
-                    // The flag by id when the symbol is in hand: by name
-                    // it hashed the id registry once per read a primitive
-                    // made under a lexical frame.
-                    let dynamic = match resolved_symbol {
-                        Some(symbol) if resolved.len() == name.len() && resolved == name => {
-                            self.dlet_active_names.contains_key(name)
-                                || self.is_special_variable_symbol(symbol)
-                        }
-                        _ => self.is_dynamic_binding_name(name),
-                    };
-                    dynamic || self.local_special_active(name, env)
-                })
-            {
-                break;
+        let Some(environment) = current_environment(env) else {
+            return Ok(None);
+        };
+        let binding = match symbol {
+            Some(symbol) if symbol.as_str().len() == name.len() && symbol.as_str() == name => {
+                assq_binding(environment, symbol)?
             }
-            if let Some(environment) = frame.lisp_environment() {
-                if let Some(value) = lisp_environment_binding_checked(environment, name)? {
-                    return Ok(Some(value));
-                }
-                // The live Lisp alist is authoritative.  Its names and
-                // binding cells may have changed since construction, so the
-                // frame's typed snapshot must never become a stale fallback.
-                continue;
-            }
-            for (position, (k, v)) in frame.iter().enumerate().rev() {
-                // The binding's symbol by id when the caller has the symbol
-                // (one id per text), else by text; the shared-cell table is
-                // probed only for the binding found.
-                let bound = match resolved_symbol {
-                    Some(symbol) if resolved.len() == name.len() && resolved == name => {
-                        k.id() == symbol.id()
-                    }
-                    _ => k == name,
-                };
-                if bound {
-                    let shared_updates = Self::frame_identity(frame)
-                        .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-                    return Ok(Some(
-                        frame
-                            .canonical_lisp_binding_value(position, name)
-                            .or_else(|| {
-                                shared_updates
-                                    .and_then(|updates| updates.get(name))
-                                    .cloned()
-                            })
-                            .unwrap_or_else(|| v.clone()),
-                    ));
-                }
-            }
-        }
-        Ok(None)
+            _ => assq_binding_named(environment, name)?,
+        };
+        Ok(binding.map(|binding| binding.cdr.borrow().clone()))
     }
 
     fn lookup_var_with_resolved_name(
@@ -280,13 +110,24 @@ impl Interpreter {
         env: &Env,
         resolved_symbol: Option<&SymbolName>,
     ) -> Result<Option<Value>, LispError> {
-        if resolved == "buffer-undo-list" {
-            return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
-            )));
-        }
-        if let Some(value) = self.lexical_value(name, resolved, env, resolved_symbol)? {
+        if let Some(value) = self.lexical_value(name, env, resolved_symbol)? {
             return Ok(Some(value));
+        }
+        Ok(self.find_symbol_value_resolved(resolved, resolved_symbol))
+    }
+
+    /// data.c:find_symbol_value for a symbol whose alias chain is
+    /// resolved: the redirect switch over the dedicated, forwarded,
+    /// buffer-local and plain cells.
+    fn find_symbol_value_resolved(
+        &self,
+        resolved: &str,
+        resolved_symbol: Option<&SymbolName>,
+    ) -> Option<Value> {
+        if resolved == "buffer-undo-list" {
+            return Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            ));
         }
         // data.c:find_symbol_value dispatches on the symbol's redirect tag.
         // A SYMBOL_PLAINVAL cell returns immediately; it never probes the
@@ -304,7 +145,7 @@ impl Interpreter {
             } else {
                 self.global_value(resolved)
             };
-            return Ok(global.or_else(|| self.builtin_var_value(resolved)));
+            return global.or_else(|| self.builtin_var_value(resolved));
         }
         // A buffer-local cell always wins over a dynamically bound default.
         // This also covers a plain special that becomes buffer-local while
@@ -317,8 +158,8 @@ impl Interpreter {
             None => self.buffer_local_binding(self.current_buffer_id(), resolved),
         };
         match local {
-            Some(Some(value)) => return Ok(Some(value)),
-            Some(None) => return Ok(None),
+            Some(Some(value)) => return Some(value),
+            Some(None) => return None,
             None => {}
         }
         let active = match resolved_symbol {
@@ -326,7 +167,7 @@ impl Interpreter {
             None => self.active_global_special_value(resolved),
         };
         if let Some(value) = active {
-            return Ok(value.or_else(|| self.builtin_var_value(resolved)));
+            return value.or_else(|| self.builtin_var_value(resolved));
         }
         let global = if let Some(symbol) = resolved_symbol {
             debug_assert_eq!(symbol.as_str(), resolved);
@@ -335,9 +176,9 @@ impl Interpreter {
             self.global_value(resolved)
         };
         if let Some(value) = global {
-            return Ok(Some(value));
+            return Some(value);
         }
-        Ok(self.builtin_var_value(resolved))
+        self.builtin_var_value(resolved)
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
@@ -871,16 +712,15 @@ impl Interpreter {
         // dedicated store, no watcher) with a value in its cell is that
         // cell, SYMBOL_PLAINVAL's one load; the general path below probes
         // the dedicated stores and the flags for every other symbol.
-        if self.globals.plain_store(name) {
-            if !env.is_empty()
-                && let Some(value) =
-                    self.lexical_value(name.as_str(), name.as_str(), env, Some(name))?
-            {
-                return Ok(value);
-            }
-            if let Some(value) = self.globals.value(name) {
-                return Ok(value.clone());
-            }
+        if let Some(environment) = current_environment(env)
+            && let Some(binding) = assq_binding(environment, name)?
+        {
+            return Ok(binding.cdr.borrow().clone());
+        }
+        if self.globals.plain_store(name)
+            && let Some(value) = self.globals.value(name)
+        {
+            return Ok(value.clone());
         }
         let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
             name.as_str().into()
@@ -888,43 +728,13 @@ impl Interpreter {
             self.resolve_variable_name(name.as_str())?.into()
         };
         let resolved_symbol = matches!(resolved, std::borrow::Cow::Borrowed(_)).then_some(name);
-        self.lookup_var_with_resolved_name(name.as_str(), resolved.as_ref(), env, resolved_symbol)?
+        self.find_symbol_value_resolved(resolved.as_ref(), resolved_symbol)
             .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
     /// Whether NAME has a user-level function definition (defun/fset).
     pub(crate) fn function_index_has(&self, name: &str) -> bool {
         self.functions_index.contains_key(name)
-    }
-
-    /// Whether local state can change symbol-function resolution: only a
-    /// function-namespace frame (cl-flet/cl-labels) can.  The lexical
-    /// environment is a value namespace (eval.c's Ffuncall reads the
-    /// function cell of the symbol whatever `let' bound it to): a
-    /// variable holding a lambda shadowed the function cell of its name
-    /// here before, against the oracle, and every call made under such a
-    /// `let' resolved by name.
-    pub(crate) fn env_may_affect_function_resolution(env: &Env) -> bool {
-        crate::lisp::types::function_namespace_frames_exist()
-            && env
-                .iter()
-                .any(|frame| frame.lisp_environment().is_none() && frame.has_function_bindings())
-    }
-
-    /// Whether a function-namespace frame of ENV binds NAME itself to a
-    /// callable: apart from an alias in NAME's function cell (whose
-    /// target a frame could bind), the only way ENV changes NAME's
-    /// resolution.
-    pub(crate) fn frame_binds_callable(name: &SymbolName, env: &Env) -> bool {
-        crate::lisp::types::function_namespace_frames_exist()
-            && env.iter().any(|frame| {
-                frame.lisp_environment().is_none()
-                    && frame.has_function_bindings()
-                    && frame.iter().any(|(bound, value)| {
-                        bound.id() == name.id()
-                            && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
-                    })
-            })
     }
 
     /// A builtin's function cell as a value: `Value::BuiltinFunc' of the
@@ -959,24 +769,9 @@ impl Interpreter {
             return Some(Value::BuiltinFunc(symbol.clone()));
         }
         let name_is_builtin = facts.builtin || facts.special_form;
-        if crate::lisp::types::function_namespace_frames_exist() {
-            for frame in env.iter().rev() {
-                // The lexical environment is a value namespace: only a
-                // function-namespace frame (cl-flet/cl-labels) shadows a
-                // function cell; a `let' binding a VARIABLE to a lambda
-                // never does, whether the name is `car' or a defun's.
-                if frame.lisp_environment().is_some() || !frame.has_function_bindings() {
-                    continue;
-                }
-                for (k, v) in frame.iter().rev() {
-                    if k.id() == symbol.id()
-                        && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_))
-                    {
-                        return Some(v.clone());
-                    }
-                }
-            }
-        }
+        // The lexical environment is a value namespace (eval.c's Ffuncall
+        // reads the function cell whatever `let' bound the name to).
+        let _ = env;
         if let Some(v) = self.globals.function(symbol) {
             return Some(v.clone());
         }
@@ -1048,16 +843,7 @@ impl Interpreter {
         if facts.prefer_override {
             return Some((Self::builtin_function_value(name), false));
         }
-        for frame in env.iter().rev() {
-            if !frame.has_function_bindings() {
-                continue;
-            }
-            for (key, value) in frame.iter().rev() {
-                if key == name && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_)) {
-                    return Some((value.clone(), true));
-                }
-            }
-        }
+        let _ = env;
         if let Some(value) = self.functions_index.get(name) {
             return Some((value.clone(), false));
         }
@@ -1346,101 +1132,40 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Fsetq's `XSETCDR (lex_binding, val)': the current environment's
+    /// binding of NAME assigned in place, false when there is none.
     fn set_lexical_variable_checked(
         &mut self,
         name: &str,
         value: Value,
         env: &mut Env,
     ) -> Result<bool, LispError> {
-        let floor = self.special_scan_floor;
-        let mut special: Option<bool> = None;
-        for (index, frame) in env.iter_mut().enumerate().rev() {
-            // Mirror `lookup': below the caller boundary a SPECIAL variable
-            // is set dynamically, never through a caller's lexical frame.
-            if index < floor && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name)) {
-                break;
-            }
-            if let Some(environment) = frame.lisp_environment().cloned() {
-                let frame_id = Self::frame_identity(frame);
-                let stored = Self::stored_value(value.clone());
-                if set_lisp_environment_binding_checked(&environment, name, stored.clone())? {
-                    if let Some(frame_id) = frame_id {
-                        self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
-                    }
-                    return Ok(true);
-                }
-                continue;
-            }
-            let frame_id = Self::frame_identity(frame);
-            if let Some(binding_index) = frame.iter().rposition(|(key, _)| key == name) {
-                let stored = Self::stored_value(value);
-                frame[binding_index].1 = stored.clone();
-                if let Some(frame_id) = frame_id {
-                    frame.update_canonical_lisp_binding(name, stored.clone());
-                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
-                }
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let Some(environment) = current_environment(env) else {
+            return Ok(false);
+        };
+        let Some(binding) = assq_binding_named(environment, name)? else {
+            return Ok(false);
+        };
+        *binding.cdr.borrow_mut() = Self::stored_value(value);
+        Ok(true)
     }
 
-    /// `set_lexical_variable_checked' for the symbol in hand: Fsetq's
-    /// Fassq over the lexical alist compares symbols (eq), so the typed
-    /// frames compare ids and a Lisp alist its entries' symbols by id
-    /// (the name was compared per binding before).
+    /// `set_lexical_variable_checked' for the symbol in hand: Fassq
+    /// compares symbols by identity.
     pub(super) fn set_lexical_variable_checked_symbol(
         &mut self,
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
     ) -> Result<bool, LispError> {
-        let floor = self.special_scan_floor;
-        let mut special: Option<bool> = None;
-        for (index, frame) in env.iter_mut().enumerate().rev() {
-            // Mirror `lookup': below the caller boundary a SPECIAL variable
-            // is set dynamically, never through a caller's lexical frame.
-            if index < floor
-                && *special.get_or_insert_with(|| {
-                    (!self.dlet_active_names.is_empty()
-                        && self.dlet_active_names.contains_key(symbol.as_str()))
-                        || self.is_special_variable_symbol(symbol)
-                })
-            {
-                break;
-            }
-            if let Some(environment) = frame.lisp_environment().cloned() {
-                let frame_id = Self::frame_identity(frame);
-                let stored = Self::stored_value(value.clone());
-                if set_lisp_environment_binding_checked_symbol(
-                    &environment,
-                    symbol,
-                    stored.clone(),
-                )? {
-                    if let Some(frame_id) = frame_id {
-                        self.record_lexical_cell_update_if_captured(
-                            frame_id,
-                            symbol.as_str(),
-                            &stored,
-                        );
-                    }
-                    return Ok(true);
-                }
-                continue;
-            }
-            let frame_id = Self::frame_identity(frame);
-            if let Some(binding_index) = frame.iter().rposition(|(key, _)| key.id() == symbol.id())
-            {
-                let stored = Self::stored_value(value);
-                frame[binding_index].1 = stored.clone();
-                if let Some(frame_id) = frame_id {
-                    frame.update_canonical_lisp_binding(symbol.as_str(), stored.clone());
-                    self.record_lexical_cell_update_if_captured(frame_id, symbol.as_str(), &stored);
-                }
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let Some(environment) = current_environment(env) else {
+            return Ok(false);
+        };
+        let Some(binding) = assq_binding(environment, symbol)? else {
+            return Ok(false);
+        };
+        *binding.cdr.borrow_mut() = Self::stored_value(value);
+        Ok(true)
     }
 
     /// GNU's `setq' probes the lexical alist before entering `Fset'.  A
@@ -1455,9 +1180,8 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        if self.set_lexical_variable_checked_symbol(resolved, value.clone(), env)? {
-            return Ok(());
-        }
+        // Fset: the caller did Fsetq's Fassq on the symbol as written; the
+        // alias chain resolved here never reaches a lexical binding.
         // data.c:set_internal, SYMBOL_PLAINVAL and untrapped: the store
         // alone (the general path below tested the name against every
         // dedicated store and the watcher list on each `setq').

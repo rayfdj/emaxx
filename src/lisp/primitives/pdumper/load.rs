@@ -14,7 +14,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{EnvFrame, LambdaValue, SharedEnv, SharedText, SymbolName};
+use crate::lisp::types::{LambdaValue, SharedText, SymbolName};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -219,9 +219,6 @@ pub(crate) fn load_image(bytes: &[u8], interp: &mut Interpreter) -> Result<Loade
         objects: ObjectTable::for_image(bytes.len()),
         params: OffsetMap::default(),
         bodies: OffsetMap::default(),
-        envs: OffsetMap::default(),
-        envs_filled: OffsetSet::default(),
-        frames: OffsetMap::default(),
         closures_in_progress: OffsetSet::default(),
         interp,
     };
@@ -383,9 +380,6 @@ struct Loader<'a> {
     objects: ObjectTable,
     params: OffsetMap<Rc<Vec<SymbolName>>>,
     bodies: OffsetMap<Rc<Vec<Value>>>,
-    envs: OffsetMap<SharedEnv>,
-    envs_filled: OffsetSet,
-    frames: OffsetMap<EnvFrame>,
     closures_in_progress: OffsetSet,
     interp: &'a mut Interpreter,
 }
@@ -1018,29 +1012,27 @@ impl Loader<'_> {
         }
         let params_offset = self.reader.word(offset)? as u32;
         let body_offset = self.reader.word(offset + 16)? as u32;
-        let env_offset = self.reader.word(offset + 24)? as u32;
         let params = self.params_at(params_offset)?;
         let body = self.body_at(body_offset)?;
-        let env = self.env_shell_at(env_offset);
         let public_parameters = self.optional_at(offset + 8)?;
         let documentation = self.optional_at(offset + 32)?;
         let interactive = self.optional_at(offset + 40)?;
-        let public_environment = self.optional_at(offset + 48)?;
         let closure = Value::allocated_lambda(LambdaValue {
             params,
             public_parameters,
             body,
-            env: env.clone(),
+            env: std::cell::OnceCell::new(),
             documentation,
             interactive,
-            public_environment,
         });
         self.objects.insert(offset, closure.clone());
         self.closures_in_progress.remove(&offset);
-        self.fill_env(env_offset)?;
-        // The closure owns its captured frames again, so an assignment to
-        // a captured variable is shared as it was before the dump.
-        self.interp.register_captured_lexical_frames(&env);
+        // The environment after the closure is on record: a closure can
+        // reach itself through its environment's conses.
+        let environment = self.value_at(offset + 24)?;
+        if let Value::Lambda(lambda) = &closure {
+            let _ = lambda.env.set(environment);
+        }
         Ok(closure)
     }
 
@@ -1080,71 +1072,6 @@ impl Loader<'_> {
         let body = Rc::new(forms);
         self.bodies.insert(offset, body.clone());
         Ok(body)
-    }
-
-    fn env_shell_at(&mut self, offset: u32) -> SharedEnv {
-        if let Some(env) = self.envs.get(&offset) {
-            return env.clone();
-        }
-        let env = crate::lisp::types::shared_env(Vec::new());
-        self.envs.insert(offset, env.clone());
-        env
-    }
-
-    fn fill_env(&mut self, offset: u32) -> Result<(), LoadError> {
-        if !self.envs_filled.insert(offset) {
-            return Ok(());
-        }
-        let env = self.env_shell_at(offset);
-        let count = self.reader.word(offset)? as usize;
-        let mut frames = Vec::with_capacity(count);
-        for index in 0..count {
-            let frame_offset = self.reader.word(offset + 8 * (index as u32 + 1))? as u32;
-            frames.push(self.frame_at(frame_offset)?);
-        }
-        *env.borrow_mut() = frames;
-        Ok(())
-    }
-
-    fn frame_at(&mut self, offset: u32) -> Result<EnvFrame, LoadError> {
-        if let Some(frame) = self.frames.get(&offset) {
-            return Ok(frame.clone());
-        }
-        let flags = self.reader.word(offset)?;
-        let identity = if flags & FRAME_HAS_IDENTITY != 0 {
-            Some(self.reader.word(offset + 8)? as i64)
-        } else {
-            None
-        };
-        let nbindings = self.reader.word(offset + 16)? as usize;
-        let mut at = offset + 24;
-        let mut bindings = Vec::with_capacity(nbindings);
-        for _ in 0..nbindings {
-            let symbol = symbol_of(self.value_at(at)?, "lexical binding")?;
-            let value = self.value_at(at + 8)?;
-            bindings.push((symbol, value));
-            at += 16;
-        }
-        let ndeclarations = self.reader.word(at)? as usize;
-        at += 8;
-        let mut declarations = Vec::with_capacity(ndeclarations);
-        for _ in 0..ndeclarations {
-            let position = self.reader.word(at)? as usize;
-            let name = symbol_of(self.value_at(at + 8)?, "locally special declaration")?;
-            declarations.push((position, name.as_str().to_owned()));
-            at += 16;
-        }
-        let mut frame = EnvFrame::from_parts(
-            bindings,
-            identity,
-            flags & FRAME_FUNCTION_BINDINGS != 0,
-            declarations,
-        );
-        if let Some(environment) = self.optional_at(at)? {
-            frame.set_lisp_environment(environment);
-        }
-        self.frames.insert(offset, frame.clone());
-        Ok(frame)
     }
 
     /// A string record: size, size_byte, intervals, data; the bytes at the

@@ -1102,11 +1102,7 @@ pub(crate) mod tests {
     fn from_slots_ignores_emaxx_facade_objects() {
         // Emaxx facade: slot 0 is an executable lambda, not an argspec.
         let slots = [
-            Value::lambda(
-                Vec::new().into(),
-                std::rc::Rc::new(Vec::new()),
-                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-            ),
+            Value::lambda(Vec::new().into(), std::rc::Rc::new(Vec::new()), Value::Nil),
             Value::Nil,
             Value::Nil,
             Value::Nil,

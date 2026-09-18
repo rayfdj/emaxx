@@ -1094,30 +1094,24 @@ fn sibling_closure_called_during_writer_sees_the_immediate_update() {
 }
 
 #[test]
-fn exact_live_capture_executes_on_the_authoritative_outer_frame() {
+fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
+    // Ffunction stores Vinternal_interpreter_environment itself in the
+    // closure: an assignment in the scope is a setcdr on the cons the
+    // closure holds, and its slot two shows the new value.
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    Interpreter::push_marked_frame(&mut env, vec![("cell".into(), Value::Integer(1))]);
-    let captured = interp.capture_closure_env(env.clone());
-
-    let result = interp
-        .eval_with_closure_env(&captured, &mut env, |interp, call_env| {
-            interp.set_variable("cell", Value::Integer(23), call_env);
-            Ok(interp.lookup_var("cell", call_env).unwrap())
-        })
-        .unwrap();
-
-    assert_eq!(result, Value::Integer(23));
-    assert_eq!(env[0][0].1, Value::Integer(23));
-    // The closure's snapshot need not be recopied: the exact frame/name
-    // overlay is the single authority for a captured cell after mutation.
-    assert_eq!(captured.borrow()[0][0].1, Value::Integer(1));
+    Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
+    let captured = crate::lisp::types::current_environment_value(&env);
     let Value::Lambda(lambda) =
         Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured.clone())
     else {
         unreachable!("Value::lambda constructs a lambda");
     };
+
+    interp.set_variable("cell", Value::Integer(23), &mut env);
+    assert_eq!(interp.lookup_var("cell", &env), Some(Value::Integer(23)));
     let environment = interp.interpreted_closure_slots(&lambda)[2].clone();
+    assert!(Interpreter::same_environment(&environment, &captured));
     assert_eq!(
         environment
             .car()
@@ -7289,57 +7283,6 @@ fn source_call_keeps_pre_argument_native_resolution_and_invalidates_later_calls(
 }
 
 #[test]
-fn source_call_cache_never_shadows_a_local_function_frame() {
-    let mut interp = Interpreter::new();
-    let mut env = Env::new();
-    let definition =
-        Reader::new("(defalias 'emaxx-test-callsite-shadow #'(lambda (value) (+ value 1)))")
-            .read()
-            .expect("global definition should parse")
-            .expect("global definition should exist");
-    interp
-        .eval(&definition, &mut env)
-        .expect("global definition should evaluate");
-
-    // Reuse this exact source cons across all three environments so the
-    // test exercises the callsite-local resolution cache itself.
-    let call = Reader::new("(emaxx-test-callsite-shadow 1)")
-        .read()
-        .expect("call should parse")
-        .expect("call should exist");
-    assert_eq!(
-        interp
-            .eval(&call, &mut env)
-            .expect("global call should evaluate"),
-        Value::Integer(2)
-    );
-
-    let local_function = Reader::new("#'(lambda (value) (+ value 10))")
-        .read()
-        .expect("local function should parse")
-        .and_then(|form| interp.eval(&form, &mut env).ok())
-        .expect("local function should evaluate");
-    env.push(EnvFrame::with_function_bindings(
-        vec![("emaxx-test-callsite-shadow".into(), local_function)],
-        1,
-    ));
-    assert_eq!(
-        interp
-            .eval(&call, &mut env)
-            .expect("locally shadowed call should evaluate"),
-        Value::Integer(11)
-    );
-    env.pop();
-
-    assert_eq!(
-        interp
-            .eval(&call, &mut env)
-            .expect("global call after local scope should evaluate"),
-        Value::Integer(2)
-    );
-}
-
-#[test]
 fn a_plain_lexical_frame_never_shadows_the_function_cell() {
     // eval.c's Ffuncall reads the function cell of the symbol in function
     // position: a lexical (value-namespace) frame binding the name to a
@@ -7372,7 +7315,10 @@ fn a_plain_lexical_frame_never_shadows_the_function_cell() {
         .expect("local function should parse")
         .and_then(|form| interp.eval(&form, &mut env).ok())
         .expect("local function should evaluate");
-    env.push(vec![("emaxx-test-plain-shadow".into(), local_function)].into());
+    Interpreter::push_bindings(
+        &mut env,
+        vec![("emaxx-test-plain-shadow".into(), local_function)],
+    );
     assert_eq!(
         interp
             .eval(&call, &mut env)

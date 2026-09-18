@@ -1485,13 +1485,13 @@ fn genuine_bytecode_special_bindings_hide_caller_lexicals() {
                bytecode-special-scope-probe))
            (byte-compile 'bytecode-special-scope-probe-fn))",
     );
-    let mut caller_env = vec![
-        vec![(
+    let mut caller_env = vec![crate::lisp::types::EnvFrame::bindings(
+        [(
             "bytecode-special-scope-probe".into(),
             Value::Symbol("stale-caller-lexical".into()),
-        )]
-        .into(),
-    ];
+        )],
+        &Value::Nil,
+    )];
 
     let actual = interp
         .call_function_value(

@@ -470,7 +470,10 @@ fn regexp_matches(
     let pattern = primitives::string_like(pattern)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern.clone()))?;
     let mut case_sensitive = env.clone();
-    case_sensitive.push(vec![("case-fold-search".into(), Value::Nil)].into());
+    Interpreter::push_bindings(
+        &mut case_sensitive,
+        vec![("case-fold-search".into(), Value::Nil)],
+    );
     regexp::compile_elisp_regex(interp, &pattern, &case_sensitive, "", true)?
         .is_match(text)
         .map_err(|error| LispError::Signal(error.to_string()))

@@ -3,7 +3,6 @@ use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{
     ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
-    shared_env,
 };
 use crate::buffer::TextPropertySpan;
 use crate::file_system as fs;

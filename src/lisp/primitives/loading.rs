@@ -200,36 +200,17 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
+        // Feval: `specbind (Qinternal_interpreter_environment, CONSP
+        // (lexical) || NILP (lexical) ? lexical : list_of_t)' -- an alist
+        // is the environment itself, its conses the bindings' storage.
+        let _ = caller_env;
         let (capture_lexical, mut eval_env) = match lexical {
             Value::Nil => (false, Vec::new()),
-            Value::T => (
-                true,
-                vec![EnvFrame::with_lisp_environment_and_identity(
-                    Vec::new(),
-                    Value::list([Value::T]),
-                    Interpreter::fresh_frame_identity(),
-                )],
-            ),
-            Value::Cons(_) => {
-                let frame = lexical_alist_frame(interp, lexical, caller_env)?;
-                (true, vec![frame.into()])
-            }
-            _ => (
-                true,
-                vec![EnvFrame::with_lisp_environment_and_identity(
-                    Vec::new(),
-                    Value::list([Value::T]),
-                    Interpreter::fresh_frame_identity(),
-                )],
-            ),
+            Value::Cons(_) => (true, vec![EnvFrame::from_alist(lexical.clone())]),
+            _ => (true, vec![EnvFrame::lexical()]),
         };
         interp.push_lambda_eval_context(capture_lexical);
-        // A fresh `eval' is a fresh activation: closures it creates must not
-        // share captured-environment cells with content-identical captures
-        // from the caller's activation (bug#51695's interpreted lambda).
-        let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut eval_env);
-        interp.leave_activation(previous_activation);
         interp.pop_lambda_capture_override();
         result
     } else {
@@ -240,29 +221,10 @@ pub(crate) fn eval_impl(
         // boundaries mask this context so their internal lambdas and lets
         // retain the function's definition-time semantics.
         interp.push_lambda_eval_context(false);
-        let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut Vec::new());
-        interp.leave_activation(previous_activation);
         interp.pop_lambda_capture_override();
         result
     }
-}
-
-fn lexical_alist_frame(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Result<Vec<(crate::lisp::types::SymbolName, Value)>, LispError> {
-    let mut frame = Vec::new();
-    for entry in value.to_vec()? {
-        let Some((key, val)) = entry.cons_values() else {
-            continue;
-        };
-        if let Ok(name) = checked_symbol_identity(interp, &key, env) {
-            frame.push((name, val));
-        }
-    }
-    Ok(frame)
 }
 
 pub(crate) fn eval_buffer_impl(
@@ -616,18 +578,12 @@ fn with_fresh_eval_environment<T>(
     body: impl FnOnce(&mut Interpreter, &mut Env) -> T,
 ) -> T {
     let mut eval_env = if lexical {
-        vec![EnvFrame::with_lisp_environment_and_identity(
-            Vec::new(),
-            Value::list([Value::T]),
-            Interpreter::fresh_frame_identity(),
-        )]
+        vec![EnvFrame::lexical()]
     } else {
         Vec::new()
     };
     interp.push_lambda_eval_context(lexical);
-    let previous_activation = interp.enter_activation();
     let result = body(interp, &mut eval_env);
-    interp.leave_activation(previous_activation);
     interp.pop_lambda_capture_override();
     result
 }

@@ -846,6 +846,23 @@ boxed-error result was implemented, measured flat against the 48-byte
 the lexical environment as a vector of frames (eval.c's alist), the
 error as a value on every return, the reference count per copy, the
 function-namespace frames, the byte-code call.
+Checkpoint 20c (2026-09-18, for main): the lexical environment as
+eval.c's alist -- a frame is the head of
+`Vinternal_interpreter_environment` as one scope holds it, `let` and
+`let*` cons onto it as Flet and FletX do, a read is Fassq and `setq`
+XSETCDR, `function` stores the head itself in the closure and a call
+conses the arguments onto it, a bare `defvar` stores the symbol into
+the alist, byte code runs under a nil frame; the frames with identity
+stamps, the updated-cell tables, the capture cache, the merge-and-
+write-back call path and the closure body markers are gone, and the
+image carries a closure's environment as a value field: the lexical
+interpreted loop 2.90 to 2.33 s (GNU 1.20 the same session), a million
+interpreted defun calls 1.42 to 1.09 s (GNU 0.84), the pre-expanded
+`when-let` loop 0.39 to 0.30 s (GNU 0.20).  Open: the dialect stack
+standing in for a nil or `(t)` environment at the fresh-environment
+evaluation sites, the boxed frame detail per call, the error as a
+value on every return, the reference count per copy, the byte-code
+call.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

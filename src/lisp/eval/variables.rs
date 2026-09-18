@@ -429,55 +429,40 @@ impl Interpreter {
         }
     }
 
-    /// Record a GNU "locally special" declaration: a bare one-arg `defvar'
-    /// evaluated inside a lexical scope makes same-scope `let's of the name
-    /// bind dynamically without setting the global special flag.  The
-    /// marker is a new persistent environment prefix, so closures created
-    /// before and after the declaration share their older tail without
-    /// becoming the same environment snapshot.  This is GNU eval.c's exact
-    /// `Vinternal_interpreter_environment = Fcons (sym, ...)` ownership
-    /// model, represented as typed Rust state.
+    /// Fdefvar without a value under lexical binding:
+    /// `Vinternal_interpreter_environment = Fcons (sym, ...)' -- the bare
+    /// symbol stored into the current environment, no specpdl entry, so
+    /// the declaration lasts to the end of the enclosing scope (the file,
+    /// at top level).  `let's of the name in that scope bind dynamically
+    /// (Flet's Fmemq) without the global special flag.
     pub(crate) fn push_local_special_declaration(&mut self, name: &str, env: &mut Env) {
-        let identity = Self::fresh_frame_identity();
-        if env.last().is_some_and(EnvFrame::is_local_special_snapshot) {
-            let mut names = env
-                .last()
-                .expect("checked local-special snapshot")
-                .local_special_declarations()
-                .iter()
-                .map(|(_, name)| name.clone())
-                .collect::<Vec<_>>();
-            names.push(name.to_string());
-            *env.last_mut().expect("checked local-special snapshot") =
-                EnvFrame::with_local_specials(names, identity);
-        } else {
-            env.push(EnvFrame::with_local_special(name, identity));
+        let declared = Value::cons(
+            Value::Symbol(name.into()),
+            crate::lisp::types::current_environment_value(env),
+        );
+        match env.last_mut() {
+            Some(frame) => frame.set_environment(declared),
+            None => env.push(EnvFrame::from_alist(declared)),
         }
         self.local_special_names.insert(name.to_string());
     }
 
-    /// Reconstitute a bare-symbol entry from GNU's serialized lexical
-    /// environment.  Such an entry declares NAME dynamically scoped inside
-    /// this closure.  Unlike evaluating a local `defvar', deserialization
-    /// must not alter the surrounding macro-expansion environment.
+    /// A bare-symbol entry of a closure's environment declares NAME
+    /// locally special within it; note the name so the `let' check runs.
     pub(crate) fn note_captured_local_special(&mut self, name: &str) {
         self.local_special_names.insert(name.to_string());
     }
 
-    /// Whether NAME is declared locally special in the current scope: the
-    /// marker must sit in a frame the scope can legitimately see — its own
-    /// frames or captured closure frames (at or above the special-reference
-    /// floor) — never a caller frame leaking through a shared env chain
-    /// (below the floor), mirroring GNU's per-closure interpreter
-    /// environment.
+    /// Flet's `!NILP (Fmemq (var, Vinternal_interpreter_environment))':
+    /// whether NAME is declared locally special in the current
+    /// environment.  The process-wide set of names ever declared is a
+    /// filter in front of the walk (a name never declared skips it).
     pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
         if !self.local_special_names.contains(name) {
             return false;
         }
-        env.iter().skip(self.special_scan_floor).any(|frame| {
-            frame.lisp_environment().is_some_and(|environment| {
-                super::bindings::lisp_environment_declares_special(environment, name)
-            }) || frame.declares_local_special(name)
+        crate::lisp::types::current_environment(env).is_some_and(|environment| {
+            crate::lisp::types::environment_declares_special(environment, name)
         })
     }
 
@@ -486,13 +471,8 @@ impl Interpreter {
     /// direct internal evaluation uses a nonempty typed environment as its
     /// lexical marker.
     pub(crate) fn interpreter_environment_is_lexical(&self, env: &Env) -> bool {
-        self.lambda_capture_override().unwrap_or(!env.is_empty())
-    }
-
-    /// Whether `let's of NAME bind dynamically and references resolve
-    /// dynamically across call boundaries.
-    pub(crate) fn is_dynamic_binding_name(&self, name: &str) -> bool {
-        self.dlet_active_names.contains_key(name) || self.is_special_variable(name)
+        self.lambda_capture_override()
+            .unwrap_or_else(|| crate::lisp::types::environment_is_lexical(env))
     }
 
     /// `is_special_variable' for a symbol in hand: the flag by id, the
@@ -520,8 +500,6 @@ impl Interpreter {
         // (each probe hashed the name per `let' binding of interpreted
         // code, over tables that are nearly always empty).
         self.lambda_capture_override() == Some(false)
-            || (!self.dlet_active_names.is_empty()
-                && self.dlet_active_names.contains_key(symbol.as_str()))
             || self.is_special_variable_symbol(symbol)
             || (!self.local_special_names.is_empty()
                 && self.local_special_active(symbol.as_str(), env))
@@ -2721,7 +2699,7 @@ impl Interpreter {
         &mut self,
         function_name: Option<&str>,
         env: &Env,
-        activation_frame: Option<&[(SymbolName, Value)]>,
+        activation_frame: Option<&EnvFrame>,
     ) {
         if !self.edebug_entered_active(env) && function_name != Some("backtrace-eval") {
             return;
@@ -2730,14 +2708,10 @@ impl Interpreter {
     }
 
     #[cold]
-    fn capture_backtrace_context(
-        &mut self,
-        env: &Env,
-        activation_frame: Option<&[(SymbolName, Value)]>,
-    ) {
+    fn capture_backtrace_context(&mut self, env: &Env, activation_frame: Option<&EnvFrame>) {
         let mut context = env.clone();
         if let Some(frame) = activation_frame {
-            context.push(frame.to_vec().into());
+            context.push(frame.clone());
         }
         if let Some(backtrace) = self.backtrace_frames.last_mut() {
             backtrace.detail_mut().lexical_context = Some(context);
@@ -2902,10 +2876,10 @@ impl Interpreter {
                 }
             }
         }
-        // Innermost bindings must win: binding lookup scans a frame back to
-        // front, so store outer entries first.
+        // Innermost bindings first: Flet conses in order, so the outer
+        // entries are consed first and the inner ones end up in front.
         merged.reverse();
-        vec![merged.into()]
+        vec![EnvFrame::bindings(merged, &Value::Nil)]
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {

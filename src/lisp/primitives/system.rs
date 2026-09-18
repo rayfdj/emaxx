@@ -1594,7 +1594,10 @@ pub(crate) fn find_file_name_handler(
         let generation_before_scan = interp.current_definition_generation();
         let entries = handlers.to_vec()?;
         let mut regexp_env = env.clone();
-        regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
+        Interpreter::push_bindings(
+            &mut regexp_env,
+            vec![("case-fold-search".into(), Value::Nil)],
+        );
         let mut cacheable = handler_alist_id.is_some();
         let mut pattern_snapshots = Vec::new();
         let mut plist_snapshots: Vec<(String, Value)> = Vec::new();

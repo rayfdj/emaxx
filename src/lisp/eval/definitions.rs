@@ -144,8 +144,14 @@ impl Interpreter {
                 self.setq_variable_symbol(&symbol, val, env)?;
                 continue;
             }
-            let resolved = self.resolve_variable_symbol(&symbol)?;
             let evaluated = self.eval(&value_form, env)?;
+            if !local_only
+                && self.set_lexical_variable_checked_symbol(&symbol, evaluated.clone(), env)?
+            {
+                result = evaluated;
+                continue;
+            }
+            let resolved = self.resolve_variable_symbol(&symbol)?;
             let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
             result = val.clone();
             if local_only {
@@ -284,33 +290,31 @@ impl Interpreter {
         let params = self.parse_source_params(&items[1], env)?;
         let (documentation, interactive_form, body) =
             self.normalize_interpreted_closure_body(&items[2..], env)?;
+        // Ffunction: under a non-nil interpreter environment the lambda
+        // is a closure over that environment (the head itself, sharing
+        // its binding conses); under nil it stays a dynamic lambda.  The
+        // context stack stands in for the environment being nil or `(t)'
+        // where the evaluator was entered without one.
         let capture_override = self.lambda_capture_override();
-        let closure_env = if capture_override.unwrap_or(true) {
-            // A lexical lambda carries an explicit context marker even when
-            // it has no free variables.  Besides forming the scope boundary,
-            // invocation uses this marker to give delayed macro expansion
-            // the lexical-binding context in which the lambda was created.
-            let lexical_source = capture_override == Some(true)
-                || self
-                    .lookup_var("lexical-binding", env)
-                    .is_some_and(|value| value.is_truthy());
-            let closure_env = self.capture_closure_env(env.clone());
-            if lexical_source {
-                self.mark_lexical_closure_env(&closure_env);
-            }
-            closure_env
+        let closure_env = if capture_override == Some(false) {
+            Value::Nil
+        } else if let Some(environment) = crate::lisp::types::current_environment(env) {
+            environment.clone()
+        } else if capture_override == Some(true)
+            || self
+                .lookup_var("lexical-binding", env)
+                .is_some_and(|value| value.is_truthy())
+        {
+            Value::list([Value::T])
         } else {
-            let closure_env = shared_env(Vec::new());
-            self.mark_closure_eval_context(&closure_env, false);
-            closure_env
+            Value::Nil
         };
-        let public_environment = self.materialize_public_interpreted_environment(&closure_env);
 
         // eval.c:Ffunction delegates lexical-environment filtering to the
         // preloaded `internal-make-interpreted-closure-function'.  In GNU 30
         // that function is the unchanged Elisp `cconv-make-interpreted-closure';
         // C neither scans free variables nor rewrites the body itself.
-        if !public_environment.is_nil()
+        if !closure_env.is_nil()
             && let Some(filter) = self
                 .lookup_var("internal-make-interpreted-closure-function", env)
                 .filter(Value::is_truthy)
@@ -321,7 +325,7 @@ impl Interpreter {
                 &[
                     items[1].clone(),
                     Value::list(body.iter().cloned()),
-                    public_environment,
+                    closure_env,
                     documentation.clone().unwrap_or(Value::Nil),
                     interactive_form.clone().unwrap_or(Value::Nil),
                 ],
@@ -365,14 +369,13 @@ impl Interpreter {
         let interactive = interactive_form
             .as_ref()
             .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
-        Ok(Value::lambda_with_public_environment(
+        Ok(Value::lambda_with_public_parameters(
             params.into(),
             items[1].clone(),
             body,
             closure_env,
             documentation,
             interactive,
-            public_environment,
         ))
     }
 }

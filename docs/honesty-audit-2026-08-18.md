@@ -11731,3 +11731,154 @@ alone): the ten library groups (batch 50, compat_runtime 84, eval_01
 2, 0 and 1 in 336 s) and the six integration binaries (23, 6, 3, 1,
 1 and 5 in 508 s), 2,718 scheduled and observed; fmt and strict
 clippy exit 0 before and after.
+
+## 2026-09-18 Checkpoint 20c: the lexical environment as eval.c's alist
+
+*What prompted it.*  20b's audit named the lexical environment first
+among what remained of eval.c's structure not yet here, and the
+profile of the 20b build on the lexical loop put a number on it: the
+frame walk of a variable read 5.5 percent, the captured-cell update of
+every `setq' 5 percent (a SipHash lookup in a side table per
+assignment), the canonical-binding materialization, the frame
+identities.  eval.c keeps one variable,
+`Vinternal_interpreter_environment', an alist of `(SYMBOL . VALUE)'
+conses: `let' conses onto it and specbinds it, a read is `Fassq', an
+assignment `XSETCDR' on the binding found, `function' stores the head
+itself in the closure, and a call conses the arguments onto the
+closure's head.  Sharing between a scope and the closures made in it
+is the sharing of those conses.  Emaxx kept a vector of copy-on-write
+frames with identity stamps and emulated the sharing: a table of
+updated cells keyed by frame identity, weak owner lists per frame, a
+per-activation capture cache, a merge of the caller's frames with the
+closure's snapshot on every call and a write-back after it, canonical
+binding conses materialized on demand, three body markers for the
+advice and oclosure paths, and a scan floor telling a callee which of
+the caller's frames it may see.
+
+*Done.*  (1) A frame on the environment stack is the alist head as one
+scope holds it (`EnvFrame' is the word), and the current environment
+is the last frame's: pushing a frame is eval.c's specbind of
+`internal-interpreter-environment', truncating the stack its
+unbind_to.  `(t)' is the lexical scope binding nothing, a bare symbol
+in the alist a local special, `nil' dynamic binding.  (2) `let' is
+Flet: the values first, then each variable consed onto the head or
+specbound, the new head installed once after the varlist (so a bare
+`defvar' in an initializer stays in the enclosing scope).  `let*' is
+FletX: the first lexical binding saves the head on the stack, the
+later ones store the extended alist into the frame; the `EQ' test
+against the head at entry decides which, so a `defvar' in the first
+initializer makes the following bindings live for the rest of the
+enclosing scope, as in GNU.  (3) A read is eval_sub's `Fassq' over the
+current environment, by symbol identity, before find_symbol_value's
+switch; `setq' is Fsetq's `Fassq' on the symbol as written and
+`XSETCDR' on the binding, before Fset's alias chain.  The walk keeps
+Fassq's checks: an improper alist signals `listp', a circular one
+`circular-list' (FOR_EACH_TAIL's Brent test).  (4) `function' under a
+non-nil environment makes a closure over the head itself, no copy and
+no filtering here (eval.c hands the head to
+`internal-make-interpreted-closure-function', cconv's, as before);
+`make-interpreted-closure' stores ENV as given, its conses the
+closure's storage; slot two of a closure is that value.  (5) A call is
+funcall_lambda: the arguments consed onto the closure's environment,
+lexically whatever the names' flags, and installed as one frame on the
+same stack; a dynamic lambda's arguments specbound under a nil frame.
+The merge path, the write-back, the activation ids, the capture cache,
+the `:closure-transparent-env' and `:closure-isolated-current-env'
+branches (nothing produced the markers any more) are gone.  (6) A bare
+`defvar' under lexical binding stores the symbol into the current
+frame's alist, no stack entry, so the declaration lasts to the end of
+the enclosing scope (the file at top level) as
+`Vinternal_interpreter_environment = Fcons (sym, ...)' does; `let''s
+test for it is Flet's `Fmemq'.  (7) `eval' with an alist installs the
+alist itself, as Feval specbinds its LEXICAL argument (a vector of
+copies was built from it before).  (8) Byte code runs under a nil
+frame: bytecode.c reads variables with Fsymbol_value, never through
+the interpreter environment, and the scan floor that kept a caller's
+lexical frames out of the VM's reads is gone with the frames.
+`backtrace-eval' evaluates in the suspended activation's own alist.
+(9) The image carries a closure's environment as a value field of its
+record (the alist and its conses, shared between the closures dumped
+over one scope); the environment and frame record types, their flag
+words and identity words are gone, and the loader and the copier set
+the field after the closure is on record, since a closure can reach
+itself through its environment.  (10) Removed with the frames: the
+function-namespace frames (`cl-flet''s, which nothing but one unit
+test constructed: eval.c has no function namespace in the
+environment), the `dlet' name table (no writer), the scan floor, the
+per-thread copies of both, and their entries in the root inventory.
+
+*Measured.*  A/B on the same box, GNU on the same machine, min /
+median of three rounds (the probes) and two (the test files); 20b is
+the committed build of that checkpoint (d301a7ce).  This session's
+box ran about a tenth slower than the morning's (GNU's dynamic loop
+0.48 against 0.46 s), so the columns compare within the table:
+
+| Probe | 20b | 20c | GNU |
+|---|---|---|---|
+| dynamic interpreted loop (`while' over `let*', `if', `setq', `<', `+', `1+'; two million iterations) | 2.06 / 2.09 s | 1.98 / 2.09 s | 0.48 / 0.50 s |
+| the same loop under lexical binding | 2.90 / 3.06 s | 2.33 / 2.39 s | 1.20 / 1.25 s |
+| a million calls of an interpreted defun | 1.42 / 1.49 s | 1.09 / 1.14 s | 0.84 / 0.90 s |
+| `when-let' in an interpreted loop, 200,000 iterations, the raw form through `eval' | 2.32 / 2.33 s | 2.24 / 2.28 s | 1.32 / 1.44 s |
+| the same, pre-expanded | 0.39 / 0.40 s | 0.30 / 0.31 s | 0.20 / 0.21 s |
+| `catch'/`throw', 300,000 iterations | 0.19 / 0.19 s | 0.18 / 0.19 s | 0.056 / 0.066 s |
+| `condition-case' over a signaling `car', 100,000 iterations | 0.27 / 0.28 s | 0.25 / 0.27 s | 0.095 / 0.100 s |
+| ucs-names (mule-tests) | 11.64 / 11.71 s | 11.35 / 11.36 s | 2.42 / 2.52 s |
+| semantic-utest-C | 6.86 / 7.06 s | 6.88 / 6.91 s | 0.90 / 0.91 s |
+| bindat-test--sint | 4.28 / 4.52 s | 3.94 / 3.99 s | 0.89 / 0.90 s |
+| undo-test4 | 4.74 / 4.75 s | 3.96 / 4.17 s | 1.11 / 1.12 s |
+| fns-tests-sort | 5.69 / 6.08 s | 5.78 / 5.87 s | 1.59 / 1.79 s |
+| pcase-tests-macro | 0.64 / 0.64 s | 0.60 / 0.65 s | 0.12 / 0.14 s |
+| `ert-select-tests' floor (probe5) | 33.1 / 41.6 ms | 33.7 / 34.2 ms | -- |
+
+The test-file rows were taken on a busier box than the morning's
+(GNU's ucs-names 2.42 s against 2.29): the columns compare within
+the table.  undo-test4 (interpreted lexical code over the edit
+primitives) 4.74 to 3.96 s and bindat 4.28 to 3.94 are the corpus
+rows that moved; ucs-names, semantic and fns-tests-sort are within
+their bands.
+
+*What did not move, and what was learned.*  The dynamic loop did not
+move: it binds nothing lexically, and its cost is the per-form floor
+20b left (the profile of this build on the lexical loop is
+`eval' 24 percent, the value drops 7, the frame push 5, `Fassq' 4,
+the result settling 4, the list walk 4; no emulation left in it).
+The lexical loop stands at 1.9 times GNU (2.7 after 20b) and the
+interpreted calls at 1.3 (2.1).  The macro-expansion loop moved by
+four percent: its time is `macroexpand-all''s own evaluation.  What
+this checkpoint leaves as Emaxx-only, each named: the dialect
+stack (`lambda_capture_overrides'), which stands in for the
+environment being nil or `(t)' where the evaluator is entered without
+one -- 110 call sites evaluate under a fresh empty environment, and
+until each is given eval.c's (the current environment, nil for Feval
+without LEXICAL), the stack says whether a `let' there binds
+lexically; the string copy on binding (`stored_value'); the boxed
+frame detail per interpreted call carrying the locals vector (eval.c
+reads locals off the specpdl); and an `eval' alist keyed by a
+symbol with position, which `Fassq' under
+`symbols-with-pos-enabled' would match as its bare symbol and the
+identity walk does not.
+
+*Which of these mirror C.*  (1) to (9) are eval.c's own structure:
+Flet, FletX, eval_sub's Fassq, Fsetq, Ffunction,
+Fmake_interpreted_closure, funcall_lambda, Fdefvar, Feval, the
+specpdl entry of the environment as the frame, and alloc.c's rooting
+of it.  (10) removes what had no counterpart.  The dialect stack is
+the one piece kept without a counterpart, disclosed above.
+
+*Verified.*  The special-form arity control (`ctl20a', the oracle's
+values) and the watcher control (`ctl19z3', the `let'/`unlet'/`set'
+rows for `lexical-binding' and Fmacroexpand binding nothing) produce
+the oracle's output on the final build; the closure test
+`a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in'
+replaces the frame-overlay test (an assignment in the scope is a
+setcdr on the cons the closure holds), the frame test in types.rs
+checks Flet's cons order and the shared tail, and the function-
+namespace frame test went with the feature.
+The library suite (2,715 tests, one thread) passed but for three
+tests that make a directory unwritable and expect a write to fail:
+this shell is root, whose CAP_DAC_OVERRIDE defeats the mode, while
+the gate runs the suite as the unprivileged user `emaxx' (the three
+passed in 20b's gate; this checkpoint's gate is their record).
+Strict clippy and fmt exit 0.
+
+*Gate.*  (pending)

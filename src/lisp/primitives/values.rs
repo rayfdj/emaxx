@@ -1838,11 +1838,8 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_str(state, name);
         }
         Value::Lambda(lambda_value) => {
-            let _ = &lambda_value.params;
-            let _ = &lambda_value.body;
-            let env = &lambda_value.env;
             hash_mix(state, 7);
-            hash_mix(state, Rc::as_ptr(env) as usize as u64);
+            hash_mix(state, Rc::as_ptr(lambda_value) as usize as u64);
         }
         Value::Buffer(buffer_value) => {
             let id = buffer_value.id;

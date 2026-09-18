@@ -490,91 +490,29 @@ impl Interpreter {
             return Err(LispError::Signal("Invalid interpreted closure body".into()));
         }
 
-        let public_environment = slots[2].clone();
-        let lexical = !public_environment.is_nil();
-        enum EnvironmentEntry {
-            Binding(SymbolName, Value),
-            LocalSpecial(String),
-        }
-        let mut entries = Vec::new();
-        let mut cursor = public_environment.clone();
+        // Fmake_interpreted_closure: ENV is the closure's environment as
+        // given; a bare symbol in it declares that name locally special
+        // for the closure's body (noted so `let' runs Flet's Fmemq).
+        let environment = slots[2].clone();
+        let mut cursor = environment.clone();
         let mut seen = std::collections::HashSet::new();
         while let Value::Cons(list_cell) = cursor {
             if !seen.insert(ConsCell::identity(&list_cell)) {
                 break;
             }
-            let entry = list_cell.car.borrow().clone();
+            if let Value::Symbol(name) = &*list_cell.car.borrow() {
+                self.note_captured_local_special(name.as_str());
+            }
             cursor = list_cell.cdr.borrow().clone();
-            match entry {
-                Value::Cons(cons_cell) => {
-                    let car = &cons_cell.car;
-                    let cdr = &cons_cell.cdr;
-                    let name = match &*car.borrow() {
-                        Value::Symbol(name) => name.clone(),
-                        Value::Nil => "nil".into(),
-                        Value::T => "t".into(),
-                        _ => continue,
-                    };
-                    // GNU treats each entry as a true alist cell: `(x 1)'
-                    // binds x to `(1)', whereas `(x . 1)' binds it to 1.
-                    entries.push(EnvironmentEntry::Binding(
-                        name,
-                        Self::stored_value(cdr.borrow().clone()),
-                    ));
-                }
-                Value::Symbol(name) => {
-                    entries.push(EnvironmentEntry::LocalSpecial(name.to_string()));
-                }
-                // `t' is GNU's empty-lexical-environment sentinel.  Other
-                // non-binding entries are ignored by GNU's assq lookup too.
-                Value::T | Value::Nil => {}
-                _ => {}
-            }
-        }
-        // GNU stores ENV exactly as an innermost-first alist and resolves the
-        // first matching binding.  EnvFrame uses the opposite internal
-        // convention (bindings are searched from the back), so translate at
-        // this boundary.  `interpreted_closure_slots' performs the inverse
-        // projection; without this reversal `make-interpreted-closure'
-        // permutes OClosure fields every time oclosure--copy rebuilds one.
-        entries.reverse();
-        let mut bindings = Vec::new();
-        let mut local_special_declarations = Vec::new();
-        for entry in entries {
-            match entry {
-                EnvironmentEntry::Binding(name, value) => bindings.push((name, value)),
-                EnvironmentEntry::LocalSpecial(name) => {
-                    self.note_captured_local_special(&name);
-                    local_special_declarations.push((bindings.len(), name));
-                }
-            }
-        }
-        let closure_env = shared_env(if public_environment.is_nil() {
-            Vec::new()
-        } else {
-            let mut frame = EnvFrame::from_parts(
-                bindings,
-                Some(Self::fresh_frame_identity()),
-                false,
-                local_special_declarations,
-            );
-            frame.set_lisp_environment(public_environment.clone());
-            vec![frame]
-        });
-        if lexical {
-            self.mark_lexical_closure_env(&closure_env);
-        } else {
-            self.mark_closure_eval_context(&closure_env, false);
         }
 
-        Ok(Value::lambda_with_public_environment(
+        Ok(Value::lambda_with_public_parameters(
             params.into(),
             slots[0].clone(),
             body.into(),
-            closure_env,
+            environment,
             slots.get(4).cloned(),
             slots.get(5).cloned(),
-            public_environment,
         ))
     }
 
@@ -729,18 +667,13 @@ impl Interpreter {
         let mut dynvars = self
             .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
             .unwrap_or(Value::Nil);
-        for frame in env.iter().skip(self.special_scan_floor).rev() {
-            if let Some(environment) = frame.lisp_environment() {
-                for entry in super::lisp_environment_entries(environment) {
-                    if let Value::Symbol(_) | Value::T | Value::Nil = entry {
-                        dynvars = Value::cons(entry, dynvars);
-                    }
-                }
-            } else {
-                for (_, name) in frame.local_special_declarations().iter().rev() {
-                    dynvars = Value::cons(Value::Symbol(name.clone().into()), dynvars);
-                }
+        let mut cursor = crate::lisp::types::current_environment_value(env);
+        while let Value::Cons(list_cell) = cursor {
+            let entry = list_cell.car.borrow().clone();
+            if let Value::Symbol(_) | Value::T | Value::Nil = entry {
+                dynvars = Value::cons(entry, dynvars);
             }
+            cursor = list_cell.cdr.borrow().clone();
         }
         if let Err(error) = cached_symbol!("macroexp--dynvars")
             .with(|symbol| self.specbind_symbol(symbol, dynvars, env))
