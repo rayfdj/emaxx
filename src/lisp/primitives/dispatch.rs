@@ -187,6 +187,19 @@ macro_rules! define_dispatch_modules {
                 }
             }
 
+            /// The module's lifted body for NAME: lisp.h's subr, found
+            /// once per symbol when its facts are learned.
+            fn lifted(self, name: &str) -> Option<DirectPrimitive> {
+                let table: &[(&str, DirectPrimitive)] = match self {
+                    $(Self::$variant => $module::LIFTED_PRIMITIVES,)+
+                    Self::None => &[],
+                };
+                table
+                    .iter()
+                    .find(|(lifted, _)| *lifted == name)
+                    .map(|(_, body)| *body)
+            }
+
             fn call(
                 self,
                 $interp: &mut Interpreter,
@@ -268,8 +281,19 @@ fn compute_name_facts(name: &str) -> NameFacts {
         // Only a builtin the module owns is called through its pointer;
         // an overriding Lisp definition or a non-native owner keeps the
         // module's own routing.
+        //
+        // fileio.c's primitives look their handler up inside their own
+        // bodies; here the lookup runs in call_with_facts before the
+        // module's arm, so a name with a handler specification keeps
+        // that route instead of a lifted pointer that would skip it.
         direct: if module != DispatchModule::None && native_owner {
-            direct_primitive(name)
+            direct_primitive(name).or_else(|| {
+                if file_name_handler_operation(name).is_some() {
+                    None
+                } else {
+                    module.lifted(name)
+                }
+            })
         } else {
             None
         },

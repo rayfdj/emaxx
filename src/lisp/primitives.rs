@@ -278,6 +278,7 @@ pub(crate) fn arith_error() -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol("arith-error".into())]))
 }
 
+pub(crate) use dispatch::DirectPrimitive;
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
 pub(crate) use dispatch::call_with_facts;

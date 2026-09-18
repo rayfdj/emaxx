@@ -863,6 +863,17 @@ standing in for a nil or `(t)` environment at the fresh-environment
 evaluation sites, the boxed frame detail per call, the error as a
 value on every return, the reference count per copy, the byte-code
 call.
+Checkpoint 20d (2026-09-18, for main): a subr pointer for every
+primitive -- each module's dispatcher emits a table of its literal
+arms as functions and the facts per symbol hold the pointer, so a
+call reaches the body through it instead of the module's string
+match: an interpreted call of a late-arm primitive 30 to 80 ns
+cheaper, the corpus rows within noise.  The byte-code call profiled
+flat at 126 ns against GNU's 19, all of it in the activation (the
+frame wrapper, the pooled stack and its root registration, the
+prologue, the resolution), which bytecode.c's `goto setup_frame` has
+none of: that is checkpoint 20e.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

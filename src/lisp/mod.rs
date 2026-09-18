@@ -127,45 +127,265 @@ macro_rules! dispatch_property {
     };
 }
 
-macro_rules! dispatch_call {
-    ($name:ident; $($arms:tt)*) => {
-        dispatch_call!(@collect $name [] $($arms)*)
+/// The lifted-primitive table of a `define_dispatch!' body: one function
+/// per literal arm (an alternation gives one per name), each with the
+/// arm's body and the name bound as the dispatcher's `name'.  Only the
+/// argument shapes `(interp, name, args, env)', `(interp, name, args)'
+/// and `(name, args)' are lifted; a guarded or non-literal arm and any
+/// other shape stays in the match.
+macro_rules! dispatch_table {
+    (($($argument:ident),*) [$($entries:tt)*]) => {
+        &[$($entries)*]
     };
-    (@collect $name:ident [$($collected:tt)*]) => {
+    (($($argument:ident),*) [$($entries:tt)*] , $($rest:tt)*) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
+    // A guarded literal arm is not lifted.
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ if $guard:expr => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ if $guard:expr => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
+    // (interp, name, args, env)
+    (
+        ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                $interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                $env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    (
+        ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                $interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                $env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    // (interp, name, args)
+    (
+        ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                $interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                _env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    (
+        ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                $interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                _env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    // (name, args)
+    (
+        ($name:ident, $args:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                _interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                _env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    (
+        ($name:ident, $args:ident) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+            #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
+            fn lifted(
+                _interp: &mut crate::lisp::eval::Interpreter,
+                $args: &[crate::lisp::types::Value],
+                _env: &mut crate::lisp::types::Env,
+            ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+                let $name: &str = $lit;
+                $body
+            }
+            lifted as crate::lisp::primitives::DirectPrimitive
+        }),)+] $($rest)*)
+    };
+    // Any other arm or shape: not lifted.
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
+}
+
+macro_rules! dispatch_call {
+    (($($argument:ident),*) $name:ident; $($arms:tt)*) => {
+        dispatch_call!(@collect ($($argument),*) $name [] $($arms)*)
+    };
+    // The residual match of a lifted shape: the arms a pointer cannot
+    // carry, then the table for a name outside the manifest (a manifest
+    // name never enters: its facts hold the pointer).
+    (@collect ($interp:ident, $name_:ident, $args:ident, $env:ident) $name:ident [$($collected:tt)*]) => {
+        match $name {
+            $($collected)*
+            _ => match LIFTED_PRIMITIVES.iter().find(|(lifted, _)| *lifted == $name) {
+                Some((_, body)) => body($interp, $args, $env),
+                None => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
+            },
+        }
+    };
+    (@collect ($interp:ident, $name_:ident, $args:ident) $name:ident [$($collected:tt)*]) => {
+        match $name {
+            $($collected)*
+            _ => match LIFTED_PRIMITIVES.iter().find(|(lifted, _)| *lifted == $name) {
+                Some((_, body)) => body($interp, $args, &mut crate::lisp::types::Env::new()),
+                None => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
+            },
+        }
+    };
+    (@collect ($($argument:ident),*) $name:ident [$($collected:tt)*]) => {
         match $name {
             $($collected)*
             _ => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
         }
     };
-    (@collect $name:ident [$($collected:tt)*] , $($rest:tt)*) => {
-        dispatch_call!(@collect $name [$($collected)*] $($rest)*)
+    (@collect ($($argument:ident),*) $name:ident [$($collected:tt)*] , $($rest:tt)*) => {
+        dispatch_call!(@collect ($($argument),*) $name [$($collected)*] $($rest)*)
     };
     (
-        @collect $name:ident [$($collected:tt)*]
+        @collect ($($argument:ident),*) $name:ident [$($collected:tt)*]
         #[dispatch($($property:ident),+)]
         $($rest:tt)*
     ) => {
-        dispatch_call!(@collect $name [$($collected)*] $($rest)*)
+        dispatch_call!(@collect ($($argument),*) $name [$($collected)*] $($rest)*)
+    };
+    // A literal arm of a lifted shape is in the table.
+    (
+        @collect ($interp:ident, $name_:ident, $args:ident, $env:ident) $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect ($interp, $name_, $args, $env) $name [$($collected)*] $($rest)*)
     };
     (
-        @collect $name:ident [$($collected:tt)*]
+        @collect ($interp:ident, $name_:ident, $args:ident, $env:ident) $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect ($interp, $name_, $args, $env) $name [$($collected)*] $($rest)*)
+    };
+    (
+        @collect ($interp:ident, $name_:ident, $args:ident) $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect ($interp, $name_, $args) $name [$($collected)*] $($rest)*)
+    };
+    (
+        @collect ($interp:ident, $name_:ident, $args:ident) $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $($lit:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect ($interp, $name_, $args) $name [$($collected)*] $($rest)*)
+    };
+    (
+        @collect ($($argument:ident),*) $name:ident [$($collected:tt)*]
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_call!(@collect $name [
+        dispatch_call!(@collect ($($argument),*) $name [
             $($collected)*
             $(#[$attribute])*
             $pattern $(if $guard)? => $body,
         ] $($rest)*)
     };
     (
-        @collect $name:ident [$($collected:tt)*]
+        @collect ($($argument:ident),*) $name:ident [$($collected:tt)*]
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_call!(@collect $name [
+        dispatch_call!(@collect ($($argument),*) $name [
             $($collected)*
             $(#[$attribute])*
             $pattern $(if $guard)? => $body,
@@ -188,6 +408,13 @@ macro_rules! define_dispatch {
             dispatch_handles!(name; $($arms)*)
         }
 
+        /// lisp.h's subr per primitive: the body of each literal arm as a
+        /// function, by name.  A call resolves the name to its pointer once
+        /// (the facts kept per symbol) and calls through it; the match
+        /// below keeps only what a pointer cannot carry.
+        $visibility const LIFTED_PRIMITIVES: &[(&str, crate::lisp::primitives::DirectPrimitive)] =
+            dispatch_table!(($($argument),*) [] $($arms)*);
+
         $visibility fn prefer_builtin(name: &str) -> bool {
             let _ = name;
             dispatch_property!(dispatch_select_builtin_override, name; $($arms)*)
@@ -202,7 +429,7 @@ macro_rules! define_dispatch {
         $visibility fn $call(
             $($argument: $argument_type),*
         ) -> $return_type {
-            dispatch_call!($name; $($arms)*)
+            dispatch_call!(($($argument),*) $name; $($arms)*)
         }
     };
 }

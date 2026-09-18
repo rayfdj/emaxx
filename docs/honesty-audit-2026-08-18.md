@@ -11891,3 +11891,115 @@ its 2 ignored), the bins stage (57, 2, 0 and 1 in 320 s) and the six
 integration binaries (23, 6, 3, 1, 1 and 5 in 625 s), 2,717 scheduled
 and observed, the three unwritable-directory tests among them; fmt
 and strict clippy exit 0 before and after.
+
+## 2026-09-18 Checkpoint 20d: a subr pointer for every primitive
+
+*What prompted it.*  lisp.h keeps a primitive's C function in the
+symbol's function cell (`struct Lisp_Subr': the pointer, min and max
+args) and Ffuncall calls through it.  Emaxx kept a pointer for about
+a hundred hot primitives (19x, 20a) and reached the other fourteen
+hundred by a string `match' inside their module's dispatcher: a
+`display' primitive late in its module compared its name against up
+to a hundred and eighty-seven patterns per call.  20c's assessment
+named this first among the corpus-wide items; this checkpoint is the
+mechanical half of it.
+
+*Done.*  (1) `define_dispatch!', the macro every module writes its
+dispatcher with, emits a `LIFTED_PRIMITIVES' table beside the match:
+one function per literal arm, with the arm's body as the function's
+and the name bound as the dispatcher's `name'; an alternation
+(`"a" | "b" =>') gives one function per name.  The bodies are the
+same tokens, moved, not rewritten.  (2) The facts learned once per
+symbol (20a) now hold the lifted pointer for every manifest name
+whose module has one, after the hand-written table; `call_with_facts'
+calls through it, past the arity check, as before for the hundred.
+(3) The module's match keeps only what a pointer cannot carry (no
+module has such an arm today) and, for a name outside the manifest --
+a host-private operation -- a scan of its own table, so those keep
+working without the string chains either.  (4) The shapes lifted are
+the three every module uses; the time module's dispatcher takes an
+extra clock argument and keeps its match (its table is empty).
+`treesit''s environment parameter is `&mut', as the others'.
+
+*Measured.*  A/B on the same box, GNU on the same machine, three
+interleaved rounds (min / median); 20c is the committed build of that
+checkpoint (5153efea).  The box ran faster in this session than in
+the morning's (GNU's dynamic loop 0.34 against 0.48 s), so the columns
+compare within the table.  A primitive called from the interpreter,
+a million calls, names late in their module's match and outside the
+hand-written table:
+
+| Interpreted call, a million times | 20c | 20d | GNU |
+|---|---|---|---|
+| `string-to-number' | 0.45 / 0.45 s | 0.37 / 0.39 s | 0.09 / 0.10 s |
+| `buffer-name' | 0.40 / 0.41 s | 0.32 / 0.37 s | 0.09 / 0.09 s |
+| `upcase' | 1.09 / 1.18 s | 1.05 / 1.06 s | 0.34 / 0.39 s |
+| `substring' | 0.49 / 0.60 s | 0.46 / 0.49 s | 0.35 / 0.36 s |
+| `assoc' | 0.34 / 0.42 s | 0.33 / 0.33 s | 0.09 / 0.09 s |
+| `string-equal' | 0.34 / 0.41 s | 0.33 / 0.37 s | 0.07 / 0.08 s |
+| `buffer-size' | 0.25 / 0.27 s | 0.25 / 0.28 s | 0.07 / 0.08 s |
+
+The same names from byte code measured nothing: the byte optimizer
+drops a side-effect-free call whose value is unused, so those loops
+ran empty on both binaries (and on GNU), which is why the interpreted
+rows stand alone.  The corpus rows and the loops:
+
+| Probe | 20c | 20d | GNU |
+|---|---|---|---|
+| dynamic interpreted loop (two million iterations) | 1.47 / 1.53 s | 1.47 / 1.49 s | 0.34 / 0.39 s |
+| the same loop under lexical binding | 1.75 / 1.82 s | 1.72 / 1.73 s | 0.76 / 0.92 s |
+| a million calls of an interpreted defun | 0.84 / 0.84 s | 0.81 / 0.82 s | 0.61 / 0.62 s |
+| ten million byte-code calls of a one-argument function | 1.25 s | 1.29 / 1.30 s | 0.19 s |
+| ucs-names (mule-tests) | 7.30 / 7.77 s | 7.26 / 7.73 s | 1.86 / 1.95 s |
+| semantic-utest-C | 5.33 / 5.36 s | 5.04 / 5.21 s | 0.72 / 0.76 s |
+| bindat-test--sint | 2.66 / 2.93 s | 3.14 / 3.20 s | 0.57 / 0.62 s |
+| undo-test4 | 2.92 / 3.00 s | 2.67 / 2.83 s | 0.71 / 0.79 s |
+| fns-tests-sort | 4.54 / 4.57 s | 4.35 / 4.38 s | 1.20 / 1.23 s |
+| pcase-tests-macro | 0.45 / 0.47 s | 0.44 / 0.46 s | 0.10 / 0.10 s |
+| `ert-select-tests' floor (probe5) | 25.8 / 27.4 ms | 23.9 / 24.4 ms | -- |
+
+*What did not move, and what was learned.*  The string match was
+not the cost of a primitive call: thirty to eighty nanoseconds of a
+three to four hundred nanosecond interpreted call, and nothing
+measurable on the corpus rows (bindat's two rounds went both ways).
+The byte-code call itself, profiled flat on this build (the DWARF
+unwinder loses the samples taken on the evaluator's own stack, so the
+earlier call-graph profiles of the VM were boot-dominated and are
+superseded): a call costs 126 ns against GNU's 19, and the profile
+puts it in the activation, not the callee -- the frame wrapper and
+its closure 18 percent, `run' (the pooled operand stack, its
+`RefCell's, the root registration, the drain on exit) 17 percent, the
+argument prologue 11, the resolution 6, the frame truncation 3.
+bytecode.c has none of these: a call to a byte-code function is a
+`goto setup_frame' that lays the callee's frame on the same thread
+stack above the caller's arguments and returns by popping it.  That
+is the next checkpoint.  The binary grew by 400 KB (the lifted bodies
+are compiled twice, in the table and in the residual match for the
+names outside the manifest).
+
+*Which of these mirror C.*  The pointer per subr is lisp.h's; the
+table per module and the facts per symbol are how the pointer reaches
+the symbol here (`XSYMBOL (fun)->u.s.function' is the subr itself in
+C, a `Value::BuiltinFunc' naming the symbol here).  The residual
+match for host-private names has no counterpart and carries none of
+GNU's primitives.
+
+*Verified.*  The special-form arity control (`ctl20a') and the
+watcher control (`ctl19z3') produce the oracle's output on the final
+build; strict clippy exits 0 (the lifted bodies allow the lints their
+new position as a function body would raise: an unused `name' or
+`env', a trailing `return', an `Ok(x?)').
+The library suite, run single-threaded on the first cut, failed twelve
+tests of the file-name-handler route (`file_name_handlers_drive_real_io',
+`quoted_visited_buffers_compose_with_earlier_file_name_handlers',
+`copy_family_native_path_uses_handler_expanded_names' and nine more):
+fileio.c's primitives look their handler up inside their own bodies,
+while here the lookup runs in `call_with_facts' before the module's
+arm, so a file primitive that gained a lifted pointer went straight to
+its body past the handler.  The facts take a lifted pointer only for a
+name without a handler specification; the twelve pass again, with the
+six handler controls beside them.  Under root the three
+unwritable-directory tests fail as on every checkpoint (the gate runs
+the suite as user `emaxx', where they pass).
+
+*Gate.*  (pending)

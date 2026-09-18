@@ -926,7 +926,7 @@ define_dispatch!(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
-        env: &Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
             "treesit-available-p" => {
