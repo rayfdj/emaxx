@@ -12240,4 +12240,12 @@ single-threaded under the gate's environment in the worktree: 2,713
 passed, the three unwritable-directory tests failing under root as
 on every checkpoint.  Strict clippy and fmt exit 0.
 
-*Gate.*  (pending)
+*Gate.*  Grouped gate run-1789752745223387735-20486 on the tree as
+committed (96576d02; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx': the ten library groups
+(batch 50, compat_runtime 84, eval_01 373, eval_02 285, eval_03 320,
+eval_04 254, eval_05 351, lightweight 446, primitives 497, tty 56 with
+its 2 ignored), the bins stage (57, 2, 0 and 1 in 194 s) and the six
+integration binaries (23, 6, 3, 1, 1 and 5 in 483 s), 2,718 scheduled
+and observed, the three unwritable-directory tests among them; fmt
+and strict clippy exit 0 before and after.
