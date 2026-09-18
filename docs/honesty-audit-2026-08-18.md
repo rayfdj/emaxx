@@ -12158,4 +12158,15 @@ so the last signal is the one that leaves: both paths now keep the
 last, the test passes, and this gate is the record.  Strict clippy
 and fmt exit 0.
 
-*Gate.*  (pending)
+*Gate.*  Grouped gate run-1789749709084275257-32642 on the tree as
+committed (1c138374; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx': the ten library groups
+(batch 50, compat_runtime 84, eval_01 373, eval_02 285 with the new
+control, eval_03 320, eval_04 254, eval_05 351, lightweight 446,
+primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
+and 1 in 119 s) and the six integration binaries (23, 6, 3, 1, 1 and
+5 in 335 s), 2,718 scheduled and observed, the three
+unwritable-directory tests among them; fmt and strict clippy exit 0
+before and after.  The first run (run-1789748237470755839-14603)
+failed the cli_parity test the paragraph above records; the tree was
+amended with the unwind-form rule and gated again.
