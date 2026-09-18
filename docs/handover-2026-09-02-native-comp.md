@@ -833,6 +833,19 @@ one 3.33 to 3.12 (GNU 1.13), the `when-let` loop 2.65 to 2.16 s
 as a vector of frames (eval.c's alist), the function-namespace frames,
 the reader's deferred literals behind `quote`, the Result through
 every call, the byte-code call.
+Checkpoint 20b (2026-09-18, for main): the evaluator's records as
+eval.c keeps them -- `specbind` leaves its record on the binding
+stack and `unbind_to` unwinds to SPECPDL_INDEX, record_in_backtrace's
+frame is written into its slot, a plain symbol's read is Fassq then
+find_symbol_value's PLAINVAL arm, `eval` is one function: the dynamic
+interpreted loop 2.47 to 1.94 s (GNU 0.46), the lexical one 3.12 to
+2.93 (GNU 1.08), a million interpreted defun calls 1.59 to 1.49 s
+(GNU 0.70), `catch`/`throw` 0.22 to 0.18 s (GNU 0.056).  A 16-byte
+boxed-error result was implemented, measured flat against the 48-byte
+`Result` (the profile line it answered was skid), and removed.  Open:
+the lexical environment as a vector of frames (eval.c's alist), the
+error as a value on every return, the reference count per copy, the
+function-namespace frames, the byte-code call.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

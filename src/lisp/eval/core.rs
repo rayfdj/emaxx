@@ -395,9 +395,16 @@ impl Interpreter {
         if outermost {
             self.clear_batch_error_backtrace();
         }
-        if let Some(termination) = self.pending_termination().cloned() {
-            return Err(LispError::Terminate(termination));
+        if self.pending_termination.is_some() {
+            return Err(LispError::Terminate(
+                self.pending_termination()
+                    .cloned()
+                    .expect("checked pending termination"),
+            ));
         }
+        // eval_sub: a symbol or a self-evaluating object returns before the
+        // quit, collection and depth tests; the body below is inlined here,
+        // one function as eval_sub is (its result crossed two frames before).
         if !matches!(expr, Value::Cons(_)) {
             let result = self.eval_inner(expr, env);
             if outermost && result.is_ok() {
@@ -475,6 +482,7 @@ impl Interpreter {
         depth > self.max_lisp_eval_depth_value()
     }
 
+    #[inline(always)]
     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
             Value::Nil
@@ -1584,11 +1592,9 @@ impl Interpreter {
                         // parked environment across binding watchers and body.
                         interp.with_lisp_stack_roots(&*env, |interp| {
                             let mut call_env = Vec::new();
-                            let mut restores = Vec::with_capacity(frame.len());
+                            let count = interp.specpdl_index();
                             let setup = frame.iter().try_for_each(|(name, value)| {
-                                interp
-                                    .bind_special_symbol(name, value.clone(), &mut call_env)
-                                    .map(|restore| restores.push(restore))
+                                interp.specbind_symbol(name, value.clone(), &mut call_env)
                             });
                             let previous_floor = interp.special_scan_floor;
                             interp.special_scan_floor = 0;
@@ -1599,17 +1605,9 @@ impl Interpreter {
                                 Err(error) => Err(error),
                             };
                             interp.special_scan_floor = previous_floor;
-                            let mut restore_error = None;
-                            for restore in restores.into_iter().rev() {
-                                if let Err(error) =
-                                    interp.restore_special_binding(restore, &mut call_env)
-                                    && restore_error.is_none()
-                                {
-                                    restore_error = Some(error);
-                                }
-                            }
+                            let unbind = interp.unbind_to(count, &mut call_env);
                             match result {
-                                Ok(value) => restore_error.map_or(Ok(value), Err),
+                                Ok(value) => unbind.map(|()| value),
                                 Err(error) => Err(error),
                             }
                         })

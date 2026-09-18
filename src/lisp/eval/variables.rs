@@ -2098,15 +2098,70 @@ impl Interpreter {
         }
     }
 
-    /// eval.c:specbind for the symbol in hand: the alias chain, the
-    /// forwarding flags, the buffer-local cell and the global cell are
-    /// read and written by id; the restore record keeps the symbol.
+    /// eval.c's SPECPDL_INDEX: the depth of the binding stack, for
+    /// `unbind_to'.
+    #[inline]
+    pub(crate) fn specpdl_index(&self) -> usize {
+        self.active_special_restores.len()
+    }
+
+    /// eval.c's specbind for the symbol in hand: the record is left on
+    /// the binding stack and nothing is returned; the caller unwinds to
+    /// the index it took with `unbind_to' (a copy of the record was
+    /// handed back and searched for on the way out before).
+    #[inline]
+    pub(crate) fn specbind_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        self.specbind_symbol_record(symbol, value, env).map(|_| ())
+    }
+
+    /// eval.c's unbind_to: every record above COUNT popped and restored,
+    /// innermost first; the first restore error is reported after all
+    /// have run.
+    pub(crate) fn unbind_to(&mut self, count: usize, env: &mut Env) -> Result<(), LispError> {
+        let mut first_error = None;
+        while self.active_special_restores.len() > count {
+            let restore = self.active_special_restores.pop().expect("above count");
+            if let Err(error) = self.apply_special_restore(restore, env)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// `specbind_symbol' with a copy of the record handed back, for the
+    /// callers outside the evaluator that keep it (the VM's unwind list,
+    /// the native runtime, the loaders).
     pub(crate) fn bind_special_symbol(
         &mut self,
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
     ) -> Result<SpecialBindingRestore, LispError> {
+        self.specbind_symbol_record(symbol, value, env)?;
+        Ok(self
+            .active_special_restores
+            .last()
+            .cloned()
+            .expect("the record just pushed"))
+    }
+
+    /// eval.c:specbind for the symbol in hand: the alias chain, the
+    /// forwarding flags, the buffer-local cell and the global cell are
+    /// read and written by id; the record, holding the symbol, is pushed
+    /// on the binding stack and its id returned.
+    fn specbind_symbol_record(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<u64, LispError> {
         // SPECPDL_LET on a plain symbol: save the cell, store the value.
         if self.globals.plain_store(symbol) {
             let binding_id = self.next_special_binding_id;
@@ -2130,8 +2185,8 @@ impl Interpreter {
                 let_default: false,
                 local_binding_killed: false,
             };
-            self.active_special_restores.push(restore.clone());
-            return Ok(restore);
+            self.active_special_restores.push(restore);
+            return Ok(binding_id);
         }
         let resolved = self.resolve_variable_symbol(symbol)?;
         let unaliased = resolved.id() == symbol.id();
@@ -2156,8 +2211,8 @@ impl Interpreter {
                 let_default: false,
                 local_binding_killed: false,
             };
-            self.active_special_restores.push(restore.clone());
-            return Ok(restore);
+            self.active_special_restores.push(restore);
+            return Ok(binding_id);
         }
         // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
         // bound or void, makes the let SPECPDL_LET_LOCAL.
@@ -2226,11 +2281,11 @@ impl Interpreter {
                 local_binding_killed: false,
             }
         };
-        self.active_special_restores.push(restore.clone());
+        self.active_special_restores.push(restore);
         if unaliased {
             self.learn_plain_store(symbol);
         }
-        Ok(restore)
+        Ok(binding_id)
     }
 
     /// Public wrappers so primitives outside the eval module can make
@@ -2389,6 +2444,15 @@ impl Interpreter {
         } else {
             restore
         };
+        self.apply_special_restore(restore, env)
+    }
+
+    /// The unbind of one record taken off the binding stack.
+    fn apply_special_restore(
+        &mut self,
+        restore: SpecialBindingRestore,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
         // The unbind of a plain symbol's SPECPDL_LET: the saved value back
         // into the cell (a watcher added since cleared the bit).
         if restore.scope == SpecialBindingScope::Global
@@ -2541,13 +2605,33 @@ impl Interpreter {
     /// The four-word frame record_in_backtrace writes.
     #[inline]
     fn push_plain_backtrace_frame(&mut self, function: Value, args: FrameArgs, evald: bool) {
-        self.backtrace_frames.push(BacktraceFrame {
-            function,
-            args,
-            evald,
-            debug_on_exit: false,
-            detail: None,
-        });
+        Self::write_backtrace_frame(&mut self.backtrace_frames, function, args, evald);
+    }
+
+    /// record_in_backtrace's stores into `specpdl_ptr': the frame's words
+    /// written into the vector's next slot (a frame built on the stack
+    /// and copied in was a stall per interpreted call).
+    #[inline(always)]
+    fn write_backtrace_frame(
+        frames: &mut Vec<BacktraceFrame>,
+        function: Value,
+        args: FrameArgs,
+        evald: bool,
+    ) {
+        frames.reserve(1);
+        let len = frames.len();
+        // SAFETY: one slot past the length was reserved above; every field
+        // of the frame is written before the length covers the slot, and
+        // nothing reads the slot in between.
+        unsafe {
+            let slot = frames.as_mut_ptr().add(len);
+            std::ptr::addr_of_mut!((*slot).function).write(function);
+            std::ptr::addr_of_mut!((*slot).args).write(args);
+            std::ptr::addr_of_mut!((*slot).evald).write(evald);
+            std::ptr::addr_of_mut!((*slot).debug_on_exit).write(false);
+            std::ptr::addr_of_mut!((*slot).detail).write(None);
+            frames.set_len(len + 1);
+        }
     }
 
     /// The same, for native Ffuncall's word vector.
@@ -2594,13 +2678,12 @@ impl Interpreter {
         // the four-word frame holds it, and the debugger's projections
         // read its head and tail when asked.  A boxed detail per
         // interpreted call was a heap allocation and release per call.
-        self.backtrace_frames.push(BacktraceFrame {
-            function: source_form.clone(),
-            args: FrameArgs::Owned(Vec::new()),
-            evald: false,
-            debug_on_exit: false,
-            detail: None,
-        });
+        Self::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            source_form.clone(),
+            FrameArgs::borrowed(&[]),
+            false,
+        );
     }
 
     /// Preserve the current evaluator environment for debugger operations.

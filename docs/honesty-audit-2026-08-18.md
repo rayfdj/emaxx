@@ -11591,3 +11591,136 @@ primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
 and 1 in 233 s) and the six integration binaries (23, 6, 3, 1, 1 and
 5 in 524 s), 2,718 scheduled and observed; fmt and strict clippy exit
 0 before and after.
+
+## 2026-09-18 Checkpoint 20b: the evaluator's records as eval.c keeps them
+
+*What prompted it.*  After 20a the dynamic interpreted loop stood at
+2.47 s against GNU's 0.46 and the profile of the final build was
+flat: no one function, but a cost per form and per call of about
+65 ns where eval_sub pays about 12.  The question put to the C
+source was which of eval_sub's records this evaluator still keeps in
+another shape, and the answer named five, each paid on every form or
+every binding: (a) `specbind' returned a copy of the binding record
+(about eighty bytes) to its caller, who held a vector of them and
+handed each back to a restore that searched the binding stack for it
+(eval.c pushes on specpdl and unwinds to an index); (b) a backtrace
+frame was built on the stack as a 64-byte struct and copied into the
+vector (record_in_backtrace stores four words into `specpdl_ptr');
+(c) a variable read tested the name against the dedicated stores,
+the alias table and the flags before reaching the cell
+(find_symbol_value switches on the redirect tag: SYMBOL_PLAINVAL is
+one load); (d) `eval' was two functions, the prelude and the body,
+with a 48-byte `Result' crossing each; (e) that `Result' itself,
+48 bytes by memory on every return where eval_sub returns one word.
+The direction, in the order the user set: (a), (b), (c), (d), then
+(e).
+
+*Done.*  (4) The binding stack is the specpdl: `specbind_symbol'
+pushes the record and returns nothing, `specpdl_index' is
+SPECPDL_INDEX, and `unbind_to (count)' pops and restores every record
+above the index, innermost first, keeping the first restore error
+after all have run.  `let', `let*', a dynamic lambda's parameters, a
+macro expander's `lexical-binding' and `macroexp--dynvars' and
+`condition-case''s variable take the index before their binds and
+unwind to it after the body (a failed bind in `let' unwinds the
+binds already made -- its error was returned over them before).
+`bind_special_symbol', which hands the record back, remains for the
+VM's unwind list, the native runtime and the loaders, whose unwind is
+not lexically nested in the binder.  (3) record_in_backtrace's
+stores: the frame's five fields are written into the vector's next
+slot in place (`write_backtrace_frame': reserve one, write each field
+through its address, then cover the slot with the length); the
+unevaluated frame's empty argument list is a borrowed empty slice,
+not an owned vector.  (6) find_symbol_value's PLAINVAL arm in
+`lookup_symbol': for a symbol whose cell carries the plain-store bit
+(no alias, not localized, no forwarding, no dedicated store, no
+watcher), the lexical environment is searched when there is one and
+the cell's value is returned, before the general path that tests the
+dedicated-store names, the alias table and the flags in turn; the
+environment search is `lexical_value', the same walk the general
+path uses (eval_sub's Fassq over Vinternal_interpreter_environment,
+with the caller-boundary rule for specials).  (7) `eval' is one
+function: `eval_inner' is inlined into it and the pending-termination
+test reads the flag before cloning anything.  (1) The register-sized
+result was implemented in full -- `EvalResult = Result<Value,
+Box<LispError>>' at sixteen bytes through `eval', `eval_call',
+`progn_list', every special form and the condition-case handler,
+with the boxing at the error sites and an unboxing wrapper for the
+callers outside the evaluator -- and measured against the build
+without it on the same probes (three rounds each, interleaved): the
+dynamic loop 1.93-1.94 s without, 1.98-2.03 with; the lexical loop
+2.89-3.02 against 2.91-3.19; the defun calls 1.47-1.60 against
+1.49-1.55; the catch/throw and condition-case loops unchanged at
+0.19 and 0.24 s.  The 48-byte result had been attributed a tenth of
+the run by the profile; the attribution was the sample skid of the
+store after the call, not the move.  It was reverted in full, and is
+recorded here because it was the fifth of the five and the user's
+order named it.
+
+*Measured.*  A/B on an idle box, GNU on the same machine, min /
+median of three rounds (the probes) and two (the test files); 20a is
+the committed build of that checkpoint (d2f0ec33):
+
+| Probe | 20a | 20b | GNU |
+|---|---|---|---|
+| dynamic interpreted loop (`while' over `let*', `if', `setq', `<', `+', `1+'; two million iterations) | 2.47 / 2.47 s | 1.94 / 1.94 s | 0.46 / 0.46 s |
+| the same loop under lexical binding | 3.11 / 3.14 s | 2.93 / 2.94 s | 1.08 / 1.09 s |
+| a million calls of an interpreted defun | 1.59 / 1.60 s | 1.49 / 1.51 s | 0.70 / 0.72 s |
+| `when-let' in an interpreted loop, 200,000 iterations, the raw form through `eval' | 2.13 / 2.18 s | 2.11 / 2.16 s | 1.12 / 1.13 s |
+| the same, pre-expanded | 0.41 / 0.41 s | 0.38 / 0.39 s | 0.19 / 0.19 s |
+| `catch'/`throw', 300,000 iterations | 0.22 / 0.23 s | 0.18 / 0.19 s | 0.056 / 0.057 s |
+| `condition-case' over a signaling `car', 100,000 iterations | 0.25 / 0.25 s | 0.25 / 0.25 s | 0.074 / 0.077 s |
+| ucs-names (mule-tests) | 12.01 / 12.13 s | 11.51 / 11.61 s | 2.29 / 2.32 s |
+| semantic-utest-C | 6.62 / 6.66 s | 6.69 / 6.80 s | 0.75 / 0.94 s |
+| bindat-test--sint | 3.81 / 3.82 s | 3.79 / 3.80 s | 0.72 / 0.74 s |
+| undo-test4 | 4.85 / 4.88 s | 4.70 / 4.72 s | 0.99 / 1.00 s |
+| fns-tests-sort | 4.64 / 4.72 s | 4.70 / 4.72 s | 1.30 / 1.32 s |
+| pcase-tests-macro | 0.48 / 0.49 s | 0.48 / 0.48 s | 0.09 / 0.10 s |
+| `ert-select-tests' floor (probe5) | 33.8 / 35.6 ms | 32.7 / 33.4 ms | -- |
+
+The steps, on the dynamic loop (two rounds each, the same session):
+(4) and (3) together 2.47 to 2.26-2.34 s; (6) and (7) added, 1.93;
+(1) added, 1.98-2.03, removed.
+
+*What did not move, and what was learned.*  The lexical loop moved
+by six percent where the dynamic one moved by a fifth: its cost is
+in the environment as a vector of frames with captured-cell
+bookkeeping, which none of the five touched.  The `when-let'
+expansion loop and `condition-case' did not move: the expander's
+time is `macroexpand-all''s own evaluation and the signal's is the
+handler search and the error's construction, neither on the paths
+changed.  The dynamic loop stands at 4.2 times GNU (5.4 after 20a),
+the lexical at 2.7, the defun calls at 2.1.  What (1) taught: the
+profile's attribution of a store after a call to the result's size
+was skid; the move of 48 bytes by memory was not the cost, and a
+change made for a profile line has to be measured before it is
+believed.  What remains of eval_sub's structure not yet here: the
+lexical environment (an alist of conses in eval.c; a vector of
+frames with identities and captured cells here, walked by
+`lexical_value' on every variable read), the error as a longjmp
+(every call still tests its `Result'), the reference count per
+`Value' copy, and the `LispError' variant's construction on every
+signal.
+
+*Which of these mirror C.*  (4) is specbind/unbind_to and
+SPECPDL_INDEX; (3) is record_in_backtrace's stores into the specpdl;
+(6) is eval_sub's Fassq followed by find_symbol_value's PLAINVAL arm;
+(7) is eval_sub as one function.  (1) had no C counterpart to mirror
+-- eval_sub returns a word and errors leave by longjmp -- and was an
+attempt to pay less for the absence; it did not, and was removed.
+Emaxx-only, unchanged: the plain-store bit as a learned summary of
+the redirect and trapped-write state (data.c reads the tag and the
+`trapped_write' field), and the environment's frames.
+
+*Verified.*  The special-form arity control (`ctl20a', the oracle's
+values for `(if)', `(quote)', `(function)', `(prog1)',
+`(condition-case)', `(setq x)' and the direct primitives) and the
+watcher control (`ctl19z3': a `let' of `lexical-binding' seen as
+`let'/`unlet' in the buffer, the SPECPDL_LET_DEFAULT rows, Fmacroexpand
+binding nothing) produce the oracle's output on the final build.
+The focused set (455 tests: the special forms, let, macro, frame,
+watcher, buffer-local, byte-code, closure and search controls, the
+arity control by name) passed on these sources in the main tree;
+strict clippy and fmt exit 0.
+
+*Gate.*  (pending)

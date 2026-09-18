@@ -198,18 +198,16 @@ impl Interpreter {
             .flatten()
     }
 
-    fn lookup_var_with_resolved_name(
+    /// eval_sub's `Fassq (form, Vinternal_interpreter_environment)': the
+    /// lexical environment's binding of NAME, innermost first, with the
+    /// caller boundary's rule for special variables.
+    fn lexical_value(
         &self,
         name: &str,
         resolved: &str,
         env: &Env,
         resolved_symbol: Option<&SymbolName>,
     ) -> Result<Option<Value>, LispError> {
-        if resolved == "buffer-undo-list" {
-            return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
-            )));
-        }
         let mut special: Option<bool> = None;
         for (index, frame) in env.iter().enumerate().rev() {
             // Below the caller boundary, references to SPECIAL variables
@@ -271,6 +269,24 @@ impl Interpreter {
                     ));
                 }
             }
+        }
+        Ok(None)
+    }
+
+    fn lookup_var_with_resolved_name(
+        &self,
+        name: &str,
+        resolved: &str,
+        env: &Env,
+        resolved_symbol: Option<&SymbolName>,
+    ) -> Result<Option<Value>, LispError> {
+        if resolved == "buffer-undo-list" {
+            return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            )));
+        }
+        if let Some(value) = self.lexical_value(name, resolved, env, resolved_symbol)? {
+            return Ok(Some(value));
         }
         // data.c:find_symbol_value dispatches on the symbol's redirect tag.
         // A SYMBOL_PLAINVAL cell returns immediately; it never probes the
@@ -849,6 +865,23 @@ impl Interpreter {
     /// stable identity in Emaxx.  Redirected symbols still take the complete
     /// alias path above.
     pub(crate) fn lookup_symbol(&self, name: &SymbolName, env: &Env) -> Result<Value, LispError> {
+        // eval_sub: Fassq over the lexical environment, then
+        // find_symbol_value's switch on the redirect.  A plain untrapped
+        // symbol (`plain_store': no alias, not localized, no forwarded or
+        // dedicated store, no watcher) with a value in its cell is that
+        // cell, SYMBOL_PLAINVAL's one load; the general path below probes
+        // the dedicated stores and the flags for every other symbol.
+        if self.globals.plain_store(name) {
+            if !env.is_empty()
+                && let Some(value) =
+                    self.lexical_value(name.as_str(), name.as_str(), env, Some(name))?
+            {
+                return Ok(value);
+            }
+            if let Some(value) = self.globals.value(name) {
+                return Ok(value.clone());
+            }
+        }
         let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
             name.as_str().into()
         } else {

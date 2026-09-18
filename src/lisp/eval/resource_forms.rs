@@ -243,11 +243,12 @@ impl Interpreter {
             return result;
         }
 
-        let restore = self.bind_special_variable(variable, value, env)?;
+        let count = self.specpdl_index();
+        self.specbind_symbol(variable, value, env)?;
         let result = self.sf_progn(body, env);
-        let restore_result = self.restore_special_binding(restore, env);
+        let unbind = self.unbind_to(count, env);
         match result {
-            Ok(value) => restore_result.map(|()| value),
+            Ok(value) => unbind.map(|()| value),
             Err(error) => Err(error),
         }
     }

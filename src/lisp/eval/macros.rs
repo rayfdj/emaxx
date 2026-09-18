@@ -710,13 +710,14 @@ impl Interpreter {
         // buffer's lexical-binding=t into `(eval FORM nil)', causing delayed
         // macro expansion inside a dynamic lambda to misclassify every
         // ordinary argument and local as lexical.
-        let restore = cached_symbol!("lexical-binding").with(|symbol| {
-            self.bind_special_symbol(symbol, if lexical { Value::T } else { Value::Nil }, env)
+        let count = self.specpdl_index();
+        cached_symbol!("lexical-binding").with(|symbol| {
+            self.specbind_symbol(symbol, if lexical { Value::T } else { Value::Nil }, env)
         })?;
         if !lexical {
             let result = operation(self, env);
-            let restore_result = self.restore_special_binding(restore, env);
-            return match (result, restore_result) {
+            let unbind = self.unbind_to(count, env);
+            return match (result, unbind) {
                 (Err(error), _) | (Ok(_), Err(error)) => Err(error),
                 (Ok(value), Ok(())) => Ok(value),
             };
@@ -741,20 +742,17 @@ impl Interpreter {
                 }
             }
         }
-        let dynvars_restore = match self.bind_special_variable("macroexp--dynvars", dynvars, env) {
-            Ok(restore) => restore,
-            Err(error) => {
-                let _ = self.restore_special_binding(restore, env);
-                return Err(error);
-            }
-        };
+        if let Err(error) = cached_symbol!("macroexp--dynvars")
+            .with(|symbol| self.specbind_symbol(symbol, dynvars, env))
+        {
+            let _ = self.unbind_to(count, env);
+            return Err(error);
+        }
         let result = operation(self, env);
-        let dynvars_restore_result = self.restore_special_binding(dynvars_restore, env);
-        let restore_result = self.restore_special_binding(restore, env);
-        match (result, dynvars_restore_result, restore_result) {
-            (Err(error), _, _) => Err(error),
-            (Ok(_), Err(error), _) | (Ok(_), Ok(()), Err(error)) => Err(error),
-            (Ok(value), Ok(()), Ok(())) => Ok(value),
+        let unbind = self.unbind_to(count, env);
+        match (result, unbind) {
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
         }
     }
 

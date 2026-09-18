@@ -307,9 +307,15 @@ impl Interpreter {
             }
         }
 
-        let mut restores = Vec::new();
+        // Flet: specbind each special, the count taken first; a failed
+        // bind unwinds the ones made (its error was returned over them
+        // before).
+        let count = self.specpdl_index();
         for (name, value) in special_bindings {
-            restores.push(self.bind_special_symbol(&name, value, env)?);
+            if let Err(error) = self.specbind_symbol(&name, value, env) {
+                let _ = self.unbind_to(count, env);
+                return Err(error);
+            }
         }
         // GNU evaluates all parallel initializers before saving the lexical
         // environment for the `let'.  Bare defvars in those initializers
@@ -324,10 +330,11 @@ impl Interpreter {
         if has_lexical_scope {
             env.truncate(lexical_scope_depth);
         }
-        for restore in restores.into_iter().rev() {
-            self.restore_special_binding(restore, env)?;
+        let unbind = self.unbind_to(count, env);
+        match result {
+            Ok(value) => unbind.map(|()| value),
+            Err(error) => Err(error),
         }
-        result
     }
 
     pub(super) fn sf_letstar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -352,7 +359,7 @@ impl Interpreter {
         };
         let mut lexical_binding_seen = false;
         let mut lexical_restore_depth = None;
-        let mut restores = Vec::new();
+        let count = self.specpdl_index();
         let setup = (|| -> Result<(), LispError> {
             // The varlist and each element read in place (FletX's
             // FOR_EACH_TAIL).
@@ -391,7 +398,7 @@ impl Interpreter {
                     _ => return Err(wrong_type_argument("listp", binding.clone())),
                 };
                 if self.binding_is_dynamic_symbol(&name, env) {
-                    restores.push(self.bind_special_symbol(&name, value, env)?);
+                    self.specbind_symbol(&name, value, env)?;
                 } else {
                     // FletX saves the original interpreter environment only
                     // when its first lexical binding is installed before an
@@ -427,16 +434,9 @@ impl Interpreter {
         if let Some(depth) = lexical_restore_depth {
             env.truncate(depth);
         }
-        let mut restore_error = None;
-        for restore in restores.into_iter().rev() {
-            if let Err(error) = self.restore_special_binding(restore, env)
-                && restore_error.is_none()
-            {
-                restore_error = Some(error);
-            }
-        }
+        let unbind = self.unbind_to(count, env);
         match result {
-            Ok(value) => restore_error.map_or(Ok(value), Err),
+            Ok(value) => unbind.map(|()| value),
             Err(error) => Err(error),
         }
     }
