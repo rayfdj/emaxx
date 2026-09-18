@@ -2640,6 +2640,13 @@ impl Interpreter {
         self.push_plain_backtrace_frame(function, FrameArgs::Owned(args), evald);
     }
 
+    /// record_in_backtrace for a byte-code call whose arguments stay on
+    /// the thread's bytecode stack: the frame holds them by address.
+    #[inline]
+    pub(crate) fn push_backtrace_frame_borrowed(&mut self, function: Value, args: &[Value]) {
+        self.push_plain_backtrace_frame(function, FrameArgs::borrowed(args), true);
+    }
+
     /// eval.c's set_backtrace_args on the frame eval_sub recorded before
     /// the arguments were evaluated: the frame now names the function and
     /// holds the evaluated arguments (nargs no longer UNEVALLED).

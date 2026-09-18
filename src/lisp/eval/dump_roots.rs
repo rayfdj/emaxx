@@ -37,6 +37,18 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "eval.c:init_eval_once_for_pdumper recreates the specpdl and bytecode stacks; scoped Rust execution roots belong to live call frames, not the image; Fdump_emacs_portable refuses other live Lisp threads",
     ),
     (
+        "bc_stack",
+        "bytecode.c: bc_thread_state is the running thread's, allocated by init_bc_thread at thread creation and never written by pdumper.c; Fdump_emacs_portable runs from loadup.el with no byte-code activation below it beyond its own",
+    ),
+    (
+        "bc_unwinds",
+        "eval.c:init_eval_once_for_pdumper recreates the specpdl; the entries of the byte-code activations in progress are the running thread's",
+    ),
+    (
+        "bc_live_programs",
+        "bytecode.c: the constants of the activations in progress are reached through the functions on the running thread's stack, which pdumper.c does not write",
+    ),
+    (
         "frame_states",
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
@@ -310,7 +322,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("gc_record_high_water", "the last collection's census"),
     ("gc_has_record_census", "the last collection's census"),
-    ("vm_stack_pool", "released bytecode stacks"),
     (
         "sqlite_handles",
         "sqlite objects are refused by the writer (OS handles)",

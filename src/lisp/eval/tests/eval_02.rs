@@ -810,6 +810,64 @@ fn cl_loop_supports_across_with_unbounded_from() {
 }
 
 #[test]
+fn bytecode_calls_lay_their_frames_on_one_stack_and_unwind_them_as_gnu_does() {
+    // bytecode.c's Bcall continues in the callee's frame on the same
+    // thread stack (`goto setup_frame'); an error or throw leaving a
+    // callee pops its frame, runs its unwind-protect forms and restores
+    // its dynamic bindings before the caller's handler sees it, and a
+    // caller's arity signal carries the template as `((MIN . MAX) N)'.
+    // Oracle: GNU Emacs 30.2, `-Q --batch' on the same forms.
+    let result = eval_str_with_upstream_batch_feature(
+        "bytecomp",
+        r#"
+            (progn
+              (eval '(progn
+                (defvar emaxx-ctl20e-dyn 'outer)
+                (defvar emaxx-ctl20e-log nil)
+                (defun emaxx-ctl20e-inner (n)
+                  (push (list 'inner n emaxx-ctl20e-dyn) emaxx-ctl20e-log)
+                  (cond ((eq n 0) (signal 'arith-error (list n)))
+                        ((eq n 1) (throw 'emaxx-ctl20e-tag (list 'thrown emaxx-ctl20e-dyn)))
+                        ((eq n 2) (car n))
+                        (t (* n 10))))
+                (defun emaxx-ctl20e-middle (n)
+                  (let ((emaxx-ctl20e-dyn (list 'middle n)))
+                    (unwind-protect
+                        (list 'middle (emaxx-ctl20e-inner n) emaxx-ctl20e-dyn)
+                      (push (list 'unwound n emaxx-ctl20e-dyn) emaxx-ctl20e-log))))
+                (defun emaxx-ctl20e-outer (n)
+                  (condition-case err
+                      (catch 'emaxx-ctl20e-tag
+                        (emaxx-ctl20e-middle n))
+                    (arith-error (list 'caught 'arith err emaxx-ctl20e-dyn))
+                    (wrong-type-argument (list 'caught 'wta (car err) emaxx-ctl20e-dyn))))
+                (defun emaxx-ctl20e-depth (n)
+                  (if (eq n 0) (emaxx-ctl20e-outer 3) (emaxx-ctl20e-depth (1- n)))))
+                t)
+              (mapc #'byte-compile '(emaxx-ctl20e-inner emaxx-ctl20e-middle
+                                     emaxx-ctl20e-outer emaxx-ctl20e-depth))
+              (format "%S"
+                (list (byte-code-function-p (symbol-function 'emaxx-ctl20e-middle))
+                      (emaxx-ctl20e-outer 0)
+                      (emaxx-ctl20e-outer 1)
+                      (emaxx-ctl20e-outer 2)
+                      (emaxx-ctl20e-outer 3)
+                      (emaxx-ctl20e-depth 200)
+                      (condition-case err (emaxx-ctl20e-middle 'x)
+                        (wrong-type-argument (list 'top (car err) emaxx-ctl20e-dyn)))
+                      (condition-case err (funcall (symbol-function 'emaxx-ctl20e-inner))
+                        (wrong-number-of-arguments (list 'arity (cdr err) emaxx-ctl20e-dyn)))
+                      emaxx-ctl20e-dyn
+                      (reverse emaxx-ctl20e-log))))
+        "#,
+    );
+    assert_eq!(
+        result,
+        Value::String("(t (caught arith (arith-error 0) outer) (thrown (middle 1)) (caught wta wrong-type-argument outer) (middle 30 (middle 3)) (middle 30 (middle 3)) (top wrong-type-argument outer) (arity ((1 . 1) 0) outer) outer ((inner 0 (middle 0)) (unwound 0 (middle 0)) (inner 1 (middle 1)) (unwound 1 (middle 1)) (inner 2 (middle 2)) (unwound 2 (middle 2)) (inner 3 (middle 3)) (unwound 3 (middle 3)) (inner 3 (middle 3)) (unwound 3 (middle 3)) (inner x (middle x)) (unwound x (middle x))))".into())
+    );
+}
+
+#[test]
 fn byte_compile_symbol_preserves_function_attributes() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(

@@ -1880,7 +1880,7 @@ pub(crate) struct CombinedAfterChangeState {
 /// The sentinel is represented structurally because GNU uses an uninterned
 /// symbol for it; ordinary labels retain their Lisp identity and are compared
 /// with `eq', not by their printed names.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct LabeledRestriction {
     buffer_id: u64,
     label: Option<Value>,
@@ -4091,6 +4091,17 @@ impl Interpreter {
             marked.mark(self, value);
         }
         self.stack_roots.mark(self, &mut marked);
+        // The thread's bytecode stack and its activations' specpdl entries
+        // (alloc.c marks them with the thread).
+        for value in self.bc_stack.values() {
+            marked.mark(self, value);
+        }
+        for entry in &self.bc_unwinds {
+            roots::mark_source(self, &mut marked, entry);
+        }
+        for constants in &self.bc_live_programs {
+            marked.mark(self, &Value::Vector(Rc::clone(constants)));
+        }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
                 roots::mark_source(self, &mut marked, &**context);
@@ -4867,7 +4878,9 @@ impl Interpreter {
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.syntax_table_mutable_entries_cache.get_mut().clear();
-        clone.vm_stack_pool.clear();
+        clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
+        clone.bc_unwinds.clear();
+        clone.bc_live_programs.clear();
 
         // The public-cons registry for keymap records is keyed by cons cell
         // identity; remap each identity to its copy.  A registered cons the
@@ -5294,7 +5307,12 @@ pub struct InterpreterState {
         std::cell::RefCell<Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
-    pub(crate) vm_stack_pool: Vec<Vec<Value>>,
+    /// bytecode.c's per-thread bytecode stack, its activations' specpdl
+    /// entries, and the constants of the activations entered from Rust:
+    /// roots for as long as the activations run (alloc.c:mark_threads).
+    pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
+    pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
+    pub(crate) bc_live_programs: Vec<Rc<crate::lisp::types::VectorValue>>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -6175,7 +6193,9 @@ impl Interpreter {
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
-            vm_stack_pool: Vec::new(),
+            bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
+            bc_unwinds: Vec::new(),
+            bc_live_programs: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),

@@ -12017,3 +12017,145 @@ with only the first echo line present -- the known-racy test the
 2026-08 audit records (its single `accept-process-output' returns on
 the first delivery), while a release build was running on the same
 four cores; it passed five times alone and in the second run.
+
+## 2026-09-18 Checkpoint 20e: the byte-code stack as bytecode.c's
+
+*What prompted it.*  Checkpoint 20d's flat profile of a byte-compiled
+call loop (ten million calls of a one-argument function, 126 ns a
+call against GNU's 19) put none of the time in the callee: 18 percent
+in the closure `with_backtrace_arguments' wraps a call in, 17 in `run'
+(the pooled `RefCell' stack taken and its activation registered as a
+root), 11 in `run_with_stack' (the prologue, the handler and unwind
+vectors made per activation), 6 in the symbol's resolution, then the
+drops of the argument copies, the frame's argument vector and the root
+guard.  bytecode.c has none of these: `exec_byte_code' runs on one
+stack per thread (`bc_thread_state'), Bcall of a lexbound byte-code
+function lays the callee's frame above the caller's arguments and
+`goto setup_frame' continues in the same loop, Breturn pops the frame
+and stores the value in the caller's slot, and a signal unwinds
+through the frames by `specpdl' index.  Emaxx's VM left the loop on
+every call: Ffuncall's layers, a fresh Rust activation with its own
+stack borrow, the arguments copied into it, and the frame and its
+roots torn down on return.
+
+*Done.*  (1) `BcStack': one operand stack per thread (`interp.bc_stack',
+a `Vec<Value>' reserved at 256 K slots on first use, bytecode.c's
+`BC_STACK_SIZE' scaled to the value width), exchanged with the other
+thread state on a switch and marked by the collector as `alloc.c'
+marks `bc_thread_state'.  The pooled `RefCell' stacks, the activation
+root registration (`VmActivationRoots') and the per-activation unwind
+vector are gone; the unwind entries are the thread's `bc_unwinds', a
+specpdl by index.  (2) `run_frames' is `exec_byte_code': a `BcFrame'
+(program, pc, base, the handler, unwind and backtrace watermarks) is
+`struct bc_frame'; Bcall of a bare symbol whose function cell holds a
+cached lexbound byte-code function -- or of such a function object --
+records the frame (`record_in_backtrace' over the arguments in place),
+runs Ffuncall's depth check and `maybe_gc', pushes the frame and
+continues in the callee (`goto setup_frame': the template's arity
+check, the optionals padded with nil, the rest list gathered from the
+slots).  Breturn pops the frame, cuts the stack to the callee's slot,
+stores the value there and resumes the caller's program and pc.  (3)
+A signal walks the frames: the handlers above the current frame's
+watermark first; without a match the frame leaves as a Rust-level
+return would (its own signaling ops' frames popped, `handler-bind'
+and the batch backtrace settled at that boundary, its unwinds run,
+its backtrace frame and Ffuncall depth restored) and the search
+continues in the caller's handlers, so `condition-case' and `catch'
+in a compiled caller see the same order of unwinding as GNU's
+`unbind_to' to the handler's `specpdl' mark.  (4) Anything Bcall's
+fast path does not take -- an alias, an autoload, a dynamic arglist,
+a builtin, a lambda, the profiler -- goes through `funcall_from_bytecode'
+as before, over the arguments in place.  (5) The arity signal of a
+byte-code function is bytecode.c's and funcall_lambda's: `((MIN . MAX)
+NARGS)' for a lexbound template, the closure and NARGS for a dynamic
+arglist (`(byte-code\ function NARGS)' before: the control below
+caught it against the oracle).
+
+*Measured.*  A/B interleaved on the same box, GNU on the same machine,
+three rounds, seconds (min / median); w14 is checkpoint 20d, w15 this
+one.
+
+| probe | w14 | w15 | GNU |
+|---|---|---|---|
+| byte-code call loop, 10 M calls of `micro-id' | 1.106 / 1.247 | 0.683 / 0.730 | 0.153 / 0.189 |
+| interpreted lexical loop, 2 M | 1.68 / 1.84 | 1.54 / 1.72 | 0.84 / 0.93 |
+| interpreted dynamic loop, 2 M | 1.45 / 1.50 | 1.34 / 1.46 | 0.30 / 0.38 |
+| 1 M interpreted defun calls | 0.78 / 0.80 | 0.68 / 0.75 | 0.65 / 0.67 |
+| `catch'/`throw' loop | 0.128 / 0.138 | 0.117 / 0.142 | 0.037 / 0.048 |
+| `condition-case' loop | 0.192 / 0.204 | 0.178 / 0.209 | 0.062 / 0.074 |
+| ucs-names (mule-tests) | 8.11 / 8.43 | 7.45 / 7.96 | 1.94 / 1.96 |
+| semantic-utest-C | 4.73 / 5.11 | 4.29 / 4.99 | 0.69 / 0.70 |
+| bindat-test--sint | 3.05 / 3.11 | 2.39 / 2.59 | 0.66 / 0.68 |
+| undo-test4 | 2.72 / 3.02 | 2.68 / 2.86 | 0.71 / 0.87 |
+| fns-tests-sort | 4.73 / 4.82 | 4.17 / 4.53 | 1.22 / 1.28 |
+| pcase-tests-macro | 0.44 / 0.44 | 0.42 / 0.48 | 0.10 / 0.10 |
+
+The byte-code call is 68 ns against GNU's 0.153 / 0.189NS (126 against
+19 at 20d).  The flat profile of the loop on w15: `run_fast' 27
+percent, `run_frames' 26, `push_plain_backtrace_frame' 6.3, the
+`Value' drop 4.3, `truncate_backtrace_frames' 2.3, `leave_frame' 2.1,
+the collector's `trace_pending' 1.8, the `FrameArgs' drop 1.4,
+`capture_current_backtrace_context' 1.4, `maybe_gc' 1.0.
+
+*What did not move, and what was learned.*  The corpus rows moved by
+their share of compiled calls: bindat 3.05 to 2.39 s (its field
+accessors are compiled functions calling compiled functions),
+fns-tests-sort 4.73 to 4.17, ucs-names 8.11 to 7.45, the others
+within their spread; none is call-bound the way the loop is
+(ucs-names conses and collects, semantic parses and searches, sort's
+predicate goes into `<' through Ffuncall).  The interpreted loops do
+not use the VM.  What remains in
+the call after this checkpoint is the frame: `record_in_backtrace' is
+four word stores in C; here the frame's function word is a `Value'
+whose drop is a refcount test, its argument descriptor an enum, its
+detail an `Option<Box>', and a flag test per call decides whether
+edebug wants the context captured; and the `Value' clone of the
+callee out of its stack slot and of every operand -- the reference
+count per copy the representation imposes.  Both are the next two
+items: the frame as four words, then the representation.
+
+*Which of these mirror C.*  The one stack per thread, the frame laid
+above the caller's arguments, `goto setup_frame', Breturn's store
+into the callee's slot and the unwind by specpdl index are
+bytecode.c's; the arity data is bytecode.c's and eval.c's.  The
+frame-by-frame handler search is how a Rust loop expresses what
+`unbind_to' and `longjmp' do in C (each frame's `handler-bind' and
+batch-backtrace settling runs at the boundary it would have run at
+before); it is a structure of this VM, not of GNU's.  The 256 K-slot
+reservation is `BC_STACK_SIZE' (64 K words) scaled to a 16-byte
+value; the recursion limit stays `max-lisp-eval-depth' as in C.
+
+*Verified.*  Control `bytecode_calls_lay_their_frames_on_one_stack_and_unwind_them_as_gnu_does'
+(eval_02): three byte-compiled functions nested, an `arith-error', a
+`throw', a `wrong-type-argument' and an arity error each leaving the
+innermost frame through a `let' of a special variable and an
+`unwind-protect' in the middle one, caught by the outer one's
+`condition-case' or `catch', two hundred frames deep once, and the
+binding's value and the unwind log afterwards -- the oracle's output
+for the same forms (`ctl20e.el'), byte for byte; the arity item was
+`(byte-code\ function 0)' before item 5.  The special-form arity
+control (`ctl20a') and the watcher control (`ctl19z3') produce the
+oracle's output on the final build.
+The library suite, single-threaded in the worktree: 2,709 passed and
+six failed before the last two items -- the three unwritable-directory
+tests (root), two charset contracts against the oracle that pass under
+the gate's `LANG=C' (the run had inherited the shell's locale; the
+oracle's `char-charset' of U+00E9 is `unicode' under C and
+`iso-8859-1' under UTF-8), and the root inventory's anti-cheat, which
+wanted the three thread fields (`bc_stack', `bc_unwinds',
+`bc_live_programs') documented as roots re-created after a load
+(bytecode.c's `bc_thread_state' is the running thread's, which
+pdumper.c never writes; `init_bc_thread' allocates it) -- the inventory
+tests pass with that entry.  The first gate run failed cli_parity's
+`c_owned_switches_and_startup_arguments_agree_with_gnu': with
+`--batch --no', `command-line' signals the ambiguous option,
+`normal-top-level''s unwind form then signals a void variable, and
+GNU exits with the second message; the activation's exit balance
+here let the error in flight win over the unwind form's, and the
+frame's leave kept the first of several.  In C each signal during
+`unbind_to' starts its own unwinding (the remaining forms still run),
+so the last signal is the one that leaves: both paths now keep the
+last, the test passes, and this gate is the record.  Strict clippy
+and fmt exit 0.
+
+*Gate.*  (pending)

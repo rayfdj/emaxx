@@ -1153,7 +1153,7 @@ impl Interpreter {
     /// through here, so an error the evaluator itself signals -- a void
     /// function or variable, a wrong arity -- reaches the handlers with the
     /// same innermost frame GNU shows.
-    fn settle_frame_result(
+    pub(crate) fn settle_frame_result(
         &mut self,
         result: Result<Value, LispError>,
         env: &mut Env,
@@ -1217,6 +1217,45 @@ impl Interpreter {
 
     /// Only execute_record fills this cache, so a hit is a genuine
     /// byte-code function whose slots have not been mutated since.
+    /// Bcall's fast path: FUNC as a lexbound byte-code function whose
+    /// program is cached (a bare symbol read through its function cell,
+    /// as `XBARE_SYMBOL (call_fun)->u.s.function'), or None for anything
+    /// Ffuncall must handle -- an alias, an autoload, a builtin that
+    /// overrides its Lisp definition, a dynamic arglist, the profiler.
+    pub(crate) fn bytecode_callee(
+        &self,
+        func: &Value,
+    ) -> Option<(std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>, u64)> {
+        let id = match func {
+            Value::Record(id) => *id,
+            Value::Symbol(name) => {
+                let facts = self
+                    .globals
+                    .facts_or(name, || crate::lisp::primitives::name_facts_symbol(name));
+                if facts.prefer_override {
+                    return None;
+                }
+                match self.globals.function(name) {
+                    Some(Value::Record(id)) => *id,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if profile_path().is_some() {
+            return None;
+        }
+        let program = self
+            .bytecode_program_cache
+            .get((id as usize).checked_sub(1)?)?
+            .as_ref()?;
+        matches!(
+            program.argspec,
+            crate::lisp::bytecode::ArgSpec::Packed { .. }
+        )
+        .then(|| (std::rc::Rc::clone(program), id))
+    }
+
     fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
         (record_id as usize)
             .checked_sub(1)

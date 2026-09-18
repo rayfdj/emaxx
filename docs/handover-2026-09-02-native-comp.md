@@ -874,6 +874,19 @@ frame wrapper, the pooled stack and its root registration, the
 prologue, the resolution), which bytecode.c's `goto setup_frame` has
 none of: that is checkpoint 20e.
 
+Checkpoint 20e (2026-09-18, for main): the byte-code stack as
+bytecode.c's -- one operand stack per thread, Bcall of a lexbound
+byte-code function lays the callee's frame above the caller's
+arguments and continues in the same loop (`goto setup_frame`),
+Breturn pops it into the callee's slot, a signal unwinds frame by
+frame by specpdl index; the pooled activation stacks, their root
+registration and the per-activation vectors are gone, and the arity
+signal is bytecode.c's `((MIN . MAX) NARGS)`.  The byte-code call
+loop 1.106 to 0.683 s for ten million calls (GNU 0.153), 68
+ns a call against 19.  Open after it: the backtrace frame as
+record_in_backtrace's four words, the reference count per operand
+copy.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
