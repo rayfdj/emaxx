@@ -12002,4 +12002,18 @@ six handler controls beside them.  Under root the three
 unwritable-directory tests fail as on every checkpoint (the gate runs
 the suite as user `emaxx', where they pass).
 
-*Gate.*  (pending)
+*Gate.*  Grouped gate run-1789744953795384710-19580 on the tree as
+committed (67525983; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx': the ten library groups
+(batch 50, compat_runtime 84, eval_01 373, eval_02 284, eval_03 320,
+eval_04 254, eval_05 351, lightweight 446, primitives 497, tty 56 with
+its 2 ignored), the bins stage (57, 2, 0 and 1 in 194 s) and the six
+integration binaries (23, 6, 3, 1, 1 and 5 in 500 s), 2,717 scheduled
+and observed, the three unwritable-directory tests among them; fmt
+and strict clippy exit 0 before and after.  A first run of the same
+gate (run-1789744444280548470-12176) failed one test in the primitives
+group, `process_send_string_and_region_route_output_to_the_process_buffer',
+with only the first echo line present -- the known-racy test the
+2026-08 audit records (its single `accept-process-output' returns on
+the first delivery), while a release build was running on the same
+four cores; it passed five times alone and in the second run.
