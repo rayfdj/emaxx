@@ -11723,4 +11723,11 @@ watcher, buffer-local, byte-code, closure and search controls, the
 arity control by name) passed on these sources in the main tree;
 strict clippy and fmt exit 0.
 
-*Gate.*  (pending)
+*Gate.*  Grouped gate run-1789721220732125194-5085 on the tree as
+committed (d301a7ce; the working tree differed by the oracle lock
+alone): the ten library groups (batch 50, compat_runtime 84, eval_01
+373, eval_02 284, eval_03 321, eval_04 254, eval_05 351, lightweight
+446, primitives 497, tty 56 with its 2 ignored), the bins stage (57,
+2, 0 and 1 in 336 s) and the six integration binaries (23, 6, 3, 1,
+1 and 5 in 508 s), 2,718 scheduled and observed; fmt and strict
+clippy exit 0 before and after.
