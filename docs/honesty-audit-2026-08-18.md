@@ -12457,4 +12457,24 @@ binary was built before fifteen `clone' calls on the now-Copy
 `ConsRef' were removed for clippy and a root function moved above
 its file's test module: no change of code).
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  Grouped gate run-1789785045586461655-26753 on the tree as
+committed (60a6b3df; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx': the ten library groups
+(batch 50, compat_runtime 84, eval_01 374, eval_02 285, eval_03 320,
+eval_04 254, eval_05 351, lightweight 444, primitives 497, tty 56 with
+its 2 ignored), the bins stage (57, 2, 0 and 1 in 16 s) and the six
+integration binaries (23, 6, 3, 1, 1 and 5 in 295 s), 2,717 scheduled
+and observed; fmt and strict clippy exit 0 before and after.  Three
+runs before it, on the same code: the first, with the gate's batch
+and lightweight groups on two test threads as they had been, ended in
+a general protection fault in the batch group -- two interpreters on
+two OS threads allocating from the process's free list, one thread's
+sweep freeing what the other held -- and the gate now runs every
+group, the bins and the integration binaries on one thread (one Lisp
+OS thread at a time, as C), the change amended into the checkpoint's
+commit; the second and third failed one integration test,
+`batch_exit_terminates_owned_children_like_gnu', on the oracle's
+side: GNU's own child was still alive five seconds after its exit,
+because the gate had been launched under `nohup', whose ignored
+SIGHUP every descendant inherits, the child included; launched
+without it, the run above.  Three runs of the test alone passed.
