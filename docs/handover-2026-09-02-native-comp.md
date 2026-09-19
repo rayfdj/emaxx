@@ -1004,6 +1004,21 @@ native heap as a second representation, the id-addressed kinds, the
 symbol's cells outside the symbol, the stack zeroing after a
 collection, no global lock.
 
+Checkpoint 20l (2026-09-19): the mark stack as alloc.c's (`mark_stk',
+`process_mark_stack'; the `SmallVec' queue and the prefetch window of
+19k gone) and the symbols rooted through the obarray alone (the
+enumeration of every name-keyed table is `mapatoms'' and completion's,
+not a root).  One collection 148 M to 91 M instructions and the lexical
+loop 12,746 to 10,478 an iteration; but the collection's wall clock 32
+to 35 ms against GNU's 6.4 and every allocating probe three to eight
+percent slower: the collection is bound by memory, a cache miss per
+object over 112-byte conses, 48-byte string cells and 56-byte symbols,
+which only the representation (phase D: the tagged word, the 16-byte
+cons) and the image as an unswept region will fix.  Next: the
+id-addressed kinds (records first) as vectorlikes, the precondition of
+both, since a record is an id the conservative scan cannot see and is
+therefore never swept (the retention pass).
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -13101,3 +13101,115 @@ primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
 and 1 in 27 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
 in 310 s), 2,718 scheduled and observed; fmt and strict clippy exit 0
 before and after.  First run, nothing else on the machine.
+
+## 2026-09-19 Checkpoint 20l: the mark phase as alloc.c's mark stack, and the roots as the obarray's
+
+*What prompted it.*  At GNU's collection rate (checkpoint 20k) a
+collection of the booted heap costs 38 ms against GNU's 7, and it
+runs 120 times per six million conses: every allocating probe is now
+two to four times GNU on that account.  Callgrind on one collection
+(148 M instructions): the mark phase 110 M, of which the queue itself
+(a `SmallVec' with a prefetch window of eight, marking on the way out)
+was a third; five name-keyed symbol tables rebuilt as string sets for
+the roots 35 M; the sweeps 6 M.
+
+*Done.*
+
+1. **The mark stack as alloc.c's.**  `process_mark_stack': pop an
+   object, mark it, push what it holds if it was not marked already;
+   a plain vector for the stack, the value pushed as the word it is
+   (`Value: Copy').  The `SmallVec' queue, its `ManuallyDrop' copies,
+   the eight-entry window and the software prefetch (an invented
+   optimization from checkpoint 19k, measured then as a wall-clock
+   win) are gone.
+
+2. **The roots as the obarray's.**  `mark_static_roots_into' marked
+   every symbol "a table of this state keys by", an enumeration
+   (`known_symbols_shared') rebuilt from five name-keyed tables
+   whenever one had changed since the last collection, interning
+   every name again (17,863 `intern_str' calls a rebuild).  The
+   enumeration admits visible names only, and a visible name's symbol
+   is an interned symbol: a member of the process's obarray, which
+   `mark_interned_symbol_roots' roots on every collection already
+   (alloc.c's `mark_object (Vobarray)' through
+   `mark_thread_local_roots').  The uninterned symbols whose cells a
+   state holds are marked by their own loop (checkpoint 20j).  The
+   enumeration stays for `mapatoms' and completion, which need it;
+   it is no longer a root.
+
+*Measured.*  Wall clock, three interleaved rounds with nothing
+else on the machine, seconds (min / median); w24 is checkpoint 20k,
+w25 this one, GNU on the same machine; the probes are `tools/perf/'.
+
+| probe | w24 (20k) | w25 (20l) | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 3.673 / 3.718 | 3.895 / 3.906 | 0.990 / 1.021 |
+| interpreted dynamic loop, 2 M | 1.099 / 1.114 | 1.104 / 1.111 | 0.417 / 0.425 |
+| 1 M interpreted defun calls | 2.942 / 2.965 | 3.038 / 3.087 | 0.657 / 0.685 |
+| byte-code call loop, 10 M | 0.505 / 0.531 | 0.526 / 0.537 | 0.189 / 0.196 |
+| 300 k conses pushed | 0.450 / 0.452 | 0.473 / 0.488 | 0.092 / 0.095 |
+| the collection after them | 0.061 / 0.063 | 0.075 / 0.078 | 0.012 / 0.013 |
+| ten collections of the idle booted heap | 0.318 / 0.343 | 0.345 / 0.368 | 0.064 / 0.064 |
+| mapcar over 100 k, twenty times | 1.825 / 1.962 | 2.029 / 2.066 | 0.212 / 0.214 |
+| six million conses (`gcs-per-conses.el') | 120 collections, 6.98 / 7.11 s | 120 collections, 7.26 / 7.33 s | 120 collections, 1.64 / 1.76 s |
+
+Callgrind: one collection of the idle booted heap 148 M instructions
+to 91 M (the queue's `SmallVec' tests and the window's copies gone;
+the root enumeration was cached between idle collections, so item 2
+shows nothing here); the lexical loop 12,746 instructions an
+iteration to 10,478 (its `let' unbinding bumps the obarray epoch, so
+every one of its collections rebuilt the enumeration: item 2), the
+dynamic loop 6,499 unchanged (GNU 3,234 and 5,477).  Wall clock: a
+collection of the idle heap 32 to 35 ms (GNU 6.4), and every
+allocating row three to eight percent slower -- the prefetch window
+was the wall-clock win it was recorded as, on cells this size (a
+112-byte cons is two cache lines; GNU's 16-byte cons is a quarter of
+one), and C's loop without it pays the miss per object.  The corpus
+rows (two rounds, the minimum): ucs-names GNU 2.06 s, 20k 7.94, 20l
+8.07; fns-tests-sort 1.31, 6.75, 7.57; pcase-tests-macro 0.09, 0.54,
+0.58; undo-test4 0.99, 7.74, 7.76.
+
+*What did not move, and what was learned.*  The wall clock of a collection did not move
+down; it moved up by a tenth, and the instruction count down by two
+fifths.  The collection is bound by memory, not by instructions: 500 k
+objects reachable from the image, each a cache miss on its mark word
+and another on its fields, at 112 bytes a cons, 48 a string cell plus
+its text on the Rust heap, 56 a symbol.  GNU marks the same graph in
+6 ms because its objects are a fraction of the size and packed in the
+dump.  The invented prefetch (19k) bought a tenth of that back and is
+gone under the rule that the structure comes first; what buys the
+rest is the representation -- the tagged word and the 16-byte cons
+(phase D) -- and the image as a region the sweep never visits.  Ahead
+of phase D, the id-addressed kinds must become vectorlikes (a record
+is an id the conservative scan cannot see, which is why records are
+never swept and why the retention pass exists): that is the next
+checkpoint.  What was learned about item 2: it was not a
+per-collection cost on an idle heap but on any program that unbinds a
+special (`let' over an unbound variable bumps the obarray epoch:
+`remove_global_binding_symbol', a deviation of its own, since C's
+`unbind_to' stores `Qunbound' back into the value cell and touches no
+table), and it was a quarter of the lexical loop's collections.
+
+*Which of these mirror C, and which do not.*  C: the mark stack and
+its loop (`mark_stk', `process_mark_stack'), the obarray as the
+symbols' root.  Not C, the standing list carried forward from 20k
+unchanged: the image's objects in the swept blocks (the sweep visits
+144 k conses and 318 k strings GNU never sweeps), the retention pass
+over the never-swept records (a second traversal from every record,
+dead or alive, because a record is an id the conservative scan cannot
+see: the next step is records as vectorlikes, alloc.c's, and with
+them the other id-addressed kinds), the stack zeroed after a
+collection, the native heap as a second representation and its
+handles as permanent roots, the symbol's cells outside the symbol,
+the uninterned symbol's book, the sweep order, no global lock, the
+subr's minimum arity policed after evaluation, a borrowed string
+object's bytes uncounted by the sweep.
+
+*Verified.*  The focused groups on the gate build (collection,
+census, roots, symbol, gc, mapatoms, completion, obarray, weak,
+finalizer, intern: 297 tests) after the change; `cargo clippy
+--all-targets -- -D warnings' and `cargo fmt --check' clean; the
+probes above on the release build, three rounds interleaved with GNU
+and checkpoint 20k's binary.
+
+*Gate.*  GATE-PLACEHOLDER

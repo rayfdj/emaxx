@@ -3281,11 +3281,9 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
-    /// Objects reached but not yet traced, as bit copies of the values
-    /// that reached them (no reference count taken: nothing is freed while
-    /// the graph is being marked, and the copy is never dropped).  Taking
-    /// the count was a third of every collection.
-    pending: smallvec::SmallVec<[std::mem::ManuallyDrop<Value>; 16]>,
+    /// alloc.c's `mark_stk': the objects reached and not yet traced,
+    /// copied as words.
+    pending: Vec<Value>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
@@ -3328,7 +3326,7 @@ impl LispReachability<'_, '_> {
     fn default_without_epoch() -> Self {
         Self {
             native: None,
-            pending: smallvec::SmallVec::new(),
+            pending: Vec::new(),
             retaining: false,
             epoch: 0,
             markers: MarkedIds::default(),
@@ -3340,23 +3338,6 @@ impl LispReachability<'_, '_> {
             finalizers: MarkedIds::default(),
         }
     }
-}
-
-/// A hint that the cache line at ADDRESS is about to be written.
-#[inline]
-fn prefetch_for_write(address: *const u8) {
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: a prefetch is a hint that faults on no address.
-    unsafe {
-        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(address as *const i8)
-    };
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: as above; the instruction reads nothing and writes nothing.
-    unsafe {
-        std::arch::asm!("prfm pstl1keep, [{0}]", in(reg) address, options(nostack, preserves_flags, readonly))
-    };
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    let _ = address;
 }
 
 pub(crate) struct WeakHashReachability {
@@ -3425,54 +3406,17 @@ impl LispReachability<'_, '_> {
         self.trace_pending(interp)
     }
 
-    /// Trace everything queued.  The mark is written when an object is
-    /// taken off the queue, a window of objects after its mark word was
-    /// prefetched on the way in (Cher, Hosking and Vitek's software
-    /// prefetching for mark-sweep): that write, a cache miss per object
-    /// over the scattered heap, was two thirds of the mark phase when
-    /// each object was marked as it was reached.  A reference to an
-    /// object already marked costs one push and one rejected pop.
+    /// alloc.c:process_mark_stack: pop an object, mark it, and if it
+    /// was not marked already push what it holds.
     fn trace_pending(&mut self, interp: &Interpreter) -> bool {
-        const WINDOW: usize = 8;
-        let mut window: [Option<std::mem::ManuallyDrop<Value>>; WINDOW] =
-            std::array::from_fn(|_| None);
-        let mut slot = 0;
-        let mut queued_in_window = 0usize;
         let mut changed = false;
-        loop {
-            let next = self.pending.pop();
-            if let Some(value) = &next {
-                Self::prefetch_mark(value);
-                queued_in_window += 1;
-            }
-            let oldest = std::mem::replace(&mut window[slot], next);
-            slot = (slot + 1) % WINDOW;
-            if let Some(value) = oldest {
-                queued_in_window -= 1;
-                if self.mark_object(&value) {
-                    changed = true;
-                    self.trace_fields(interp, &value);
-                }
-            } else if queued_in_window == 0 && self.pending.is_empty() {
-                break;
+        while let Some(value) = self.pending.pop() {
+            if self.mark_object(&value) {
+                changed = true;
+                self.trace_fields(interp, &value);
             }
         }
         changed
-    }
-
-    /// The object VALUE names is about to be marked: its mark word into
-    /// the cache.
-    #[inline]
-    fn prefetch_mark(value: &Value) {
-        let mark: *const crate::lisp::types::MarkBit = match value {
-            Value::Cons(cell) => &cell.mark,
-            Value::Vector(vector) => vector.mark_bit(),
-            Value::String(text) => text.mark_bit(),
-            Value::Symbol(symbol) => symbol.mark_bit(),
-            Value::Float(value) => value.mark_bit(),
-            _ => return,
-        };
-        prefetch_for_write(mark as *const u8);
     }
 
     /// Queue VALUE's object for marking (nothing for an immediate).
@@ -3483,12 +3427,7 @@ impl LispReachability<'_, '_> {
         ) {
             return;
         }
-        // SAFETY: the copy is only ever read, through `ManuallyDrop', while
-        // the object it names is kept alive by whatever the tracer reached
-        // it through; the marking phase frees nothing.
-        self.pending.push(std::mem::ManuallyDrop::new(unsafe {
-            std::ptr::read(value)
-        }));
+        self.pending.push(*value);
     }
 
     /// alloc.c's mark on the object: true when VALUE's object was not yet
@@ -4314,12 +4253,12 @@ impl Interpreter {
         for (_, value) in self.globals.iter() {
             mark(value);
         }
-        // Every symbol a table of this state keys by (the obarray's
-        // entries in C): the symbol object and its name strings stay,
-        // whether or not any object names the symbol.
-        for symbol in self.known_symbols_shared().iter() {
-            mark(&Value::Symbol(*symbol));
-        }
+        // The obarray's entries are the process's interned symbols, a root
+        // of every collection (`mark_interned_symbol_roots'); the
+        // enumeration of every symbol a table of this state keys by was
+        // marked here too, and rebuilt as string sets on every collection
+        // in which a table had changed, for interned names only: the
+        // obarray root's own members.
         // An uninterned symbol whose value cell this state holds (the
         // cell lives in the table, not in the symbol as C's does): the
         // table kept the symbol alive through the reference count, and
