@@ -602,7 +602,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     );
     for (name, value, expected) in [
         ("byte-code-function-p", lambda, Value::Nil),
-        ("stringp", vector.clone(), Value::Nil),
+        ("stringp", vector, Value::Nil),
         ("documentation-stringp", vector, Value::Nil),
         ("char-or-string-p", Value::Integer(0x11_0000), Value::T),
     ] {
@@ -626,18 +626,13 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let function = crate::lisp::primitives::call(
         &mut interpreter,
         "make-byte-code",
-        &[
-            Value::Integer(0),
-            code,
-            constants.clone(),
-            Value::Integer(1),
-        ],
+        &[Value::Integer(0), code, constants, Value::Integer(1)],
         &mut environment,
     )
     .expect("alloc.c:Fmake_byte_code");
     assert_eq!(
         interpreter
-            .call_function_value(function.clone(), None, &[], &mut environment)
+            .call_function_value(function, None, &[], &mut environment)
             .expect("first bytecode execution"),
         Value::Integer(11),
     );

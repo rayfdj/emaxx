@@ -325,7 +325,7 @@ impl ConsMutationSnapshot {
         let mut field_ids = Vec::new();
         let mut native_cells = Vec::new();
         let mut seen = HashSet::new();
-        let mut current = value.clone();
+        let mut current = *value;
         while let Value::Cons(cell) = current {
             let cell_id = ConsCell::identity(&cell);
             if !seen.insert(cell_id) {
@@ -335,7 +335,7 @@ impl ConsMutationSnapshot {
             if cell.attached_native_address().is_some() {
                 native_cells.push(cell.downgrade());
             }
-            current = cell.cdr.borrow().clone();
+            current = *cell.cdr.borrow();
         }
         let mut snapshot = Self::from_field_ids(field_ids);
         snapshot.native_cells = native_cells;
@@ -381,7 +381,7 @@ impl ConsMutationSnapshot {
 
     pub(crate) fn include_tree(&mut self, value: &Value) {
         let mut seen = HashSet::new();
-        let mut pending = vec![value.clone()];
+        let mut pending = vec![*value];
         let mut added = Vec::new();
         while let Some(value) = pending.pop() {
             let Value::Cons(cell) = value else {
@@ -395,8 +395,8 @@ impl ConsMutationSnapshot {
                 self.track_native_cell(&cell);
             }
             added.extend(fields);
-            pending.push(cell.car.borrow().clone());
-            pending.push(cell.cdr.borrow().clone());
+            pending.push(*cell.car.borrow());
+            pending.push(*cell.cdr.borrow());
         }
         added.sort_unstable();
         added.dedup();
@@ -1040,7 +1040,7 @@ impl SymbolName {
     }
 
     pub(crate) fn lisp_name(&self) -> Value {
-        self.0.lisp_name.clone()
+        self.0.lisp_name
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -1392,7 +1392,7 @@ impl LambdaValue {
                     matches!(items.first(), Some(Value::Symbol(head)) if head == "vector-literal")
                 })
                 .and_then(|items| items.get(1).cloned())
-                .unwrap_or_else(|| slot.clone())
+                .unwrap_or(*slot)
         })
     }
 
@@ -1949,8 +1949,9 @@ pub enum ReaderForm {
     },
 }
 
-/// A Lisp value. This covers the subset we need for ERT tests.
-#[derive(Debug)]
+/// A Lisp value: lisp.h's `Lisp_Object', copied as a word is (no
+/// count, no drop glue); every kind is a cell address or an immediate.
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
     Nil,
     T,
@@ -2022,55 +2023,6 @@ impl Value {
     pub(crate) fn discard(self) {
         let _ = self;
     }
-
-    #[inline(never)]
-    fn clone_shared(&self) -> Value {
-        match self {
-            Value::Nil => Value::Nil,
-            Value::T => Value::T,
-            Value::Integer(value) => Value::Integer(*value),
-            Value::BigInteger(value) => Value::BigInteger(*value),
-            Value::Float(value) => Value::Float(*value),
-            Value::String(value) => Value::String(*value),
-            Value::StringObject(value) => Value::StringObject(*value),
-            Value::Symbol(value) => Value::Symbol(*value),
-            Value::Cons(value) => Value::Cons(*value),
-            Value::Vector(value) => Value::Vector(*value),
-            Value::BuiltinFunc(value) => Value::BuiltinFunc(*value),
-            Value::Lambda(value) => Value::Lambda(*value),
-            Value::Buffer(value) => Value::Buffer(*value),
-            Value::Marker(value) => Value::Marker(*value),
-            Value::Overlay(value) => Value::Overlay(*value),
-            Value::CharTable(value) => Value::CharTable(*value),
-            Value::Frame(value) => Value::Frame(*value),
-            Value::Terminal(value) => Value::Terminal(*value),
-            Value::Record(value) => Value::Record(*value),
-            Value::Finalizer(value) => Value::Finalizer(*value),
-            Value::ReaderForm(value) => Value::ReaderForm(*value),
-            Value::Unbound => Value::Unbound,
-        }
-    }
-}
-
-impl Clone for Value {
-    /// An immediate is copied in place (lisp.h copies a word); only a
-    /// value that shares a heap object takes the reference count.
-    #[inline(always)]
-    fn clone(&self) -> Value {
-        if self.is_immediate() {
-            // SAFETY: an immediate owns nothing, so a bitwise copy is the
-            // same value with nothing to account for.
-            unsafe { std::ptr::read(self) }
-        } else if let Value::Cons(cell) = self {
-            // The evaluator's reads of a form's cells: the count taken in
-            // line, not through the general copy.
-            Value::Cons(*cell)
-        } else if let Value::Symbol(name) = self {
-            Value::Symbol(*name)
-        } else {
-            self.clone_shared()
-        }
-    }
 }
 
 /// eval.c's `Vinternal_interpreter_environment' as one scope holds it:
@@ -2115,7 +2067,7 @@ impl EnvFrame {
         bindings: impl IntoIterator<Item = (SymbolName, Value)>,
         outer: &Value,
     ) -> Self {
-        let mut environment = outer.clone();
+        let mut environment = *outer;
         for (symbol, value) in bindings {
             environment = Value::cons(Value::cons(Value::Symbol(symbol), value), environment);
         }
@@ -2159,8 +2111,7 @@ pub(crate) fn current_environment(env: &Env) -> Option<&Value> {
 /// The current interpreter environment as a value (`nil' with no frame).
 #[inline]
 pub(crate) fn current_environment_value(env: &Env) -> Value {
-    env.last()
-        .map_or(Value::Nil, |frame| frame.environment().clone())
+    env.last().map_or(Value::Nil, |frame| *frame.environment())
 }
 
 /// Whether `Vinternal_interpreter_environment' is non-nil.
@@ -2234,10 +2185,10 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
     if circular {
         LispError::SignalValue(Value::list([
             Value::Symbol("circular-list".into()),
-            environment.clone(),
+            *environment,
         ]))
     } else {
-        LispError::WrongTypeArgument("listp".into(), environment.clone())
+        LispError::WrongTypeArgument("listp".into(), *environment)
     }
 }
 
@@ -2586,7 +2537,7 @@ impl Value {
             Value::Integer(n) => Ok(*n),
             // A bignum is an integer but not a fixnum, which is exactly what
             // CHECK_FIXNUM rejects.
-            _ => Err(LispError::WrongTypeArgument("fixnump".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("fixnump".into(), *self)),
         }
     }
 
@@ -2597,11 +2548,8 @@ impl Value {
             Value::Integer(n) => Ok(*n),
             Value::BigInteger(n) => n
                 .to_i64()
-                .ok_or_else(|| LispError::WrongTypeArgument("fixnump".into(), self.clone())),
-            _ => Err(LispError::WrongTypeArgument(
-                "integerp".into(),
-                self.clone(),
-            )),
+                .ok_or_else(|| LispError::WrongTypeArgument("fixnump".into(), *self)),
+            _ => Err(LispError::WrongTypeArgument("integerp".into(), *self)),
         }
     }
 
@@ -2611,12 +2559,12 @@ impl Value {
         match self {
             Value::Float(f) => Ok(f.get()),
             Value::Integer(n) => Ok(*n as f64),
-            Value::BigInteger(n) => n.to_f64().ok_or_else(|| {
-                LispError::WrongTypeArgument("number-or-marker-p".into(), self.clone())
-            }),
+            Value::BigInteger(n) => n
+                .to_f64()
+                .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *self)),
             _ => Err(LispError::WrongTypeArgument(
                 "number-or-marker-p".into(),
-                self.clone(),
+                *self,
             )),
         }
     }
@@ -2624,7 +2572,7 @@ impl Value {
     pub fn as_string(&self) -> Result<&str, LispError> {
         match self {
             Value::String(s) => Ok(s),
-            _ => Err(LispError::WrongTypeArgument("stringp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("stringp".into(), *self)),
         }
     }
 
@@ -2633,23 +2581,23 @@ impl Value {
             Value::Nil => Ok("nil"),
             Value::T => Ok("t"),
             Value::Symbol(s) => Ok(s),
-            _ => Err(LispError::WrongTypeArgument("symbolp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("symbolp".into(), *self)),
         }
     }
 
     pub fn car(&self) -> Result<Value, LispError> {
         match self {
-            Value::Cons(cell) => Ok(cell.car.borrow().clone()),
+            Value::Cons(cell) => Ok(*cell.car.borrow()),
             Value::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
     pub fn cdr(&self) -> Result<Value, LispError> {
         match self {
-            Value::Cons(cell) => Ok(cell.cdr.borrow().clone()),
+            Value::Cons(cell) => Ok(*cell.cdr.borrow()),
             Value::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
@@ -2659,7 +2607,7 @@ impl Value {
                 *cell.car.borrow_mut() = new_car;
                 Ok(())
             }
-            _ => Err(LispError::WrongTypeArgument("consp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("consp".into(), *self)),
         }
     }
 
@@ -2669,7 +2617,7 @@ impl Value {
                 *cell.cdr.borrow_mut() = new_cdr;
                 Ok(())
             }
-            _ => Err(LispError::WrongTypeArgument("consp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("consp".into(), *self)),
         }
     }
 
@@ -2689,7 +2637,7 @@ impl Value {
 
     pub fn cons_values(&self) -> Option<(Value, Value)> {
         self.cons_cells()
-            .map(|(car, cdr)| (car.borrow().clone(), cdr.borrow().clone()))
+            .map(|(car, cdr)| (*car.borrow(), *cdr.borrow()))
     }
 
     /// Convert a proper list to a Vec.
@@ -2711,7 +2659,7 @@ impl Value {
     /// Source evaluation and other callers share this path so cycle and
     /// improper-list handling cannot drift between independent list walkers.
     pub(crate) fn extend_list_elements(&self, result: &mut Vec<Value>) -> Result<(), LispError> {
-        let mut current = self.clone();
+        let mut current = *self;
         let mut seen = CycleGuard::new();
         loop {
             match current {
@@ -2720,14 +2668,11 @@ impl Value {
                     if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
                     }
-                    result.push(cell.car.borrow().clone());
-                    current = cell.cdr.borrow().clone();
+                    result.push(*cell.car.borrow());
+                    current = *cell.cdr.borrow();
                 }
                 _ => {
-                    return Err(LispError::WrongTypeArgument(
-                        "listp".into(),
-                        current.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("listp".into(), current));
                 }
             }
         }
@@ -2895,7 +2840,7 @@ fn format_value(
         {
             // Vector literals ride on conses internally but print as vectors.
             write!(f, "[")?;
-            let mut current = cell.cdr.borrow().clone();
+            let mut current = *cell.cdr.borrow();
             let mut first = true;
             while let Value::Cons(cell) = current {
                 if !first {
@@ -2903,7 +2848,7 @@ fn format_value(
                 }
                 format_value(&cell.car.borrow(), f, seen)?;
                 first = false;
-                current = cell.cdr.borrow().clone();
+                current = *cell.cdr.borrow();
             }
             write!(f, "]")
         }
@@ -2919,7 +2864,7 @@ fn format_value(
                 return format_value(&inner.car.borrow(), f, seen);
             }
             write!(f, "(")?;
-            let mut current = value.clone();
+            let mut current = *value;
             let mut first = true;
             loop {
                 match current {
@@ -2937,7 +2882,7 @@ fn format_value(
                         }
                         format_value(&cell.car.borrow(), f, seen)?;
                         first = false;
-                        current = cell.cdr.borrow().clone();
+                        current = *cell.cdr.borrow();
                     }
                     Value::Nil => break,
                     other => {
@@ -3183,7 +3128,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                     }
                     render(&cell.car.borrow().clone(), depth - 1, out);
                     emitted += 1;
-                    let next = cell.cdr.borrow().clone();
+                    let next = *cell.cdr.borrow();
                     match next {
                         Value::Nil => break,
                         Value::Cons(_) => cursor = next,
@@ -3294,7 +3239,7 @@ mod tests {
         assert_eq!(*binding.cdr.borrow(), Value::Integer(2));
         // The head shares the outer scope's cells: the tail of the frame
         // is the outer environment itself.
-        let mut tail = frame.environment().clone();
+        let mut tail = *frame.environment();
         for _ in 0..2 {
             tail = tail.cdr().expect("cons");
         }
@@ -3307,7 +3252,7 @@ mod tests {
     #[test]
     fn cloning_string_reuses_the_text_allocation() {
         let value = Value::string("shared text");
-        let clone = value.clone();
+        let clone = value;
         let (Value::String(text), Value::String(cloned_text)) = (&value, &clone) else {
             unreachable!("constructed string values")
         };
@@ -3378,7 +3323,7 @@ mod tests {
     fn live_census_counts_float_allocations_once_across_clones() {
         let before = census_live_floats();
         let value = Value::float(1.5);
-        let clone = value.clone();
+        let clone = value;
         assert_eq!(census_live_floats(), before + 1);
         let _ = value;
         assert_eq!(census_live_floats(), before + 1);
@@ -3438,7 +3383,7 @@ mod tests {
     #[test]
     fn cloning_big_integer_reuses_the_integer_allocation() {
         let value = Value::big_integer(num_bigint::BigInt::from(1_u8) << 256);
-        let clone = value.clone();
+        let clone = value;
         let (Value::BigInteger(integer), Value::BigInteger(cloned_integer)) = (&value, &clone)
         else {
             unreachable!("constructed big integer values")
@@ -3458,13 +3403,27 @@ mod tests {
     #[test]
     fn uninterned_symbol_names_remain_reclaimable() {
         // An uninterned symbol nothing names is freed by the sweep (not by
-        // the drop of a handle), and its entry in the book goes with it
-        // (`collection_frees_unreached_conses_and_expires_weak_slots'
-        // covers the collection itself).
+        // the drop of a handle), and its entry in the book goes with it.
+        // The stack is scanned conservatively: the symbol is made out of
+        // this frame and the frames below are clobbered before the
+        // collection.
+        #[inline(never)]
+        fn make(text: &str) {
+            let name = SymbolName::from(text.to_owned());
+            assert!(SymbolName::intern_str(text).0.ptr_eq(&name.0));
+        }
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let mut env = super::Env::new();
         let text = make_uninterned_symbol_name("temporary", 1);
-        let name = SymbolName::from(text.clone());
-        assert!(SymbolName::intern_str(&text).0.ptr_eq(&name.0));
-        assert!(super::census_live_uninterned_symbols() >= 1);
+        make(&text);
+        assert!(SymbolName::live_uninterned(&text).is_some());
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect");
+        assert!(
+            SymbolName::live_uninterned(&text).is_none(),
+            "the unreached uninterned symbol is swept and leaves the book"
+        );
     }
 
     #[test]
@@ -3493,7 +3452,7 @@ mod tests {
     #[test]
     fn cloning_lambda_shares_immutable_parameters() {
         let lambda = Value::lambda(vec!["value".into()].into(), Vec::new().into(), Value::Nil);
-        let clone = lambda.clone();
+        let clone = lambda;
 
         let (Value::Lambda(lambda), Value::Lambda(cloned_lambda)) = (&lambda, &clone) else {
             unreachable!("constructed lambda values")
@@ -3505,7 +3464,7 @@ mod tests {
     #[test]
     fn cloning_buffer_reuses_the_buffer_descriptor() {
         let buffer = Value::buffer(7, "shared buffer");
-        let clone = buffer.clone();
+        let clone = buffer;
         let (Value::Buffer(buffer), Value::Buffer(cloned_buffer)) = (&buffer, &clone) else {
             unreachable!("constructed buffer values")
         };
@@ -3522,7 +3481,7 @@ mod tests {
         );
 
         let pair = Value::cons(Value::Integer(1), Value::Integer(2));
-        let clone = pair.clone();
+        let clone = pair;
         let (car, cdr) = pair.cons_cells().expect("constructed cons");
         let (cloned_car, cloned_cdr) = clone.cons_cells().expect("cloned cons");
 
@@ -3668,7 +3627,7 @@ mod tests {
     #[test]
     fn tree_mutation_snapshot_tracks_nested_cons_fields() {
         let nested = Value::list([Value::symbol("inner"), Value::Integer(1)]);
-        let source = Value::list([Value::symbol("outer"), nested.clone()]);
+        let source = Value::list([Value::symbol("outer"), nested]);
         let spine_snapshot = super::ConsMutationSnapshot::list_spine(&source);
         let tree_snapshot = super::ConsMutationSnapshot::tree(&source);
 
@@ -3713,7 +3672,7 @@ mod tests {
     #[test]
     fn float_values_preserve_lisp_object_identity() {
         let original = Value::float(f64::NAN);
-        let shared = original.clone();
+        let shared = original;
         let distinct = Value::float(f64::NAN);
         let Value::Float(original) = original else {
             unreachable!();

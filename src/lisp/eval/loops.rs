@@ -17,7 +17,7 @@ impl Interpreter {
                         Value::Symbol(_) => Ok(item),
                         _ => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
                             .map(|(symbol, _)| symbol)
-                            .ok_or_else(|| invalid_function(spec.clone())),
+                            .ok_or_else(|| invalid_function(*spec)),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 validate_lambda_list(spec, &normalized)?;
@@ -27,11 +27,11 @@ impl Interpreter {
                         Value::Symbol(name) => Ok(name),
                         Value::Nil => Ok("nil".into()),
                         Value::T => Ok("t".into()),
-                        _ => Err(invalid_function(spec.clone())),
+                        _ => Err(invalid_function(*spec)),
                     })
                     .collect()
             }
-            _ => Err(invalid_function(spec.clone())),
+            _ => Err(invalid_function(*spec)),
         }
     }
 
@@ -48,8 +48,8 @@ impl Interpreter {
                 Value::Symbol(_) => Ok(item),
                 _ if positioned => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
                     .map(|(symbol, _)| symbol)
-                    .ok_or_else(|| invalid_function(spec.clone())),
-                _ => Err(invalid_function(spec.clone())),
+                    .ok_or_else(|| invalid_function(*spec)),
+                _ => Err(invalid_function(*spec)),
             })
             .collect::<Result<Vec<_>, _>>()?;
         validate_lambda_list(spec, &normalized)?;
@@ -59,7 +59,7 @@ impl Interpreter {
                 Value::Symbol(name) => Ok(name),
                 Value::Nil => Ok("nil".into()),
                 Value::T => Ok("t".into()),
-                _ => Err(invalid_function(spec.clone())),
+                _ => Err(invalid_function(*spec)),
             })
             .collect()
     }

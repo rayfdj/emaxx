@@ -233,7 +233,7 @@ impl Iterator for ListForms {
     #[inline]
     fn next(&mut self) -> Option<Value> {
         let cell = self.0.take()?;
-        let form = cell.car.borrow().clone();
+        let form = *cell.car.borrow();
         self.0 = next_cons(&cell);
         Some(form)
     }
@@ -245,7 +245,7 @@ impl Iterator for ListForms {
 #[inline]
 pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
     match tail {
-        Value::Cons(cell) => Some((cell.car.borrow().clone(), cell.cdr.borrow().clone())),
+        Value::Cons(cell) => Some((*cell.car.borrow(), *cell.cdr.borrow())),
         _ => None,
     }
 }
@@ -254,7 +254,7 @@ pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
 #[inline]
 pub(super) fn list_car(list: &Value) -> Value {
     match list {
-        Value::Cons(cell) => cell.car.borrow().clone(),
+        Value::Cons(cell) => *cell.car.borrow(),
         _ => Value::Nil,
     }
 }
@@ -263,14 +263,14 @@ pub(super) fn list_car(list: &Value) -> Value {
 #[inline]
 pub(super) fn list_cdr(list: &Value) -> Value {
     match list {
-        Value::Cons(cell) => cell.cdr.borrow().clone(),
+        Value::Cons(cell) => *cell.cdr.borrow(),
         _ => Value::Nil,
     }
 }
 
 /// Fnth: the Nth element, nil past the end.
 pub(super) fn list_nth(list: &Value, n: usize) -> Value {
-    let mut tail = list.clone();
+    let mut tail = *list;
     for _ in 0..n {
         tail = list_cdr(&tail);
     }
@@ -302,7 +302,7 @@ pub(super) fn list_has_at_least(list: &Value, n: usize) -> bool {
 /// check; the walks here read what they count).
 pub(super) fn list_cons_count(list: &Value) -> usize {
     let mut count = 0;
-    let mut tail = list.clone();
+    let mut tail = *list;
     while let Some((_, next)) = list_next(&tail) {
         count += 1;
         tail = next;
@@ -314,16 +314,16 @@ pub(super) fn list_cons_count(list: &Value) -> usize {
 /// argument list); a dotted tail signals listp.
 pub(super) fn list_to_vector(list: &Value) -> Result<smallvec::SmallVec<[Value; 8]>, LispError> {
     let mut items = smallvec::SmallVec::new();
-    let mut tail = list.clone();
+    let mut tail = *list;
     loop {
         match &tail {
             Value::Nil => return Ok(items),
             Value::Cons(cell) => {
-                items.push(cell.car.borrow().clone());
-                let next = cell.cdr.borrow().clone();
+                items.push(*cell.car.borrow());
+                let next = *cell.cdr.borrow();
                 tail = next;
             }
-            other => return Err(LispError::WrongTypeArgument("listp".into(), other.clone())),
+            other => return Err(LispError::WrongTypeArgument("listp".into(), *other)),
         }
     }
 }
@@ -488,20 +488,20 @@ impl Interpreter {
             | Value::Integer(_)
             | Value::BigInteger(_)
             | Value::Float(_)
-            | Value::StringObject(_) => Ok(expr.clone()),
+            | Value::StringObject(_) => Ok(*expr),
 
             // GNU has already constructed every nested reader object by the
             // time eval_sub sees a vector.  Emaxx's parser is deliberately
             // interpreter-free, so finish that existing reader contract at
             // the evaluation boundary before returning this self-evaluating
             // object.
-            Value::Vector(_) => self.materialize_read_object_literals(expr.clone(), env),
+            Value::Vector(_) => self.materialize_read_object_literals(*expr, env),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
             // literals while `(memq (car l) l)' still finds the element the
             // evaluation put there (GNU strings are always heap objects).
-            Value::String(_) => Ok(Self::stored_value(expr.clone())),
+            Value::String(_) => Ok(Self::stored_value(*expr)),
 
             Value::Record(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
@@ -509,11 +509,11 @@ impl Interpreter {
             {
                 let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, expr)
                 else {
-                    return Ok(expr.clone());
+                    return Ok(*expr);
                 };
                 let name = symbol
                     .as_symbol()
-                    .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), expr.clone()))?;
+                    .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), *expr))?;
                 if name == "t" {
                     return Ok(Value::T);
                 }
@@ -524,7 +524,7 @@ impl Interpreter {
                     Ok(value) => Ok(value),
                     Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
                         Value::Symbol("void-variable".into()),
-                        expr.clone(),
+                        *expr,
                     ]))),
                     Err(error) => Err(error),
                 }
@@ -540,9 +540,9 @@ impl Interpreter {
             | Value::Terminal(_)
             | Value::Record(_)
             | Value::Finalizer(_)
-            | Value::Unbound => Ok(expr.clone()),
+            | Value::Unbound => Ok(*expr),
 
-            Value::ReaderForm(_) => self.materialize_read_object_literals(expr.clone(), env),
+            Value::ReaderForm(_) => self.materialize_read_object_literals(*expr, env),
 
             Value::Symbol(name) => self.lookup_symbol(name, env),
 
@@ -552,13 +552,13 @@ impl Interpreter {
                 // cell, CHECK_LIST (original_args).
                 let (head_symbol, head_value) = match &*cell.car.borrow() {
                     Value::Symbol(name) => (Some(*name), None),
-                    other => (None, Some(other.clone())),
+                    other => (None, Some(*other)),
                 };
                 let args_cell: Option<SharedCons> = match &*cell.cdr.borrow() {
                     Value::Cons(args) => Some(*args),
                     Value::Nil => None,
                     other => {
-                        return Err(LispError::WrongTypeArgument("listp".into(), other.clone()));
+                        return Err(LispError::WrongTypeArgument("listp".into(), *other));
                     }
                 };
                 let callable_name = match head_value.as_ref() {
@@ -740,18 +740,25 @@ impl Interpreter {
         // up to eight, the forms read off the list cell by cell; past
         // eight, SAFE_ALLOCA_LISP's array, which the collector scans (a
         // heap vector the stack scan cannot see lost a fresh argument to
-        // the collection a later argument's evaluation ran).
-        let argnum = match &prepared {
-            // A fixed-arity subr of at most eight takes argvals[8] without
-            // the length walk; MANY, more than eight, and a lambda (whose
-            // funcall_lambda allocates its array by list_length) count.
-            FunctionResolution::DirectBuiltin(facts)
-                if facts.max_args.is_some_and(|maximum| maximum <= 8) =>
-            {
-                0
-            }
-            _ => ListForms::from_cell(args_list).count(),
-        };
+        // the collection a later argument's evaluation ran).  The count
+        // is `list_length (args_left)' taken first, for every callee, as
+        // eval_sub takes it (a fixed-arity subr's count was skipped
+        // before, and nine arguments to it wrote past the array).
+        let argnum = ListForms::from_cell(args_list).count();
+        // eval_sub's SUBRP arm signals `wrong-number-of-arguments' on the
+        // count before any argument is evaluated.
+        if let FunctionResolution::DirectBuiltin(facts) = &prepared
+            && !facts.special_form
+            && facts
+                .max_args
+                .is_some_and(|maximum| usize::from(maximum) < argnum)
+        {
+            let name = callable_name.expect("a direct subr verdict names its symbol");
+            let error = LispError::WrongNumberOfArgs(name.as_str().to_owned(), argnum);
+            let result = self.settle_frame_result(Err(error), env);
+            self.pop_backtrace_frame();
+            return result;
+        }
         if argnum > 8 {
             return self.eval_call_rooted(
                 depth,
@@ -924,7 +931,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         if profile_path().is_some() {
-            return self.call_function_value(func.clone(), None, args, env);
+            return self.call_function_value(*func, None, args, env);
         }
         match func {
             Value::Record(id) if self.has_cached_bytecode_program(*id) => {
@@ -966,13 +973,13 @@ impl Interpreter {
                         // A lambda, an autoload, a local function binding or
                         // a void function: the general path, which resolves
                         // again from the cache.
-                        _ => self.call_function_value_inner(func.clone(), None, args, env, true),
+                        _ => self.call_function_value_inner(*func, None, args, env, true),
                     }
                 };
                 self.end_funcall();
                 result
             }
-            _ => self.call_function_value(func.clone(), None, args, env),
+            _ => self.call_function_value(*func, None, args, env),
         }
     }
 
@@ -1593,7 +1600,7 @@ impl Interpreter {
                 let wrong_arity = || {
                     LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-number-of-arguments".into()),
-                        func.clone(),
+                        func,
                         Value::Integer(args.len() as i64),
                     ]))
                 };
@@ -1603,7 +1610,7 @@ impl Interpreter {
                 let signal_arity = |this: &mut Self, env: &mut Env| -> LispError {
                     let function = original_name
                         .map(CallName::original_symbol_value)
-                        .unwrap_or_else(|| func.clone());
+                        .unwrap_or_else(|| func);
                     this.with_backtrace_frame(function, args, |interp| {
                         interp
                             .settle_frame_result(Err(wrong_arity()), env)
@@ -1665,7 +1672,7 @@ impl Interpreter {
                     }
                     let consumed_arg = arg_idx < args.len();
                     let val = if consumed_arg {
-                        args[arg_idx].clone()
+                        args[arg_idx]
                     } else if optional {
                         Value::Nil
                     } else {
@@ -1678,7 +1685,7 @@ impl Interpreter {
                 }
                 let backtrace_function = original_name
                     .map(CallName::original_symbol_value)
-                    .unwrap_or_else(|| func.clone());
+                    .unwrap_or_else(|| func);
                 self.with_backtrace_frame(backtrace_function, args, |interp| {
                     // funcall_lambda: a closure's arguments are consed onto
                     // its environment (lexically, whatever the names'
@@ -1698,9 +1705,9 @@ impl Interpreter {
                     let count = interp.specpdl_index();
                     let setup = match lambda.environment() {
                         Some(closure_env) => {
-                            let mut lexenv = closure_env.clone();
+                            let mut lexenv = *closure_env;
                             for (name, value) in &frame {
-                                lexenv = Self::cons_binding(*name, value.clone(), lexenv);
+                                lexenv = Self::cons_binding(*name, *value, lexenv);
                             }
                             env.push(EnvFrame::from_alist(lexenv));
                             Ok(())
@@ -1708,7 +1715,7 @@ impl Interpreter {
                         None => {
                             env.push(EnvFrame::dynamic());
                             frame.iter().try_for_each(|(name, value)| {
-                                interp.specbind_symbol(name, value.clone(), env)
+                                interp.specbind_symbol(name, *value, env)
                             })
                         }
                     };
@@ -1787,7 +1794,7 @@ mod eval_value_buffer_tests {
         primitives::call(
             &mut interpreter,
             "setcdr",
-            &[original, tail.clone()],
+            &[original, tail],
             &mut Env::new(),
         )
         .expect("ordinary primitive succeeds");
@@ -1824,7 +1831,7 @@ mod eval_value_buffer_tests {
             .expect("load-path is bound");
         let temporary = Value::list([Value::string("/temporary")]);
         let restore = interpreter
-            .bind_special_dynamic("load-path", temporary.clone(), &mut env)
+            .bind_special_dynamic("load-path", temporary, &mut env)
             .expect("bind forwarded load-path");
         assert!(primitives::values_eq_in_env(
             &interpreter,
@@ -1844,7 +1851,7 @@ mod eval_value_buffer_tests {
 
         let first_buffer = interpreter.current_buffer_id();
         let (second_buffer, _) = interpreter.create_buffer(" *load-path forwarding*");
-        interpreter.set_buffer_local_value(first_buffer, "load-path", temporary.clone());
+        interpreter.set_buffer_local_value(first_buffer, "load-path", temporary);
         assert!(primitives::values_eq_in_env(
             &interpreter,
             &interpreter.load_path,
@@ -1902,17 +1909,17 @@ mod eval_value_buffer_tests {
                 &mut env,
             )
             .expect("ordinary primitive succeeds");
-            interpreter.set_global_binding("weak-table-root", table.clone());
+            interpreter.set_global_binding("weak-table-root", table);
             // The negative control is consed in a frame of its own and the
             // stack under it cleared, or the conservative scan would read
             // it (a C local's object).
             #[inline(never)]
             fn insert_keys(interpreter: &mut Interpreter, table: &Value, original: &Value) {
-                for key in [original.clone(), Value::cons(Value::Integer(7), Value::Nil)] {
+                for key in [*original, Value::cons(Value::Integer(7), Value::Nil)] {
                     primitives::call(
                         interpreter,
                         "puthash",
-                        &[key, Value::T, table.clone()],
+                        &[key, Value::T, *table],
                         &mut Env::new(),
                     )
                     .expect("ordinary primitive succeeds");
@@ -1929,7 +1936,7 @@ mod eval_value_buffer_tests {
             .expect("ordinary primitive succeeds");
             assert!(interpreter.symbol_value_cell("load-path").is_err());
             let plain = Value::list([Value::string("/plain")]);
-            interpreter.set_symbol_value_cell("load-path", plain.clone());
+            interpreter.set_symbol_value_cell("load-path", plain);
             assert!(primitives::values_eq_in_env(
                 interpreter,
                 &interpreter.load_path,
@@ -1992,7 +1999,7 @@ mod eval_value_buffer_tests {
         let original = interpreter
             .symbol_value_cell("load-path")
             .expect("load-path is bound");
-        interpreter.set_global_binding("saved-load-path", original.clone());
+        interpreter.set_global_binding("saved-load-path", original);
         let copied = interpreter.deep_clone_image();
         let copied_path = copied
             .symbol_value_cell("load-path")
@@ -2067,7 +2074,7 @@ mod eval_value_buffer_tests {
     fn lexical_binding_symbols_are_gc_roots_before_closure_projection() {
         let interpreter = Interpreter::new();
         let lisp_name = Value::string("binding");
-        let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
+        let name = SymbolName::make_uninterned(lisp_name, "binding", 1);
         let key = Value::Symbol(name);
         let env = crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(
             [(name, Value::Integer(7))],
@@ -2219,19 +2226,14 @@ mod eval_value_buffer_tests {
         primitives::call(
             &mut interpreter,
             "set-default",
-            &[flag.clone(), Value::Nil],
+            &[flag, Value::Nil],
             &mut env,
         )
         .expect("store directly through the forwarded default");
         assert!(!relocated_value());
         let alias = Value::symbol("position-flag-alias");
-        primitives::call(
-            &mut interpreter,
-            "defvaralias",
-            &[alias.clone(), flag.clone()],
-            &mut env,
-        )
-        .expect("alias an ordinary symbol to the forwarded variable");
+        primitives::call(&mut interpreter, "defvaralias", &[alias, flag], &mut env)
+            .expect("alias an ordinary symbol to the forwarded variable");
         let restore = interpreter
             .bind_special_dynamic("position-flag-alias", Value::Integer(19), &mut env)
             .expect("specbind resolves the alias before binding the C cell");
@@ -2266,13 +2268,8 @@ mod eval_value_buffer_tests {
             .set_current_buffer_id(original)
             .expect("select the buffer with a local cell");
         assert!(!relocated_value());
-        primitives::call(
-            &mut interpreter,
-            "set-default",
-            &[flag.clone(), Value::T],
-            &mut env,
-        )
-        .expect("store the non-selected default without changing the local");
+        primitives::call(&mut interpreter, "set-default", &[flag, Value::T], &mut env)
+            .expect("store the non-selected default without changing the local");
         assert!(!relocated_value());
         interpreter
             .set_current_buffer_id(other)
@@ -2338,27 +2335,16 @@ mod eval_value_buffer_tests {
                 )
                 .expect("data.c detaches the symbol without changing its C slot");
                 assert!(interpreter.symbol_value_cell(name).is_err(), "{name}");
-                assert_eq!(
-                    interpreter.forwarded_c_value(name, &env),
-                    Some(c_value.clone())
-                );
+                assert_eq!(interpreter.forwarded_c_value(name, &env), Some(c_value));
                 let plain = Value::string("uncoerced plain value");
-                primitives::call(
-                    &mut interpreter,
-                    "set",
-                    &[symbol.clone(), plain.clone()],
-                    &mut env,
-                )
-                .expect("a detached plain symbol has no forwarded type restriction");
+                primitives::call(&mut interpreter, "set", &[symbol, plain], &mut env)
+                    .expect("a detached plain symbol has no forwarded type restriction");
                 interpreter.refresh_forwarded_eval_cells();
                 assert_eq!(
                     interpreter.symbol_value_cell(name).expect("plain binding"),
                     plain
                 );
-                assert_eq!(
-                    interpreter.forwarded_c_value(name, &env),
-                    Some(c_value.clone())
-                );
+                assert_eq!(interpreter.forwarded_c_value(name, &env), Some(c_value));
                 assert_eq!(
                     interpreter.detached_forwarded_variables.get(name),
                     Some(&Value::Nil)
@@ -2440,11 +2426,7 @@ mod eval_value_buffer_tests {
             primitives::call(
                 &mut interpreter,
                 "puthash",
-                &[
-                    key.clone(),
-                    Value::Integer(index as i64),
-                    Value::Record(table_id),
-                ],
+                &[*key, Value::Integer(index as i64), Value::Record(table_id)],
                 &mut env,
             )
             .expect("weak entry");
@@ -2458,7 +2440,7 @@ mod eval_value_buffer_tests {
         .into_iter()
         .zip(&keys)
         {
-            interpreter.set_symbol_value_cell(name, key.clone());
+            interpreter.set_symbol_value_cell(name, *key);
             primitives::call(
                 &mut interpreter,
                 "makunbound",
@@ -2469,10 +2451,10 @@ mod eval_value_buffer_tests {
         }
         interpreter
             .detached_forwarded_variables
-            .insert("text-quoting-style".into(), keys[4].clone());
-        interpreter.pending_thread_events.push(keys[5].clone());
-        interpreter.coding_systems[0].charset_list = keys[6].clone();
-        interpreter.coding_systems[0].type_args = vec![keys[7].clone()];
+            .insert("text-quoting-style".into(), keys[4]);
+        interpreter.pending_thread_events.push(keys[5]);
+        interpreter.coding_systems[0].charset_list = keys[6];
+        interpreter.coding_systems[0].type_args = vec![keys[7]];
         let marked = interpreter.weak_hash_reachability(&env, &[]);
         let (_, entries, keep) = marked
             .tables
@@ -2511,7 +2493,7 @@ mod eval_value_buffer_tests {
         let mut env = Env::new();
         let c_value = Value::cons(Value::Integer(1), Value::Nil);
         let plain = Value::cons(Value::Integer(2), Value::Nil);
-        interpreter.set_symbol_value_cell("quit-flag", c_value.clone());
+        interpreter.set_symbol_value_cell("quit-flag", c_value);
         primitives::call(
             &mut interpreter,
             "makunbound",
@@ -2519,14 +2501,14 @@ mod eval_value_buffer_tests {
             &mut env,
         )
         .expect("detach C field");
-        interpreter.set_symbol_value_cell("quit-flag", plain.clone());
-        interpreter.set_symbol_value_cell("inhibit-quit", c_value.clone());
+        interpreter.set_symbol_value_cell("quit-flag", plain);
+        interpreter.set_symbol_value_cell("inhibit-quit", c_value);
         interpreter
             .detached_forwarded_variables
-            .insert("text-quoting-style".into(), c_value.clone());
-        interpreter.pending_thread_events.push(c_value.clone());
-        interpreter.coding_systems[0].charset_list = c_value.clone();
-        interpreter.coding_systems[0].type_args = vec![c_value.clone()];
+            .insert("text-quoting-style".into(), c_value);
+        interpreter.pending_thread_events.push(c_value);
+        interpreter.coding_systems[0].charset_list = c_value;
+        interpreter.coding_systems[0].type_args = vec![c_value];
         let mut copied = interpreter.deep_clone_image();
         let copied_c = copied.quit_flag_value();
         assert!(!primitives::values_eq_in_env(
@@ -2534,14 +2516,14 @@ mod eval_value_buffer_tests {
         ));
         assert_eq!(copied_c, c_value);
         for child in [
-            copied.inhibit_quit.clone(),
+            copied.inhibit_quit,
             copied
                 .symbol_value_cell("inhibit-quit")
                 .expect("still forwarded"),
-            copied.detached_forwarded_variables["text-quoting-style"].clone(),
-            copied.pending_thread_events[0].clone(),
-            copied.coding_systems[0].charset_list.clone(),
-            copied.coding_systems[0].type_args[0].clone(),
+            copied.detached_forwarded_variables["text-quoting-style"],
+            copied.pending_thread_events[0],
+            copied.coding_systems[0].charset_list,
+            copied.coding_systems[0].type_args[0],
         ] {
             assert!(
                 primitives::values_eq_in_env(&copied, &copied_c, &child, &env),

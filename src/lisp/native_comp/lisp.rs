@@ -52,8 +52,8 @@ impl UnitData {
             .filter(Value::is_truthy)
             .ok_or_else(|| native_ice("comp-ctxt is nil"))?;
 
-        let speed = call_one(interp, env, "comp-ctxt-speed", context.clone())?.as_integer()?;
-        let debug = call_one(interp, env, "comp-ctxt-debug", context.clone())?.as_integer()?;
+        let speed = call_one(interp, env, "comp-ctxt-speed", context)?.as_integer()?;
+        let debug = call_one(interp, env, "comp-ctxt-debug", context)?.as_integer()?;
         let mut compiler_options = string_list(
             interp
                 .lookup_var("native-comp-compiler-options", env)
@@ -63,7 +63,7 @@ impl UnitData {
             interp,
             env,
             "comp-ctxt-compiler-options",
-            context.clone(),
+            context,
         )?)?);
         let mut driver_options = string_list(
             interp
@@ -74,7 +74,7 @@ impl UnitData {
             interp,
             env,
             "comp-ctxt-driver-options",
-            context.clone(),
+            context,
         )?)?);
         let reproducer = interp
             .lookup_var("comp-libgccjit-reproducer", env)
@@ -100,7 +100,7 @@ impl UnitData {
             ]),
         )?;
 
-        let function_docs = call_one(interp, env, "comp-ctxt-function-docs", context.clone())?;
+        let function_docs = call_one(interp, env, "comp-ctxt-function-docs", context)?;
         let function_docs = print_static(interp, env, &function_docs)?;
         let abi_hash = interp
             .lookup_var("comp-abi-hash", env)
@@ -108,27 +108,13 @@ impl UnitData {
             .ok_or_else(|| native_ice("comp-abi-hash is nil"))?;
         let abi_hash = print_static(interp, env, &abi_hash)?;
 
-        let default_container = call_one(interp, env, "comp-ctxt-d-default", context.clone())?;
-        let impure_container = call_one(interp, env, "comp-ctxt-d-impure", context.clone())?;
-        let ephemeral_container = call_one(interp, env, "comp-ctxt-d-ephemeral", context.clone())?;
-        let default_index = call_one(
-            interp,
-            env,
-            "comp-data-container-idx",
-            default_container.clone(),
-        )?;
-        let impure_index = call_one(
-            interp,
-            env,
-            "comp-data-container-idx",
-            impure_container.clone(),
-        )?;
-        let ephemeral_index = call_one(
-            interp,
-            env,
-            "comp-data-container-idx",
-            ephemeral_container.clone(),
-        )?;
+        let default_container = call_one(interp, env, "comp-ctxt-d-default", context)?;
+        let impure_container = call_one(interp, env, "comp-ctxt-d-impure", context)?;
+        let ephemeral_container = call_one(interp, env, "comp-ctxt-d-ephemeral", context)?;
+        let default_index = call_one(interp, env, "comp-data-container-idx", default_container)?;
+        let impure_index = call_one(interp, env, "comp-data-container-idx", impure_container)?;
+        let ephemeral_index =
+            call_one(interp, env, "comp-data-container-idx", ephemeral_container)?;
 
         let core_relocations = CoreRelocations {
             t: find_relocation(
@@ -184,14 +170,13 @@ impl UnitData {
         let mut functions = Vec::with_capacity(function_entries.len());
         let mut function_values = Vec::with_capacity(function_entries.len());
         for (_, function) in function_entries {
-            let c_name =
-                string_result(call_one(interp, env, "comp-func-c-name", function.clone())?)?;
-            let lexical = call_one(interp, env, "comp-func-l-p", function.clone())?.is_truthy();
+            let c_name = string_result(call_one(interp, env, "comp-func-c-name", function)?)?;
+            let lexical = call_one(interp, env, "comp-func-l-p", function)?.is_truthy();
             let calling_convention = if !lexical {
                 FunctionCallingConvention::NoArgs
             } else {
-                let arguments = call_one(interp, env, "comp-func-l-args", function.clone())?;
-                if call_one(interp, env, "comp-nargs-p", arguments.clone())?.is_truthy() {
+                let arguments = call_one(interp, env, "comp-func-l-args", function)?;
+                if call_one(interp, env, "comp-nargs-p", arguments)?.is_truthy() {
                     FunctionCallingConvention::Nargs
                 } else {
                     let max = call_one(interp, env, "comp-args-max", arguments)?.as_integer()?;
@@ -306,7 +291,7 @@ fn read_relocation(
     env: &mut Env,
     container: Value,
 ) -> Result<OwnedRelocation, LispError> {
-    let index = call_one(interp, env, "comp-data-container-idx", container.clone())?;
+    let index = call_one(interp, env, "comp-data-container-idx", container)?;
     let len = call_one(interp, env, "hash-table-count", index)?.as_integer()?;
     let len = usize::try_from(len).map_err(|_| native_ice("negative relocation array length"))?;
     let objects = call_one(interp, env, "comp-data-container-l", container)?;
@@ -330,12 +315,7 @@ fn find_relocation(
         (RelocationArrayKind::Impure, impure_index),
         (RelocationArrayKind::Ephemeral, ephemeral_index),
     ] {
-        let value = call_c_primitive(
-            interp,
-            env,
-            "gethash",
-            &[object.clone(), index.clone(), Value::Nil],
-        )?;
+        let value = call_c_primitive(interp, env, "gethash", &[*object, *index, Value::Nil])?;
         if value.is_truthy() {
             let index = value.as_integer()?;
             return Ok(Relocation {

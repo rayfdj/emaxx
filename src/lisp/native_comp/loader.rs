@@ -137,7 +137,7 @@ fn native_arity(
         other => {
             return Err(crate::lisp::primitives::wrong_type_argument(
                 "integer-or-many-p",
-                other.clone(),
+                *other,
             ));
         }
     };
@@ -434,14 +434,14 @@ mod suspension_tests {
 fn inconsistent(file: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("native-lisp-file-inconsistent"),
-        file.clone(),
+        *file,
     ]))
 }
 
 fn load_failed(file: &Value, message: impl Into<String>) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("native-lisp-load-failed"),
-        file.clone(),
+        *file,
         Value::String(message.into().into()),
     ]))
 }
@@ -654,7 +654,7 @@ pub(super) fn load(
             .find_record(record_id)
             .and_then(|record| record.slots.first())
             .cloned()
-            .unwrap_or_else(|| filename.clone());
+            .unwrap_or(*filename);
         let top_level_name = if late {
             LATE_TOP_LEVEL_RUN_SYM
         } else {
@@ -686,7 +686,7 @@ pub(super) fn load(
         .find_record(record_id)
         .and_then(|record| record.slots.first())
         .cloned()
-        .unwrap_or_else(|| filename.clone());
+        .unwrap_or(*filename);
     let ephemeral = if recursive_load {
         // Another load of this unit is active on the stack and holds the
         // ephemeral data; rewriting it would clobber objects in use.
@@ -898,9 +898,9 @@ fn first_load(
         let record = interpreter
             .find_record_mut(record_id)
             .expect("new native compilation unit remains live");
-        record.slots[1] = optimization_qualities.clone();
-        record.slots[5] = data.clone();
-        record.slots[6] = impure_data.clone();
+        record.slots[1] = optimization_qualities;
+        record.slots[5] = data;
+        record.slots[6] = impure_data;
     }
     let data_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
@@ -1034,7 +1034,7 @@ pub(super) fn register_with_state(
             interpreter,
             environment,
             "gethash",
-            &[arguments[0].clone(), table.clone(), Value::Nil],
+            &[arguments[0], table, Value::Nil],
         )?;
         let symbol = arguments[0].as_symbol().map(str::to_owned).or_else(|_| {
             crate::lisp::primitives::symbols_with_pos_enabled(interpreter, environment)
@@ -1042,7 +1042,7 @@ pub(super) fn register_with_state(
                 .flatten()
                 .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_owned))
                 .ok_or_else(|| {
-                    crate::lisp::primitives::wrong_type_argument("symbolp", arguments[0].clone())
+                    crate::lisp::primitives::wrong_type_argument("symbolp", arguments[0])
                 })
         })?;
         let current = interpreter
@@ -1053,7 +1053,7 @@ pub(super) fn register_with_state(
                 interpreter,
                 environment,
                 "remhash",
-                &[arguments[0].clone(), table],
+                &[arguments[0], table],
             )?;
             return Ok(Value::Nil);
         }
@@ -1063,24 +1063,22 @@ pub(super) fn register_with_state(
     };
     let c_name = string_like(&arguments[1])
         .map(|string| string.text)
-        .ok_or_else(|| {
-            crate::lisp::primitives::wrong_type_argument("stringp", arguments[1].clone())
-        })?;
+        .ok_or_else(|| crate::lisp::primitives::wrong_type_argument("stringp", arguments[1]))?;
     let dynamic = matches!(arguments[2], Value::Cons(_));
     let (min_args, max_value, lambda_list) = if dynamic {
         (
             arguments[2].car()?.as_integer()?,
             arguments[2].cdr()?,
-            arguments[3].clone(),
+            arguments[3],
         )
     } else {
-        (arguments[2].as_integer()?, arguments[3].clone(), Value::Nil)
+        (arguments[2].as_integer()?, arguments[3], Value::Nil)
     };
     let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
     let Value::Record(unit_record_id) = arguments[6] else {
         return Err(crate::lisp::primitives::wrong_type_argument(
             "native-comp-unit-p",
-            arguments[6].clone(),
+            arguments[6],
         ));
     };
 
@@ -1107,13 +1105,13 @@ pub(super) fn register_with_state(
                 // Lisp string here would invent two GC-visible objects.
                 Value::Nil,
                 Value::Integer(min_args as i64),
-                max_value.clone(),
+                max_value,
                 Value::Nil,
-                arguments[4].clone(),
+                arguments[4],
                 rest.first().cloned().unwrap_or(Value::Nil),
                 rest.get(1).cloned().unwrap_or(Value::Nil),
                 rest.get(2).cloned().unwrap_or(Value::Nil),
-                arguments[6].clone(),
+                arguments[6],
                 lambda_list,
                 if dynamic { Value::T } else { Value::Nil },
             ],
@@ -1156,13 +1154,13 @@ pub(super) fn register_with_state(
                 interpreter,
                 environment,
                 "puthash",
-                &[function.clone(), Value::T, lambda_guard],
+                &[function, Value::T, lambda_guard],
             )?;
             let old_index = super::lisp::call_c_primitive(
                 interpreter,
                 environment,
                 "gethash",
-                &[arguments[1].clone(), lambda_name_index.clone(), Value::Nil],
+                &[arguments[1], lambda_name_index, Value::Nil],
             )?;
             if old_index.is_truthy() {
                 return Err(super::lisp::native_ice(
@@ -1173,11 +1171,7 @@ pub(super) fn register_with_state(
                 interpreter,
                 environment,
                 "puthash",
-                &[
-                    arguments[1].clone(),
-                    arguments[0].clone(),
-                    lambda_name_index,
-                ],
+                &[arguments[1], arguments[0], lambda_name_index],
             )?;
             let relocation = usize::try_from(arguments[0].as_integer()?)
                 .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
@@ -1192,21 +1186,13 @@ pub(super) fn register_with_state(
             }
             unsafe { std::ptr::write(unit.impure_relocations.add(relocation), word) };
         } else {
-            interpreter.defalias_value(
-                &[arguments[0].clone(), function.clone(), Value::Nil],
-                environment,
-            )?;
+            interpreter.defalias_value(&[arguments[0], function, Value::Nil], environment)?;
         }
         Ok(function)
     })()?;
 
     if let Some(table) = late_pending_table {
-        super::lisp::call_c_primitive(
-            interpreter,
-            environment,
-            "remhash",
-            &[arguments[0].clone(), table],
-        )?;
+        super::lisp::call_c_primitive(interpreter, environment, "remhash", &[arguments[0], table])?;
         Ok(Value::Nil)
     } else {
         Ok(registered)
@@ -1388,7 +1374,7 @@ fn invoke_function(
                         value
                     } else if let Some(value) = arguments.get(argument_index) {
                         argument_index += 1;
-                        value.clone()
+                        *value
                     } else if optional {
                         Value::Nil
                     } else {
@@ -1567,7 +1553,7 @@ pub(super) fn load_dumped_unit(
     if let Some(record) = interpreter.find_record_mut(record_id)
         && let Some(slot) = record.slots.first_mut()
     {
-        *slot = eln_file.clone();
+        *slot = eln_file;
     }
     let library = match unsafe { Library::new(Path::new(&eln_fname)) } {
         Ok(library) => library,
@@ -1711,7 +1697,7 @@ fn fixup_eln_load_path(
     let mut last_cell = Value::Nil;
     let mut tail = load_path;
     while let Value::Cons(_) = tail {
-        last_cell = tail.clone();
+        last_cell = tail;
         tail = tail.cdr()?;
     }
     fn directory(
@@ -1909,7 +1895,7 @@ pub(crate) fn unit_documentation(
     let slot = record.slots.get_mut(4).ok_or_else(|| {
         super::lisp::native_ice("native compilation unit has no documentation slot")
     })?;
-    *slot = docs.clone();
+    *slot = docs;
     Ok(docs)
 }
 

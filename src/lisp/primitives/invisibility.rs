@@ -123,7 +123,7 @@ pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u
         return direct;
     }
     if matches!(value, Value::Cons(_)) {
-        let mut tail = value.clone();
+        let mut tail = *value;
         while let Value::Cons(_) = tail {
             if let Ok(member) = tail.car() {
                 let class = match_atom(&member);

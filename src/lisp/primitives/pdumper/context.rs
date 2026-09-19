@@ -676,7 +676,7 @@ impl DumpContext {
         let Some(referrers) = self.referrers.as_mut() else {
             return;
         };
-        let Some(referrer) = self.current_referrer.clone() else {
+        let Some(referrer) = self.current_referrer else {
             return;
         };
         let Some(key) = object_key(value) else {
@@ -743,7 +743,7 @@ impl DumpContext {
 
     fn unsupported(&self, object: &Value, message: &str) -> DumpError {
         DumpError::Unsupported(UnsupportedObject {
-            object: object.clone(),
+            object: *object,
             message: message.to_string(),
         })
     }
@@ -802,8 +802,7 @@ impl DumpContext {
                 };
                 // Multiple enqueue calls can increase the object's weight.
                 if state == ObjectState::OnNormalQueue {
-                    self.dump_queue
-                        .enqueue(key, value.clone(), self.offset, weight);
+                    self.dump_queue.enqueue(key, *value, self.offset, weight);
                 }
             }
         }
@@ -825,7 +824,7 @@ impl DumpContext {
         if self.flags.dump_object_contents {
             self.emacs_relocs.push(EmacsReloc {
                 slot,
-                payload: EmacsRelocPayload::Object(value.clone()),
+                payload: EmacsRelocPayload::Object(*value),
             });
         }
         self.enqueue_object(value, WEIGHT_NONE);
@@ -849,7 +848,7 @@ impl DumpContext {
         }
         words[index] = FIXUP_PLACEHOLDER;
         let field_offset = start + (index * 8) as u32;
-        self.remember_fixup_lv(field_offset, value.clone());
+        self.remember_fixup_lv(field_offset, *value);
         self.enqueue_object(value, weight);
     }
 
@@ -1002,7 +1001,7 @@ impl DumpContext {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
                 self.remember_object(object, ObjectState::OnColdQueue);
-                self.remember_cold_op(ColdOp::Object(object.clone()));
+                self.remember_cold_op(ColdOp::Object(*object));
             }
             return Ok(ObjectState::OnColdQueue);
         }
@@ -1017,7 +1016,7 @@ impl DumpContext {
                 self.dump_object(interp, object)?;
                 self.flags = old_flags;
                 self.remember_object(object, ObjectState::OnCopiedQueue);
-                self.copied_queue.push(object.clone());
+                self.copied_queue.push(*object);
             }
             return Ok(ObjectState::OnCopiedQueue);
         }
@@ -1034,13 +1033,13 @@ impl DumpContext {
                 self.dump_object(interp, object)?;
                 self.flags = old_flags;
                 self.remember_object(object, ObjectState::OnHashTableQueue);
-                self.deferred_hash_tables.push(object.clone());
+                self.deferred_hash_tables.push(*object);
             }
             return Ok(ObjectState::OnHashTableQueue);
         }
 
         // Object needs to be dumped.
-        self.set_referrer(object.clone());
+        self.set_referrer(*object);
         let (offset, kind) = match object {
             Value::String(_) | Value::StringObject(_) => self.dump_string(interp, object)?,
             Value::Vector(vector) => (self.dump_vector(vector)?, DumpType::Vector),
@@ -1133,7 +1132,7 @@ impl DumpContext {
             words[2] = FIXUP_PLACEHOLDER;
         }
         words[3] = FIXUP_PLACEHOLDER;
-        self.remember_cold_op(ColdOp::String(object.clone()));
+        self.remember_cold_op(ColdOp::String(*object));
         let offset = self.object_finish(&words)?;
         if has_props {
             let properties = self.dump_text_properties(interp, &string.props)?;
@@ -1159,7 +1158,7 @@ impl DumpContext {
             for (name, value) in &span.props {
                 fields.push((words.len(), Value::symbol(name), WEIGHT_STRONG));
                 words.push(0);
-                fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+                fields.push((words.len(), *value, WEIGHT_STRONG));
                 words.push(0);
             }
         }
@@ -1198,7 +1197,7 @@ impl DumpContext {
         self.field_lv(start, &mut words, 1, &symbol.lisp_name(), WEIGHT_STRONG);
         let val = match &cell.alias {
             Some(target) => Value::Symbol(*target),
-            None => cell.value.clone().unwrap_or(Value::Unbound),
+            None => cell.value.unwrap_or(Value::Unbound),
         };
         self.field_lv(start, &mut words, 2, &val, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
@@ -1249,10 +1248,10 @@ impl DumpContext {
         let words = [0, FIXUP_PLACEHOLDER];
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
-            self.remember_cold_op(ColdOp::Bignum(object.clone()));
+            self.remember_cold_op(ColdOp::Bignum(*object));
             self.fixups.push(Fixup::BignumData {
                 offset: start + 8,
-                value: object.clone(),
+                value: *object,
             });
             self.push_dump_reloc(offset, DumpRelocKind::Bignum);
         }
@@ -1282,7 +1281,7 @@ impl DumpContext {
             return Err(self.unsupported(object, "record without an object"));
         };
         let kind = record.kind;
-        let type_tag = record.type_tag.clone();
+        let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
             RecordKind::Record
@@ -1611,13 +1610,13 @@ impl DumpContext {
             return Err(self.unsupported(object, "char-table without an object"));
         };
         let subtype = table.subtype.clone();
-        let default = table.default.clone();
+        let default = table.default;
         let parent = table.parent;
         let extra_slots = table.extra_slots.clone();
         let entries = table
             .entries
             .iter()
-            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .map(|entry| (entry.start, entry.end, entry.value))
             .collect::<Vec<_>>();
         let category_docs = table.category_docs.clone();
         let start = self.object_start()?;
@@ -1821,7 +1820,7 @@ impl DumpContext {
         for (symbol, value) in &locals {
             fields.push((words.len(), Value::Symbol(*symbol), WEIGHT_STRONG));
             words.push(0);
-            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            fields.push((words.len(), *value, WEIGHT_STRONG));
             words.push(0);
         }
         // The buffer-local hook lists are local bindings of the hook
@@ -1832,7 +1831,7 @@ impl DumpContext {
             words.push(0);
             words.push(functions.len() as u64);
             for function in functions {
-                fields.push((words.len(), function.clone(), WEIGHT_STRONG));
+                fields.push((words.len(), *function, WEIGHT_STRONG));
                 words.push(0);
             }
         }
@@ -1848,7 +1847,7 @@ impl DumpContext {
         for (index, value, weight) in fields {
             self.field_lv(start, &mut words, index, &value, weight);
         }
-        self.remember_cold_op(ColdOp::Buffer(object.clone()));
+        self.remember_cold_op(ColdOp::Buffer(*object));
         let offset = self.object_finish(&words)?;
         for (index, spans) in props_fixups {
             let properties = self.dump_text_properties(interp, &spans)?;
@@ -1932,9 +1931,9 @@ impl DumpContext {
         ];
         let mut fields = vec![(5, buffer.unwrap_or(Value::Nil))];
         for (key, value) in &overlay.plist {
-            fields.push((words.len(), key.clone()));
+            fields.push((words.len(), *key));
             words.push(0);
-            fields.push((words.len(), value.clone()));
+            fields.push((words.len(), *value));
             words.push(0);
         }
         for (index, value) in fields {
@@ -2033,7 +2032,7 @@ impl DumpContext {
         let weakness = slots.get(5).cloned().unwrap_or(Value::Nil);
         let mutable = interp.hash_table_is_mutable(id);
         if self.flags.dump_object_contents {
-            self.hash_tables.push(object.clone());
+            self.hash_tables.push(*object);
         }
         let start = self.object_start()?;
         let mut words = vec![
@@ -2427,7 +2426,7 @@ fn push_undo_entry(
         }
         UndoEntry::Combined { display, entries } => {
             words.push(UNDO_COMBINED);
-            fields.push((words.len(), display.clone(), WEIGHT_STRONG));
+            fields.push((words.len(), *display, WEIGHT_STRONG));
             words.push(0);
             words.push(entries.len() as u64);
             for entry in entries {
@@ -2436,7 +2435,7 @@ fn push_undo_entry(
         }
         UndoEntry::Opaque(value) => {
             words.push(UNDO_OPAQUE);
-            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            fields.push((words.len(), *value, WEIGHT_STRONG));
             words.push(0);
         }
         UndoEntry::Boundary => words.push(UNDO_BOUNDARY),

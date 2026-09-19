@@ -4,7 +4,7 @@ fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<
     let value = value.unwrap_or(&Value::Nil);
     interp
         .decode_terminal_id(value)
-        .ok_or_else(|| wrong_type_argument("terminal-live-p", value.clone()))
+        .ok_or_else(|| wrong_type_argument("terminal-live-p", *value))
 }
 
 define_dispatch!(
@@ -62,7 +62,7 @@ define_dispatch!(
             "terminal-parameter" => {
                 need_args(name, args, 2)?;
                 if !args[1].is_symbol() {
-                    return Err(wrong_type_argument("symbolp", args[1].clone()));
+                    return Err(wrong_type_argument("symbolp", args[1]));
                 }
                 let id = require_live_terminal(interp, args.first())?;
                 Ok(interp
@@ -71,13 +71,13 @@ define_dispatch!(
                     .parameters
                     .iter()
                     .rfind(|(key, _)| key == &args[1])
-                    .map(|(_, value)| value.clone())
+                    .map(|(_, value)| *value)
                     .unwrap_or(Value::Nil))
             }
             "set-terminal-parameter" => {
                 need_args(name, args, 3)?;
                 let id = require_live_terminal(interp, args.first())?;
-                Ok(interp.set_terminal_parameter_on(id, args[1].clone(), args[2].clone()))
+                Ok(interp.set_terminal_parameter_on(id, args[1], args[2]))
             }
             "delete-terminal" => {
                 need_arg_range(name, args, 0, 2)?;

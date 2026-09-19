@@ -43,9 +43,9 @@ pub(crate) fn resolve_callable_aliases(
     func: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let mut current = func.clone();
+    let mut current = *func;
     let mut seen = HashSet::new();
-    while let Value::Symbol(name) = current.clone() {
+    while let Value::Symbol(name) = current {
         if !seen.insert(name.as_str().to_owned()) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("cyclic-function-indirection".into()),
@@ -142,16 +142,14 @@ pub(crate) fn call_interactively_impl(
         )?,
         Value::Cons(_)
     ) {
-        return Err(wrong_type_argument("commandp", args[0].clone()));
+        return Err(wrong_type_argument("commandp", args[0]));
     }
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
     // `k'...) read instead of the current command's keys -- how
     // `command-execute' hands a special event to its `special-event-map'
     // binding.
     let keys_binding = match args.get(2).filter(|keys| !keys.is_nil()) {
-        Some(keys) => {
-            Some(interp.bind_special_variable("this-command-keys-vector", keys.clone(), env)?)
-        }
+        Some(keys) => Some(interp.bind_special_variable("this-command-keys-vector", *keys, env)?),
         None => None,
     };
     let interactive_args = collect_interactive_args(interp, &func, env);
@@ -174,9 +172,9 @@ pub(crate) fn call_interactively_impl(
     // machinery — the exact shape nadvice's called-interactively-p
     // skip function walks.
     let call_target = if args[0].as_symbol().is_ok() {
-        args[0].clone()
+        args[0]
     } else {
-        func.clone()
+        func
     };
     let result = interp.call_function_value(call_target, None, &interactive_args, env);
     interp.pop_backtrace_frame();
@@ -208,7 +206,7 @@ pub(crate) fn eval_impl(
             Value::Nil => (false, crate::lisp::types::Env::new()),
             Value::Cons(_) => (
                 true,
-                crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(lexical.clone())]),
+                crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(*lexical)]),
             ),
             _ => (
                 true,
@@ -274,11 +272,8 @@ pub(crate) fn eval_buffer_impl(
     )?
     .is_truthy()
         && !string_like(&source_file).is_some_and(|file| file.text.ends_with(".elc"));
-    let previous_load_list = interp.bind_special_variable(
-        "current-load-list",
-        Value::list([source_file.clone()]),
-        env,
-    )?;
+    let previous_load_list =
+        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
     // Feval_buffer specbinds the Lisp variable `lexical-binding' to the
     // buffer's file-variable cookie (lisp_file_lexical_cookie) for the
     // whole readevalloop, so macros that consult the variable while the
@@ -325,8 +320,8 @@ pub(crate) fn eval_region_impl(
     if start > end {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("args-out-of-range".into()),
-            args[0].clone(),
-            args[1].clone(),
+            args[0],
+            args[1],
         ])));
     }
     let print_flag = args.get(2).cloned().unwrap_or(Value::Nil);
@@ -353,7 +348,7 @@ pub(crate) fn eval_region_impl(
     let standard_output = if print_flag.is_nil() {
         Value::Symbol("symbolp".into())
     } else {
-        print_flag.clone()
+        print_flag
     };
     restores.push(interp.bind_special_variable("standard-output", standard_output, env)?);
     let eval_buffer_list = interp
@@ -412,7 +407,7 @@ pub(crate) fn eval_region_impl(
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "print",
-                    &[result.clone(), print_flag.clone()],
+                    &[result, print_flag],
                     eval_env,
                 )?;
             }
@@ -460,23 +455,14 @@ fn eval_region_via_read_function(
         }
         // readevalloop calls the Lisp reader without a handler: its
         // `end-of-file' propagates; the loop itself stops at END.
-        let form = interp.call_function_value(
-            read_function.clone(),
-            None,
-            std::slice::from_ref(&stream),
-            env,
-        )?;
+        let form =
+            interp.call_function_value(*read_function, None, std::slice::from_ref(&stream), env)?;
         // No `intern_symbols_in_value' here: when reading is delegated to a
         // Lisp reader GNU interns nothing beyond what that reader interned,
         // so a deliberately `unintern'-ed symbol it returns stays dead.
         result = eager_expand_eval(interp, &form, env)?;
         if !print_flag.is_nil() {
-            let _ = crate::lisp::primitives::call(
-                interp,
-                "print",
-                &[result.clone(), print_flag.clone()],
-                env,
-            )?;
+            let _ = crate::lisp::primitives::call(interp, "print", &[result, *print_flag], env)?;
         }
     }
     Ok(result)
@@ -656,7 +642,7 @@ fn call_internal_macroexpand_for_load(
     interp.call_function_value(
         owner,
         Some("internal-macroexpand-for-load"),
-        &[form.clone(), full],
+        &[*form, full],
         env,
     )
 }
@@ -686,7 +672,7 @@ fn eval_buffer_via_load_read_function(
             break;
         }
         let form = match interp.call_function_value(
-            load_read.clone(),
+            *load_read,
             None,
             std::slice::from_ref(&stream),
             env,
@@ -1029,7 +1015,7 @@ pub(crate) fn get_load_suffixes_value(
                 .unwrap_or(Value::Nil),
         );
         while let Some((rep, _)) = reps.current.cons_values() {
-            values.push(super::call(interp, "concat", &[suffix.clone(), rep], env)?);
+            values.push(super::call(interp, "concat", &[suffix, rep], env)?);
             reps.advance(interp, env, false)?;
         }
         suffixes.advance(interp, env, false)?;

@@ -37,10 +37,7 @@ fn current_or_named_buffer(
         None | Some(Value::Nil) => interp.current_buffer_id(),
         Some(buffer @ Value::Buffer(_)) => interp.resolve_buffer_id(buffer)?,
         Some(other) => {
-            return Err(LispError::WrongTypeArgument(
-                "bufferp".into(),
-                other.clone(),
-            ));
+            return Err(LispError::WrongTypeArgument("bufferp".into(), *other));
         }
     };
     Ok((buffer_id, interp.root_buffer_id(buffer_id)))
@@ -309,11 +306,7 @@ fn ensure_compiled_query(
         let state = interp.treesit_query_state(value).ok_or_else(|| {
             LispError::TypeError("treesit-compiled-query-p".into(), value.type_name())
         })?;
-        (
-            state.language.clone(),
-            state.source.clone(),
-            state.query.clone(),
-        )
+        (state.language, state.source, state.query.clone())
     };
     if let Some(query) = cached {
         return Ok(query);
@@ -327,7 +320,7 @@ fn ensure_compiled_query(
 fn resolve_query_node(interp: &mut Interpreter, value: &Value) -> Result<Value, LispError> {
     if interp.treesit_node_state(value).is_some() {
         interp.with_treesit_node(value, |_, _| ())?;
-        return Ok(value.clone());
+        return Ok(*value);
     }
     if interp.treesit_parser_state(value).is_some() {
         return interp.treesit_root_node(value);
@@ -339,7 +332,7 @@ fn resolve_query_node(interp: &mut Interpreter, value: &Value) -> Result<Value, 
             .reusable_treesit_parser(value, list_buffer_id, &tag)
             .map(Ok)
             .unwrap_or_else(|| {
-                interp.create_treesit_parser(value.clone(), buffer_id, list_buffer_id, tag.clone())
+                interp.create_treesit_parser(*value, buffer_id, list_buffer_id, tag)
             })?;
         return interp.treesit_root_node(&parser);
     }
@@ -351,7 +344,7 @@ fn resolve_query_node(interp: &mut Interpreter, value: &Value) -> Result<Value, 
             Value::symbol("treesit-parser-p"),
             Value::symbol("symbolp"),
         ]),
-        value.clone(),
+        *value,
     ])))
 }
 
@@ -359,7 +352,7 @@ fn predicate_signal(kind: &str, message: &str, predicate: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol(kind),
         Value::String(message.into()),
-        predicate.clone(),
+        *predicate,
     ]))
 }
 
@@ -468,7 +461,7 @@ fn regexp_matches(
     env: &Env,
 ) -> Result<bool, LispError> {
     let pattern = primitives::string_like(pattern)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *pattern))?;
     let mut case_sensitive = env.clone();
     Interpreter::push_bindings(
         &mut case_sensitive,
@@ -494,7 +487,7 @@ fn node_matches(
     if functionp(interp, predicate, env) {
         let node = related_flat_node(interp, source, tree, Some(index))?;
         return interp
-            .call_function_value(predicate.clone(), None, &[node], &mut env.clone())
+            .call_function_value(*predicate, None, &[node], &mut env.clone())
             .map(|value| value.is_truthy());
     }
     if let Ok(thing) = predicate.as_symbol() {
@@ -862,7 +855,7 @@ fn query_capture(
     let query = if interp.treesit_query_state(query_value).is_some() {
         ensure_compiled_query(interp, query_value, env)?
     } else {
-        let language = interp.with_treesit_node(source, |_, parser| parser.language.clone())?;
+        let language = interp.with_treesit_node(source, |_, parser| parser.language)?;
         let grammar = interp.require_treesit_language(language.as_symbol()?)?;
         compile_query(interp, &grammar, query_value, env)?
     };
@@ -914,7 +907,7 @@ fn sparse_nodes(
     }
     let node = related_flat_node(interp, traversal.source, traversal.tree, Some(index))?;
     let value = if let Some(function) = process {
-        interp.call_function_value(function.clone(), None, &[node], &mut traversal.env.clone())?
+        interp.call_function_value(*function, None, &[node], &mut traversal.env.clone())?
     } else {
         node
     };
@@ -985,7 +978,7 @@ define_dispatch!(
                 {
                     return Ok(parser);
                 }
-                interp.create_treesit_parser(args[0].clone(), buffer_id, list_buffer_id, tag)
+                interp.create_treesit_parser(args[0], buffer_id, list_buffer_id, tag)
             }
             "treesit-parser-delete" => {
                 need_args(name, args, 1)?;
@@ -1031,19 +1024,16 @@ define_dispatch!(
             "treesit-parser-set-included-ranges" => {
                 need_args(name, args, 2)?;
                 if !args[1].is_list() {
-                    return Err(LispError::WrongTypeArgument(
-                        "consp".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("consp".into(), args[1]));
                 }
-                interp.set_treesit_included_ranges(&args[0], args[1].clone())?;
+                interp.set_treesit_included_ranges(&args[0], args[1])?;
                 Ok(Value::Nil)
             }
             "treesit-parser-add-notifier" | "treesit-parser-remove-notifier" => {
                 need_args(name, args, 2)?;
                 args[1].as_symbol()?;
                 if name == "treesit-parser-add-notifier" {
-                    interp.add_treesit_notifier(&args[0], args[1].clone())?;
+                    interp.add_treesit_notifier(&args[0], args[1])?;
                 } else {
                     interp.remove_treesit_notifier(&args[0], &args[1])?;
                 }
@@ -1062,9 +1052,7 @@ define_dispatch!(
                 interp
                     .treesit_node_state(&args[0])
                     .map(|node| Value::Record(node.parser_id))
-                    .ok_or_else(|| {
-                        LispError::WrongTypeArgument("treesit-node-p".into(), args[0].clone())
-                    })
+                    .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), args[0]))
             }
             "treesit-node-type" => {
                 need_args(name, args, 1)?;
@@ -1178,9 +1166,7 @@ define_dispatch!(
                 }
                 let field = primitives::string_like(&args[1])
                     .map(|string| string.text)
-                    .ok_or_else(|| {
-                        LispError::WrongTypeArgument("stringp".into(), args[1].clone())
-                    })?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1]))?;
                 related_node(interp, &args[0], |node| node.child_by_field_name(field))
             }
             "treesit-node-field-name-for-child" => {
@@ -1219,10 +1205,10 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let left = interp.treesit_node_state(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("treesit-node-p".into(), args[0].clone())
+                    LispError::WrongTypeArgument("treesit-node-p".into(), args[0])
                 })?;
                 let right = interp.treesit_node_state(&args[1]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("treesit-node-p".into(), args[1].clone())
+                    LispError::WrongTypeArgument("treesit-node-p".into(), args[1])
                 })?;
                 Ok(
                     if left.parser_id == right.parser_id
@@ -1307,7 +1293,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 interp
                     .treesit_query_state(&args[0])
-                    .map(|query| query.language.clone())
+                    .map(|query| query.language)
                     .ok_or_else(|| {
                         LispError::TypeError("treesit-compiled-query-p".into(), args[0].type_name())
                     })
@@ -1315,13 +1301,10 @@ define_dispatch!(
             "treesit-query-compile" => {
                 need_arg_range(name, args, 2, 3)?;
                 if !args[0].is_symbol() {
-                    return Err(LispError::WrongTypeArgument(
-                        "symbolp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("symbolp".into(), args[0]));
                 }
                 if interp.treesit_query_state(&args[1]).is_some() {
-                    return Ok(args[1].clone());
+                    return Ok(args[1]);
                 }
                 if !(args[1].is_string()
                     || matches!(args[1], Value::Cons(_)) && !is_vector_value(&args[1]))
@@ -1331,7 +1314,7 @@ define_dispatch!(
                         args[1].type_name(),
                     ));
                 }
-                let query = interp.create_treesit_query(args[0].clone(), args[1].clone());
+                let query = interp.create_treesit_query(args[0], args[1]);
                 if args.get(2).is_some_and(Value::is_truthy) {
                     ensure_compiled_query(interp, &query, env)?;
                 }
@@ -1428,10 +1411,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let process = args.get(2).filter(|function| !function.is_nil());
                 if process.is_some_and(|function| !functionp(interp, function, env)) {
-                    return Err(LispError::WrongTypeArgument(
-                        "functionp".into(),
-                        args[2].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("functionp".into(), args[2]));
                 }
                 let depth = args
                     .get(3)

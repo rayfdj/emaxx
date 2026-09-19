@@ -23,7 +23,7 @@ fn decode_frame(
                 } else {
                     "framep"
                 },
-                value.clone(),
+                *value,
             ));
         }
     };
@@ -63,7 +63,7 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
             "height".into(),
             Value::Integer(frame.parameter_height.max(1)),
         ),
-        ("name".into(), frame.name.clone()),
+        ("name".into(), frame.name),
         ("font".into(), Value::string("tty")),
         ("background-color".into(), Value::string("unspecified-bg")),
         ("foreground-color".into(), Value::string("unspecified-fg")),
@@ -82,7 +82,7 @@ fn frame_parameter_value(interp: &Interpreter, id: u64, parameter: &str) -> Valu
         .parameter_overrides
         .iter()
         .find(|(name, _)| name == parameter)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| *value)
         .or_else(|| {
             default_frame_parameters(interp, id)
                 .into_iter()
@@ -121,7 +121,7 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         return;
     };
     if parameter == "name" {
-        frame.name = value.clone();
+        frame.name = value;
     }
     if let Some((_, current)) = frame
         .parameter_overrides
@@ -295,7 +295,7 @@ define_dispatch!(
                 let id = decode_frame(interp, args.first(), true, false)?;
                 let parameter = args[1]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
                 Ok(if interp.frame_is_live(id) {
                     frame_parameter_value(interp, id, parameter)
                 } else {
@@ -318,10 +318,10 @@ define_dispatch!(
                 for entry in parameters.into_iter().rev() {
                     let (parameter, value) = entry
                         .cons_values()
-                        .ok_or_else(|| wrong_type_argument("consp", entry.clone()))?;
+                        .ok_or_else(|| wrong_type_argument("consp", entry))?;
                     let parameter = parameter
                         .as_symbol()
-                        .map_err(|_| wrong_type_argument("symbolp", parameter.clone()))?
+                        .map_err(|_| wrong_type_argument("symbolp", parameter))?
                         .to_string();
                     store_frame_parameter(interp, id, parameter, value);
                 }
@@ -502,7 +502,7 @@ define_dispatch!(
                     matches!(items.first(), Some(Value::Symbol(event)) if event == "switch-frame")
                 })
                 .and_then(|items| items.get(1).cloned())
-                .unwrap_or_else(|| args[0].clone());
+                .unwrap_or_else(|| args[0]);
                 let id = decode_frame(interp, Some(&frame), false, false)?;
                 if !interp.frame_is_live(id) {
                     return Ok(Value::Nil);
@@ -612,7 +612,7 @@ define_dispatch!(
                     .frame_state_mut(id)
                     .expect("a decoded frame identity must have state")
                     .after_make_frame = args[1].is_truthy();
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "frame-window-state-change" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -733,10 +733,10 @@ fn make_terminal_frame(
     for entry in entries.into_iter().rev() {
         let (key, value) = entry
             .cons_values()
-            .ok_or_else(|| wrong_type_argument("consp", entry.clone()))?;
+            .ok_or_else(|| wrong_type_argument("consp", entry))?;
         let name = key
             .as_symbol()
-            .map_err(|_| wrong_type_argument("symbolp", key.clone()))?;
+            .map_err(|_| wrong_type_argument("symbolp", key))?;
         if !matches!(name, "minibuffer" | "tty" | "tty-type") {
             store_frame_parameter(interp, id, name.to_owned(), value);
         }

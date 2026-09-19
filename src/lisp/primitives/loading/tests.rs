@@ -33,11 +33,11 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     interp.buffer.file = Some("buffer-visited-name.el".into());
     let filename = Value::string("explicit-history-name.el");
     let outer = Value::list([Value::string("outer-load.el")]);
-    interp.set_variable("current-load-list", outer.clone(), &mut env);
+    interp.set_variable("current-load-list", outer, &mut env);
     let result = super::super::call(
         &mut interp,
         "eval-buffer",
-        &[Value::Nil, Value::Nil, filename.clone()],
+        &[Value::Nil, Value::Nil, filename],
         &mut env,
     )
     .expect("an empty buffer still records its explicit history filename");
@@ -86,7 +86,7 @@ fn eval_buffer_nil_filename_records_an_independent_nil_history_entry() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let outer = Value::list([Value::string("outer-file.el")]);
-    interp.set_variable("current-load-list", outer.clone(), &mut env);
+    interp.set_variable("current-load-list", outer, &mut env);
     for _ in 0..2 {
         super::super::call(&mut interp, "eval-buffer", &[], &mut env)
             .expect("nil filename is a valid read/eval-loop source name");
@@ -195,7 +195,7 @@ fn load_source_callback_receives_gnu_arguments_and_owns_the_return_value() {
         assert_eq!(
             actual,
             Value::list([
-                fullname.clone(),
+                fullname,
                 if purifying {
                     Value::string("comp-test-45603.el")
                 } else {
@@ -219,11 +219,7 @@ fn load_source_callback_observes_and_restores_the_outer_c_bindings() {
     let mut env = Env::new();
     let old_warning = Value::list([Value::Integer(63)]);
     interp.set_variable("lexical-binding", Value::T, &mut env);
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        old_warning.clone(),
-        &mut env,
-    );
+    interp.set_variable("lread--unescaped-character-literals", old_warning, &mut env);
     let callback = source_callback(
         &mut interp,
         &[8, 9, 68, 135],
@@ -261,11 +257,11 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
     let callback = source_callback(
         &mut interp,
         &[192, 193, 194, 34, 135],
-        vec![Value::symbol("throw"), tag.clone(), Value::Integer(23)],
+        vec![Value::symbol("throw"), tag, Value::Integer(23)],
     );
     interp.set_variable("load-source-file-function", callback, &mut env);
     interp.set_variable("lexical-binding", Value::T, &mut env);
-    interp.push_active_catch_tag(tag.clone());
+    interp.push_active_catch_tag(tag);
     let result = super::super::call(
         &mut interp,
         "load",
@@ -302,13 +298,13 @@ fn load_source_callback_reads_the_detached_c_slot() {
     let result = super::super::call(
         &mut interp,
         "load",
-        &[fullname.clone(), Value::Nil, Value::T],
+        &[fullname, Value::Nil, Value::T],
         &mut env,
     )
     .expect("Fload reads Vload_source_file_function, not the detached symbol");
     assert_eq!(
         result,
-        Value::list([fullname.clone(), fullname, Value::Nil, Value::T])
+        Value::list([fullname, fullname, Value::Nil, Value::T])
     );
     assert!(interp.loads_in_progress.is_nil());
 }
@@ -326,15 +322,10 @@ fn load_recursion_limit_counts_only_the_same_file_and_restores_the_stack() {
     interp.set_variable("load-source-file-function", Value::symbol("list"), &mut env);
     for count in [3, 4] {
         let saved = Value::list(
-            std::iter::repeat_n(file.clone(), count).chain([Value::string("unrelated-file.el")]),
+            std::iter::repeat_n(file, count).chain([Value::string("unrelated-file.el")]),
         );
-        interp.loads_in_progress = saved.clone();
-        let result = super::super::call(
-            &mut interp,
-            "load",
-            &[file.clone(), Value::T, Value::T],
-            &mut env,
-        );
+        interp.loads_in_progress = saved;
+        let result = super::super::call(&mut interp, "load", &[file, Value::T, Value::T], &mut env);
         if count == 3 {
             assert!(
                 result.is_ok(),
@@ -349,7 +340,7 @@ fn load_recursion_limit_counts_only_the_same_file_and_restores_the_stack() {
                 Value::list([
                     Value::symbol("error"),
                     Value::string("Recursive load"),
-                    Value::cons(file.clone(), saved.clone()),
+                    Value::cons(file, saved),
                 ])
             );
         }
@@ -599,7 +590,7 @@ fn locate_file_internal_accepts_its_two_required_arguments() {
         super::super::call(
             &mut interp,
             "locate-file-internal",
-            &[file.clone(), Value::Nil],
+            &[file, Value::Nil],
             &mut Env::new()
         )
         .expect("GNU arity is 2..4"),

@@ -898,7 +898,7 @@ pub(crate) fn write_printer_output(
             append_external_debugging_output(interp, text)
         }
         Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_)) => {
-            let function = stream.expect("matched Some").clone();
+            let function = *stream.expect("matched Some");
             for ch in text.chars() {
                 call_function_value(interp, &function, &[Value::Integer(ch as i64)], env)?;
             }
@@ -960,7 +960,7 @@ pub(crate) fn printer_stream_value(
 ) -> Option<Value> {
     let resolved = match explicit {
         Some(Value::Nil) => interp.lookup_var("standard-output", env),
-        Some(value) => Some(value.clone()),
+        Some(value) => Some(*value),
         None => interp.lookup_var("standard-output", env),
     };
     match resolved {
@@ -1005,7 +1005,7 @@ pub(crate) fn printer_env_with_overrides(
                     let [Value::Symbol(name), value] = spec.as_slice() else {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     };
-                    (*name, value.clone())
+                    (*name, *value)
                 } else if let Some((car, cdr)) = item.cons_values() {
                     let Value::Symbol(name) = car else {
                         return Err(LispError::Signal("invalid print overrides".into()));
@@ -1621,7 +1621,7 @@ pub(crate) fn finish_insert_file_contents(
         let result = interp.call_function_value(
             function,
             Some("after-insert-file-set-coding"),
-            &[Value::Integer(inserted as i64), visit.clone()],
+            &[Value::Integer(inserted as i64), visit],
             env,
         )?;
         inserted = inserted_count(&result, inserted)?;
@@ -1644,7 +1644,7 @@ pub(crate) fn finish_insert_file_contents(
             for hook in hooks.to_vec()? {
                 let function = match &hook {
                     Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
-                    function => function.clone(),
+                    function => *function,
                 };
                 let original_name = hook.as_symbol().ok();
                 let result = interp.call_function_value(

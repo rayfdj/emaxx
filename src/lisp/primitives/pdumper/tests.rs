@@ -141,14 +141,14 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
     // an interned and an uninterned symbol, and a built-in function.
     let shared = Value::list([Value::Integer(1), Value::Integer(2)]);
     let cycle = Value::cons(Value::symbol("loop"), Value::Nil);
-    cycle.set_cdr(cycle.clone()).expect("setcdr");
+    cycle.set_cdr(cycle).expect("setcdr");
     let float = Value::float(2.5);
     let props = vec![TextPropertySpan {
         start: 1,
         end: 3,
         props: vec![
             ("face".into(), Value::symbol("bold")),
-            ("shared".into(), shared.clone()),
+            ("shared".into(), shared),
         ],
     }];
     let propertized =
@@ -194,17 +194,17 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
             .expect("a bignum literal"),
     );
     let graph = Value::vector([
-        shared.clone(),
-        shared.clone(),
-        cycle.clone(),
+        shared,
+        shared,
+        cycle,
         Value::string("plain ascii"),
         Value::string("ünïcödé"),
         propertized,
         extended,
         unibyte,
         multibyte_raw,
-        float.clone(),
-        float.clone(),
+        float,
+        float,
         Value::float(2.5),
         bignum,
         negative_bignum,
@@ -218,15 +218,15 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
         Value::T,
         Value::Unbound,
         Value::symbol("car"),
-        uninterned.clone(),
-        uninterned.clone(),
+        uninterned,
+        uninterned,
         Value::BuiltinFunc("car".into()),
         Value::BuiltinFunc("car".into()),
         Value::string(""),
         Value::vector([]),
     ]);
     let roots = vec![
-        (RootSlot::LoadPath, graph.clone()),
+        (RootSlot::LoadPath, graph),
         (RootSlot::QuitFlag, Value::Integer(42)),
         (RootSlot::InhibitQuit, Value::T),
         (RootSlot::CurrentGlobalMap, Value::Unbound),
@@ -244,7 +244,7 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
             .roots
             .iter()
             .find(|(candidate, _)| *candidate == slot)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
             .unwrap_or_else(|| panic!("root {slot:?} missing"))
     };
     assert_eq!(root(RootSlot::QuitFlag), Value::Integer(42));
@@ -487,8 +487,8 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
 fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     let mut interp = Interpreter::new();
     let inner = Value::list([Value::string("a"), Value::string("b")]);
-    let outer = Value::vector([inner.clone(), inner.clone(), Value::string("c")]);
-    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, outer.clone())]);
+    let outer = Value::vector([inner, inner, Value::string("c")]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, outer)]);
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     // Object starts are unique and ascending.
@@ -552,14 +552,14 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         .expect("setup parses")
         .expect("setup has a form");
     let graph = interp.eval(&form, &mut env).expect("setup evaluates");
-    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     let loaded = image
         .roots
         .iter()
         .find(|(slot, _)| *slot == RootSlot::LoadPath)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| *value)
         .expect("root");
     let mut seen = HashMap::new();
     graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
@@ -582,12 +582,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(second.params[0].as_str(), "y");
     let call = |target: &mut Interpreter, function: &Value, args: &[Value]| {
         target
-            .call_function_value(
-                function.clone(),
-                None,
-                args,
-                &mut crate::lisp::types::Env::new(),
-            )
+            .call_function_value(*function, None, args, &mut crate::lisp::types::Env::new())
             .expect("closure call")
     };
     assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(1));
@@ -610,7 +605,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         table
             .entries
             .iter()
-            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .map(|entry| (entry.start, entry.end, entry.value))
             .collect::<Vec<_>>(),
         vec![
             (97, 122, Value::symbol("lower")),
@@ -697,7 +692,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         .expect("setup parses")
         .expect("setup has a form");
     let graph = interp.eval(&form, &mut env).expect("setup evaluates");
-    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     assert_ne!(image.header.hash_list, 0, "the hash list is written");
@@ -705,17 +700,17 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         .roots
         .iter()
         .find(|(slot, _)| *slot == RootSlot::LoadPath)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| *value)
         .expect("root");
     let Value::Vector(vector) = &loaded else {
         panic!("root vector")
     };
     let slots = vector.slots().to_vec();
-    let eq_table = slots[0].clone();
-    let equal_table = slots[1].clone();
-    let weak = slots[2].clone();
-    let empty = slots[3].clone();
-    let shared = slots[4].clone();
+    let eq_table = slots[0];
+    let equal_table = slots[1];
+    let weak = slots[2];
+    let empty = slots[3];
+    let shared = slots[4];
     assert_eq!(
         call_in(
             &mut target,
@@ -733,11 +728,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         Value::symbol("eq")
     );
     assert_eq!(
-        call_in(
-            &mut target,
-            "gethash",
-            &[Value::symbol("a"), eq_table.clone()]
-        ),
+        call_in(&mut target, "gethash", &[Value::symbol("a"), eq_table]),
         Value::Integer(1)
     );
     // The value is the shared list object, not a copy.
@@ -745,7 +736,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         object_key(&call_in(
             &mut target,
             "gethash",
-            &[Value::symbol("b"), eq_table.clone()]
+            &[Value::symbol("b"), eq_table]
         )),
         object_key(&shared)
     );
@@ -760,27 +751,15 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         Value::symbol("equal")
     );
     assert_eq!(
-        call_in(
-            &mut target,
-            "gethash",
-            &[Value::string("k2"), equal_table.clone()]
-        ),
+        call_in(&mut target, "gethash", &[Value::string("k2"), equal_table]),
         Value::Integer(2)
     );
     assert_eq!(
-        call_in(
-            &mut target,
-            "gethash",
-            &[Value::string("k3"), equal_table.clone()]
-        ),
+        call_in(&mut target, "gethash", &[Value::string("k3"), equal_table]),
         Value::Integer(3)
     );
     assert_eq!(
-        call_in(
-            &mut target,
-            "gethash",
-            &[Value::string("k1"), equal_table.clone()]
-        ),
+        call_in(&mut target, "gethash", &[Value::string("k1"), equal_table]),
         Value::Nil
     );
     // Weakness and an empty table survive.
@@ -793,7 +772,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         Value::symbol("key")
     );
     assert_eq!(
-        call_in(&mut target, "gethash", &[Value::symbol("w"), weak.clone()]),
+        call_in(&mut target, "gethash", &[Value::symbol("w"), weak]),
         Value::symbol("x")
     );
     assert_eq!(
@@ -812,7 +791,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     call_in(
         &mut target,
         "puthash",
-        &[Value::symbol("c"), Value::Integer(3), eq_table.clone()],
+        &[Value::symbol("c"), Value::Integer(3), eq_table],
     );
     assert_eq!(
         call_in(&mut target, "hash-table-count", &[eq_table]),
@@ -900,7 +879,7 @@ fn image_keeps_a_private_obarray_symbol_apart_from_its_namesake() {
         .roots
         .iter()
         .find(|(slot, _)| *slot == RootSlot::LoadPath)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| *value)
         .expect("the root vector");
     target
         .install_image(
@@ -1013,10 +992,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .expect("the buffer set a syntax table");
     let source_finalizers = interp.finalizer_ids();
     let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
-    let roots = vec![
-        (RootSlot::LoadPath, graph.clone()),
-        (RootSlot::QuitFlag, terminal),
-    ];
+    let roots = vec![(RootSlot::LoadPath, graph), (RootSlot::QuitFlag, terminal)];
     let bytes = dump(&mut interp, roots);
 
     let mut target = Interpreter::new();
@@ -1026,7 +1002,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
             .roots
             .iter()
             .find(|(candidate, _)| *candidate == slot)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
             .unwrap_or_else(|| panic!("root {slot:?} missing"))
     };
     let Value::Vector(vector) = root(RootSlot::LoadPath) else {

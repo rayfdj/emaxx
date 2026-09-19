@@ -13,7 +13,7 @@ pub(super) struct SearchTail {
 impl SearchTail {
     pub fn new(list: Value) -> Self {
         Self {
-            tortoise: list.clone(),
+            tortoise: list,
             current: list,
             max: 2,
             remaining: 0,
@@ -38,7 +38,7 @@ impl SearchTail {
                 self.max = self.max.wrapping_mul(2);
                 self.quit_count = self.max as u16;
                 self.remaining = self.max >> u16::BITS;
-                self.tortoise = self.current.clone();
+                self.tortoise = self.current;
                 return Ok(());
             }
         }
@@ -46,7 +46,7 @@ impl SearchTail {
             if !safe {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("circular-list"),
-                    self.current.clone(),
+                    self.current,
                 ])));
             }
             self.current = Value::Nil;
@@ -83,7 +83,7 @@ pub(super) fn openp_search(
     env: &mut Env,
 ) -> Result<(Option<SearchMatch>, i32), LispError> {
     let requested = string_text(file)?;
-    let mut tail = SearchTail::new(suffixes.clone());
+    let mut tail = SearchTail::new(*suffixes);
     while let Some((suffix, _)) = tail.current.cons_values() {
         string_text(&suffix)?;
         tail.advance(interp, env, true)?;
@@ -93,17 +93,13 @@ pub(super) fn openp_search(
     // tilde still needs expansion, while a leading slash is complete.
     let absolute = requested.starts_with('/');
     let just_use_str = Value::list([Value::Nil]);
-    let mut directories = SearchTail::new(if path.is_nil() {
-        just_use_str.clone()
-    } else {
-        path.clone()
-    });
+    let mut directories = SearchTail::new(if path.is_nil() { just_use_str } else { *path });
     let mut last_errno = libc::ENOENT;
     while let Some((directory, _)) = directories.current.cons_values() {
         let mut filename = if directories.current.cons_id() == just_use_str.cons_id() {
-            file.clone()
+            *file
         } else {
-            super::super::call(interp, "expand-file-name", &[file.clone(), directory], env)?
+            super::super::call(interp, "expand-file-name", &[*file, directory], env)?
         };
         if !string_text(&filename)?.starts_with('/') {
             filename =
@@ -122,7 +118,7 @@ pub(super) fn openp_search(
         let mut candidates = SearchTail::new(if suffixes.is_nil() {
             Value::list([Value::string("")])
         } else {
-            suffixes.clone()
+            *suffixes
         });
         let mut newest: Option<(SearchMatch, std::time::SystemTime)> = None;
         while let Some((suffix, _)) = candidates.current.cons_values() {
@@ -149,7 +145,7 @@ pub(super) fn openp_search(
                         .is_truthy()
                 } else {
                     let answer = interp.call_function_value(
-                        predicate.clone(),
+                        *predicate,
                         predicate.as_symbol().ok(),
                         std::slice::from_ref(&name),
                         env,

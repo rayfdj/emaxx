@@ -209,7 +209,7 @@ impl Context<'_> {
             .modules
             .values
             .get(&(handle as usize))
-            .map(|value| (**value).clone())
+            .map(|value| **value)
             .unwrap_or_else(|| {
                 let count = self.interpreter().modules.values.len();
                 let environments = ACTIVE_ENVS.with_borrow(HashMap::len);
@@ -236,7 +236,7 @@ impl Context<'_> {
             return;
         }
         let (symbol, data) = match &error {
-            LispError::Throw(tag, value) => (tag.clone(), value.clone()),
+            LispError::Throw(tag, value) => (*tag, *value),
             _ => {
                 let condition = super::eval::error_condition_value(&error);
                 (
@@ -366,7 +366,7 @@ pub(crate) fn load(
     environment: &mut Env,
 ) -> Result<Value, LispError> {
     let path = primitives::string_like(file)
-        .ok_or_else(|| primitives::wrong_type_argument("stringp", file.clone()))?
+        .ok_or_else(|| primitives::wrong_type_argument("stringp", *file))?
         .text;
     // dynlib.c uses global symbols for modules, unlike native Lisp units.
     // SAFETY: module-load explicitly loads caller-selected native code.
@@ -380,7 +380,7 @@ pub(crate) fn load(
     let library = Rc::new(library.map_err(|error| {
         condition(
             "module-open-failed",
-            [file.clone(), Value::string(&error.to_string())],
+            [*file, Value::string(&error.to_string())],
         )
     })?);
     // Fmodule_load retains every opened library, even when a later GPL,
@@ -390,10 +390,10 @@ pub(crate) fn load(
     let init = unsafe {
         library
             .get::<*mut c_void>(b"plugin_is_GPL_compatible")
-            .map_err(|_| condition("module-not-gpl-compatible", [file.clone()]))?;
+            .map_err(|_| condition("module-not-gpl-compatible", [*file]))?;
         *library
             .get::<unsafe extern "C" fn(*mut Runtime) -> c_int>(b"emacs_module_init")
-            .map_err(|_| condition("missing-module-init-function", [file.clone()]))?
+            .map_err(|_| condition("missing-module-init-function", [*file]))?
     };
     let activation = Activation::new(interpreter, environment);
     let mut runtime = Box::new(Runtime {
@@ -427,7 +427,7 @@ pub(crate) fn load(
     if status != 0 {
         return Err(condition(
             "module-init-failed",
-            [file.clone(), Value::Integer(status as i64)],
+            [*file, Value::Integer(status as i64)],
         ));
     }
     context.propagate_exit()?;
@@ -460,7 +460,7 @@ pub(crate) fn call(
     Context(&activation).make(Value::Record(id));
     let mut handles: Vec<_> = args
         .iter()
-        .map(|arg| Context(&activation).make(arg.clone()))
+        .map(|arg| Context(&activation).make(*arg))
         .collect();
     let arguments = if handles.is_empty() {
         std::ptr::null_mut()

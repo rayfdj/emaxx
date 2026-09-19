@@ -211,7 +211,7 @@ fn integer(value: &Value) -> Result<BigInt, LispError> {
     match value {
         Value::Integer(n) => Ok(BigInt::from(*n)),
         Value::BigInteger(n) => Ok((*n).into()),
-        _ => Err(primitives::wrong_type_argument("integerp", value.clone())),
+        _ => Err(primitives::wrong_type_argument("integerp", *value)),
     }
 }
 pub(super) unsafe extern "C" fn extract_integer(env: *mut ModuleEnv, handle: Handle) -> i64 {
@@ -291,15 +291,12 @@ pub(super) unsafe extern "C" fn copy_string_contents(
     api(env, false, |a| {
         let value = a.value(handle);
         let string = primitives::string_like(&value)
-            .ok_or_else(|| primitives::wrong_type_argument("stringp", value.clone()))?;
+            .ok_or_else(|| primitives::wrong_type_argument("stringp", value))?;
         let bytes = if string.multibyte {
             let mut bytes = Vec::new();
             for code in string.character_codes() {
                 if !(0..=0x10ffff).contains(&code) {
-                    return Err(primitives::wrong_type_argument(
-                        "unicode-string-p",
-                        value.clone(),
-                    ));
+                    return Err(primitives::wrong_type_argument("unicode-string-p", value));
                 }
                 primitives::push_emacs_multibyte_char(&mut bytes, code as u32)?;
             }

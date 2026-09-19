@@ -595,7 +595,7 @@ impl Loader<'_> {
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
-                    let Value::Vector(vector) = self.objects[&offset].clone() else {
+                    let Value::Vector(vector) = self.objects[&offset] else {
                         unreachable!()
                     };
                     let slots = vector.slots_mut();
@@ -824,7 +824,7 @@ impl Loader<'_> {
                     "finalizer {id} is on the chain but not in the image"
                 )));
             };
-            self.interp.install_finalizer(*id, function.clone());
+            self.interp.install_finalizer(*id, *function);
         }
         for (id, function, _) in finalizer_records {
             if !chain.contains(&id) {
@@ -884,7 +884,7 @@ impl Loader<'_> {
             Some(DumpRelocKind::DumpToDumpLv(_)) => {
                 let target = word as u32;
                 if let Some(value) = self.objects.get(&target) {
-                    return Ok(value.clone());
+                    return Ok(*value);
                 }
                 if self.types.get(&target) == Some(&DumpType::Closure) {
                     return self.closure_at(target);
@@ -908,7 +908,7 @@ impl Loader<'_> {
             Some(DumpRelocKind::DumpToDumpLv(DumpType::Symbol)) => {
                 let target = word as u32;
                 if let Some(value) = self.objects.get(&target) {
-                    return Ok(value.clone());
+                    return Ok(*value);
                 }
                 let flags = self.reader.word(target)?;
                 let name = self.value_at(target + 8)?;
@@ -973,7 +973,7 @@ impl Loader<'_> {
         };
         if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
             return Ok(SymbolName::make_uninterned(
-                name.clone(),
+                name,
                 &name_text,
                 next_make_symbol_id(),
             ));
@@ -1003,7 +1003,7 @@ impl Loader<'_> {
 
     fn closure_at(&mut self, offset: u32) -> Result<Value, LoadError> {
         if let Some(value) = self.objects.get(&offset) {
-            return Ok(value.clone());
+            return Ok(*value);
         }
         if !self.closures_in_progress.insert(offset) {
             return Err(LoadError::Error(format!(
@@ -1025,7 +1025,7 @@ impl Loader<'_> {
             documentation,
             interactive,
         });
-        self.objects.insert(offset, closure.clone());
+        self.objects.insert(offset, closure);
         self.closures_in_progress.remove(&offset);
         // The environment after the closure is on record: a closure can
         // reach itself through its environment's conses.

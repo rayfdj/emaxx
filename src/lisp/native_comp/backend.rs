@@ -697,7 +697,7 @@ impl Compiler {
             interp,
             env,
             "comp-func-c-name",
-            function_value.clone(),
+            *function_value,
         )?)?;
         let function = self
             .exported_functions
@@ -705,21 +705,14 @@ impl Compiler {
             .copied()
             .ok_or_else(|| super::lisp::native_ice("missing compiled function declaration"))?;
         let frame_size =
-            call_lisp_one(interp, env, "comp-func-frame-size", function_value.clone())?
-                .as_integer()?;
+            call_lisp_one(interp, env, "comp-func-frame-size", *function_value)?.as_integer()?;
         let frame_size = usize::try_from(frame_size)
             .map_err(|_| super::lisp::native_ice("negative native function frame size"))?;
-        let has_non_local = call_lisp_one(
-            interp,
-            env,
-            "comp-func-has-non-local",
-            function_value.clone(),
-        )?
-        .is_truthy();
-        let speed =
-            call_lisp_one(interp, env, "comp-func-speed", function_value.clone())?.as_integer()?;
+        let has_non_local =
+            call_lisp_one(interp, env, "comp-func-has-non-local", *function_value)?.is_truthy();
+        let speed = call_lisp_one(interp, env, "comp-func-speed", *function_value)?.as_integer()?;
         let safety =
-            call_lisp_one(interp, env, "comp-func-safety", function_value.clone())?.as_integer()?;
+            call_lisp_one(interp, env, "comp-func-safety", *function_value)?.as_integer()?;
 
         let runtime = self
             .runtime
@@ -760,7 +753,7 @@ impl Compiler {
             .context
             .new_local(function, self.types.handler_ptr, &c_string("c"));
 
-        let blocks_value = call_lisp_one(interp, env, "comp-func-blocks", function_value.clone())?;
+        let blocks_value = call_lisp_one(interp, env, "comp-func-blocks", *function_value)?;
         let (_, block_entries) = crate::lisp::json::hash_table_entries(interp, &blocks_value)
             .ok_or_else(|| super::lisp::native_ice("comp-func-blocks returned a non-hash-table"))?;
         let mut blocks = std::collections::HashMap::with_capacity_and_hasher(
@@ -790,7 +783,7 @@ impl Compiler {
             if block.is_nil() {
                 return Err(super::lisp::native_ice("basic block is missing or empty"));
             }
-            let instructions = call_lisp_one(interp, env, "comp-block-insns", block.clone())?;
+            let instructions = call_lisp_one(interp, env, "comp-block-insns", block)?;
             if instructions.is_nil() {
                 return Err(super::lisp::native_ice("basic block is missing or empty"));
             }
@@ -1010,7 +1003,7 @@ impl Compiler {
         env: &mut Env,
         mvar: &Value,
     ) -> Result<*mut LValueOpaque, LispError> {
-        let slot = call_lisp_one(interp, env, "comp-mvar-slot", mvar.clone())?;
+        let slot = call_lisp_one(interp, env, "comp-mvar-slot", *mvar)?;
         if slot.as_symbol().is_ok_and(|name| name == "scratch") {
             let existing = self
                 .current_function()
@@ -1068,10 +1061,9 @@ impl Compiler {
         unit: &super::lisp::UnitData,
         mvar: &Value,
     ) -> Result<*mut RValueOpaque, LispError> {
-        let constant_valid =
-            call_lisp_one(interp, env, "comp-cstr-imm-vld-p", mvar.clone())?.is_truthy();
+        let constant_valid = call_lisp_one(interp, env, "comp-cstr-imm-vld-p", *mvar)?.is_truthy();
         if constant_valid {
-            let value = call_lisp_one(interp, env, "comp-cstr-imm", mvar.clone())?;
+            let value = call_lisp_one(interp, env, "comp-cstr-imm", *mvar)?;
             if let Value::Integer(integer) = value {
                 if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer) {
                     return self
@@ -1255,7 +1247,7 @@ impl Compiler {
         direct: bool,
     ) -> Result<*mut RValueOpaque, LispError> {
         if direct {
-            let name = lisp_string(callee.clone())?;
+            let name = lisp_string(*callee)?;
             let function =
                 self.exported_functions.get(&name).copied().ok_or_else(|| {
                     super::lisp::native_ice("missing direct function declaration")
@@ -1327,7 +1319,7 @@ impl Compiler {
         }
         if state.has_non_local || state.speed == 0 {
             let first_slot =
-                call_lisp_one(interp, env, "comp-mvar-slot", mvars[0].clone())?.as_integer()?;
+                call_lisp_one(interp, env, "comp-mvar-slot", mvars[0])?.as_integer()?;
             let first_slot = usize::try_from(first_slot)
                 .map_err(|_| super::lisp::native_ice("negative native callref frame slot"))?;
             let first = self
@@ -1393,7 +1385,7 @@ impl Compiler {
             interp,
             env,
             "comp-mvar-type-hint-match-p",
-            &[mvar.clone(), Value::symbol(expected)],
+            &[*mvar, Value::symbol(expected)],
         )?
         .is_truthy())
     }
@@ -1687,14 +1679,11 @@ impl Compiler {
                 let then_block = self.block(argument(2)?)?;
                 let else_block = self.block(argument(3)?)?;
                 let left_is_constant_nil =
-                    call_lisp_one(interp, env, "comp-cstr-imm-vld-p", left_mvar.clone())?
-                        .is_truthy()
-                        && call_lisp_one(interp, env, "comp-cstr-imm", left_mvar.clone())?.is_nil();
+                    call_lisp_one(interp, env, "comp-cstr-imm-vld-p", *left_mvar)?.is_truthy()
+                        && call_lisp_one(interp, env, "comp-cstr-imm", *left_mvar)?.is_nil();
                 let right_is_constant_nil =
-                    call_lisp_one(interp, env, "comp-cstr-imm-vld-p", right_mvar.clone())?
-                        .is_truthy()
-                        && call_lisp_one(interp, env, "comp-cstr-imm", right_mvar.clone())?
-                            .is_nil();
+                    call_lisp_one(interp, env, "comp-cstr-imm-vld-p", *right_mvar)?.is_truthy()
+                        && call_lisp_one(interp, env, "comp-cstr-imm", *right_mvar)?.is_nil();
                 let test = if left_is_constant_nil || right_is_constant_nil {
                     self.base_eq(left, right)
                 } else {
@@ -1806,8 +1795,8 @@ impl Compiler {
                 self.assign_mvar(interp, env, argument(0)?, value)?;
             }
             "set-rest-args-to-local" => {
-                let slot = call_lisp_one(interp, env, "comp-mvar-slot", argument(0)?.clone())?
-                    .as_integer()?;
+                let slot =
+                    call_lisp_one(interp, env, "comp-mvar-slot", *argument(0)?)?.as_integer()?;
                 let slot = i32::try_from(slot)
                     .map_err(|_| super::lisp::native_ice("native frame slot exceeds c_int"))?;
                 let function = self
@@ -1861,7 +1850,7 @@ impl Compiler {
                 let value = argument(0)?;
                 let comment = string_like(value)
                     .map(|string| string.text)
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
                 self.add_comment(&comment)?;
             }
             "return" => {

@@ -3,15 +3,15 @@ use super::*;
 fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
     match value {
         Value::Integer(index) => Ok(*index),
-        other => Err(wrong_type_argument("fixnump", other.clone())),
+        other => Err(wrong_type_argument("fixnump", *other)),
     }
 }
 
 fn args_out_of_range(sequence: &Value, index: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("args-out-of-range".into()),
-        sequence.clone(),
-        index.clone(),
+        *sequence,
+        *index,
     ]))
 }
 
@@ -28,12 +28,12 @@ fn delete_from_list(
     env: &Env,
     comparison: DeleteListComparison,
 ) -> Result<Value, LispError> {
-    let mut head = list.clone();
+    let mut head = *list;
     let mut previous: Option<Value> = None;
-    let mut tail = list.clone();
+    let mut tail = *list;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match tail.clone() {
+        match tail {
             Value::Nil => return Ok(head),
             Value::Cons(cell) => {
                 if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
@@ -42,7 +42,7 @@ fn delete_from_list(
                         Value::String("Circular list".into()),
                     ])));
                 }
-                let next = cell.cdr.borrow().clone();
+                let next = *cell.cdr.borrow();
                 let matches = match comparison {
                     DeleteListComparison::Eq => {
                         values_eq_in_env(interp, &cell.car.borrow(), elt, env)
@@ -53,12 +53,12 @@ fn delete_from_list(
                 };
                 if matches {
                     if let Some(previous) = &previous {
-                        previous.set_cdr(next.clone())?;
+                        previous.set_cdr(next)?;
                     } else {
-                        head = next.clone();
+                        head = next;
                     }
                 } else {
-                    previous = Some(tail.clone());
+                    previous = Some(tail);
                 }
                 tail = next;
             }
@@ -164,10 +164,10 @@ define_dispatch!(
             // ── Plist operations ──
             "plist-get" => {
                 need_arg_range(name, args, 2, 3)?;
-                let plist = args[0].clone();
+                let plist = args[0];
                 let key = &args[1];
                 let testfn = args.get(2);
-                let mut current = plist.clone();
+                let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current {
@@ -179,15 +179,15 @@ define_dispatch!(
                             if seen.step(cell_id) {
                                 return Ok(Value::Nil);
                             }
-                            let property = car.borrow().clone();
+                            let property = *car.borrow();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match cdr.borrow().clone() {
-                                    Value::Cons(cell) => Ok(cell.car.borrow().clone()),
+                                return match *cdr.borrow() {
+                                    Value::Cons(cell) => Ok(*cell.car.borrow()),
                                     _ => Ok(Value::Nil),
                                 };
                             }
-                            match cdr.borrow().clone() {
-                                Value::Cons(cell) => current = cell.cdr.borrow().clone(),
+                            match *cdr.borrow() {
+                                Value::Cons(cell) => current = *cell.cdr.borrow(),
                                 Value::Nil => return Ok(Value::Nil),
                                 _ => return Ok(Value::Nil),
                             }
@@ -199,18 +199,18 @@ define_dispatch!(
 
             "plist-put" => {
                 need_arg_range(name, args, 3, 4)?;
-                let plist = args[0].clone();
+                let plist = args[0];
                 let key = &args[1];
                 let val = &args[2];
                 let testfn = args.get(3);
-                let mut current = plist.clone();
+                let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current {
                         Value::Nil => {
                             let mut items = plist.to_vec()?;
-                            items.push(key.clone());
-                            items.push(val.clone());
+                            items.push(*key);
+                            items.push(*val);
                             return Ok(Value::list(items));
                         }
                         Value::Cons(cons_cell) => {
@@ -223,26 +223,25 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let property = car.borrow().clone();
+                            let property = *car.borrow();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match cdr.borrow().clone() {
+                                return match *cdr.borrow() {
                                     Value::Cons(cons_cell) => {
                                         let value = &cons_cell.car;
                                         let _ = &cons_cell.cdr;
-                                        *value.borrow_mut() = val.clone();
+                                        *value.borrow_mut() = *val;
                                         Ok(plist)
                                     }
                                     _ => Err(plist_type_error(&plist)),
                                 };
                             }
-                            match cdr.borrow().clone() {
+                            match *cdr.borrow() {
                                 Value::Cons(cons_cell) => {
                                     let _ = &cons_cell.car;
                                     let next_cdr = &cons_cell.cdr;
-                                    let next = next_cdr.borrow().clone();
+                                    let next = *next_cdr.borrow();
                                     if next.is_nil() {
-                                        *next_cdr.borrow_mut() =
-                                            Value::list([key.clone(), val.clone()]);
+                                        *next_cdr.borrow_mut() = Value::list([*key, *val]);
                                         return Ok(plist);
                                     }
                                     current = next;
@@ -257,10 +256,10 @@ define_dispatch!(
 
             "plist-member" => {
                 need_arg_range(name, args, 2, 3)?;
-                let plist = args[0].clone();
+                let plist = args[0];
                 let key = &args[1];
                 let testfn = args.get(2);
-                let mut current = plist.clone();
+                let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current {
@@ -275,13 +274,13 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let property = car.borrow().clone();
+                            let property = *car.borrow();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
                                 return Ok(Value::Cons(cons_cell));
                             }
                             // Skip the value
-                            match cdr.borrow().clone() {
-                                Value::Cons(cell) => current = cell.cdr.borrow().clone(),
+                            match *cdr.borrow() {
+                                Value::Cons(cell) => current = *cell.cdr.borrow(),
                                 Value::Nil => return Ok(Value::Nil),
                                 _ => return Err(plist_type_error(&plist)),
                             }
@@ -305,7 +304,7 @@ define_dispatch!(
                 if let Some(arg) = args.get(index)
                     && !matches!(arg, Value::Symbol(symbol) if symbol.starts_with(':'))
                 {
-                    lessp = Some(arg.clone());
+                    lessp = Some(*arg);
                     index += 1;
                 }
                 while index + 1 < args.len() {
@@ -314,14 +313,14 @@ define_dispatch!(
                             key = if args[index + 1].is_nil() {
                                 None
                             } else {
-                                Some(args[index + 1].clone())
+                                Some(args[index + 1])
                             };
                         }
                         Value::Symbol(keyword) if keyword == ":lessp" => {
                             lessp = if args[index + 1].is_nil() {
                                 None
                             } else {
-                                Some(args[index + 1].clone())
+                                Some(args[index + 1])
                             };
                         }
                         Value::Symbol(keyword) if keyword == ":in-place" => {
@@ -341,7 +340,7 @@ define_dispatch!(
                     sort_sequence_items(interp, items, key.as_ref(), lessp.as_ref(), reverse, env)?;
                 if in_place {
                     write_sorted_sequence(&args[0], &kind, &sorted)?;
-                    Ok(args[0].clone())
+                    Ok(args[0])
                 } else {
                     Ok(build_sorted_sequence(&kind, sorted))
                 }
@@ -367,7 +366,7 @@ define_dispatch!(
                             if limit <= BigInt::zero() {
                                 Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("args-out-of-range".into()),
-                                    args[0].clone(),
+                                    args[0],
                                 ])))
                             } else {
                                 Ok(normalize_bigint_value(random_bigint_below(&limit)))
@@ -440,7 +439,7 @@ define_dispatch!(
                         }
                         set_bool_vector_bit(interp, target, index, bit)?;
                     }
-                    Ok(if changed { target.clone() } else { Value::Nil })
+                    Ok(if changed { *target } else { Value::Nil })
                 } else {
                     Ok(make_bool_vector_value(interp, result))
                 }
@@ -474,10 +473,7 @@ define_dispatch!(
                     && !matches!(args[0], Value::Lambda(_) | Value::CharTable(_))
                     && !readable_record
                 {
-                    return Err(LispError::WrongTypeArgument(
-                        "arrayp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -532,7 +528,7 @@ define_dispatch!(
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
                         if idx == 0 {
-                            Ok(record.type_tag.clone())
+                            Ok(record.type_tag)
                         } else {
                             record
                                 .slots
@@ -545,10 +541,7 @@ define_dispatch!(
                         if is_vector_value(&args[0]) {
                             vector_slot_value(&args[0], idx)
                         } else {
-                            Err(LispError::WrongTypeArgument(
-                                "arrayp".into(),
-                                args[0].clone(),
-                            ))
+                            Err(LispError::WrongTypeArgument("arrayp".into(), args[0]))
                         }
                     }
                 }
@@ -570,10 +563,7 @@ define_dispatch!(
                     && !matches!(args[0], Value::CharTable(_))
                     && !writable_record
                 {
-                    return Err(LispError::WrongTypeArgument(
-                        "arrayp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -581,30 +571,30 @@ define_dispatch!(
                 let idx = raw_idx as usize;
                 match &args[0] {
                     value if is_vector_value(value) => {
-                        aset_vector_value(value, idx, args[2].clone())
+                        aset_vector_value(value, idx, args[2])
                             .map_err(|_| args_out_of_range(&args[0], &args[1]))?;
-                        Ok(args[2].clone())
+                        Ok(args[2])
                     }
                     Value::CharTable(id) => {
                         let key = raw_idx as u32;
-                        interp.char_table_set(*id, key, args[2].clone())?;
-                        Ok(args[2].clone())
+                        interp.char_table_set(*id, key, args[2])?;
+                        Ok(args[2])
                     }
                     value if is_bool_vector_value(interp, value) => {
                         set_bool_vector_bit(interp, value, idx, args[2].is_truthy())?;
-                        Ok(args[2].clone())
+                        Ok(args[2])
                     }
                     Value::String(_) | Value::StringObject(_) => {
                         aset_string_value(&args[0], idx, &args[2])?;
-                        Ok(args[2].clone())
+                        Ok(args[2])
                     }
                     Value::Record(id) => {
                         // GNU records are asettable; index 0 is the type tag
                         // (eieio's `make-instance' downgrades the class-object
                         // tag to the class symbol this way).
                         if idx == 0 {
-                            interp.retag_record(*id, args[2].clone())?;
-                            return Ok(args[2].clone());
+                            interp.retag_record(*id, args[2])?;
+                            return Ok(args[2]);
                         }
                         let record = interp
                             .find_record_mut(*id)
@@ -612,13 +602,10 @@ define_dispatch!(
                         let Some(slot) = record.slots.get_mut(idx - 1) else {
                             return Err(args_out_of_range(&args[0], &args[1]));
                         };
-                        *slot = args[2].clone();
-                        Ok(args[2].clone())
+                        *slot = args[2];
+                        Ok(args[2])
                     }
-                    _ => Err(LispError::WrongTypeArgument(
-                        "arrayp".into(),
-                        args[0].clone(),
-                    )),
+                    _ => Err(LispError::WrongTypeArgument("arrayp".into(), args[0])),
                 }
             }
 
@@ -637,9 +624,9 @@ define_dispatch!(
                     value if is_vector_value(value) => {
                         let len = vector_items(value)?.len();
                         for index in 0..len {
-                            aset_vector_value(value, index, args[1].clone())?;
+                            aset_vector_value(value, index, args[1])?;
                         }
-                        Ok(args[0].clone())
+                        Ok(args[0])
                     }
                     Value::StringObject(state) => {
                         let mut state = state.borrow_mut();
@@ -657,7 +644,7 @@ define_dispatch!(
                         };
                         state.text = std::iter::repeat_n(fill_char, len).collect();
                         state.props.clear();
-                        Ok(args[0].clone())
+                        Ok(args[0])
                     }
                     Value::String(text) => {
                         let len = text.chars().count();
@@ -673,17 +660,17 @@ define_dispatch!(
                         for index in 0..len {
                             set_bool_vector_bit(interp, value, index, args[1].is_truthy())?;
                         }
-                        Ok(args[0].clone())
+                        Ok(args[0])
                     }
                     Value::CharTable(id) => {
                         let table = interp.find_char_table_mut(*id).ok_or_else(|| {
                             LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
                         })?;
-                        table.default = args[1].clone();
+                        table.default = args[1];
                         table.clear_entries();
-                        Ok(args[0].clone())
+                        Ok(args[0])
                     }
-                    other => Err(LispError::WrongTypeArgument("arrayp".into(), other.clone())),
+                    other => Err(LispError::WrongTypeArgument("arrayp".into(), *other)),
                 }
             }
             "load-average" => {
@@ -799,10 +786,7 @@ define_dispatch!(
                         Ok(Value::Nil)
                     }
                     Value::String(_) => Ok(Value::Nil),
-                    other => Err(LispError::WrongTypeArgument(
-                        "stringp".into(),
-                        other.clone(),
-                    )),
+                    other => Err(LispError::WrongTypeArgument("stringp".into(), *other)),
                 }
             }
 
@@ -810,12 +794,11 @@ define_dispatch!(
                 if args.is_empty() || args.len().is_multiple_of(2) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 let props = args[1..]
                     .chunks(2)
-                    .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1].clone())))
+                    .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1])))
                     .collect::<Result<Vec<_>, LispError>>()?;
                 let len = string.text.chars().count();
                 let value = make_shared_string_value_with_multibyte(
@@ -827,9 +810,9 @@ define_dispatch!(
                     for (name, value) in &props {
                         if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)
                         {
-                            *existing = value.clone();
+                            *existing = *value;
                         } else {
-                            current.push((name.clone(), value.clone()));
+                            current.push((name.clone(), *value));
                         }
                     }
                     current
@@ -843,10 +826,7 @@ define_dispatch!(
                     Value::Nil => None,
                     Value::Symbol(symbol) => Some(symbol.to_string()),
                     other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
                     }
                 };
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
@@ -890,10 +870,7 @@ define_dispatch!(
             "char-table-subtype" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 Ok(interp
                     .char_table_subtype(id)
@@ -905,10 +882,7 @@ define_dispatch!(
             "char-table-parent" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 Ok(interp
                     .char_table_parent(id)
@@ -924,32 +898,23 @@ define_dispatch!(
             "set-char-table-parent" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 let parent = match &args[1] {
                     Value::Nil => None,
                     Value::CharTable(parent_id) => Some(*parent_id),
                     other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
                     }
                 };
                 interp.set_char_table_parent(id, parent)?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
 
             "char-table-extra-slot" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
                 Ok(interp.char_table_extra_slot(id, slot).unwrap_or(Value::Nil))
@@ -958,28 +923,22 @@ define_dispatch!(
             "set-char-table-extra-slot" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
-                interp.set_char_table_extra_slot(id, slot, args[2].clone())?;
-                Ok(args[2].clone())
+                interp.set_char_table_extra_slot(id, slot, args[2])?;
+                Ok(args[2])
             }
 
             "char-table-range" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 match char_table_range_spec(&args[1])? {
                     None => Ok(interp
                         .find_char_table(id)
-                        .map(|table| table.default.clone())
+                        .map(|table| table.default)
                         .unwrap_or(Value::Nil)),
                     Some((start, end)) if start == end => Ok(syntax::char_table_public_value(
                         interp,
@@ -999,26 +958,18 @@ define_dispatch!(
             "set-char-table-range" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 match char_table_range_spec(&args[1])? {
-                    None => interp.char_table_set_default(id, args[2].clone())?,
-                    Some((start, end)) => {
-                        interp.char_table_set_range(id, start, end, args[2].clone())?
-                    }
+                    None => interp.char_table_set_default(id, args[2])?,
+                    Some((start, end)) => interp.char_table_set_range(id, start, end, args[2])?,
                 }
-                Ok(args[2].clone())
+                Ok(args[2])
             }
             "optimize-char-table" => {
                 need_arg_range(name, args, 1, 2)?;
                 if !matches!(args[0], Value::CharTable(_)) {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 }
                 // Emaxx stores ranges directly instead of allocating GNU's
                 // nested sub-char-tables, so there is no structural compaction
@@ -1029,14 +980,11 @@ define_dispatch!(
             "map-char-table" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[1] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[1]));
                 };
-                let effective = interp.char_table_effective_ranges(id).ok_or_else(|| {
-                    LispError::WrongTypeArgument("char-table-p".into(), args[1].clone())
-                })?;
+                let effective = interp
+                    .char_table_effective_ranges(id)
+                    .ok_or_else(|| LispError::WrongTypeArgument("char-table-p".into(), args[1]))?;
                 for entry in effective {
                     let key = if entry.start == entry.end {
                         Value::Integer(entry.start as i64)
@@ -1064,25 +1012,19 @@ define_dispatch!(
             "set-case-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_current_case_table(id);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
 
             "set-standard-case-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_standard_case_table(id);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
 
             "copy-syntax-table" => {
@@ -1093,10 +1035,7 @@ define_dispatch!(
                     Some(Value::CharTable(id)) => *id,
                     Some(Value::Nil) | None => interp.standard_syntax_table_id(),
                     Some(other) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
                     }
                 };
                 if interp.char_table_purpose(source) != Some("syntax-table") {
@@ -1118,13 +1057,10 @@ define_dispatch!(
             "set-syntax-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_current_syntax_table(id);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
 
             "modify-syntax-entry" => {
@@ -1158,10 +1094,7 @@ define_dispatch!(
                     // for nil, including native calls' padded optional slot.
                     Some(Value::Nil) | None => interp.current_syntax_table_id(),
                     Some(other) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
                     }
                 };
                 interp.char_table_set_range(
@@ -1212,11 +1145,7 @@ define_dispatch!(
             "set-category-table" => {
                 need_args(name, args, 1)?;
                 let table = Value::CharTable(category_table_arg(interp, args.first(), false)?);
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "category-table",
-                    table.clone(),
-                );
+                interp.set_buffer_local_value(interp.current_buffer_id(), "category-table", table);
                 Ok(table)
             }
 
@@ -1361,10 +1290,7 @@ define_dispatch!(
                 let table_id = match &args[2] {
                     Value::CharTable(id) => *id,
                     _ => {
-                        return Err(LispError::WrongTypeArgument(
-                            "char-table-p".into(),
-                            args[2].clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), args[2]));
                     }
                 };
                 if interp.char_table_purpose(table_id) != Some("translation-table") {
@@ -1391,8 +1317,7 @@ define_dispatch!(
                 // leaking the record to source owners such as subr.el's
                 // `butlast' (which delegates to `take').
                 let keymap_id = keymap_record_id(interp, &args[1]);
-                let list =
-                    runtime_keymap_public_view(interp, &args[1]).unwrap_or_else(|| args[1].clone());
+                let list = runtime_keymap_public_view(interp, &args[1]).unwrap_or_else(|| args[1]);
                 if name == "take" {
                     let mut current = list;
                     let mut items = Vec::new();
@@ -1403,22 +1328,19 @@ define_dispatch!(
                             Value::Cons(cons_cell) => {
                                 let car = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
-                                items.push(car.borrow().clone());
-                                current = cdr.borrow().clone();
+                                items.push(*car.borrow());
+                                current = *cdr.borrow();
                                 remaining -= 1;
                             }
                             value => {
-                                return Err(LispError::WrongTypeArgument(
-                                    "listp".into(),
-                                    value.clone(),
-                                ));
+                                return Err(LispError::WrongTypeArgument("listp".into(), value));
                             }
                         }
                     }
                     Ok(Value::list(items))
                 } else {
                     let head = list;
-                    let mut current = head.clone();
+                    let mut current = head;
                     let mut remaining = n;
                     while remaining > 1 {
                         match current {
@@ -1426,7 +1348,7 @@ define_dispatch!(
                             Value::Cons(cons_cell) => {
                                 let _ = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
-                                let next = cdr.borrow().clone();
+                                let next = *cdr.borrow();
                                 match next {
                                     Value::Cons(_) => {
                                         current = next;
@@ -1436,16 +1358,13 @@ define_dispatch!(
                                     value => {
                                         return Err(LispError::WrongTypeArgument(
                                             "listp".into(),
-                                            value.clone(),
+                                            value,
                                         ));
                                     }
                                 }
                             }
                             value => {
-                                return Err(LispError::WrongTypeArgument(
-                                    "listp".into(),
-                                    value.clone(),
-                                ));
+                                return Err(LispError::WrongTypeArgument("listp".into(), value));
                             }
                         }
                     }
@@ -1460,7 +1379,7 @@ define_dispatch!(
                             }
                             Ok(head)
                         }
-                        value => Err(LispError::WrongTypeArgument("listp".into(), value.clone())),
+                        value => Err(LispError::WrongTypeArgument("listp".into(), value)),
                     }
                 }
             }
@@ -1487,8 +1406,8 @@ define_dispatch!(
             "make-list" => {
                 need_args(name, args, 2)?;
                 let n = args[0].as_integer()?;
-                let val = args[1].clone();
-                let items: Vec<Value> = (0..n).map(|_| val.clone()).collect();
+                let val = args[1];
+                let items: Vec<Value> = (0..n).map(|_| val).collect();
                 Ok(Value::list(items))
             }
         }
@@ -1505,11 +1424,11 @@ pub(super) fn direct_setcar(
     need_args(name, args, 2)?;
     let owners = interp.keymap_public_cons_owner_ids(&args[0]);
     if matches!(&args[0], Value::Cons(_)) {
-        args[0].set_car(args[1].clone())?;
+        args[0].set_car(args[1])?;
     } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-        view.set_car(args[1].clone())?;
+        view.set_car(args[1])?;
     } else {
-        return Err(wrong_type_argument("consp", args[0].clone()));
+        return Err(wrong_type_argument("consp", args[0]));
     }
     for owner in owners {
         sync_runtime_keymap_from_public_view(interp, owner)?;
@@ -1518,7 +1437,7 @@ pub(super) fn direct_setcar(
     // invalidate macro metadata caches for arbitrary cons mutation;
     // GNU exposes no detached copy at `symbol-plist'.
     interp.note_definition_changed();
-    Ok(args[1].clone())
+    Ok(args[1])
 }
 
 /// The `setcdr' primitive, callable directly (a subr's function pointer).
@@ -1531,13 +1450,13 @@ pub(super) fn direct_setcdr(
     need_args(name, args, 2)?;
     let owners = interp.keymap_public_cons_owner_ids(&args[0]);
     if matches!(&args[0], Value::Cons(_)) {
-        args[0].set_cdr(args[1].clone())?;
+        args[0].set_cdr(args[1])?;
     } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
-        return Err(wrong_type_argument("consp", args[0].clone()));
+        return Err(wrong_type_argument("consp", args[0]));
     }
     for owner in owners {
         sync_runtime_keymap_from_public_view(interp, owner)?;
     }
     interp.note_definition_changed();
-    Ok(args[1].clone())
+    Ok(args[1])
 }

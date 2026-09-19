@@ -262,7 +262,7 @@ pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option
 pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))
 }
 
 pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
@@ -355,8 +355,8 @@ pub(crate) fn string_compare_codes(
     ignore_case: bool,
     clamp_end: bool,
 ) -> Result<Vec<i64>, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let codes = string_sequence_values(&string)
         .into_iter()
         .map(|value| value.as_integer())
@@ -535,7 +535,7 @@ pub(crate) fn str_collate(
                 // fns.c: `if (!NILP (locale)) CHECK_STRING (locale)'.
                 return Err(LispError::WrongTypeArgument(
                     "stringp".into(),
-                    locale_value.clone(),
+                    *locale_value,
                 ));
             };
             let locale_text = string_text(locale_value)?;
@@ -651,7 +651,7 @@ pub(crate) fn assoc_string_folded_text(
 fn args_out_of_range_for_aset(target: &Value, index: usize) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("args-out-of-range".into()),
-        target.clone(),
+        *target,
         Value::Integer(index as i64),
     ]))
 }
@@ -662,10 +662,7 @@ pub(crate) fn aset_string_value(
     new_value: &Value,
 ) -> Result<Value, LispError> {
     if !matches!(target, Value::String(_) | Value::StringObject(_)) {
-        return Err(LispError::WrongTypeArgument(
-            "stringp".into(),
-            target.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("stringp".into(), *target));
     }
     let code = new_value.as_integer()?;
     // data.c's Faset stores an ASCII character into an ASCII string in
@@ -683,11 +680,11 @@ pub(crate) fn aset_string_value(
             // SAFETY: the text is ASCII and the stored byte is ASCII, so
             // the result remains valid UTF-8.
             unsafe { state.text.as_bytes_mut()[index] = code as u8 };
-            return Ok(target.clone());
+            return Ok(*target);
         }
     }
     let mut string = string_like(target)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), target.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *target))?;
     let mut chars: Vec<char> = string.text.chars().collect();
     if index >= chars.len() {
         return Err(args_out_of_range_for_aset(target, index));
@@ -709,7 +706,7 @@ pub(crate) fn aset_string_value(
         if chars.iter().any(|ch| !ch.is_ascii()) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("args-out-of-range".into()),
-                target.clone(),
+                *target,
                 Value::Integer(code),
             ])));
         }
@@ -723,7 +720,7 @@ pub(crate) fn aset_string_value(
         state.text = string.text;
         state.props = shared_string_props(&string.props);
         state.multibyte = string.multibyte;
-        return Ok(target.clone());
+        return Ok(*target);
     }
     Ok(make_shared_string_value_with_multibyte(
         string.text,
@@ -816,8 +813,8 @@ pub(crate) fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> V
 }
 
 pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let len = string.text.chars().count();
     let text = string.text.chars().rev().collect::<String>();
     let props = string
@@ -855,10 +852,7 @@ pub(crate) fn reverse_sequence_value(
             items.reverse();
             Ok(Value::list(items))
         }
-        _ => Err(LispError::WrongTypeArgument(
-            "sequencep".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
 
@@ -874,9 +868,9 @@ pub(crate) fn nreverse_sequence_value(
     {
         let record = interp
             .find_record_mut(*id)
-            .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
         record.slots.reverse();
-        return Ok(value.clone());
+        return Ok(*value);
     }
     match value {
         Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
@@ -885,25 +879,22 @@ pub(crate) fn nreverse_sequence_value(
             for (index, item) in items.into_iter().enumerate() {
                 aset_vector_value(value, index, item)?;
             }
-            Ok(value.clone())
+            Ok(*value)
         }
         Value::Nil | Value::Cons(_) => nreverse_list_cells(value),
-        _ => Err(LispError::WrongTypeArgument(
-            "sequencep".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
 
 fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
-    let mut current = value.clone();
+    let mut current = *value;
     let mut reversed = Value::Nil;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let cell = match &current {
             Value::Nil => return Ok(reversed),
             Value::Cons(cell) => *cell,
-            other => return Err(LispError::WrongTypeArgument("listp".into(), other.clone())),
+            other => return Err(LispError::WrongTypeArgument("listp".into(), *other)),
         };
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(LispError::SignalValue(Value::list([
@@ -911,7 +902,7 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
                 Value::String("Circular list".into()),
             ])));
         }
-        let next = cell.cdr.borrow().clone();
+        let next = *cell.cdr.borrow();
         *cell.cdr.borrow_mut() = reversed;
         reversed = Value::Cons(cell);
         current = next;
@@ -924,7 +915,7 @@ pub(crate) fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispErr
     let mut i = 0;
     while i + 1 < items.len() {
         let key = items[i].as_symbol()?.to_string();
-        props.push((key, items[i + 1].clone()));
+        props.push((key, items[i + 1]));
         i += 2;
     }
     Ok(props)
@@ -934,7 +925,7 @@ pub(crate) fn plist_value(props: &[(String, Value)]) -> Value {
     let mut items = Vec::new();
     for (key, value) in props {
         items.push(Value::Symbol(key.clone().into()));
-        items.push(value.clone());
+        items.push(*value);
     }
     Value::list(items)
 }
@@ -1074,7 +1065,7 @@ pub(crate) fn flatten_overlapping_string_props(
             if span.start <= start && end <= span.end {
                 for (key, value) in &span.props {
                     if !plist.iter().any(|(existing, _)| existing == key) {
-                        plist.push((key.clone(), value.clone()));
+                        plist.push((key.clone(), *value));
                     }
                 }
             }
@@ -1136,7 +1127,7 @@ pub(crate) fn property_from_props_with_category(
     let direct = props
         .iter()
         .find(|(name, _)| name == prop)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| *value)
         .or_else(|| property_from_category_symbol(interp, props, prop));
     if direct.is_some() {
         return direct;
@@ -1155,7 +1146,7 @@ pub(crate) fn property_from_props_with_category(
         props
             .iter()
             .find(|(name, _)| name == alias)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
             .or_else(|| property_from_category_symbol(interp, props, alias))
     })
 }
@@ -1207,7 +1198,7 @@ pub(crate) fn overlay_property_with_category(
         .plist
         .iter()
         .find(|(name, _)| matches!(name, Value::Symbol(name) if name == prop))
-        .map(|(_, value)| value.clone());
+        .map(|(_, value)| *value);
     if direct.is_some() || prop == "category" {
         return direct;
     }
@@ -1229,7 +1220,7 @@ pub(crate) fn string_property_at(value: &Value, pos: usize, prop: &str) -> Optio
             span.props
                 .iter()
                 .find(|(name, _)| name == prop)
-                .map(|(_, value)| value.clone())
+                .map(|(_, value)| *value)
         })
 }
 
@@ -1365,10 +1356,7 @@ where
         if matches!(value, Value::String(_)) {
             return Ok(());
         }
-        return Err(LispError::WrongTypeArgument(
-            "stringp".into(),
-            value.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
     let mut state = state.borrow_mut();
     let len = state.text.chars().count();

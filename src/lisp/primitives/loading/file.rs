@@ -20,7 +20,7 @@ impl LoadRequest {
         }
         string_text(&args[0])?;
         Ok(Self {
-            file: args[0].clone(),
+            file: args[0],
             noerror: args.get(1).cloned().unwrap_or(Value::Nil),
             nomessage: args.get(2).cloned().unwrap_or(Value::Nil),
             nosuffix: args.get(3).cloned().unwrap_or(Value::Nil),
@@ -44,7 +44,7 @@ pub(crate) fn load_file(
             None,
             &[
                 Value::symbol("load"),
-                request.file.clone(),
+                request.file,
                 request.noerror,
                 request.nomessage,
                 request.nosuffix,
@@ -104,10 +104,10 @@ pub(crate) fn load_file(
             .detached_forwarded_variables
             .get_mut("user-init-file")
         {
-            *slot = found.name.clone();
+            *slot = found.name;
         } else {
             // A raw C assignment does not invoke variable watchers.
-            interp.set_symbol_value_cell("user-init-file", found.name.clone());
+            interp.set_symbol_value_cell("user-init-file", found.name);
         }
     }
     if found.file.is_none() {
@@ -124,7 +124,7 @@ pub(crate) fn load_file(
                 None,
                 &[
                     Value::symbol("load"),
-                    found.name.clone(),
+                    found.name,
                     request.noerror,
                     request.nomessage,
                     Value::T,
@@ -135,9 +135,9 @@ pub(crate) fn load_file(
         }
     }
 
-    let saved_loads = interp.loads_in_progress.clone();
+    let saved_loads = interp.loads_in_progress;
     let mut nesting = 0;
-    let mut tail = search::SearchTail::new(saved_loads.clone());
+    let mut tail = search::SearchTail::new(saved_loads);
     while let Some((file, _)) = tail.current.cons_values() {
         if values_equal_signaling(interp, &file, &found.name, env)? {
             nesting += 1;
@@ -145,13 +145,13 @@ pub(crate) fn load_file(
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("error"),
                     Value::string("Recursive load"),
-                    Value::cons(found.name.clone(), saved_loads),
+                    Value::cons(found.name, saved_loads),
                 ])));
             }
         }
         tail.advance(interp, env, true)?;
     }
-    interp.loads_in_progress = Value::cons(found.name.clone(), saved_loads.clone());
+    interp.loads_in_progress = Value::cons(found.name, saved_loads);
     let result = load_with_context(interp, &request, found, env);
     interp.loads_in_progress = saved_loads;
     let (result, found, after_load) = result?;
@@ -193,7 +193,7 @@ fn load_with_context(
         let effective = if native {
             native_effective_filename(interp, &found.name, env)?
         } else {
-            found.name.clone()
+            found.name
         };
         let history = if interp
             .forwarded_c_value("purify-flag", &Env::new())
@@ -232,8 +232,8 @@ fn load_with_context(
                     source_loader,
                     None,
                     &[
-                        found.name.clone(),
-                        history.clone(),
+                        found.name,
+                        history,
                         if request.noerror.is_truthy() {
                             Value::T
                         } else {
@@ -323,7 +323,7 @@ fn load_message(
                     "Loading %s{kind}...{}",
                     if done { "done" } else { "" }
                 )),
-                request.file.clone(),
+                request.file,
             ],
             env,
         )?;
@@ -343,11 +343,11 @@ fn native_effective_filename(
         env,
     )?;
     let Some(table) = interp.forwarded_c_value("comp-eln-to-el-h", &Env::new()) else {
-        return Ok(name.clone());
+        return Ok(*name);
     };
     let source = super::super::call(interp, "gethash", &[basename, table, Value::Nil], env)?;
     let Some(source) = string_like(&source) else {
-        return Ok(name.clone());
+        return Ok(*name);
     };
     Ok(Value::string(&format!(
         "{}c",
@@ -366,7 +366,7 @@ fn emit_load_warning(
             "message",
             &[
                 Value::string("Loading `%s': %s"),
-                requested.clone(),
+                *requested,
                 Value::string(&warning),
             ],
             env,
@@ -458,7 +458,7 @@ mod tests {
         );
         interp.set_variable("load-source-file-function", callback, &mut env);
         let name = Value::string(&path.display().to_string());
-        let request = LoadRequest::new(&[name.clone(), Value::Nil, Value::T])
+        let request = LoadRequest::new(&[name, Value::Nil, Value::T])
             .expect("construct a valid load request");
         let (result, _, completion) = load_with_context(
             &mut interp,
@@ -503,7 +503,7 @@ mod tests {
         fs::copy(gnu_root().join("lisp/emacs-lisp/seq.el"), &selected)
             .expect("replace the name with another unchanged GNU file");
         let name = Value::string(&selected.display().to_string());
-        let request = LoadRequest::new(&[name.clone(), Value::Nil, Value::T])
+        let request = LoadRequest::new(&[name, Value::Nil, Value::T])
             .expect("construct a valid load request");
         let result = load_with_context(
             &mut interp,

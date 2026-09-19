@@ -37,7 +37,7 @@ fn execute_kbd_macro(
             env,
         )?
     } else {
-        args[0].clone()
+        args[0]
     };
     let events = if let Some(string) = string_like(&final_macro) {
         string
@@ -76,7 +76,7 @@ fn execute_kbd_macro(
 
     let mut result = Ok(());
     loop {
-        interp.set_variable("executing-kbd-macro", final_macro.clone(), env);
+        interp.set_variable("executing-kbd-macro", final_macro, env);
         interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
         interp.set_variable("prefix-arg", Value::Nil, env);
         interp.set_variable("last-prefix-arg", Value::Nil, env);
@@ -230,7 +230,7 @@ fn prepare_native_kbd_command_body(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let pending_prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
-    interp.set_variable("current-prefix-arg", pending_prefix.clone(), env);
+    interp.set_variable("current-prefix-arg", pending_prefix, env);
     interp.set_variable("prefix-arg", Value::Nil, env);
     if pending_prefix.is_truthy()
         && let Ok(update) = interp.lookup_function("prefix-command-update", env)
@@ -308,8 +308,7 @@ fn read_minibuffer_text_from_kbd_macro(
     };
     let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
     let result = (|| {
-        let minibuffer =
-            activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
+        let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
         run_active_minibuffer(interp, env, minibuffer, |interp, env| {
             read_minibuffer_text_from_kbd_macro_inner(interp, env, initial)
         })
@@ -416,7 +415,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         if code < 0 {
             break;
         }
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
         let mut event_key = key_sequence_binding_text(&key)?;
         if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
@@ -429,12 +428,12 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(code);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
             event_key = key_sequence_binding_text(&translated)?;
         }
         advance_kbd_macro_index(interp, 1, env);
         pending_keys.push(event_key);
-        pending_events.push(event.clone());
+        pending_events.push(event);
         let binding_key = pending_keys.join(" ");
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
@@ -517,7 +516,7 @@ fn read_minibuffer_text_without_queued_events(
     history: Value,
     batch_stdin: bool,
 ) -> Result<String, LispError> {
-    let minibuffer = activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
+    let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
         if batch_stdin {
             read_minibuffer_text_from_batch_stdin(prompt)
@@ -554,8 +553,7 @@ fn read_minibuffer_text_from_unread_events(
     let saved_buffer_id = interp.current_buffer_id();
     let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
     let result = (|| {
-        let minibuffer =
-            activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
+        let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
         run_active_minibuffer(interp, env, minibuffer, |interp, env| {
             read_minibuffer_text_from_unread_events_inner(interp, env, initial)
         })
@@ -590,7 +588,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             Value::list(events.iter().cloned()),
             env,
         );
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
         let mut event_key = key_sequence_binding_text(&key)?;
         if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
@@ -602,7 +600,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(translated);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
             event_key = key_sequence_binding_text(&translated)?;
         }
         let code = event.as_integer().ok();
@@ -655,7 +653,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             break;
         }
         pending_keys.push(event_key);
-        pending_events.push(event.clone());
+        pending_events.push(event);
         let binding_key = pending_keys.join(" ");
 
         let binding = key_binding(interp, &binding_key, false, false, env)?;
@@ -671,10 +669,10 @@ fn read_minibuffer_text_from_unread_events_inner(
         {
             let command = Value::Symbol("self-insert-command".into());
             set_command_key_state(interp, pending_events.clone(), pending_events.clone(), env);
-            interp.set_variable("last-command-event", event.clone(), env);
-            interp.set_variable("last-input-event", event.clone(), env);
-            interp.set_variable("this-original-command", command.clone(), env);
-            interp.set_variable("this-command", command.clone(), env);
+            interp.set_variable("last-command-event", event, env);
+            interp.set_variable("last-input-event", event, env);
+            interp.set_variable("this-original-command", command, env);
+            interp.set_variable("this-command", command, env);
             increment_num_input_keys(interp, env);
             safe_run_named_hooks(
                 interp,
@@ -685,7 +683,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             let dispatched_command = interp
                 .lookup_var("this-command", env)
                 .filter(|command| !command.is_nil())
-                .unwrap_or_else(|| command.clone());
+                .unwrap_or(command);
             if dispatched_command == command {
                 prepare_native_kbd_command_body(interp, env)?;
                 let repeat = interp
@@ -754,7 +752,7 @@ fn bare_symbol_type_error(value: &Value) -> LispError {
             Value::Symbol("symbolp".into()),
             Value::Symbol("symbol-with-pos-p".into()),
         ]),
-        value.clone(),
+        *value,
     ]))
 }
 
@@ -793,7 +791,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             set_command_key_state(interp, Vec::new(), Vec::new(), env);
             return Ok(());
         };
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
         let mut event_key = key_sequence_binding_text(&key)?;
         // GNU describes function-key symbol events in angle brackets
         // ("<escape>"), which is also what the string-parsing lookup path
@@ -820,14 +818,14 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = translated_event;
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
             event_key = key_sequence_binding_text(&translated)?;
             if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
                 event_key = format!("<{event_key}>");
             }
         }
         pending_keys.push(event_key);
-        pending_events.push(event.clone());
+        pending_events.push(event);
         let binding_key = pending_keys.join(" ");
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
@@ -863,8 +861,8 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             advance_kbd_macro_index(interp, 1, env);
         }
         increment_num_input_keys(interp, env);
-        set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
-        interp.set_variable("last-command-event", event.clone(), env);
+        set_command_key_state(interp, vec![event], vec![event], env);
+        interp.set_variable("last-command-event", event, env);
         interp.set_variable("last-input-event", event, env);
         interp.set_variable("this-original-command", Value::Nil, env);
         interp.set_variable("this-command", Value::Nil, env);
@@ -991,10 +989,10 @@ fn execute_kbd_macro_command(
     // The command loop resolves [remap COMMAND] bindings from the active
     // keymaps before dispatching (erc-fill-wrap remaps erc-bol);
     // `this-original-command' keeps the pre-remap binding.
-    let original_command = command.clone();
+    let original_command = *command;
     let remapped = crate::lisp::primitives::command_remapping(interp, command, None, env)?;
     let command = if remapped.is_nil() {
-        original_command.clone()
+        original_command
     } else {
         remapped
     };
@@ -1003,10 +1001,10 @@ fn execute_kbd_macro_command(
     interp.buffer.push_undo_boundary();
     set_command_key_state(interp, events.to_vec(), events.to_vec(), env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
-    interp.set_variable("last-command-event", event.clone(), env);
+    interp.set_variable("last-command-event", event, env);
     interp.set_variable("last-input-event", event, env);
     interp.set_variable("this-original-command", original_command, env);
-    interp.set_variable("this-command", command.clone(), env);
+    interp.set_variable("this-command", command, env);
     increment_num_input_keys(interp, env);
     safe_run_named_hooks(
         interp,
@@ -1017,7 +1015,7 @@ fn execute_kbd_macro_command(
     let dispatched_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
-        .unwrap_or_else(|| command.clone());
+        .unwrap_or(command);
     let command_result = if matches!(&dispatched_command, Value::Symbol(name) if name == "narrow-to-region")
     {
         prepare_native_kbd_command_body(interp, env)?;
@@ -1112,12 +1110,12 @@ fn execute_kbd_macro_self_insert(
     ) {
         interp.buffer.push_undo_boundary();
     }
-    set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
+    set_command_key_state(interp, vec![*event], vec![*event], env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
-    interp.set_variable("last-command-event", event.clone(), env);
-    interp.set_variable("last-input-event", event.clone(), env);
-    interp.set_variable("this-original-command", command.clone(), env);
-    interp.set_variable("this-command", command.clone(), env);
+    interp.set_variable("last-command-event", *event, env);
+    interp.set_variable("last-input-event", *event, env);
+    interp.set_variable("this-original-command", command, env);
+    interp.set_variable("this-command", command, env);
     increment_num_input_keys(interp, env);
     safe_run_named_hooks(
         interp,
@@ -1128,7 +1126,7 @@ fn execute_kbd_macro_self_insert(
     let dispatched_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
-        .unwrap_or_else(|| command.clone());
+        .unwrap_or(command);
     if dispatched_command == command {
         prepare_native_kbd_command_body(interp, env)?;
         let repeat = interp
@@ -1194,7 +1192,7 @@ fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
     let tail = nthcdr_value(count, list)?;
     match tail {
         Value::Nil => Ok(Value::Nil),
-        Value::Cons(ref cell) => Ok(cell.car.borrow().clone()),
+        Value::Cons(ref cell) => Ok(*cell.car.borrow()),
         other => Err(wrong_type_argument("listp", other)),
     }
 }
@@ -1215,7 +1213,7 @@ define_dispatch!(
             "cdr-safe" => direct_cdr_safe(interp, args, env),
             "identity" => {
                 need_args(name, args, 1)?;
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "list" => Ok(Value::list(args.iter().cloned())),
             "nconc" => {
@@ -1223,7 +1221,7 @@ define_dispatch!(
                     .iter()
                     .map(|value| {
                         keymap_list_items(interp, value)
-                            .map(|items| items.map(Value::list).unwrap_or_else(|| value.clone()))
+                            .map(|items| items.map(Value::list).unwrap_or_else(|| *value))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 nconc_values(&projected)
@@ -1243,7 +1241,7 @@ define_dispatch!(
                         // `append` copies all preceding args and reuses the
                         // last one verbatim as the tail — even when it is a
                         // string or vector: (append '(2) "b") => (2 . "b").
-                        let mut result = a.clone();
+                        let mut result = *a;
                         for item in items.into_iter().rev() {
                             result = Value::cons(item, result);
                         }
@@ -1314,7 +1312,7 @@ define_dispatch!(
             "assq" | "rassq" => direct_assq_family(interp, args, env, name),
             "rassoc" => {
                 need_args(name, args, 2)?;
-                let mut current = args[1].clone();
+                let mut current = args[1];
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current {
@@ -1329,13 +1327,13 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let item = car.borrow().clone();
+                            let item = *car.borrow();
                             if matches!(item, Value::Cons(_))
                                 && values_equal_in_env(interp, &item.cdr()?, &args[0], env)
                             {
                                 return Ok(item);
                             }
-                            current = cdr.borrow().clone();
+                            current = *cdr.borrow();
                         }
                         other => {
                             return Err(LispError::SignalValue(Value::list([
@@ -1349,7 +1347,7 @@ define_dispatch!(
             }
             "assoc" => {
                 need_arg_range(name, args, 2, 3)?;
-                let mut current = args[1].clone();
+                let mut current = args[1];
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current {
@@ -1364,14 +1362,14 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let item = car.borrow().clone();
+                            let item = *car.borrow();
                             if matches!(item, Value::Cons(_))
                                 && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                                 {
                                     call_function_value(
                                         interp,
                                         testfn,
-                                        &[args[0].clone(), item.car()?],
+                                        &[args[0], item.car()?],
                                         env,
                                     )?
                                     .is_truthy()
@@ -1381,7 +1379,7 @@ define_dispatch!(
                             {
                                 return Ok(item);
                             }
-                            current = cdr.borrow().clone();
+                            current = *cdr.borrow();
                         }
                         other => {
                             return Err(LispError::SignalValue(Value::list([
@@ -1408,7 +1406,7 @@ define_dispatch!(
                 for item in &items {
                     let thiscar = match item {
                         Value::Cons(_) => item.car()?,
-                        _ => item.clone(),
+                        _ => *item,
                     };
                     let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
                         continue;
@@ -1419,7 +1417,7 @@ define_dispatch!(
                         candidate
                     };
                     if candidate == key {
-                        return Ok(item.clone());
+                        return Ok(*item);
                     }
                 }
                 Ok(Value::Nil)
@@ -1456,7 +1454,7 @@ define_dispatch!(
                 for item in &list {
                     let _ = call_function_value(interp, &args[0], std::slice::from_ref(item), env)?;
                 }
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "eval" => eval_impl(interp, args, env),
             "eval-buffer" => eval_buffer_impl(interp, args, env),
@@ -1503,7 +1501,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
                             Value::Symbol("sequencep".into()),
-                            item.clone(),
+                            *item,
                         ])));
                     }
                 }
@@ -1517,7 +1515,7 @@ define_dispatch!(
                 // a symbol with position whose position is borrowed (cconv
                 // repositions `ignore' from the unused variable this way).
                 let bare = match &args[0] {
-                    Value::Symbol(_) | Value::Nil | Value::T => args[0].clone(),
+                    Value::Symbol(_) | Value::Nil | Value::T => args[0],
                     other => symbol_with_pos_parts(interp, other)
                         .map(|(symbol, _)| symbol)
                         .ok_or_else(|| bare_symbol_type_error(&args[0]))?,
@@ -1529,7 +1527,7 @@ define_dispatch!(
                         .ok_or_else(|| {
                             LispError::WrongTypeArgument(
                                 "fixnum-or-symbol-with-pos-p".into(),
-                                args[1].clone(),
+                                args[1],
                             )
                         })?,
                 };
@@ -1552,14 +1550,14 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(symbol_with_pos_parts(interp, &args[0])
                     .map(|(symbol, _)| symbol)
-                    .unwrap_or_else(|| args[0].clone()))
+                    .unwrap_or_else(|| args[0]))
             }
             "bare-symbol" => {
                 // data.c Fbare_symbol: unlike remove-pos-from-symbol, a
                 // non-symbol argument signals wrong-type-argument.
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::Symbol(_) | Value::Nil | Value::T => Ok(args[0].clone()),
+                    Value::Symbol(_) | Value::Nil | Value::T => Ok(args[0]),
                     other => symbol_with_pos_parts(interp, other)
                         .map(|(symbol, _)| symbol)
                         .ok_or_else(|| bare_symbol_type_error(&args[0])),
@@ -1576,16 +1574,13 @@ define_dispatch!(
                     // valid zero-argument call; an empty list therefore tries
                     // to funcall nil and reports void-function.
                     if is_vector_value(&args[0]) {
-                        return Err(LispError::WrongTypeArgument(
-                            "listp".into(),
-                            args[0].clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("listp".into(), args[0]));
                     }
                     let expanded_args = args[0].to_vec()?;
                     let Some((function, call_args)) = expanded_args.split_first() else {
                         return interp.call_function_value(Value::Nil, None, &[], env);
                     };
-                    return interp.call_function_value(function.clone(), None, call_args, env);
+                    return interp.call_function_value(*function, None, call_args, env);
                 }
                 let func = &args[0];
                 let last = &args[args.len() - 1];
@@ -1594,10 +1589,10 @@ define_dispatch!(
                 // spread argument is a proper list, not an arbitrary Emacs
                 // sequence.
                 if is_vector_value(last) {
-                    return Err(LispError::WrongTypeArgument("listp".into(), last.clone()));
+                    return Err(LispError::WrongTypeArgument("listp".into(), *last));
                 }
                 all_args.extend(last.to_vec()?);
-                interp.call_function_value(func.clone(), None, &all_args, env)
+                interp.call_function_value(*func, None, &all_args, env)
             }
             "funcall" => {
                 if args.is_empty() {
@@ -1606,13 +1601,13 @@ define_dispatch!(
                 // Let the common funcall_general translation resolve the
                 // original function object so resolution failures retain the
                 // attempted call in the backtrace, as GNU does.
-                interp.call_function_value(args[0].clone(), None, &args[1..], env)
+                interp.call_function_value(args[0], None, &args[1..], env)
             }
             "fset" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.fset_function(&symbol, args[1].clone(), env)
+                interp.fset_function(&symbol, args[1], env)
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;
@@ -1622,7 +1617,7 @@ define_dispatch!(
                 // GNU voids the function cell outright; shadowed stale entries
                 // (repeated defuns push duplicates) must not resurface.
                 interp.remove_all_function_bindings(&symbol);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "funcall-interactively" => {
                 if args.is_empty() {
@@ -1633,7 +1628,7 @@ define_dispatch!(
                 // recorded by the ordinary call path, which is the exact
                 // shape nadvice's called-interactively-p skip walks
                 // (lambda, apply, SYMBOL, funcall-interactively).
-                interp.call_function_value(args[0].clone(), None, &args[1..], env)
+                interp.call_function_value(args[0], None, &args[1..], env)
             }
             "call-interactively" => call_interactively_impl(interp, args, env),
 
@@ -1700,7 +1695,7 @@ define_dispatch!(
                     std::iter::once(Value::symbol("vector-literal"))
                         .chain(interp.kbd_macro_definition.iter().cloned()),
                 );
-                interp.set_variable("last-kbd-macro", last_macro.clone(), env);
+                interp.set_variable("last-kbd-macro", last_macro, env);
                 super::call(
                     interp,
                     "message",
@@ -1710,14 +1705,14 @@ define_dispatch!(
                 if repeat == 0 {
                     let mut execute_args = vec![last_macro, Value::Integer(0)];
                     if let Some(loop_function) = args.get(1) {
-                        execute_args.push(loop_function.clone());
+                        execute_args.push(*loop_function);
                     }
                     execute_kbd_macro(interp, &execute_args, env)?;
                 } else if repeat > 1 {
                     let mut execute_args =
                         vec![last_macro, Value::Integer(repeat.saturating_sub(1))];
                     if let Some(loop_function) = args.get(1) {
-                        execute_args.push(loop_function.clone());
+                        execute_args.push(*loop_function);
                     }
                     execute_kbd_macro(interp, &execute_args, env)?;
                 }
@@ -1733,7 +1728,7 @@ define_dispatch!(
                     interp.lookup_var("last-command", env).unwrap_or(Value::Nil),
                     env,
                 );
-                interp.set_variable("real-this-command", macro_value.clone(), env);
+                interp.set_variable("real-this-command", macro_value, env);
                 if interp
                     .lookup_var("defining-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy())
@@ -1772,7 +1767,7 @@ define_dispatch!(
                     .lookup_var("defining-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy())
                 {
-                    interp.kbd_macro_definition.push(args[0].clone());
+                    interp.kbd_macro_definition.push(args[0]);
                 }
                 Ok(Value::Nil)
             }
@@ -1821,9 +1816,7 @@ define_dispatch!(
                 )?;
                 let path = PathBuf::from(
                     string_like(&expanded)
-                        .ok_or_else(|| {
-                            LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                        })?
+                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?
                         .text,
                 );
                 if path.exists() {
@@ -1851,7 +1844,7 @@ define_dispatch!(
                 {
                     return Err(LispError::WrongTypeArgument(
                         "stringp".into(),
-                        stuff_string.clone(),
+                        *stuff_string,
                     ));
                 }
                 run_named_hooks(interp, "suspend-hook", env, None)?;
@@ -1932,9 +1925,8 @@ define_dispatch!(
             }
             "set--this-command-keys" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 let keys = string
                     .text
                     .chars()
@@ -2045,7 +2037,7 @@ define_dispatch!(
                 let initial = string_like(&initial_value)
                     .map(|string| string.text)
                     .unwrap_or_default();
-                let prompt = args[0].clone();
+                let prompt = args[0];
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
@@ -2108,7 +2100,7 @@ define_dispatch!(
                         &initial,
                         &initial_value,
                         &local_map,
-                        history.clone(),
+                        history,
                         batch_stdin,
                     )?);
                 }
@@ -2121,7 +2113,7 @@ define_dispatch!(
                         let histstring = if contents.is_empty() {
                             match default.cons_values() {
                                 Some((head, _)) => head,
-                                None => default.clone(),
+                                None => default,
                             }
                         } else {
                             Value::String(contents.clone().into())
@@ -2155,7 +2147,7 @@ define_dispatch!(
                         {
                             let default = match default.cons_values() {
                                 Some((head, _)) => head,
-                                None => default.clone(),
+                                None => *default,
                             };
                             return Ok(default);
                         }
@@ -2175,18 +2167,15 @@ define_dispatch!(
                     .lookup_var("read-buffer-function", env)
                     .filter(|function| !function.is_nil())
                 {
-                    let mut call_args = vec![
-                        args[0].clone(),
-                        default,
-                        args.get(2).cloned().unwrap_or(Value::Nil),
-                    ];
+                    let mut call_args =
+                        vec![args[0], default, args.get(2).cloned().unwrap_or(Value::Nil)];
                     if let Some(predicate) = args.get(3) {
-                        call_args.push(predicate.clone());
+                        call_args.push(*predicate);
                     }
                     return call_function_value(interp, &function, &call_args, env);
                 }
                 let prompt = if default.is_nil() {
-                    args[0].clone()
+                    args[0]
                 } else {
                     let raw = string_text(&args[0])?;
                     let stem = raw
@@ -2194,11 +2183,11 @@ define_dispatch!(
                         .or_else(|| raw.strip_suffix(':'))
                         .or_else(|| raw.strip_suffix(' '))
                         .unwrap_or(&raw);
-                    let shown_default = default.car().unwrap_or_else(|_| default.clone());
+                    let shown_default = default.car().unwrap_or(default);
                     call_function_value(
                         interp,
                         &Value::Symbol("format-prompt".into()),
-                        &[Value::String(stem.into()), shown_default.clone()],
+                        &[Value::String(stem.into()), shown_default],
                         env,
                     )
                     .or_else(|error| {
@@ -2271,8 +2260,8 @@ define_dispatch!(
                 let value = completing_read(
                     interp,
                     &[
-                        args[0].clone(),
-                        obarray.clone(),
+                        args[0],
+                        obarray,
                         predicate,
                         Value::T,
                         Value::Nil,
@@ -2304,7 +2293,7 @@ pub(super) fn direct_car_safe(
     let name = "car-safe";
     need_args(name, args, 1)?;
     Ok(match &args[0] {
-        Value::Cons(cell) => cell.car.borrow().clone(),
+        Value::Cons(cell) => *cell.car.borrow(),
         value => runtime_keymap_public_view(interp, value)
             .and_then(|view| view.car().ok())
             .unwrap_or(Value::Nil),
@@ -2320,7 +2309,7 @@ pub(super) fn direct_cdr_safe(
     let name = "cdr-safe";
     need_args(name, args, 1)?;
     Ok(match &args[0] {
-        Value::Cons(cell) => cell.cdr.borrow().clone(),
+        Value::Cons(cell) => *cell.cdr.borrow(),
         value => runtime_keymap_public_view(interp, value)
             .and_then(|view| view.cdr().ok())
             .unwrap_or(Value::Nil),
@@ -2357,7 +2346,7 @@ pub(super) fn direct_nthcdr(
             // Runtime keymaps project to GNU's cons-list surface,
             // but nthcdr with a nonpositive count returns the
             // original object, including its identity.
-            return Ok(args[1].clone());
+            return Ok(args[1]);
         }
         return nthcdr_value(&args[0], &Value::list(items));
     }
@@ -2416,7 +2405,7 @@ pub(super) fn direct_member_family(
         "memql" => MemTest::Eql,
         _ => MemTest::Eq,
     };
-    let mut current = args[1].clone();
+    let mut current = args[1];
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let next = match &current {
@@ -2438,9 +2427,9 @@ pub(super) fn direct_member_family(
                     }
                 };
                 if matches {
-                    return Ok(current.clone());
+                    return Ok(current);
                 }
-                cdr.borrow().clone()
+                *cdr.borrow()
             }
             Value::Nil => return Ok(Value::Nil),
             other => {
@@ -2450,12 +2439,12 @@ pub(super) fn direct_member_family(
                     _ => values_eq_in_env(interp, other, &args[0], env),
                 };
                 if matches {
-                    return Ok(other.clone());
+                    return Ok(*other);
                 }
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("wrong-type-argument".into()),
                     Value::Symbol("listp".into()),
-                    other.clone(),
+                    *other,
                 ])));
             }
         };
@@ -2514,7 +2503,7 @@ pub(super) fn direct_assq_family(
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("wrong-type-argument".into()),
                 Value::Symbol("listp".into()),
-                other.clone(),
+                *other,
             ])));
         }
     };
@@ -2553,7 +2542,7 @@ pub(super) fn direct_assq_family(
             }
         };
         if matched {
-            return Ok(cell.car.borrow().clone());
+            return Ok(*cell.car.borrow());
         }
         let tail = cell.cdr.borrow();
         let next = match &*tail {
@@ -2563,7 +2552,7 @@ pub(super) fn direct_assq_family(
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("wrong-type-argument".into()),
                     Value::Symbol("listp".into()),
-                    other.clone(),
+                    *other,
                 ])));
             }
         };
@@ -2597,7 +2586,7 @@ pub(super) fn direct_cons(
 ) -> Result<Value, LispError> {
     let name = "cons";
     need_args(name, args, 2)?;
-    Ok(Value::cons(args[0].clone(), args[1].clone()))
+    Ok(Value::cons(args[0], args[1]))
 }
 
 /// The subr behind `car', by pointer (data.c/fns.c: called through
@@ -2614,7 +2603,7 @@ pub(super) fn direct_car(
     } else {
         args[0]
             .car()
-            .map_err(|_| wrong_type_argument("listp", args[0].clone()))
+            .map_err(|_| wrong_type_argument("listp", args[0]))
     }
 }
 
@@ -2632,6 +2621,6 @@ pub(super) fn direct_cdr(
     } else {
         args[0]
             .cdr()
-            .map_err(|_| wrong_type_argument("listp", args[0].clone()))
+            .map_err(|_| wrong_type_argument("listp", args[0]))
     }
 }

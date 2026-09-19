@@ -529,14 +529,14 @@ const DIGESTS: &[DigestSpec] = &[
 ];
 
 fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
-    let mut current = plist.clone();
+    let mut current = *plist;
     while let Value::Cons(cell) = current {
-        let rest = cell.cdr.borrow().clone();
+        let rest = *cell.cdr.borrow();
         let (value, tail) = rest.cons_cells()?;
         if matches!(&*cell.car.borrow(), Value::Symbol(name) if name == property) {
             return value.borrow().as_integer().ok();
         }
-        current = tail.borrow().clone();
+        current = *tail.borrow();
     }
     None
 }
@@ -559,7 +559,7 @@ fn invalid_digest_method(method: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("error"),
         Value::string("GnuTLS digest-method is invalid or not found"),
-        method.clone(),
+        *method,
     ]))
 }
 
@@ -674,14 +674,14 @@ fn invalid_mac_method(method: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("error"),
         Value::string("GnuTLS MAC-method is invalid or not found"),
-        method.clone(),
+        *method,
     ]))
 }
 
 fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
     let normalized = match method {
         Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
-        method => method.clone(),
+        method => *method,
     };
     let id = match &normalized {
         Value::Integer(id) => c_int::try_from(*id).ok(),
@@ -707,14 +707,14 @@ fn invalid_cipher_method(method: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("error"),
         Value::string("GnuTLS cipher is invalid or not found"),
-        method.clone(),
+        *method,
     ]))
 }
 
 fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
     let normalized = match method {
         Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
-        method => method.clone(),
+        method => *method,
     };
     let id = match &normalized {
         Value::Integer(id) => c_int::try_from(*id).ok(),
@@ -742,13 +742,13 @@ fn require_crypto_input(value: &Value) -> Result<(), LispError> {
     if value.is_string() || matches!(value, Value::Buffer(_)) || value.is_cons() {
         Ok(())
     } else {
-        Err(wrong_type_argument("consp", value.clone()))
+        Err(wrong_type_argument("consp", *value))
     }
 }
 
 fn clear_crypto_key(value: &Value) {
     let source = if value.is_string() {
-        value.clone()
+        *value
     } else {
         safe_car(value)
     };
@@ -768,7 +768,7 @@ fn gnutls_error_description(library: &GnuTlsLibrary, code: c_int) -> String {
 fn gnutls_format_certificate(cert: &Value) -> Result<Value, LispError> {
     let cert = string_like(cert)
         .map(|string| string.text)
-        .ok_or_else(|| wrong_type_argument("stringp", cert.clone()))?;
+        .ok_or_else(|| wrong_type_argument("stringp", *cert))?;
     let library = gnutls_library()?;
     let mut certificate = std::ptr::null_mut();
     // SAFETY: GnuTLS initializes the opaque certificate handle on success.
@@ -1029,7 +1029,7 @@ fn gnutls_error_code(interp: &Interpreter, error: &Value) -> Result<c_int, &'sta
             }
             _ => return Err("Symbol has no numeric gnutls-code property"),
         },
-        error => error.clone(),
+        error => *error,
     };
     let Value::Integer(code) = resolved else {
         return Err("Not an error symbol or code");
@@ -1056,7 +1056,7 @@ fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>
         return secure_hash_source_bytes(interp, input, None, None);
     }
     if !input.is_cons() {
-        return Err(wrong_type_argument("consp", input.clone()));
+        return Err(wrong_type_argument("consp", *input));
     }
 
     let source = safe_car(input);
@@ -1498,11 +1498,11 @@ fn gnutls_boot(
 ) -> Result<Value, LispError> {
     let process_id = interp.resolve_process_id(process)?;
     let Value::Symbol(credential_type) = credential_type else {
-        return Err(wrong_type_argument("symbolp", credential_type.clone()));
+        return Err(wrong_type_argument("symbolp", *credential_type));
     };
     parameters
         .to_vec()
-        .map_err(|_| wrong_type_argument("listp", parameters.clone()))?;
+        .map_err(|_| wrong_type_argument("listp", *parameters))?;
     let is_x509 = match credential_type.as_str() {
         "gnutls-x509pki" => true,
         "gnutls-anon" => false,
@@ -1754,12 +1754,12 @@ pub(crate) fn progress_async_gnutls(
     }
     let items = parameters
         .to_vec()
-        .map_err(|_| wrong_type_argument("listp", parameters.clone()))?;
+        .map_err(|_| wrong_type_argument("listp", parameters))?;
     let Some((credential_type, parameter_items)) = items.split_first() else {
         return Ok(AsyncGnuTlsProgress::NotRequested);
     };
     let Value::Symbol(credential_symbol) = credential_type else {
-        return Err(wrong_type_argument("symbolp", credential_type.clone()));
+        return Err(wrong_type_argument("symbolp", *credential_type));
     };
     let is_x509 = match credential_symbol.as_str() {
         "gnutls-x509pki" => true,
@@ -1879,7 +1879,7 @@ define_dispatch!(
             "gnutls-asynchronous-parameters" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                interp.set_process_gnutls_boot_parameters(process_id, args[1].clone());
+                interp.set_process_gnutls_boot_parameters(process_id, args[1]);
                 Ok(Value::Nil)
             }
             "gnutls-boot" => {
@@ -2041,7 +2041,7 @@ define_dispatch!(
             "gnutls-peer-status-warning-describe" => {
                 need_args(name, args, 1)?;
                 let Value::Symbol(status) = &args[0] else {
-                    return Err(wrong_type_argument("symbolp", args[0].clone()));
+                    return Err(wrong_type_argument("symbolp", args[0]));
                 };
                 Ok(peer_status_warning_description(status)
                     .map(Value::string)

@@ -1631,7 +1631,7 @@ fn window_margin_display(value: &Value) -> Option<(String, Value)> {
         return None;
     }
     let side = location.get(1)?.as_symbol().ok()?.to_string();
-    let payload = parts.get(1)?.clone();
+    let payload = *parts.get(1)?;
     crate::lisp::primitives::string_text(&payload).ok()?;
     Some((side, payload))
 }
@@ -1965,13 +1965,7 @@ fn visual_line_at(
                 .get_prop(&Value::Symbol("priority".into()))
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(0);
-            overlay_displays.push((
-                overlay.beg,
-                overlay.end,
-                priority,
-                overlay.id,
-                value.clone(),
-            ));
+            overlay_displays.push((overlay.beg, overlay.end, priority, overlay.id, *value));
         }
         for (name, after) in [("before-string", false), ("after-string", true)] {
             let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
@@ -1987,7 +1981,7 @@ fn visual_line_at(
                 if after { overlay.end } else { overlay.beg },
                 after,
                 overlay.id,
-                value.clone(),
+                *value,
             ));
         }
     }
@@ -2789,15 +2783,11 @@ fn run_fontification_functions(
         Ok(Value::Symbol(ref name)) if name == "lambda"
     );
     if !matches!(value, Value::Cons(_)) || is_bare_lambda {
-        let _ = interpreter.call_function_value(
-            value.clone(),
-            None,
-            std::slice::from_ref(&pos_value),
-            env,
-        );
+        let _ =
+            interpreter.call_function_value(*value, None, std::slice::from_ref(&pos_value), env);
         return;
     }
-    let mut rest = value.clone();
+    let mut rest = *value;
     while let Value::Cons(_) = rest {
         let Ok(function) = rest.car() else {
             break;
@@ -4429,7 +4419,7 @@ fn compose_echo_row(
                 string.base_faces = face_spans
                     .iter()
                     .filter(|(from, to, _)| *from <= string.position && string.position < *to)
-                    .map(|(_, _, face)| face.clone())
+                    .map(|(_, _, face)| *face)
                     .collect();
             }
         }
@@ -6389,7 +6379,7 @@ gamma word three
                 env,
                 binding,
                 std::slice::from_ref(&event),
-                event.clone(),
+                event,
             )
             .expect("command executes");
             described
@@ -6462,7 +6452,7 @@ gamma word three
                 env,
                 binding,
                 std::slice::from_ref(&event),
-                event.clone(),
+                event,
             )
             .expect("command executes");
             described

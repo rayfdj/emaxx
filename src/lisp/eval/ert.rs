@@ -32,7 +32,7 @@ impl Interpreter {
             .get(6)
             .and_then(|value| primitives::string_like(value).map(|text| text.text))
             .or_else(|| self.current_load_file.clone());
-        self.put_symbol_property(name, "ert--test", test.clone());
+        self.put_symbol_property(name, "ert--test", *test);
         self.ert_tests.retain(|existing| existing.name != name);
         self.ert_tests.push(ErtTestDefinition {
             name: name.to_string(),
@@ -41,7 +41,7 @@ impl Interpreter {
             tags,
             expected_result,
         });
-        Ok(test.clone())
+        Ok(*test)
     }
 
     fn set_ert_test_most_recent_result(&mut self, test: &Value, result: Value) {
@@ -146,7 +146,7 @@ impl Interpreter {
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let previous_name = self.current_ert_test_name.replace(test.name.clone());
             let stats_restore =
-                self.bind_special_variable("ert--current-run-stats", run_stats.clone(), &mut env);
+                self.bind_special_variable("ert--current-run-stats", run_stats, &mut env);
             // GNU pushes the executing test onto `ert--running-tests';
             // helpers like `ert-running-test' read it.
             let test_struct = self
@@ -156,11 +156,7 @@ impl Interpreter {
             let previous_running = self
                 .lookup_var("ert--running-tests", &env)
                 .unwrap_or(Value::Nil);
-            self.set_variable(
-                "ert--running-tests",
-                Value::list([test_struct.clone()]),
-                &mut env,
-            );
+            self.set_variable("ert--running-tests", Value::list([test_struct]), &mut env);
             // GNU's ert--run-test-internal gives each test its own temp
             // buffer ("For now, each test gets its own temp buffer ...
             // just to be safe"); erc's helpers rely on starting in one.
@@ -198,9 +194,7 @@ impl Interpreter {
                 lexical_restore.as_ref(),
                 temp_buffer_result.as_ref(),
             ) {
-                (Ok(_), Ok(_), Ok(_)) => {
-                    self.call_function_value(test.body.clone(), None, &[], &mut env)
-                }
+                (Ok(_), Ok(_), Ok(_)) => self.call_function_value(test.body, None, &[], &mut env),
                 (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error.clone()),
             };
             self.active_catch_tags.pop();

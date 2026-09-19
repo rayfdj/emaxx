@@ -77,10 +77,7 @@ fn resolve_ccl_program(
     program: &Value,
 ) -> Result<Option<Vec<i32>>, LispError> {
     if !is_vector_value(program) {
-        return Err(LispError::WrongTypeArgument(
-            "vectorp".into(),
-            program.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), *program));
     }
     let items = vector_items(program)?;
     if items.len() <= CCL_HEADER_MAIN {
@@ -138,7 +135,7 @@ fn resolve_ccl_program(
 
 fn registered_program(interp: &Interpreter, program: &Value) -> Result<Value, LispError> {
     if is_vector_value(program) {
-        return Ok(program.clone());
+        return Ok(*program);
     }
     let name = program
         .as_symbol()
@@ -152,7 +149,7 @@ fn registered_program(interp: &Interpreter, program: &Value) -> Result<Value, Li
         .ccl_programs
         .get(index)
         .and_then(Option::as_ref)
-        .and_then(|(_, program)| (!program.is_nil()).then_some(program.clone()))
+        .and_then(|(_, program)| (!program.is_nil()).then_some(*program))
         .ok_or_else(|| LispError::Signal("Invalid CCL program".into()))
 }
 
@@ -187,7 +184,7 @@ fn register_ccl_program(
             interp.ccl_programs.push(None);
             interp.ccl_programs.len() - 1
         });
-    interp.ccl_programs[index] = Some((name.clone(), program.clone()));
+    interp.ccl_programs[index] = Some((name.clone(), *program));
     interp.put_symbol_property(&name, "ccl-program-idx", Value::Integer(index as i64));
     Ok(Value::Integer(index as i64))
 }
@@ -199,7 +196,7 @@ fn register_code_conversion_map(
 ) -> Result<Value, LispError> {
     let symbol = symbol.as_symbol()?.to_string();
     if !is_vector_value(map) {
-        return Err(LispError::WrongTypeArgument("vectorp".into(), map.clone()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), *map));
     }
     let table = interp
         .default_value("code-conversion-map-vector")
@@ -225,7 +222,7 @@ fn register_code_conversion_map(
         }
     }
     let index = index.unwrap_or(slots.len());
-    let entry = Value::cons(Value::Symbol(symbol.clone().into()), map.clone());
+    let entry = Value::cons(Value::Symbol(symbol.clone().into()), *map);
     if index < slots.len() {
         aset_vector_value(&table, index, entry)?;
     } else {
@@ -233,7 +230,7 @@ fn register_code_conversion_map(
         extended.push(entry);
         interp.set_global_binding("code-conversion-map-vector", make_vector(extended));
     }
-    interp.put_symbol_property(&symbol, "code-conversion-map", map.clone());
+    interp.put_symbol_property(&symbol, "code-conversion-map", *map);
     interp.put_symbol_property(
         &symbol,
         "code-conversion-map-id",
@@ -244,10 +241,7 @@ fn register_code_conversion_map(
 
 fn initial_registers(value: &Value, length: usize) -> Result<[i32; 8], LispError> {
     if !is_vector_value(value) {
-        return Err(LispError::WrongTypeArgument(
-            "vectorp".into(),
-            value.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), *value));
     }
     let items = vector_items(value)?;
     if items.len() != length {
@@ -306,7 +300,7 @@ fn ccl_execute_on_string(
         .filter(|pc| CCL_HEADER_MAIN < *pc && *pc < code.len())
         .unwrap_or(CCL_HEADER_MAIN);
     let string = string_like(source)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), source.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *source))?;
     let input = if string.multibyte {
         string.text.chars().map(|ch| ch as i32).collect()
     } else {
@@ -496,7 +490,7 @@ impl CclMachine {
         let Some((_, table)) = (slot).cons_cells() else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };
-        let table = table.borrow().clone();
+        let table = *table.borrow();
         let Some((test, entries)) = json::hash_table_entries(interp, &table) else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };

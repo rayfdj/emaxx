@@ -1385,10 +1385,10 @@ impl CharTableState {
             map.iter()
                 .filter_map(|(&start, &(end, index))| {
                     let value = &self.entries[index].value;
-                    (!value.is_nil()).then(|| CharTableEntry {
+                    (!value.is_nil()).then_some(CharTableEntry {
                         start,
                         end,
-                        value: value.clone(),
+                        value: *value,
                     })
                 })
                 .collect()
@@ -1769,7 +1769,7 @@ impl FrameFunction {
     /// The word as a value of its own (a reference taken for the caller).
     fn value(&self) -> Value {
         match self {
-            Self::Owned(value) => value.clone(),
+            Self::Owned(value) => *value,
             // SAFETY: the pointer came from a live cons the evaluating
             // caller still holds (see the type comment); a cons handle
             // carries no count.
@@ -1844,11 +1844,11 @@ impl BacktraceFrame {
         if !self.evald {
             match &self.function {
                 FrameFunction::Form(_) => return Some(self.function.value()),
-                FrameFunction::Owned(value @ Value::Cons(_)) => return Some(value.clone()),
+                FrameFunction::Owned(value @ Value::Cons(_)) => return Some(*value),
                 FrameFunction::Owned(_) => {}
             }
         }
-        self.detail.as_ref()?.source_form.clone()
+        self.detail.as_ref()?.source_form
     }
 
     fn locals(&self) -> &[(SymbolName, Value)] {
@@ -2494,11 +2494,11 @@ impl Clone for ProcessGnuTlsState {
             panic!("image-template clone with a live gnutls session");
         }
         Self {
-            boot_parameters: self.boot_parameters.clone(),
+            boot_parameters: self.boot_parameters,
             initstage: self.initstage,
             active: self.active,
             session: None,
-            peer_status: self.peer_status.clone(),
+            peer_status: self.peer_status,
         }
     }
 }
@@ -2538,17 +2538,17 @@ impl Clone for ProcessState {
             buffer_id: self.buffer_id,
             mark_marker_id: self.mark_marker_id,
             status: self.status.clone(),
-            filter: self.filter.clone(),
-            sentinel: self.sentinel.clone(),
+            filter: self.filter,
+            sentinel: self.sentinel,
             sentinel_notified: self.sentinel_notified,
-            log: self.log.clone(),
+            log: self.log,
             name: self.name.clone(),
             thread_id: self.thread_id,
             query_on_exit_flag: self.query_on_exit_flag,
             traffic_stopped: self.traffic_stopped,
             inherit_coding_system_flag: self.inherit_coding_system_flag,
-            decoding: self.decoding.clone(),
-            encoding: self.encoding.clone(),
+            decoding: self.decoding,
+            encoding: self.encoding,
             program: self.program.clone(),
             argv: self.argv.clone(),
             stderr_process_id: self.stderr_process_id,
@@ -2566,9 +2566,9 @@ impl Clone for ProcessState {
             pending_stdout: self.pending_stdout.clone(),
             pending_stderr: self.pending_stderr.clone(),
             output_delivery_count: self.output_delivery_count,
-            plist: self.plist.clone(),
+            plist: self.plist,
             gnutls: self.gnutls.clone(),
-            contact: self.contact.clone(),
+            contact: self.contact,
         }
     }
 }
@@ -2688,10 +2688,10 @@ impl Clone for FileNotifyWatch {
             panic!("image-template clone with a live inotify watch");
         }
         Self {
-            descriptor: self.descriptor.clone(),
+            descriptor: self.descriptor,
             path: self.path.clone(),
             flags: self.flags.clone(),
-            callback: self.callback.clone(),
+            callback: self.callback,
             active: self.active,
             backend: self.backend,
             fingerprint: self.fingerprint.clone(),
@@ -3022,15 +3022,15 @@ impl ImageGraphCopier {
             Value::Cons(_) => self.copy_cons_chain(value),
             Value::Vector(vector) => {
                 if vector.slots().is_empty() {
-                    return value.clone();
+                    return *value;
                 }
                 let key = vector.identity();
                 if let Some(copied) = self.vectors.get(&key) {
-                    return copied.clone();
+                    return *copied;
                 }
                 let source_slots = vector.slots().to_vec();
                 let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
-                self.vectors.insert(key, copied.clone());
+                self.vectors.insert(key, copied);
                 let Value::Vector(copied_vector) = &copied else {
                     unreachable!("nonempty vector copy has vector storage")
                 };
@@ -3042,7 +3042,7 @@ impl ImageGraphCopier {
             Value::StringObject(state) => {
                 let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
-                    return copied.clone();
+                    return *copied;
                 }
                 let mut inner = state.borrow().clone();
                 let copied = crate::lisp::types::string_object_value(
@@ -3053,7 +3053,7 @@ impl ImageGraphCopier {
                         extended_chars: std::mem::take(&mut inner.extended_chars),
                     },
                 );
-                self.strings.insert(key, copied.clone());
+                self.strings.insert(key, copied);
                 let props = state.borrow().props.clone();
                 let copied_props = props
                     .iter()
@@ -3075,7 +3075,7 @@ impl ImageGraphCopier {
             Value::Lambda(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
-                    return copied.clone();
+                    return *copied;
                 }
                 // The environment is copied after the closure is on
                 // record: a closure can reach itself through it.
@@ -3098,7 +3098,7 @@ impl ImageGraphCopier {
                         .as_ref()
                         .map(|interactive| self.copy(interactive)),
                 });
-                self.lambdas.insert(key, copied.clone());
+                self.lambdas.insert(key, copied);
                 let environment = self.copy(&lambda.environment_value());
                 if let Value::Lambda(copied) = &copied {
                     let _ = copied.env.set(environment);
@@ -3108,7 +3108,7 @@ impl ImageGraphCopier {
             Value::ReaderForm(form) => {
                 let key = form.identity();
                 if let Some(copied) = self.reader_forms.get(&key) {
-                    return copied.clone();
+                    return *copied;
                 }
                 let copied = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
                     match form.as_ref() {
@@ -3158,10 +3158,10 @@ impl ImageGraphCopier {
                         }
                     },
                 ));
-                self.reader_forms.insert(key, copied.clone());
+                self.reader_forms.insert(key, copied);
                 copied
             }
-            other => other.clone(),
+            other => *other,
         }
     }
 
@@ -3170,21 +3170,21 @@ impl ImageGraphCopier {
     /// naive recursive copy would need.
     fn copy_cons_chain(&mut self, head: &Value) -> Value {
         let mut spine = Vec::new();
-        let mut cursor = head.clone();
+        let mut cursor = *head;
         while let Value::Cons(cell) = &cursor {
             let key = crate::lisp::types::ConsCell::identity(cell);
             if self.cons.contains_key(&key) {
                 break;
             }
             let placeholder = Value::cons(Value::Nil, Value::Nil);
-            self.cons.insert(key, placeholder.clone());
-            spine.push((*cell, placeholder.clone()));
-            let next = cell.cdr.borrow().clone();
+            self.cons.insert(key, placeholder);
+            spine.push((*cell, placeholder));
+            let next = *cell.cdr.borrow();
             cursor = next;
         }
         for (source, copied) in spine.into_iter().rev() {
-            let car = source.car.borrow().clone();
-            let cdr = source.cdr.borrow().clone();
+            let car = *source.car.borrow();
+            let cdr = *source.cdr.borrow();
             let copied_car = self.copy(&car);
             let copied_cdr = self.copy(&cdr);
             let Value::Cons(cell) = &copied else {
@@ -3200,7 +3200,7 @@ impl ImageGraphCopier {
         if let Value::Cons(cell) = value {
             let key = crate::lisp::types::ConsCell::identity(cell);
             if let Some(copied) = self.cons.get(&key) {
-                return copied.clone();
+                return *copied;
             }
         }
         self.copy(value)
@@ -3760,26 +3760,20 @@ impl Interpreter {
     ) -> Vec<(crate::lisp::primitives::pdumper::image::RootSlot, Value)> {
         use crate::lisp::primitives::pdumper::image::RootSlot;
         let mut roots = vec![
-            (RootSlot::QuitFlag, self.quit_flag.clone()),
-            (RootSlot::InhibitQuit, self.inhibit_quit.clone()),
-            (RootSlot::ThrowOnInput, self.throw_on_input.clone()),
+            (RootSlot::QuitFlag, self.quit_flag),
+            (RootSlot::InhibitQuit, self.inhibit_quit),
+            (RootSlot::ThrowOnInput, self.throw_on_input),
             (
                 RootSlot::OverridingPlistEnvironment,
-                self.overriding_plist_environment.clone(),
+                self.overriding_plist_environment,
             ),
-            (RootSlot::LoadPath, self.load_path.clone()),
-            (RootSlot::LoadsInProgress, self.loads_in_progress.clone()),
-            (
-                RootSlot::LocalTimeZoneRule,
-                self.local_time_zone_rule.clone(),
-            ),
-            (
-                RootSlot::FrameAndBufferState,
-                self.frame_and_buffer_state.clone(),
-            ),
+            (RootSlot::LoadPath, self.load_path),
+            (RootSlot::LoadsInProgress, self.loads_in_progress),
+            (RootSlot::LocalTimeZoneRule, self.local_time_zone_rule),
+            (RootSlot::FrameAndBufferState, self.frame_and_buffer_state),
             (
                 RootSlot::CurrentGlobalMap,
-                self.current_global_map.clone().unwrap_or(Value::Unbound),
+                self.current_global_map.unwrap_or(Value::Unbound),
             ),
         ];
         roots.extend(self.dump_root_groups());
@@ -3896,7 +3890,7 @@ impl Interpreter {
             .map(|cells| {
                 cells
                     .iter()
-                    .map(|(symbol, value)| (*symbol, value.clone()))
+                    .map(|(symbol, value)| (*symbol, *value))
                     .collect()
             })
             .unwrap_or_default()
@@ -6676,7 +6670,7 @@ impl Interpreter {
             ("fontification-functions", Value::Nil),
             ("frame-alpha-lower-limit", Value::Integer(20)),
             ("frame-size-history", Value::Nil),
-            ("frame-title-format", frame_title_format.clone()),
+            ("frame-title-format", frame_title_format),
             ("global-disable-point-adjustment", Value::Nil),
             ("global-mode-string", Value::Nil),
             ("glyph-table", Value::Nil),
@@ -6901,7 +6895,7 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             );
             let value = match read {
-                Ok(Value::Cons(cell)) => cell.car.borrow().clone(),
+                Ok(Value::Cons(cell)) => *cell.car.borrow(),
                 _ => panic!("the oracle's printed default for `{name}' does not read back"),
             };
             interp.define_special_variable(name, value);
@@ -7014,7 +7008,7 @@ impl Interpreter {
         // dumped simple.el creates: a stable map, mode variable, hook family,
         // and minor-mode registry entry.
         let visual_line_mode_map = make_visual_line_mode_map(&mut interp);
-        interp.define_special_variable("visual-line-mode-map", visual_line_mode_map.clone());
+        interp.define_special_variable("visual-line-mode-map", visual_line_mode_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding(
             "minor-mode-map-alist",
@@ -7795,7 +7789,6 @@ impl Interpreter {
 
     pub fn current_global_map_value(&self) -> Value {
         self.current_global_map
-            .clone()
             .or_else(|| self.lookup_var("global-map", &crate::lisp::types::Env::new()))
             .unwrap_or(Value::Nil)
     }
@@ -7814,7 +7807,7 @@ impl Interpreter {
     }
 
     pub(crate) fn set_load_path_value(&mut self, value: Value) {
-        self.load_path = value.clone();
+        self.load_path = value;
         // init_lread writes the C slot. After makunbound that slot is
         // independent of the now-plain Lisp symbol (data.c:set_internal).
         if !self.detached_forwarded_variables.contains_key("load-path") {
@@ -7869,7 +7862,7 @@ impl Interpreter {
         // the closure's storage, `nil' for a dynamic lambda.
         let environment = lambda.environment_value();
         let mut slots = vec![
-            lambda.public_parameters.clone().unwrap_or_else(|| {
+            lambda.public_parameters.unwrap_or_else(|| {
                 Value::list(lambda.params.iter().map(|param| Value::Symbol(*param)))
             }),
             Value::list(lambda.body.as_ref().clone()),
@@ -7877,10 +7870,10 @@ impl Interpreter {
         ];
         if lambda.interactive.is_some() || lambda.documentation.is_some() {
             slots.push(Value::Nil);
-            slots.push(lambda.documentation.clone().unwrap_or(Value::Nil));
+            slots.push(lambda.documentation.unwrap_or(Value::Nil));
         }
         if let Some(interactive) = &lambda.interactive {
-            slots.push(interactive.clone());
+            slots.push(*interactive);
         }
         slots
     }
@@ -7951,17 +7944,11 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
                 return function_name_from_binding_form(&items[1]);
             }
             let other = unquote(value);
-            Err(LispError::WrongTypeArgument(
-                "symbolp".into(),
-                other.clone(),
-            ))
+            Err(LispError::WrongTypeArgument("symbolp".into(), other))
         }
         _ => match unquote(value) {
             Value::Symbol(name) => Ok(name.to_string()),
-            other => Err(LispError::WrongTypeArgument(
-                "symbolp".into(),
-                other.clone(),
-            )),
+            other => Err(LispError::WrongTypeArgument("symbolp".into(), other)),
         },
     }
 }
@@ -7973,16 +7960,16 @@ fn unquote(value: &Value) -> Value {
                 && items.len() == 2
                 && matches!(items.first(), Some(Value::Symbol(name)) if name == "quote")
             {
-                return items[1].clone();
+                return items[1];
             }
-            value.clone()
+            *value
         }
-        _ => value.clone(),
+        _ => *value,
     }
 }
 
 fn quoted_literal(value: &Value) -> Value {
-    Value::list([Value::Symbol("quote".into()), value.clone()])
+    Value::list([Value::Symbol("quote".into()), *value])
 }
 
 pub(crate) fn error_condition_value(error: &LispError) -> Value {
@@ -7999,7 +7986,7 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
         LispError::WrongTypeArgument(predicate, value) => Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol(predicate.clone().into()),
-            value.clone(),
+            *value,
         ]),
         LispError::Void(symbol) => Value::list([
             Value::Symbol("void-variable".into()),
@@ -8033,12 +8020,12 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::String(message.clone().into()),
         ]),
         LispError::Throw(tag, value) => {
-            Value::list([Value::Symbol("no-catch".into()), tag.clone(), value.clone()])
+            Value::list([Value::Symbol("no-catch".into()), *tag, *value])
         }
         LispError::Terminate(_) => {
             unreachable!("process termination cannot be converted to a Lisp condition")
         }
-        LispError::SignalValue(value) => value.clone(),
+        LispError::SignalValue(value) => *value,
     }
 }
 
@@ -8061,9 +8048,9 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                 extended_chars: Vec::new(),
                 markers: Vec::new(),
             },
-            _ => crate::buffer::UndoEntry::Opaque(value.clone()),
+            _ => crate::buffer::UndoEntry::Opaque(*value),
         },
-        _ => crate::buffer::UndoEntry::Opaque(value.clone()),
+        _ => crate::buffer::UndoEntry::Opaque(*value),
     }
 }
 
@@ -8145,18 +8132,18 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
 
     for item in items {
         let Value::Symbol(symbol) = item else {
-            return Err(invalid_function(spec.clone()));
+            return Err(invalid_function(*spec));
         };
         match symbol.as_str() {
             "&optional" => {
                 if seen_optional || seen_rest {
-                    return Err(invalid_function(spec.clone()));
+                    return Err(invalid_function(*spec));
                 }
                 seen_optional = true;
             }
             "&rest" => {
                 if seen_rest {
-                    return Err(invalid_function(spec.clone()));
+                    return Err(invalid_function(*spec));
                 }
                 seen_rest = true;
                 needs_rest_arg = true;
@@ -8166,14 +8153,14 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
                     needs_rest_arg = false;
                     rest_arg_seen = true;
                 } else if rest_arg_seen {
-                    return Err(invalid_function(spec.clone()));
+                    return Err(invalid_function(*spec));
                 }
             }
         }
     }
 
     if needs_rest_arg {
-        return Err(invalid_function(spec.clone()));
+        return Err(invalid_function(*spec));
     }
 
     Ok(())

@@ -333,7 +333,7 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
     crate::lisp::primitives::call(
         interpreter,
         "puthash",
-        &[key.clone(), Value::T, table],
+        &[key, Value::T, table],
         &mut Env::new(),
     )?;
     state.runtime.record_unwind(

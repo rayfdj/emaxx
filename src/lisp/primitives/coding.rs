@@ -24,7 +24,7 @@ pub(crate) fn coding_system_error(name: impl Into<String>) -> LispError {
 fn charset_plist_property(interp: &Interpreter, charset: &str, property: &str) -> Option<Value> {
     let items = interp.charset_plist_value(charset)?.to_vec().ok()?;
     items.windows(2).find_map(|pair| {
-        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1].clone())
+        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1])
     })
 }
 
@@ -214,7 +214,7 @@ pub(crate) fn make_charset_character(
     let name = charset.as_symbol()?;
     let canonical = interp
         .charset_canonical_name(name)
-        .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), charset.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), *charset))?;
     let bounds = charset_code_space(interp, &canonical)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
     let dimension = charset_dimension(interp, &canonical) as usize;
@@ -241,22 +241,16 @@ pub(crate) fn make_charset_character(
                 bounds[dimension - index - 1].0
             } else {
                 let Value::Integer(number) = position else {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        position.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), *position));
                 };
                 if *number < 0 {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        position.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), *position));
                 }
                 if *number >= 256 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("args-out-of-range"),
                         Value::Integer(255),
-                        position.clone(),
+                        *position,
                     ])));
                 }
                 *number as u32
@@ -450,7 +444,7 @@ pub(crate) fn encode_charset_char(
 fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
     let items = interp.coding_system_plist_value(coding)?.to_vec().ok()?;
     items.windows(2).find_map(|pair| {
-        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1].clone())
+        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1])
     })
 }
 
@@ -574,7 +568,7 @@ fn run_coding_conversion(
     } else {
         vec![Value::Integer(text.len() as i64)]
     };
-    let result = interp.call_function_value(function.clone(), None, &arguments, env);
+    let result = interp.call_function_value(*function, None, &arguments, env);
     let result_buffer_id = interp.current_buffer_id();
     let converted = interp.buffer.buffer_string();
     let _ = interp.set_current_buffer_id(saved_buffer_id);
@@ -744,8 +738,8 @@ pub(crate) fn set_last_coding_system_used(interp: &mut Interpreter, coding: &str
 }
 
 pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     Ok(make_shared_string_value_with_multibyte(
         string.text,
         string.props,
@@ -839,10 +833,7 @@ pub(crate) fn aset_vector_value(
     new_value: Value,
 ) -> Result<(), LispError> {
     let Value::Vector(vector) = target else {
-        return Err(LispError::WrongTypeArgument(
-            "arrayp".into(),
-            target.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("arrayp".into(), *target));
     };
     let slots = vector.slots_mut();
     let slot = slots
@@ -958,8 +949,8 @@ pub(crate) fn base64_encode_string_value(
     pad: bool,
     base64url: bool,
 ) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
     Ok(Value::String(
         encode_base64_bytes(&bytes, line_break, pad, base64url).into(),
@@ -1044,8 +1035,8 @@ pub(crate) fn decode_base64_string_value(
     base64url: bool,
     ignore_invalid: bool,
 ) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let bytes = encode_raw_text_bytes(&string.text)?;
     let mut cursor = 0usize;
     let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
@@ -2739,7 +2730,7 @@ pub(crate) fn detect_coding_string_value(
     highest: Option<&Value>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let string = string_like(value).ok_or_else(|| wrong_type_argument("stringp", value.clone()))?;
+    let string = string_like(value).ok_or_else(|| wrong_type_argument("stringp", *value))?;
     let highest = highest.is_some_and(Value::is_truthy);
     let src = DetectSource::from_text(&string.text, string.multibyte);
     Ok(detected_names_value(
@@ -2883,8 +2874,8 @@ pub(crate) fn find_operation_coding_system_value(
         )));
     };
     let operation_target = match target {
-        Value::Cons(cell) if operation == "insert-file-contents" => cell.car.borrow().clone(),
-        other => other.clone(),
+        Value::Cons(cell) if operation == "insert-file-contents" => *cell.car.borrow(),
+        other => *other,
     };
     let Some(alist) = interp.lookup_var(alist_name, env) else {
         return Ok(Value::Nil);
@@ -2982,14 +2973,14 @@ pub(crate) fn encode_coding_value_recording(
     record_used: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
         if record_used {
             set_last_coding_system_used(interp, "no-conversion", env);
         }
         return if nocopy {
-            Ok(value.clone())
+            Ok(*value)
         } else {
             shared_string_copy(value)
         };
@@ -3062,7 +3053,7 @@ pub(crate) fn encode_coding_value_recording(
             inhibit_eol_conversion,
         )
     {
-        Ok(value.clone())
+        Ok(*value)
     } else {
         Ok(bytes_to_shared_unibyte_value(
             &encode_text_bytes_with_charsets(
@@ -3228,12 +3219,12 @@ pub(crate) fn decode_coding_text(
     region: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
         set_last_coding_system_used(interp, "no-conversion", env);
         return if nocopy {
-            Ok(value.clone())
+            Ok(*value)
         } else {
             shared_string_copy(value)
         };
@@ -3403,7 +3394,7 @@ pub(crate) fn decode_coding_text(
             inhibit_eol_conversion,
         )
     {
-        Ok(value.clone())
+        Ok(*value)
     } else {
         // A decode that ran carries only the decoder's annotations; a
         // post-read conversion rewrites the text, after which they cannot

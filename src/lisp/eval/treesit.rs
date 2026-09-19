@@ -15,7 +15,7 @@ fn load_error(kind: &str, data: impl IntoIterator<Item = Value>) -> LispError {
 fn value_string(value: &Value) -> Result<String, LispError> {
     primitives::string_like(value)
         .map(|string| string.text)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))
 }
 
 fn library_suffixes(interp: &Interpreter) -> Result<Vec<String>, LispError> {
@@ -280,7 +280,7 @@ impl Interpreter {
             .position(|parser| parser.record_id == *record_id)
             .ok_or_else(|| LispError::TypeError("treesit-parser-p".into(), value.type_name()))?;
         if self.treesit_parsers[index].deleted {
-            return Err(treesit_signal("treesit-parser-deleted", [value.clone()]));
+            return Err(treesit_signal("treesit-parser-deleted", [*value]));
         }
         Ok(index)
     }
@@ -359,10 +359,10 @@ impl Interpreter {
         let index = self.treesit_parser_index(value)?;
         let parser = &self.treesit_parsers[index];
         Ok((
-            parser.buffer.clone(),
-            parser.language.clone(),
-            parser.tag.clone(),
-            parser.included_ranges.clone(),
+            parser.buffer,
+            parser.language,
+            parser.tag,
+            parser.included_ranges,
             parser.notifiers.clone(),
         ))
     }
@@ -415,7 +415,7 @@ impl Interpreter {
         let buffer_id = self.treesit_parsers[index].buffer_id;
         let buffer = self
             .get_buffer_by_id(buffer_id)
-            .ok_or_else(|| treesit_signal("treesit-parser-buffer-killed", [value.clone()]))?;
+            .ok_or_else(|| treesit_signal("treesit-parser-buffer-killed", [*value]))?;
         let tick = buffer.chars_modified_tick();
         let visible_region = (buffer.point_min(), buffer.point_max());
         if self.treesit_parsers[index].tree.is_some()
@@ -427,9 +427,10 @@ impl Interpreter {
         let text = buffer.buffer_string();
         let ranges = included_ranges(buffer, &self.treesit_parsers[index].included_ranges)?;
         let state = &mut self.treesit_parsers[index];
-        state.parser.set_included_ranges(&ranges).map_err(|_| {
-            treesit_signal("treesit-range-invalid", [state.included_ranges.clone()])
-        })?;
+        state
+            .parser
+            .set_included_ranges(&ranges)
+            .map_err(|_| treesit_signal("treesit-range-invalid", [state.included_ranges]))?;
         state.parser.reset();
         state.tree = state.parser.parse(&text, None);
         if state.tree.is_none() {
@@ -484,7 +485,7 @@ impl Interpreter {
     pub(crate) fn treesit_node_outdated(&self, value: &Value) -> Result<bool, LispError> {
         let node = self
             .treesit_node_state(value)
-            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), *value))?;
         let parser = self
             .treesit_parsers
             .iter()
@@ -496,7 +497,7 @@ impl Interpreter {
     pub(crate) fn treesit_node_live(&self, value: &Value) -> Result<bool, LispError> {
         let node = self
             .treesit_node_state(value)
-            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), *value))?;
         let parser = self
             .treesit_parsers
             .iter()
@@ -513,20 +514,17 @@ impl Interpreter {
         let node = self
             .treesit_node_state(value)
             .cloned()
-            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), *value))?;
         let parser = self
             .treesit_parsers
             .iter()
             .find(|parser| parser.record_id == node.parser_id)
             .expect("Tree-sitter node retains its parser state");
         if parser.generation != node.generation {
-            return Err(treesit_signal("treesit-node-outdated", [value.clone()]));
+            return Err(treesit_signal("treesit-node-outdated", [*value]));
         }
         if !self.has_buffer_id(parser.buffer_id) {
-            return Err(treesit_signal(
-                "treesit-node-buffer-killed",
-                [value.clone()],
-            ));
+            return Err(treesit_signal("treesit-node-buffer-killed", [*value]));
         }
         let tree = parser
             .tree
@@ -548,7 +546,7 @@ impl Interpreter {
         let state = self
             .treesit_node_state(source)
             .cloned()
-            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), source.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), *source))?;
         Ok(self.create_treesit_node(state.parser_id, node_id, state.generation))
     }
 
@@ -615,7 +613,7 @@ impl Interpreter {
         let buffer_id = self.treesit_parsers[index].buffer_id;
         let buffer = self
             .get_buffer_by_id(buffer_id)
-            .ok_or_else(|| treesit_signal("treesit-parser-buffer-killed", [parser.clone()]))?;
+            .ok_or_else(|| treesit_signal("treesit-parser-buffer-killed", [*parser]))?;
         included_ranges(buffer, &ranges)?;
         self.treesit_parsers[index].included_ranges = ranges;
         self.treesit_parsers[index].parsed_tick = None;

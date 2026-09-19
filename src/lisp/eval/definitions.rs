@@ -78,14 +78,14 @@ impl Interpreter {
             self.call_function_value(
                 setter,
                 None,
-                &[Value::Symbol(resolved.clone().into()), value.clone()],
+                &[Value::Symbol(resolved.clone().into()), value],
                 env,
             )?;
         } else {
             self.call_function_value(
                 Value::BuiltinFunc("set-default".into()),
                 Some("set-default"),
-                &[Value::Symbol(resolved.into()), value.clone()],
+                &[Value::Symbol(resolved.into()), value],
                 env,
             )?;
         }
@@ -108,11 +108,11 @@ impl Interpreter {
         };
         let mut nargs = 0usize;
         while let Some(symbol_cell) = cur {
-            let sym = symbol_cell.car.borrow().clone();
+            let sym = *symbol_cell.car.borrow();
             let Some(value_cell) = next_cons(&symbol_cell) else {
                 return Err(LispError::WrongNumberOfArgs("setq".into(), nargs + 1));
             };
-            let value_form = value_cell.car.borrow().clone();
+            let value_form = *value_cell.car.borrow();
             cur = next_cons(&value_cell);
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.
@@ -121,10 +121,7 @@ impl Interpreter {
                 Value::Nil => SymbolName::intern_str("nil"),
                 Value::T => SymbolName::intern_str("t"),
                 other => {
-                    return Err(LispError::WrongTypeArgument(
-                        "symbolp".into(),
-                        other.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
                 }
             };
             // Fsetq: the value, then the lexical alist, then Fset -- for
@@ -133,8 +130,8 @@ impl Interpreter {
             // whole of Fset.
             if !local_only && self.globals.plain_store(&symbol) {
                 let val = self.eval(&value_form, env)?;
-                result = val.clone();
-                if self.set_lexical_variable_checked_symbol(&symbol, val.clone(), env)? {
+                result = val;
+                if self.set_lexical_variable_checked_symbol(&symbol, val, env)? {
                     continue;
                 }
                 if let Some(existing) = self.globals.value_mut(&symbol) {
@@ -145,19 +142,17 @@ impl Interpreter {
                 continue;
             }
             let evaluated = self.eval(&value_form, env)?;
-            if !local_only
-                && self.set_lexical_variable_checked_symbol(&symbol, evaluated.clone(), env)?
-            {
+            if !local_only && self.set_lexical_variable_checked_symbol(&symbol, evaluated, env)? {
                 result = evaluated;
                 continue;
             }
             let resolved = self.resolve_variable_symbol(&symbol)?;
             let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
-            result = val.clone();
+            result = val;
             if local_only {
                 self.notify_variable_watchers(
                     resolved.as_str(),
-                    val.clone(),
+                    val,
                     "set",
                     Some(self.current_buffer_id()),
                     env,
@@ -299,7 +294,7 @@ impl Interpreter {
         let closure_env = if capture_override == Some(false) {
             Value::Nil
         } else if let Some(environment) = crate::lisp::types::current_environment(env) {
-            environment.clone()
+            *environment
         } else if capture_override == Some(true)
             || self
                 .lookup_var("lexical-binding", env)
@@ -323,11 +318,11 @@ impl Interpreter {
                 filter,
                 None,
                 &[
-                    items[1].clone(),
+                    items[1],
                     Value::list(body.iter().cloned()),
                     closure_env,
-                    documentation.clone().unwrap_or(Value::Nil),
-                    interactive_form.clone().unwrap_or(Value::Nil),
+                    documentation.unwrap_or(Value::Nil),
+                    interactive_form.unwrap_or(Value::Nil),
                 ],
                 env,
             );
@@ -371,7 +366,7 @@ impl Interpreter {
             .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
         Ok(Value::lambda_with_public_parameters(
             params.into(),
-            items[1].clone(),
+            items[1],
             body,
             closure_env,
             documentation,

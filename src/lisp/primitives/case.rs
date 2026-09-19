@@ -374,8 +374,8 @@ pub(crate) fn casify_value(
             interp, &context, down_table, up_table, code, action,
         ) as i64));
     }
-    let input = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let input =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let input_len = input.text.chars().count();
     let output = casify_string(interp, &input.text, action, env)?;
     // casefiddle.c copies intervals while casing can stay in the source
@@ -496,7 +496,7 @@ pub(crate) fn parse_region_bound(value: &Value) -> Result<(usize, usize), LispEr
 }
 
 pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, LispError> {
-    let mut cursor = value.clone();
+    let mut cursor = *value;
     let mut bounds = Vec::new();
     for _ in 0..1024 {
         match cursor {
@@ -505,7 +505,7 @@ pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, 
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
                 bounds.push(parse_region_bound(&car.borrow())?);
-                cursor = cdr.borrow().clone();
+                cursor = *cdr.borrow();
             }
             _ => return Err(LispError::Signal("Invalid region bounds".into())),
         }

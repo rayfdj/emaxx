@@ -10,14 +10,14 @@ impl Interpreter {
         let initial_faces = self
             .lisp_face_states
             .iter()
-            .filter_map(|face| Some((face.name.clone(), face.id?, face.global.clone()?)))
+            .filter_map(|face| Some((face.name.clone(), face.id?, face.global?)))
             .collect::<Vec<_>>();
         let entries = initial_faces
             .iter()
             .map(|(name, id, vector)| {
                 (
                     Value::symbol(name),
-                    Value::cons(Value::Integer(*id), vector.clone()),
+                    Value::cons(Value::Integer(*id), *vector),
                 )
             })
             .collect();
@@ -55,7 +55,7 @@ impl Interpreter {
             .lisp_face_state_index(name)
             .and_then(|index| self.lisp_face_states.get(index))?;
         match frame {
-            None => state.global.clone(),
+            None => state.global,
             Some(id) => state.frames.get(&id).cloned(),
         }
     }
@@ -96,16 +96,14 @@ impl Interpreter {
             self.lisp_face_states[index].global = Some(empty_lisp_face_vector());
         }
         let vector = match frame {
-            Some(id) => self.lisp_face_states[index]
+            Some(id) => *self.lisp_face_states[index]
                 .frames
                 .entry(id)
-                .or_insert_with(empty_lisp_face_vector)
-                .clone(),
-            None => self.lisp_face_states[index]
+                .or_insert_with(empty_lisp_face_vector),
+            None => *self.lisp_face_states[index]
                 .global
                 .as_ref()
-                .expect("face has an initialized global definition")
-                .clone(),
+                .expect("face has an initialized global definition"),
         };
         if reset {
             for slot in 1..LFACE_VECTOR_SIZE {
@@ -113,7 +111,7 @@ impl Interpreter {
             }
         }
         if let Some(id) = frame {
-            self.sync_frame_face_hash_entry(id, name, vector.clone())?;
+            self.sync_frame_face_hash_entry(id, name, vector)?;
         }
         Ok(vector)
     }
@@ -128,7 +126,6 @@ impl Interpreter {
             .frame_state(frame)
             .expect("decoded frame has state")
             .face_hash_table
-            .clone()
         else {
             return Ok(());
         };
@@ -153,7 +150,7 @@ impl Interpreter {
         let Some(id) = self.lisp_face_states[index].id else {
             return Ok(());
         };
-        let Some(vector) = self.lisp_face_states[index].global.clone() else {
+        let Some(vector) = self.lisp_face_states[index].global else {
             return Ok(());
         };
         let Some(table) = self.global_binding_value("face--new-frame-defaults") else {
@@ -180,7 +177,7 @@ impl Interpreter {
             .expect("decoded frame has state")
             .face_hash_table
         {
-            return table.clone();
+            return *table;
         }
         let entries = self
             .lisp_face_states
@@ -195,7 +192,7 @@ impl Interpreter {
         let table = crate::lisp::json::make_hash_table(self, "eq", entries);
         self.frame_state_mut(frame)
             .expect("decoded frame has state")
-            .face_hash_table = Some(table.clone());
+            .face_hash_table = Some(table);
         table
     }
 
@@ -252,7 +249,7 @@ impl Interpreter {
         frame: Option<u64>,
     ) -> Result<Value, LispError> {
         let vector = self.ensure_lisp_face_on(name, frame, false)?;
-        aset_vector_value(&vector, index, value.clone())?;
+        aset_vector_value(&vector, index, value)?;
         self.face_change_count += 1;
         if frame.is_none() {
             self.sync_new_frame_face_hash_entry(name)?;

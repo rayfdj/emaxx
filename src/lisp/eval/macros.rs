@@ -20,7 +20,7 @@ impl CircularReadMaterializer<'_> {
             return None;
         };
         match form.as_ref() {
-            ReaderForm::CircularLabel { id, payload } => Some((*id, payload.clone())),
+            ReaderForm::CircularLabel { id, payload } => Some((*id, *payload)),
             _ => None,
         }
     }
@@ -62,7 +62,7 @@ impl CircularReadMaterializer<'_> {
         let identity = form.identity();
         if let Some(record) = self.records.get(&identity).cloned() {
             if let Some(label) = label {
-                self.labels.insert(label, record.clone());
+                self.labels.insert(label, record);
             }
             return Ok(Some(record));
         }
@@ -102,11 +102,11 @@ impl CircularReadMaterializer<'_> {
                 vec![Value::Nil; slots.len()],
             )
         };
-        self.records.insert(identity, placeholder.clone());
+        self.records.insert(identity, placeholder);
         if let Some(label) = label {
             // Reused label numbers replace the previous mapping, exactly as
             // GNU's reader does; already-built objects retain their links.
-            self.labels.insert(label, placeholder.clone());
+            self.labels.insert(label, placeholder);
         }
 
         let mut resolved = Vec::with_capacity(slots.len());
@@ -177,9 +177,9 @@ impl CircularReadMaterializer<'_> {
             // cloning every list in a form that happens to contain a label.
             // Besides matching GNU's identity model, this avoids quadratic
             // list rescans in comp.el's large serialized compiler context.
-            let placeholder = matches!(template, Value::Cons(_)).then(|| template.clone());
+            let placeholder = matches!(template, Value::Cons(_)).then(|| template);
             if let Some(placeholder) = placeholder {
-                self.labels.insert(id, placeholder.clone());
+                self.labels.insert(id, placeholder);
                 if let Value::Cons(cell) = &placeholder {
                     self.resolved_cons.insert(ConsCell::identity(cell));
                 }
@@ -188,33 +188,33 @@ impl CircularReadMaterializer<'_> {
             }
 
             let resolved = self.resolve(&template)?;
-            self.labels.insert(id, resolved.clone());
+            self.labels.insert(id, resolved);
             return Ok(resolved);
         }
 
         match value {
             Value::Cons(cell) => {
                 if !self.resolved_cons.insert(ConsCell::identity(cell)) {
-                    return Ok(value.clone());
+                    return Ok(*value);
                 }
                 let Some((car_cell, cdr_cell)) = value.cons_cells() else {
                     return Err(Self::invalid());
                 };
-                let car = car_cell.borrow().clone();
+                let car = *car_cell.borrow();
                 *car_cell.borrow_mut() = self.resolve(&car)?;
-                let cdr = cdr_cell.borrow().clone();
+                let cdr = *cdr_cell.borrow();
                 *cdr_cell.borrow_mut() = self.resolve(&cdr)?;
-                Ok(value.clone())
+                Ok(*value)
             }
             Value::Vector(vector) => {
                 if !self.resolved_vectors.insert(vector.identity()) {
-                    return Ok(value.clone());
+                    return Ok(*value);
                 }
                 let slots = vector.slots().to_vec();
                 for (index, slot) in slots.iter().enumerate() {
                     vector.slots_mut()[index] = self.resolve(slot)?;
                 }
-                Ok(value.clone())
+                Ok(*value)
             }
             Value::StringObject(state) => {
                 let spans = state.borrow().props.clone();
@@ -227,7 +227,7 @@ impl CircularReadMaterializer<'_> {
                     resolved_spans.push(StringPropertySpan { props, ..span });
                 }
                 state.borrow_mut().props = resolved_spans;
-                Ok(value.clone())
+                Ok(*value)
             }
             Value::ReaderForm(form) => {
                 if let Some(record) = self.record_placeholder(form, None)? {
@@ -282,7 +282,7 @@ impl CircularReadMaterializer<'_> {
                     crate::lisp::alloc::VectorlikeRef::allocate(resolved),
                 ))
             }
-            _ => Ok(value.clone()),
+            _ => Ok(*value),
         }
     }
 }
@@ -374,7 +374,7 @@ impl Interpreter {
         {
             let identity = form.identity();
             if let Some(record) = records.get(&identity) {
-                return Ok(record.clone());
+                return Ok(*record);
             }
             if !active_reader_forms.insert(identity) {
                 return Err(LispError::ReadError("circular record literal".into()));
@@ -418,17 +418,17 @@ impl Interpreter {
                     if kind.as_symbol().ok() == Some("interpreted-function") {
                         self.make_interpreted_closure_value(&materialized[1..])?
                     } else {
-                        self.create_record_with_type(kind.clone(), materialized[1..].to_vec())
+                        self.create_record_with_type(*kind, materialized[1..].to_vec())
                     }
                 }
             };
             active_reader_forms.remove(&identity);
-            records.insert(identity, record.clone());
+            records.insert(identity, record);
             return Ok(record);
         }
         if let Value::Vector(vector) = value {
             if !seen_vectors.insert(vector.identity()) {
-                return Ok(value.clone());
+                return Ok(*value);
             }
             let slots = vector.slots().to_vec();
             for (index, slot) in slots.iter().enumerate() {
@@ -441,16 +441,16 @@ impl Interpreter {
                     records,
                 )?;
             }
-            return Ok(value.clone());
+            return Ok(*value);
         }
         let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-            return Ok(value.clone());
+            return Ok(*value);
         };
         let identity = car_cell.cell_id();
         if !seen_cons.insert(identity) {
-            return Ok(value.clone());
+            return Ok(*value);
         }
-        let car = car_cell.borrow().clone();
+        let car = *car_cell.borrow();
         *car_cell.borrow_mut() = self.materialize_read_record_literals_inner(
             &car,
             env,
@@ -459,7 +459,7 @@ impl Interpreter {
             active_reader_forms,
             records,
         )?;
-        let cdr = cdr_cell.borrow().clone();
+        let cdr = *cdr_cell.borrow();
         *cdr_cell.borrow_mut() = self.materialize_read_record_literals_inner(
             &cdr,
             env,
@@ -468,7 +468,7 @@ impl Interpreter {
             active_reader_forms,
             records,
         )?;
-        Ok(value.clone())
+        Ok(*value)
     }
 
     /// Construct GNU's interpreted `#[ARGS BODY ENV ...]' closure object.
@@ -494,8 +494,8 @@ impl Interpreter {
         // Fmake_interpreted_closure: ENV is the closure's environment as
         // given; a bare symbol in it declares that name locally special
         // for the closure's body (noted so `let' runs Flet's Fmemq).
-        let environment = slots[2].clone();
-        let mut cursor = environment.clone();
+        let environment = slots[2];
+        let mut cursor = environment;
         let mut seen = std::collections::HashSet::new();
         while let Value::Cons(list_cell) = cursor {
             if !seen.insert(ConsCell::identity(&list_cell)) {
@@ -504,12 +504,12 @@ impl Interpreter {
             if let Value::Symbol(name) = &*list_cell.car.borrow() {
                 self.note_captured_local_special(name.as_str());
             }
-            cursor = list_cell.cdr.borrow().clone();
+            cursor = *list_cell.cdr.borrow();
         }
 
         Ok(Value::lambda_with_public_parameters(
             params.into(),
-            slots[0].clone(),
+            slots[0],
             body.into(),
             environment,
             slots.get(4).cloned(),
@@ -533,7 +533,7 @@ impl Interpreter {
         // original object for its return value while installing the function
         // on the positioned symbol's bare owner.
         let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
-        let mut function = args[1].clone();
+        let mut function = args[1];
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         self.validate_function_binding(&name, &function)?;
         if self
@@ -561,7 +561,7 @@ impl Interpreter {
         if !docstring.is_nil() {
             self.put_symbol_property(&name, "function-documentation", docstring);
         }
-        Ok(args[0].clone())
+        Ok(args[0])
     }
 
     pub(super) fn try_macroexpand(
@@ -670,11 +670,11 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let mut cursor = crate::lisp::types::current_environment_value(env);
         while let Value::Cons(list_cell) = cursor {
-            let entry = list_cell.car.borrow().clone();
+            let entry = *list_cell.car.borrow();
             if let Value::Symbol(_) | Value::T | Value::Nil = entry {
                 dynvars = Value::cons(entry, dynvars);
             }
-            cursor = list_cell.cdr.borrow().clone();
+            cursor = *list_cell.cdr.borrow();
         }
         if let Err(error) = cached_symbol!("macroexp--dynvars")
             .with(|symbol| self.specbind_symbol(symbol, dynvars, env))
@@ -762,10 +762,10 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let Ok(items) = form.to_vec() else {
-            return Ok(form.clone());
+            return Ok(*form);
         };
         let Some(Value::Symbol(name)) = items.first() else {
-            return Ok(form.clone());
+            return Ok(*form);
         };
         Ok(self
             .try_macroexpand_with_environment(
@@ -775,7 +775,7 @@ impl Interpreter {
                 MacroCaller::Macroexpand,
                 env,
             )?
-            .unwrap_or_else(|| form.clone()))
+            .unwrap_or(*form))
     }
 }
 
@@ -789,7 +789,7 @@ pub(super) enum MacroCaller {
 }
 
 fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
-    let mut entries = macro_environment?.clone();
+    let mut entries = *macro_environment?;
     while let Value::Cons(_) = &entries {
         let entry = entries.car().ok()?;
         if let Value::Cons(_) = entry {

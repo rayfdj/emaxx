@@ -25,23 +25,14 @@ fn decode_env_path(
     let mut result = Value::Nil;
     for bytes in path.split(|byte| *byte == separator) {
         let mut element = if bytes.is_empty() {
-            empty_element.clone()
+            empty_element
         } else {
             primitives::bytes_to_shared_unibyte_value(bytes)
         };
         if !element.is_nil() {
-            let mut handler = c(
-                interpreter,
-                "find-file-name-handler",
-                &[element.clone(), Value::T],
-            )?;
+            let mut handler = c(interpreter, "find-file-name-handler", &[element, Value::T])?;
             if c(interpreter, "symbolp", std::slice::from_ref(&handler))?.is_truthy()
-                && c(
-                    interpreter,
-                    "get",
-                    &[handler.clone(), Value::symbol("safe-magic")],
-                )?
-                .is_truthy()
+                && c(interpreter, "get", &[handler, Value::symbol("safe-magic")])?.is_truthy()
             {
                 handler = Value::Nil;
             }
@@ -59,7 +50,7 @@ fn add_directory(
     path: Value,
     directory: Value,
 ) -> Result<Value, LispError> {
-    if c(interpreter, "member", &[directory.clone(), path.clone()])?.is_nil() {
+    if c(interpreter, "member", &[directory, path])?.is_nil() {
         Ok(Value::cons(directory, path))
     } else {
         Ok(path)
@@ -74,7 +65,7 @@ fn expand(
     c(
         interpreter,
         "expand-file-name",
-        &[Value::string(name), directory.clone()],
+        &[Value::string(name), *directory],
     )
 }
 
@@ -89,7 +80,7 @@ fn default_load_path(
     no_site_lisp: bool,
 ) -> Result<Value, LispError> {
     if will_dump {
-        return Ok(dump_path.clone());
+        return Ok(*dump_path);
     }
     let installed = format!(
         "/usr/local/share/emacs/{}/lisp",
@@ -106,11 +97,11 @@ fn default_load_path(
         )?
         .is_truthy()
         {
-            if c(interpreter, "member", &[directory.clone(), path.clone()])?.is_nil() {
+            if c(interpreter, "member", &[directory, path])?.is_nil() {
                 path = Value::list([directory]);
             }
         } else {
-            path = c(interpreter, "nconc", &[path, dump_path.clone()])?;
+            path = c(interpreter, "nconc", &[path, *dump_path])?;
         }
         if !no_site_lisp {
             let site = expand(interpreter, "site-lisp", &installation)?;
@@ -125,13 +116,7 @@ fn default_load_path(
             }
         }
         let source = interpreter.symbol_value_cell("source-directory")?;
-        if c(
-            interpreter,
-            "equal",
-            &[installation.clone(), source.clone()],
-        )?
-        .is_nil()
-        {
+        if c(interpreter, "equal", &[installation, source])?.is_nil() {
             let makefile = expand(interpreter, "src/Makefile", &installation)?;
             let exists = c(interpreter, "file-exists-p", &[makefile])?;
             let template = expand(interpreter, "src/Makefile.in", &installation)?;
@@ -224,7 +209,7 @@ pub(crate) fn initialize_load_path(
     let path = if let Some(environment) = environment {
         let environment = decode_env_path(interpreter, environment.as_encoded_bytes(), true)?;
         check_load_path(interpreter, &environment, true)?;
-        if c(interpreter, "memq", &[Value::Nil, environment.clone()])?.is_nil() {
+        if c(interpreter, "memq", &[Value::Nil, environment])?.is_nil() {
             environment
         } else {
             let defaults = default_load_path(interpreter, &dump_path, false, no_site_lisp)?;
@@ -233,7 +218,7 @@ pub(crate) fn initialize_load_path(
             let mut result = Value::Nil;
             for element in environment.to_vec()? {
                 let tail = if element.is_nil() {
-                    defaults.clone()
+                    defaults
                 } else {
                     Value::list([element])
                 };
@@ -344,7 +329,7 @@ mod tests {
         let handler = Value::symbol("identity");
         interpreter.set_global_binding(
             "file-name-handler-alist",
-            Value::list([Value::cons(Value::string("remote"), handler.clone())]),
+            Value::list([Value::cons(Value::string("remote"), handler)]),
         );
         let quoted =
             decode_env_path(&mut interpreter, b"remote", false).expect("quote unsafe handler");
@@ -394,15 +379,15 @@ mod tests {
             .canonicalize()
             .expect("GNU Lisp source root");
         let root_value = Value::String(root.display().to_string().into());
-        let dump_path = Value::list([root_value.clone()]);
+        let dump_path = Value::list([root_value]);
         // SAFETY: bootstrap environment write lock excludes other bootstraps.
         unsafe {
             std::env::set_var("EMACSLOADPATH", format!(":{}:", root.display()));
         }
         let mut interpreter = Interpreter::new();
-        let initialized = initialize_load_path(&mut interpreter, dump_path.clone(), false, true);
+        let initialized = initialize_load_path(&mut interpreter, dump_path, false, true);
         let session = interpreter.symbol_value_cell("load-path");
-        let dumping = initialize_load_path(&mut interpreter, dump_path.clone(), true, false);
+        let dumping = initialize_load_path(&mut interpreter, dump_path, true, false);
         let dump = interpreter.symbol_value_cell("load-path");
         // SAFETY: restore the process environment under the same lock.
         unsafe {
@@ -416,10 +401,7 @@ mod tests {
             .expect("session path bound")
             .to_vec()
             .expect("proper session list");
-        assert_eq!(
-            entries,
-            [root_value.clone(), root_value.clone(), root_value]
-        );
+        assert_eq!(entries, [root_value, root_value, root_value]);
         assert!(
             primitives::values_eq_in_env(
                 &interpreter,

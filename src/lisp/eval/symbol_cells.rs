@@ -420,7 +420,7 @@ impl SymbolCells {
     pub(crate) fn snapshot(&self, symbol: &SymbolName) -> SymbolCellSnapshot {
         match self.cell(symbol.id()) {
             Some(cell) => SymbolCellSnapshot {
-                value: cell.value.clone(),
+                value: cell.value,
                 alias: cell.alias,
                 flags: cell.flags,
             },

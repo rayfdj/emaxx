@@ -10,7 +10,7 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
     let mut index = 0usize;
     while index + 1 < args.len() {
         let key = args[index].as_symbol()?;
-        let value = args[index + 1].clone();
+        let value = args[index + 1];
         match key {
             ":object-type" => {
                 options.object_type = match &value {
@@ -18,10 +18,7 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
                     Value::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
                     other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
                     }
                 };
             }
@@ -30,10 +27,7 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
                     Value::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
                     other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
                     }
                 };
             }
@@ -54,7 +48,7 @@ pub(crate) fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), L
     let mut index = 0usize;
     while index + 1 < args.len() {
         let key = args[index].as_symbol()?;
-        let value = args[index + 1].clone();
+        let value = args[index + 1];
         match key {
             ":null-object" => null_object = value,
             ":false-object" => false_object = value,
@@ -1606,8 +1600,8 @@ pub(crate) fn find_file_name_handler(
             let Some((pattern, handler)) = (entry).cons_cells() else {
                 continue;
             };
-            let pattern = pattern.borrow().clone();
-            let handler = handler.borrow().clone();
+            let pattern = *pattern.borrow();
+            let handler = *handler.borrow();
             let Some(pattern_text) = string_like(&pattern) else {
                 continue;
             };
@@ -2012,7 +2006,7 @@ pub(crate) fn dispatch_file_name_handler(
             } else {
                 string_like(visit)
                     .map(|name| name.text)
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), visit.clone()))?
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *visit))?
             };
             interp.buffer.file = Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
             interp.buffer.set_unmodified();
@@ -2043,7 +2037,7 @@ pub(crate) fn directory_files(
     }
     if let Some(matcher) = matcher {
         let pattern = string_like(matcher)
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), matcher.clone()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *matcher))?;
         regexp::validate_elisp_regex(&pattern.text)?;
         let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
         let mut filtered = Vec::new();

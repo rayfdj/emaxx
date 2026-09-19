@@ -28,8 +28,8 @@ fn checked_buffer_region(
     {
         return Err(args_out_of_range([
             current_buffer_value(interp),
-            start.clone(),
-            end.clone(),
+            *start,
+            *end,
         ]));
     }
     Ok(if from <= to { (from, to) } else { (to, from) })
@@ -40,7 +40,7 @@ fn checked_string_region(
     start: &Value,
     end: &Value,
 ) -> Result<(usize, usize), LispError> {
-    let text = string_like(string).ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
+    let text = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
     let len = text.text.chars().count() as i64;
     let normalize = |value: &Value| -> Result<i64, LispError> {
         let raw = value.as_integer()?;
@@ -49,11 +49,7 @@ fn checked_string_region(
     let from = normalize(start)?;
     let to = normalize(end)?;
     if from < 0 || to < 0 || from > to || to > len {
-        return Err(args_out_of_range([
-            string.clone(),
-            start.clone(),
-            end.clone(),
-        ]));
+        return Err(args_out_of_range([*string, *start, *end]));
     }
     Ok((from as usize, to as usize))
 }
@@ -85,7 +81,7 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
 
 fn compose_string(args: &[Value]) -> Result<Value, LispError> {
     if string_like(&args[0]).is_none() {
-        return Err(wrong_type_argument("stringp", args[0].clone()));
+        return Err(wrong_type_argument("stringp", args[0]));
     }
     let (start, end) = checked_string_region(&args[0], &args[1], &args[2])?;
     let components = args.get(3).cloned().unwrap_or(Value::Nil);
@@ -96,13 +92,13 @@ fn compose_string(args: &[Value]) -> Result<Value, LispError> {
             .iter_mut()
             .find(|(name, _)| name == "composition")
         {
-            *value = property.clone();
+            *value = property;
         } else {
-            properties.insert(0, ("composition".into(), property.clone()));
+            properties.insert(0, ("composition".into(), property));
         }
         properties
     })?;
-    Ok(args[0].clone())
+    Ok(args[0])
 }
 
 #[derive(Clone)]
@@ -124,8 +120,7 @@ fn composition_ranges(
             .map(|span| (span.start, span.end, span.props))
             .collect::<Vec<_>>()
     } else {
-        let string =
-            string_like(string).ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
+        let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         string
             .props
             .into_iter()
@@ -189,7 +184,7 @@ fn composition_chars(
             .map_err(|error| LispError::Signal(error.to_string()))?
     } else {
         string_like(string)
-            .ok_or_else(|| wrong_type_argument("stringp", string.clone()))?
+            .ok_or_else(|| wrong_type_argument("stringp", *string))?
             .text
             .chars()
             .skip(start)
@@ -205,7 +200,7 @@ fn components_vector(components: &Value, chars: &[char]) -> Result<Value, LispEr
             .iter()
             .map(|character| Value::Integer(*character as i64))
             .collect(),
-        Value::Integer(_) => vec![components.clone()],
+        Value::Integer(_) => vec![*components],
         Value::String(_) | Value::StringObject(_) => string_like(components)
             .expect("string variant must be string-like")
             .text
@@ -276,7 +271,7 @@ fn register_composition(
             return Ok(None);
         };
         return Ok(Some((
-            state.components.clone(),
+            state.components,
             state.relative,
             modification,
             state.width,
@@ -329,7 +324,7 @@ fn register_composition(
             interp
                 .composition_states
                 .push(crate::lisp::eval::CompositionState {
-                    components: key.clone(),
+                    components: key,
                     relative,
                     width,
                 });
@@ -338,7 +333,7 @@ fn register_composition(
     range.property.set_car(Value::Integer(id as i64))?;
     range.property.set_cdr(Value::cons(
         Value::Integer((range.end - range.start) as i64),
-        Value::cons(key.clone(), tail.clone()),
+        Value::cons(key, tail),
     ))?;
     Ok(Some((key, relative, tail, width)))
 }
@@ -517,8 +512,8 @@ fn autocmp_chars_inner(
         &[
             Value::Integer(charpos as i64),
             Value::Integer(to as i64),
-            font_object.clone(),
-            string.clone(),
+            font_object,
+            *string,
         ],
     )?;
     let function = interp
@@ -528,11 +523,11 @@ fn autocmp_chars_inner(
         function,
         None,
         &[
-            rule_items[2].clone(),
+            rule_items[2],
             Value::Integer(charpos as i64),
             Value::Integer(to as i64),
             font_object,
-            string.clone(),
+            *string,
             Value::Nil,
         ],
         env,
@@ -729,7 +724,7 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
     {
         Ok(Value::symbol(&interp.effective_terminal_coding_system()))
     } else {
-        Err(wrong_type_argument("terminal-live-p", value.clone()))
+        Err(wrong_type_argument("terminal-live-p", *value))
     }
 }
 
@@ -796,17 +791,16 @@ fn find_composition(
     let (minimum, maximum) = if string.is_nil() {
         (interp.buffer.point_min(), interp.buffer.point_max())
     } else {
-        let string =
-            string_like(string).ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
+        let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         (0, string.text.chars().count())
     };
     if !(minimum..=maximum).contains(&position) {
         let object = if string.is_nil() {
             current_buffer_value(interp)
         } else {
-            string.clone()
+            *string
         };
-        return Err(args_out_of_range([object, args[0].clone()]));
+        return Err(args_out_of_range([object, args[0]]));
     }
     let limit = if args[1].is_nil() {
         None
@@ -816,9 +810,9 @@ fn find_composition(
             Value::Marker(id) => interp
                 .marker_position(*id)
                 .map(|position| position as i64)
-                .ok_or_else(|| wrong_type_argument("integer-or-marker-p", args[1].clone()))?,
+                .ok_or_else(|| wrong_type_argument("integer-or-marker-p", args[1]))?,
             value => {
-                return Err(wrong_type_argument("integer-or-marker-p", value.clone()));
+                return Err(wrong_type_argument("integer-or-marker-p", *value));
             }
         };
         Some(raw.clamp(minimum as i64, maximum as i64) as usize)
@@ -831,7 +825,7 @@ fn find_composition(
             // wins (Ffind_composition_internal's second
             // find_automatic_composition call carries no multibyte or
             // inhibition guard).
-            let string = string.clone();
+            let string = *string;
             if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
             {
                 let better = if found.end <= position {
@@ -879,7 +873,7 @@ fn find_composition(
         string_like(string).is_some_and(|text| text.multibyte)
     };
     if multibyte && !inhibit_auto_composition(interp, env) {
-        let string = string.clone();
+        let string = *string;
         if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)? {
             return Ok(Value::list([
                 Value::Integer(found.start as i64),
@@ -912,9 +906,9 @@ fn sort_rules(rules: &Value) -> Result<Value, LispError> {
     let original = rules;
     let mut rules = original
         .to_vec()
-        .map_err(|_| wrong_type_argument("listp", original.clone()))?;
+        .map_err(|_| wrong_type_argument("listp", *original))?;
     if rules.len() <= 1 {
-        return Ok(original.clone());
+        return Ok(*original);
     }
     let mut keyed = Vec::with_capacity(rules.len());
     for rule in rules.drain(..) {

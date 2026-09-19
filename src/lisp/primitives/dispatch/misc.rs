@@ -15,13 +15,13 @@ fn fringe_bits_length(value: &Value) -> Result<usize, LispError> {
     if let Some(string) = string_like(value) {
         return Ok(string.text.chars().count());
     }
-    Err(wrong_type_argument("arrayp", value.clone()))
+    Err(wrong_type_argument("arrayp", *value))
 }
 
 fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
     match value {
         Value::Integer(value) => Ok(*value),
-        _ => Err(wrong_type_argument("fixnump", value.clone())),
+        _ => Err(wrong_type_argument("fixnump", *value)),
     }
 }
 
@@ -29,7 +29,7 @@ fn fringe_symbol_name(value: &Value) -> Result<String, LispError> {
     value
         .as_symbol()
         .map(str::to_string)
-        .map_err(|_| wrong_type_argument("symbolp", value.clone()))
+        .map_err(|_| wrong_type_argument("symbolp", *value))
 }
 
 fn define_fringe_bitmap(
@@ -49,7 +49,7 @@ fn define_fringe_bitmap(
             if !(1..=16).contains(&width) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("args-out-of-range"),
-                    value.clone(),
+                    *value,
                     Value::String("Width must be from 1 to 16".into()),
                 ])));
             }
@@ -85,7 +85,7 @@ fn define_fringe_bitmap(
             + 1
     });
     if existing_id.is_none() {
-        let mut bitmaps = vec![args[0].clone()];
+        let mut bitmaps = vec![args[0]];
         bitmaps.extend(
             interp
                 .lookup_var("fringe-bitmaps", env)
@@ -96,7 +96,7 @@ fn define_fringe_bitmap(
         interp.put_symbol_property(&name, "fringe", Value::Integer(bitmap_id));
     }
     let definition = Value::list([
-        args[1].clone(),
+        args[1],
         Value::Integer(height),
         Value::Integer(width),
         align,
@@ -122,7 +122,7 @@ fn define_fringe_bitmap(
                 face: Value::Nil,
             });
     }
-    Ok(args[0].clone())
+    Ok(args[0])
 }
 
 fn destroy_fringe_bitmap(
@@ -285,7 +285,7 @@ fn macroexpand_dispatch(
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
     let environment = args.get(1).filter(|value| value.is_truthy());
-    let mut form = args[0].clone();
+    let mut form = args[0];
     loop {
         let expanded = interp.macroexpand_1_form_with_environment(&form, environment, env)?;
         if expanded == form {
@@ -374,14 +374,14 @@ pub(crate) fn set_internal_symbol(
     env: &mut Env,
 ) -> Result<(), LispError> {
     // data.c:set_internal's SYMBOL_PLAINVAL, untrapped: the store alone.
-    if interp.assign_plain_global(symbol, value.clone()) {
+    if interp.assign_plain_global(symbol, value) {
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
     // data.c:set_internal notifies with NEWVAL before the forwarded C slot
     // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
     // the watcher must receive the caller's original object.
-    let stored = interp.prepare_variable_assignment_symbol(&resolved, value.clone())?;
+    let stored = interp.prepare_variable_assignment_symbol(&resolved, value)?;
     let buffer_id = interp.assignment_buffer_id_symbol(&resolved);
     interp.notify_variable_watchers(resolved.as_str(), value, "set", buffer_id, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
@@ -510,7 +510,7 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::Signal("signal".into()));
                 }
-                let condition = args[0].clone();
+                let condition = args[0];
                 let data = args.get(1).cloned().unwrap_or(Value::Nil);
                 let value = if let Ok(items) = data.to_vec() {
                     Value::cons(condition, Value::list(items))
@@ -525,7 +525,7 @@ define_dispatch!(
                 if args.len() != 2 {
                     return Err(LispError::WrongNumberOfArgs("throw".into(), args.len()));
                 }
-                interp.throw_value(args[0].clone(), args[1].clone(), env)
+                interp.throw_value(args[0], args[1], env)
             }
             "defalias" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -546,7 +546,7 @@ define_dispatch!(
                 }
                 interp
                     .provide_feature_with_after_load(&feature, env)
-                    .map(|_| args[0].clone())
+                    .map(|_| args[0])
             }
             "require" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -568,7 +568,7 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                result.map(|_| args[0].clone())
+                result.map(|_| args[0])
             }
             "define-fringe-bitmap" => {
                 need_arg_range(name, args, 2, 5)?;
@@ -609,7 +609,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::symbol("args-out-of-range"),
                             window,
-                            position.clone(),
+                            *position,
                         ])));
                     }
                 }
@@ -635,7 +635,7 @@ define_dispatch!(
                 if let Some(obarray) = &obarray
                     && !is_obarray_like_value(interp, obarray)
                 {
-                    return Err(wrong_type_argument("obarrayp", obarray.clone()));
+                    return Err(wrong_type_argument("obarrayp", *obarray));
                 }
                 // lread.c:Fintern checks OBARRAY before STRING, then supplies
                 // the original string (or GNU's longhand/purecopy) on a miss.
@@ -730,7 +730,7 @@ define_dispatch!(
                             crate::lisp::types::visible_symbol_name(symbol),
                         )?;
                         return Ok(if interned == args[0] {
-                            args[0].clone()
+                            args[0]
                         } else {
                             Value::Nil
                         });
@@ -748,7 +748,7 @@ define_dispatch!(
                         let bare_name = bare.as_symbol()?;
                         if obarray.is_none() {
                             return Ok(if interp.standard_obarray_contains_symbol(bare_name) {
-                                positioned.clone()
+                                *positioned
                             } else {
                                 Value::Nil
                             });
@@ -760,7 +760,7 @@ define_dispatch!(
                             crate::lisp::types::visible_symbol_name(bare_name),
                         )?;
                         return Ok(if interned == bare {
-                            positioned.clone()
+                            *positioned
                         } else {
                             Value::Nil
                         });
@@ -813,7 +813,7 @@ define_dispatch!(
                 let base = string_text(&args[0])?;
                 let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(Value::Symbol(
-                    crate::lisp::types::SymbolName::make_uninterned(args[0].clone(), &base, id),
+                    crate::lisp::types::SymbolName::make_uninterned(args[0], &base, id),
                 ))
             }
             "autoload" => {
@@ -852,7 +852,7 @@ define_dispatch!(
             }
             "autoload-do-load" => {
                 need_arg_range(name, args, 1, 3)?;
-                let fundef = args[0].clone();
+                let fundef = args[0];
                 let Some((file, _, kind)) = autoload_parts(&fundef) else {
                     return Ok(fundef);
                 };
@@ -891,8 +891,8 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
-                set_internal(interp, &checked, args[1].clone(), env)?;
-                Ok(args[1].clone())
+                set_internal(interp, &checked, args[1], env)?;
+                Ok(args[1])
             }
             "set-default" => {
                 need_args(name, args, 2)?;
@@ -900,8 +900,8 @@ define_dispatch!(
                 // set_default_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_name(&checked)?;
-                let watcher_value = args[1].clone();
-                let value = interp.prepare_variable_assignment(&symbol, watcher_value.clone())?;
+                let watcher_value = args[1];
+                let value = interp.prepare_variable_assignment(&symbol, watcher_value)?;
                 interp.notify_variable_watchers(
                     &symbol,
                     watcher_value,
@@ -911,8 +911,8 @@ define_dispatch!(
                     None,
                     env,
                 )?;
-                interp.set_global_binding(&symbol, value.clone());
-                Ok(args[1].clone())
+                interp.set_global_binding(&symbol, value);
+                Ok(args[1])
             }
             "symbol-value" => direct_symbol_value(interp, args, env),
             "default-value" => {
@@ -937,9 +937,9 @@ define_dispatch!(
                 // CHECK_SYMBOL default binding path.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_name(&checked)?;
-                let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
-                interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
-                interp.set_default_toplevel_value(&symbol, value.clone());
+                let value = interp.prepare_variable_assignment(&symbol, args[1])?;
+                interp.notify_variable_watchers(&symbol, value, "set", None, env)?;
+                interp.set_default_toplevel_value(&symbol, value);
                 Ok(value)
             }
             "symbol-plist" => {
@@ -952,7 +952,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fsetplist uses CHECK_SYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.set_symbol_plist(&symbol, args[1].clone())
+                interp.set_symbol_plist(&symbol, args[1])
             }
             "interactive-form" => {
                 need_args(name, args, 1)?;
@@ -971,7 +971,7 @@ define_dispatch!(
                 // chain can reach here.  A defensive cap was measured to
                 // diverge from GNU at the 64th link, and the sibling
                 // `command-modes' walk is likewise uncapped.
-                let mut probe = args[0].clone();
+                let mut probe = args[0];
                 while let Ok(symbol) = probe.as_symbol() {
                     let symbol = symbol.to_string();
                     if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
@@ -1076,7 +1076,7 @@ define_dispatch!(
                 if interp.is_constant_symbol(&checked) || checked == "initial-window-system" {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
-                        args[0].clone(),
+                        args[0],
                     ])));
                 }
                 let symbol = interp.resolve_variable_name(&checked)?;
@@ -1129,7 +1129,7 @@ define_dispatch!(
                     interp.remove_global_binding(&symbol);
                     interp.detach_forwarded_variable(&symbol, slot_value);
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "lread--substitute-object-in-subtree" => {
                 need_args(name, args, 3)?;
@@ -1185,16 +1185,10 @@ define_dispatch!(
                 let alias_value = interp.symbol_value_cell(&alias).ok();
                 match interp.symbol_value_cell(&base) {
                     Err(LispError::Void(_)) => {
-                        if let Some(value) = alias_value.clone() {
+                        if let Some(value) = alias_value {
                             // set_internal (base, value, Qnil, SET_INTERNAL_BIND)
                             if !interp.variable_watchers(&base).is_empty() {
-                                interp.notify_variable_watchers(
-                                    &base,
-                                    value.clone(),
-                                    "let",
-                                    None,
-                                    env,
-                                )?;
+                                interp.notify_variable_watchers(&base, value, "let", None, env)?;
                             }
                             interp.set_symbol_value_cell(&base, value);
                         }
@@ -1288,11 +1282,7 @@ define_dispatch!(
                     interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
                 if interp.lookup_var(&symbol_name, env).is_none() {
-                    interp.set_variable(
-                        &symbol_name,
-                        args[1].clone(),
-                        &mut crate::lisp::types::Env::new(),
-                    );
+                    interp.set_variable(&symbol_name, args[1], &mut crate::lisp::types::Env::new());
                 }
                 Ok(Value::Symbol(symbol_name.into()))
             }
@@ -1320,7 +1310,7 @@ define_dispatch!(
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
-                let mut slots = vec![args[0].clone(), args[1].clone(), args[2].clone()];
+                let mut slots = vec![args[0], args[1], args[2]];
                 let documentation = args.get(3).filter(|value| !value.is_nil()).cloned();
                 let interactive = match args.get(4).filter(|value| !value.is_nil()) {
                     Some(iform) => {
@@ -1408,9 +1398,9 @@ define_dispatch!(
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        Ok(interp.find_record(*id).expect("record checked above").slots[4].clone())
+                        Ok(interp.find_record(*id).expect("record checked above").slots[4])
                     }
-                    other => Err(wrong_type_argument("subrp", other.clone())),
+                    other => Err(wrong_type_argument("subrp", *other)),
                 }
             }
             "function-equal" => {
@@ -1533,8 +1523,7 @@ define_dispatch!(
                 for hook in hook_values {
                     let mut wrapper_args = vec![hook];
                     wrapper_args.extend_from_slice(&args[2..]);
-                    let value =
-                        interp.call_function_value(wrapper.clone(), None, &wrapper_args, env)?;
+                    let value = interp.call_function_value(wrapper, None, &wrapper_args, env)?;
                     if value.is_truthy() {
                         return Ok(value);
                     }
@@ -1729,10 +1718,10 @@ fn parse_doc_file_entries(bytes: &[u8]) -> Result<Vec<DocFileEntry>, LispError> 
 
 fn doc_path(directory: &Value, filename: &Value) -> Result<PathBuf, LispError> {
     let directory = string_like(directory)
-        .ok_or_else(|| wrong_type_argument("stringp", directory.clone()))?
+        .ok_or_else(|| wrong_type_argument("stringp", *directory))?
         .text;
     let filename = string_like(filename)
-        .ok_or_else(|| wrong_type_argument("stringp", filename.clone()))?
+        .ok_or_else(|| wrong_type_argument("stringp", *filename))?
         .text;
     let filename = PathBuf::from(filename);
     Ok(if filename.is_absolute() {
@@ -1947,7 +1936,7 @@ fn snarf_documentation(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if string_like(filename).is_none() {
-        return Err(wrong_type_argument("stringp", filename.clone()));
+        return Err(wrong_type_argument("stringp", *filename));
     }
     let directory = interp
         .lookup_var("doc-directory", env)
@@ -1960,7 +1949,7 @@ fn snarf_documentation(
         ))
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
-    interp.set_variable("internal-doc-file-name", filename.clone(), env);
+    interp.set_variable("internal-doc-file-name", *filename, env);
     // GNU's help-fns.el validates C source markers against the native object
     // inventory in `build-files'.  DOC already carries that inventory as S
     // records, so derive it from this parse instead of maintaining a second
@@ -2063,10 +2052,10 @@ fn documentation_property(
 ) -> Result<Value, LispError> {
     let symbol = args[0]
         .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+        .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
     let property = args[1]
         .as_symbol()
-        .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+        .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
     let mut doc = interp
         .get_symbol_property(symbol, property)
         .unwrap_or(Value::Nil);
@@ -2103,7 +2092,7 @@ fn documentation(
         return documentation_property(
             interp,
             &[
-                args[0].clone(),
+                args[0],
                 Value::symbol("function-documentation"),
                 if raw { Value::T } else { Value::Nil },
             ],
@@ -2330,7 +2319,7 @@ pub(super) fn direct_symbol_value(
         // XSYMBOL unwraps a symbol-with-position.
         Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
-            args[0].clone(),
+            args[0],
         ]))),
         result => result,
     }

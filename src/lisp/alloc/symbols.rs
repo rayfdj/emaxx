@@ -15,7 +15,7 @@
 //! the interpreter's tables by the symbol's id (phase C's next step).
 
 use super::super::types::{MarkBit, Value};
-use super::{BlockKind, CONS_BLOCK_BYTES, FREE_MARK, blocks_of, new_block, release_block};
+use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -37,8 +37,7 @@ pub struct SymbolCell {
     pub(crate) key: Option<Box<str>>,
 }
 
-const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();
-pub(crate) const SYMBOLS_PER_BLOCK: usize = CONS_BLOCK_BYTES / SYMBOL_CELL_SIZE;
+pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();
 
 /// alloc.c's `symbol_free_list', `symbol_block' with `symbol_block_index',
 /// and gcstat's `total_symbols' and `total_free_symbols'.
@@ -231,7 +230,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     }
     SYMBOL_FREE_LIST.store(free_list, Ordering::Relaxed);
     for start in released {
-        release_block(start);
+        release_block(start, BlockKind::Symbol);
     }
     LIVE_SYMBOLS.store(num_used, Ordering::Relaxed);
     FREE_SYMBOLS.store(num_free, Ordering::Relaxed);

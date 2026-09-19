@@ -42,17 +42,17 @@ fn font_record<'a>(
     value: &Value,
 ) -> Result<&'a crate::lisp::eval::RecordState, LispError> {
     let Value::Record(id) = value else {
-        return Err(wrong_type_argument("fontp", value.clone()));
+        return Err(wrong_type_argument("fontp", *value));
     };
     interp
         .find_record(*id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::Font)
-        .ok_or_else(|| wrong_type_argument("fontp", value.clone()))
+        .ok_or_else(|| wrong_type_argument("fontp", *value))
 }
 
 fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
     let Value::Record(id) = value else {
-        return Err(wrong_type_argument("font-spec-p", value.clone()));
+        return Err(wrong_type_argument("font-spec-p", *value));
     };
     interp
         .find_record(*id)
@@ -61,7 +61,7 @@ fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
                 && record.has_symbol_type("font-spec")
         })
         .map(|_| *id)
-        .ok_or_else(|| wrong_type_argument("font-spec-p", value.clone()))
+        .ok_or_else(|| wrong_type_argument("font-spec-p", *value))
 }
 
 fn require_font_type(
@@ -73,20 +73,20 @@ fn require_font_type(
     if font_record(interp, value).is_ok_and(|font| font.has_symbol_type(record_type)) {
         Ok(())
     } else {
-        Err(wrong_type_argument(predicate, value.clone()))
+        Err(wrong_type_argument(predicate, *value))
     }
 }
 
 fn require_font(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
     font_record(interp, value)
         .map(|_| ())
-        .map_err(|_| wrong_type_argument("font", value.clone()))
+        .map_err(|_| wrong_type_argument("font", *value))
 }
 
 fn require_character(value: &Value) -> Result<(), LispError> {
     match value {
         Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(()),
-        _ => Err(wrong_type_argument("characterp", value.clone())),
+        _ => Err(wrong_type_argument("characterp", *value)),
     }
 }
 
@@ -94,14 +94,14 @@ fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(),
     match frame {
         None | Some(Value::Nil) => Ok(()),
         Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.clone())),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
     }
 }
 
 fn require_frame(frame: Option<&Value>) -> Result<(), LispError> {
     match frame {
         None | Some(Value::Nil | Value::Frame(_)) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("framep", frame.clone())),
+        Some(frame) => Err(wrong_type_argument("framep", *frame)),
     }
 }
 
@@ -115,7 +115,7 @@ fn invalid_glyph_string(gstring: &Value) -> LispError {
         Value::string("Invalid glyph-string: "),
     ];
     if !gstring.is_nil() {
-        data.push(gstring.clone());
+        data.push(*gstring);
     }
     LispError::SignalValue(Value::list(data))
 }
@@ -132,7 +132,7 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     if header.len() < 2 {
         return None;
     }
-    let font = header[0].clone();
+    let font = header[0];
     if !font.is_nil()
         && !matches!(&font, Value::Symbol(name) if interp.has_coding_system(name))
         && !font_record(interp, &font).is_ok_and(|record| record.has_symbol_type("font-object"))
@@ -152,7 +152,7 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
             return None;
         }
     }
-    Some((font, body[1].clone()))
+    Some((font, body[1]))
 }
 
 fn invalid_font_property() -> LispError {
@@ -269,8 +269,8 @@ fn style_property(index: usize, value: &Value) -> Result<Value, LispError> {
 
 fn nonnegative_property(value: &Value) -> Result<Value, LispError> {
     match value {
-        Value::Integer(number) if *number >= 0 => Ok(value.clone()),
-        Value::Float(number) if number.get() >= 0.0 => Ok(value.clone()),
+        Value::Integer(number) if *number >= 0 => Ok(*value),
+        Value::Float(number) if number.get() >= 0.0 => Ok(*value),
         _ => Err(invalid_font_property()),
     }
 }
@@ -278,7 +278,7 @@ fn nonnegative_property(value: &Value) -> Result<Value, LispError> {
 fn spacing_property(value: &Value) -> Result<Value, LispError> {
     match value {
         Value::Nil => Ok(Value::Nil),
-        Value::Integer(number) if (0..=110).contains(number) => Ok(value.clone()),
+        Value::Integer(number) if (0..=110).contains(number) => Ok(*value),
         Value::Symbol(symbol) if symbol.len() == 1 => match symbol.as_bytes()[0] {
             b'p' | b'P' => Ok(Value::Integer(0)),
             b'd' | b'D' => Ok(Value::Integer(90)),
@@ -306,7 +306,7 @@ fn otf_property(value: &Value) -> Result<Value, LispError> {
             return Err(invalid_font_property());
         }
     }
-    Ok(value.clone())
+    Ok(*value)
 }
 
 fn validated_font_property(index: usize, value: &Value) -> Result<Value, LispError> {
@@ -390,27 +390,23 @@ fn make_font_spec(args: &[Value]) -> Result<Vec<Value>, LispError> {
     while index < args.len() {
         let key = args[index]
             .as_symbol()
-            .map_err(|_| wrong_type_argument("symbolp", args[index].clone()))?;
+            .map_err(|_| wrong_type_argument("symbolp", args[index]))?;
         let Some(value) = args.get(index + 1) else {
             return Err(LispError::Signal(format!("No value for key `{key}'")));
         };
         if key == ":name" {
             let name = string_text(value)?;
             set_name_properties(&mut slots, &name)?;
-            put_extra(
-                &mut slots[FONT_EXTRA_INDEX],
-                args[index].clone(),
-                value.clone(),
-            );
+            put_extra(&mut slots[FONT_EXTRA_INDEX], args[index], *value);
         } else if let Some(property_index) = font_property_index(key) {
             slots[property_index] = validated_font_property(property_index, value)?;
         } else {
             let value = match key {
                 ":lang" | ":script" => symbol_property(value, false)?,
                 ":otf" => otf_property(value)?,
-                _ => value.clone(),
+                _ => *value,
             };
-            put_extra(&mut slots[FONT_EXTRA_INDEX], args[index].clone(), value);
+            put_extra(&mut slots[FONT_EXTRA_INDEX], args[index], value);
         }
         index += 2;
     }
@@ -442,7 +438,7 @@ fn put_font_property(
         font_spec_id(interp, font)?
     } else {
         let Value::Record(id) = font else {
-            return Err(wrong_type_argument("fontp", font.clone()));
+            return Err(wrong_type_argument("fontp", *font));
         };
         font_record(interp, font)?;
         *id
@@ -453,14 +449,14 @@ fn put_font_property(
         let mut replacement = interp
             .find_record(id)
             .map(|record| record.slots.clone())
-            .ok_or_else(|| wrong_type_argument("font-spec-p", font.clone()))?;
+            .ok_or_else(|| wrong_type_argument("font-spec-p", *font))?;
         set_name_properties(&mut replacement, &name)?;
-        put_extra(&mut replacement[FONT_EXTRA_INDEX], key_value, value.clone());
+        put_extra(&mut replacement[FONT_EXTRA_INDEX], key_value, *value);
         interp
             .find_record_mut(id)
             .expect("validated font-spec record must stay live")
             .slots = replacement;
-        return Ok(value.clone());
+        return Ok(*value);
     }
 
     if let Some(index) = font_property_index(key) {
@@ -472,13 +468,13 @@ fn put_font_property(
             record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
         }
         record.slots[index] = normalized;
-        return Ok(value.clone());
+        return Ok(*value);
     }
 
     let normalized = match key {
         ":lang" | ":script" => symbol_property(value, false)?,
         ":otf" => otf_property(value)?,
-        _ => value.clone(),
+        _ => *value,
     };
     let record = interp
         .find_record_mut(id)
@@ -487,7 +483,7 @@ fn put_font_property(
         record.slots.resize(FONT_SPEC_SIZE, Value::Nil);
     }
     put_extra(&mut record.slots[FONT_EXTRA_INDEX], key_value, normalized);
-    Ok(value.clone())
+    Ok(*value)
 }
 
 fn xlfd_field(value: Option<&Value>) -> String {
@@ -605,7 +601,7 @@ fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispErr
             fontset_index(interp, &name)
                 .ok_or_else(|| LispError::Signal(format!("Fontset {name} does not exist")))
         }
-        _ => Err(wrong_type_argument("stringp", value.clone())),
+        _ => Err(wrong_type_argument("stringp", *value)),
     }
 }
 
@@ -641,7 +637,7 @@ fn font_pattern(
             Ok(Some(font_pattern_from_slots(&record.slots)))
         }
         Value::String(_) | Value::StringObject(_) => {
-            let slots = make_font_spec(&[Value::symbol(":name"), value.clone()])?;
+            let slots = make_font_spec(&[Value::symbol(":name"), *value])?;
             Ok(Some(font_pattern_from_slots(&slots)))
         }
         Value::Cons(_) => {
@@ -657,7 +653,7 @@ fn font_pattern(
         _ => Err(LispError::SignalValue(Value::list([
             Value::symbol("font"),
             Value::string("Invalid font-spec"),
-            value.clone(),
+            *value,
         ]))),
     }
 }
@@ -674,14 +670,14 @@ fn parse_fontset_target(value: &Value) -> Result<FontsetTargetState, LispError> 
                 .cons_values()
                 .expect("a range cons must have endpoints");
             let (Value::Integer(from), Value::Integer(to)) = (from, to) else {
-                return Err(wrong_type_argument("characterp", value.clone()));
+                return Err(wrong_type_argument("characterp", *value));
             };
             if from < 0 || to < from || to > 0x3f_ffff {
-                return Err(args_out_of_range(value.clone(), Value::Integer(to)));
+                return Err(args_out_of_range(*value, Value::Integer(to)));
             }
             Ok(FontsetTargetState::Range(from, to))
         }
-        _ => Err(wrong_type_argument("characterp", value.clone())),
+        _ => Err(wrong_type_argument("characterp", *value)),
     }
 }
 
@@ -835,14 +831,12 @@ fn add_fontlist(
     for entry in fontlist.to_vec()? {
         let (script, definitions) = entry
             .cons_values()
-            .ok_or_else(|| wrong_type_argument("listp", entry.clone()))?;
+            .ok_or_else(|| wrong_type_argument("listp", entry))?;
         let script = script
             .as_symbol()
-            .map_err(|_| wrong_type_argument("symbolp", script.clone()))?
+            .map_err(|_| wrong_type_argument("symbolp", script))?
             .to_string();
-        let definitions = definitions
-            .to_vec()
-            .unwrap_or_else(|_| vec![definitions.clone()]);
+        let definitions = definitions.to_vec().unwrap_or_else(|_| vec![definitions]);
         for definition in definitions {
             let pattern = font_pattern(interp, &definition)?;
             set_fontset_mapping(
@@ -891,7 +885,7 @@ define_dispatch!(
                         font_type.as_deref() == Some(expected)
                     }
                     Some(extra_type) => {
-                        return Err(wrong_type_argument("font-extra-type", extra_type.clone()));
+                        return Err(wrong_type_argument("font-extra-type", *extra_type));
                     }
                 };
                 Ok(if matches { Value::T } else { Value::Nil })
@@ -900,16 +894,16 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let key = args[1]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
                 font_property(interp, &args[0], key)
             }
             "font-put" => {
                 need_args(name, args, 3)?;
                 let key = args[1]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?
+                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?
                     .to_string();
-                put_font_property(interp, &args[0], &key, args[1].clone(), &args[2])
+                put_font_property(interp, &args[0], &key, args[1], &args[2])
             }
             "font-match-p" => {
                 need_args(name, args, 2)?;
@@ -933,7 +927,7 @@ define_dispatch!(
                 font_spec_id(interp, &args[0])?;
                 if let Some(limit) = args.get(2).filter(|value| !value.is_nil()) {
                     let Value::Integer(limit) = limit else {
-                        return Err(wrong_type_argument("fixnump", limit.clone()));
+                        return Err(wrong_type_argument("fixnump", *limit));
                     };
                     if *limit <= 0 {
                         return Ok(Value::Nil);
@@ -955,21 +949,21 @@ define_dispatch!(
                 let window = match window {
                     Some(window) => {
                         window_record_id_from_value(interp, window)
-                            .ok_or_else(|| wrong_type_argument("window-live-p", window.clone()))?;
-                        window.clone()
+                            .ok_or_else(|| wrong_type_argument("window-live-p", *window))?;
+                        *window
                     }
                     None => Value::Record(interp.selected_window_id()),
                 };
                 if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
                     let Value::Integer(position) = args[0] else {
-                        return Err(wrong_type_argument("fixnump", args[0].clone()));
+                        return Err(wrong_type_argument("fixnump", args[0]));
                     };
-                    let string_value = string.clone();
+                    let string_value = *string;
                     let string = string_like(&string_value)
-                        .ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
+                        .ok_or_else(|| wrong_type_argument("stringp", *string))?;
                     let length = string.text.chars().count() as i64;
                     if !(0..length).contains(&position) {
-                        return Err(args_out_of_range(string_value.clone(), args[0].clone()));
+                        return Err(args_out_of_range(string_value, args[0]));
                     }
                 } else {
                     if window_buffer_id(interp, &window) != Some(interp.current_buffer_id()) {
@@ -980,7 +974,7 @@ define_dispatch!(
                     let position = position_from_value(interp, &args[0])?;
                     let (begin, end) = interp.buffer.restriction();
                     if !(begin..end).contains(&position) {
-                        return Err(args_out_of_range(args[0].clone(), args[0].clone()));
+                        return Err(args_out_of_range(args[0], args[0]));
                     }
                 }
                 Ok(Value::Nil)
@@ -1029,7 +1023,7 @@ define_dispatch!(
                 let (font, id) = composition_gstring_parts(interp, &args[0])
                     .ok_or_else(|| invalid_glyph_string(&args[0]))?;
                 if !id.is_nil() {
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 }
                 require_font_type(interp, &font, "font-object", "font-object")?;
                 Err(window_system_frame_required())
@@ -1116,10 +1110,10 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 let fontset_index = resolve_fontset(interp, &args[0])?;
                 let Value::Integer(character) = args[1] else {
-                    return Err(wrong_type_argument("characterp", args[1].clone()));
+                    return Err(wrong_type_argument("characterp", args[1]));
                 };
                 if !(0..=0x3f_ffff).contains(&character) {
-                    return Err(wrong_type_argument("characterp", args[1].clone()));
+                    return Err(wrong_type_argument("characterp", args[1]));
                 }
                 Ok(fontset_font(
                     interp,

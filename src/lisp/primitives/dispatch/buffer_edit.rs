@@ -381,7 +381,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| interp.lookup_var("last-command-event", env))
                     .unwrap_or(Value::Nil);
-                interp.set_variable("last-command-event", event.clone(), env);
+                interp.set_variable("last-command-event", event, env);
                 let ch = match event {
                     Value::Integer(code) => char::from_u32(code as u32),
                     Value::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
@@ -564,9 +564,9 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 let (goal_col, n) = match &args[0] {
                     cons @ Value::Cons(_) => {
-                        let (car, cdr) = cons.cons_values().ok_or_else(|| {
-                            LispError::WrongTypeArgument("consp".into(), args[0].clone())
-                        })?;
+                        let (car, cdr) = cons
+                            .cons_values()
+                            .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), args[0]))?;
                         // COLS may be a float (line-move-visual divides
                         // pixels by the frame char width); GNU truncates
                         // it to a pixel count.
@@ -761,7 +761,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
                 if enabled == interp.buffer.is_multibyte() {
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 }
                 if interp.buffer.restriction()
                     != (1, interp.buffer.full_buffer_string().chars().count() + 1)
@@ -806,7 +806,7 @@ define_dispatch!(
                             if enabled { Value::Nil } else { Value::T },
                         ])));
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "char-after" => direct_char_after(interp, args, env),
             "char-before" => direct_char_before(interp, args, env),
@@ -831,12 +831,12 @@ define_dispatch!(
             "get-byte" => {
                 if let Some(string_value) = args.get(1).filter(|value| !value.is_nil()) {
                     let string = string_like(string_value).ok_or_else(|| {
-                        LispError::WrongTypeArgument("stringp".into(), string_value.clone())
+                        LispError::WrongTypeArgument("stringp".into(), *string_value)
                     })?;
                     let position = match args.first().filter(|value| !value.is_nil()) {
                         Some(Value::Integer(position)) if *position >= 0 => *position as usize,
                         Some(value) => {
-                            return Err(wrong_type_argument("wholenump", value.clone()));
+                            return Err(wrong_type_argument("wholenump", *value));
                         }
                         None => 0,
                     };
@@ -845,7 +845,7 @@ define_dispatch!(
                     if character.is_none() && (position != 0 || !string.text.is_empty()) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("args-out-of-range".into()),
-                            string_value.clone(),
+                            *string_value,
                             Value::Integer(position as i64),
                         ])));
                     }
@@ -859,7 +859,7 @@ define_dispatch!(
                             {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("args-out-of-range".into()),
-                                    value.clone(),
+                                    *value,
                                     Value::Integer(interp.buffer.point_min() as i64),
                                     Value::Integer(interp.buffer.point_max() as i64),
                                 ])));
@@ -1114,15 +1114,12 @@ define_dispatch!(
                             *pos as usize
                         }
                         Value::Marker(id) => interp.marker_position(*id).ok_or_else(|| {
-                            LispError::WrongTypeArgument(
-                                "integer-or-marker-p".into(),
-                                args[0].clone(),
-                            )
+                            LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0])
                         })?,
                         _ => {
                             return Err(LispError::WrongTypeArgument(
                                 "integer-or-marker-p".into(),
-                                args[0].clone(),
+                                args[0],
                             ));
                         }
                     }
@@ -1307,10 +1304,7 @@ define_dispatch!(
             "internal--set-buffer-modified-tick" => {
                 need_arg_range(name, args, 1, 2)?;
                 let Value::Integer(tick) = &args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "fixnump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 let buffer_id = match args.get(1) {
                     Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
@@ -1345,7 +1339,7 @@ define_dispatch!(
             }
             "restore-buffer-modified-p" => {
                 need_args(name, args, 1)?;
-                let flag = args[0].clone();
+                let flag = args[0];
                 let modified = !flag.is_nil();
                 let was_modified = interp.buffer.is_modified();
                 let update_lock = !interp
@@ -1384,7 +1378,7 @@ define_dispatch!(
                     .and_then(|object| window_record_id_from_value(interp, object));
                 let buffer_id = match args.get(2) {
                     Some(object) if window_id.is_some() => window_buffer_id(interp, object)
-                        .ok_or_else(|| wrong_type_argument("window-live-p", object.clone()))?,
+                        .ok_or_else(|| wrong_type_argument("window-live-p", *object))?,
                     Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
                     _ => interp.current_buffer_id(),
                 };
@@ -1438,7 +1432,7 @@ define_dispatch!(
                     .and_then(|object| window_record_id_from_value(interp, object));
                 let buffer_id = match args.get(2) {
                     Some(object) if window_id.is_some() => window_buffer_id(interp, object)
-                        .ok_or_else(|| wrong_type_argument("window-live-p", object.clone()))?,
+                        .ok_or_else(|| wrong_type_argument("window-live-p", *object))?,
                     Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
                     _ => interp.current_buffer_id(),
                 };
@@ -1941,7 +1935,7 @@ define_dispatch!(
                     Value::StringObject(state) if state.borrow().props.is_empty() => {
                         Value::String(state.borrow().text.clone().into())
                     }
-                    _ => args[3].clone(),
+                    _ => args[3],
                 };
                 if let Some(object) = args.get(4) {
                     if string_like(object).is_some() {
@@ -1953,9 +1947,9 @@ define_dispatch!(
                             if let Some((_, existing)) =
                                 current.iter_mut().find(|(key, _)| key == &prop)
                             {
-                                *existing = prop_value.clone();
+                                *existing = prop_value;
                             } else {
-                                current.insert(0, (prop.clone(), prop_value.clone()));
+                                current.insert(0, (prop.clone(), prop_value));
                             }
                             current
                         })?;
@@ -1963,14 +1957,14 @@ define_dispatch!(
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
                         interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.put_text_property(start, end, &prop, prop_value.clone())
+                            buffer.put_text_property(start, end, &prop, prop_value)
                         });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
                     interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.put_text_property(start, end, &prop, prop_value.clone())
+                        buffer.put_text_property(start, end, &prop, prop_value)
                     });
                 }
                 Ok(Value::T)
@@ -1991,9 +1985,9 @@ define_dispatch!(
                                 if let Some((_, existing)) =
                                     current.iter_mut().find(|(key, _)| key == name)
                                 {
-                                    *existing = value.clone();
+                                    *existing = *value;
                                 } else {
-                                    current.insert(0, (name.clone(), value.clone()));
+                                    current.insert(0, (name.clone(), *value));
                                 }
                             }
                             current
@@ -2133,17 +2127,17 @@ define_dispatch!(
                 let mut replaced = false;
                 for pair in plist.as_chunks_mut::<2>().0 {
                     if values_eq_in_env(interp, &pair[0], &args[1], env) {
-                        pair[1] = args[2].clone();
+                        pair[1] = args[2];
                         replaced = true;
                         break;
                     }
                 }
                 if !replaced {
-                    plist.push(args[1].clone());
-                    plist.push(args[2].clone());
+                    plist.push(args[1]);
+                    plist.push(args[2]);
                 }
                 interp.set_symbol_plist(&symbol, Value::list(plist))?;
-                Ok(args[2].clone())
+                Ok(args[2])
             }
         }
     }
@@ -2224,7 +2218,7 @@ pub(crate) fn visual_char_widths(
     let mut pos = bol;
     while pos < eol {
         let display = interp.buffer.text_property_at(pos, "display");
-        if let Some(display_value) = display.clone().filter(|value| !value.is_nil()) {
+        if let Some(display_value) = display.filter(|value| !value.is_nil()) {
             let mut end = pos;
             while end < eol && interp.buffer.text_property_at(end, "display") == display {
                 end += 1;
@@ -2411,7 +2405,7 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     let window = if value.is_nil() {
         interp.selected_window_value()
     } else {
-        value.clone()
+        *value
     };
     let Some(window_id) = window_record_id_from_value(interp, &window) else {
         return Err(wrong_type_argument("window-live-p", window));
@@ -2440,7 +2434,7 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
 fn motion_pair(value: &Value) -> Result<(i64, i64), LispError> {
     let (horizontal, vertical) = value
         .cons_values()
-        .ok_or_else(|| wrong_type_argument("consp", value.clone()))?;
+        .ok_or_else(|| wrong_type_argument("consp", *value))?;
     Ok((horizontal.as_integer()?, vertical.as_integer()?))
 }
 
@@ -2449,7 +2443,7 @@ fn checked_motion_position(interp: &Interpreter, value: &Value) -> Result<usize,
     if position < interp.buffer.point_min() || position > interp.buffer.point_max() {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("args-out-of-range"),
-            value.clone(),
+            *value,
             Value::Integer(interp.buffer.point_min() as i64),
             Value::Integer(interp.buffer.point_max() as i64),
         ])));
@@ -2475,7 +2469,7 @@ fn display_motion_width(
         .filter(|value| !value.is_nil())
     {
         let begins_run = position == interp.buffer.point_min()
-            || interp.buffer.text_property_at(position - 1, "display") != Some(display.clone());
+            || interp.buffer.text_property_at(position - 1, "display") != Some(display);
         if !begins_run {
             return 0;
         }
@@ -2857,7 +2851,7 @@ pub(super) fn direct_goto_char(
     // GNU Fgoto_char returns its POSITION argument unchanged (a
     // marker stays a marker), not the clamped integer point —
     // erc-display-msg does (marker-position (goto-char MARKER)).
-    Ok(args[0].clone())
+    Ok(args[0])
 }
 
 /// The `forward-char' primitive, callable directly (a subr's function pointer).
@@ -3040,7 +3034,7 @@ pub(super) fn direct_char_after(
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
-                value.clone(),
+                *value,
             ));
         }
     };
@@ -3064,7 +3058,7 @@ pub(super) fn direct_char_before(
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
-                value.clone(),
+                *value,
             ));
         }
     };

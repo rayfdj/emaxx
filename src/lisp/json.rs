@@ -532,8 +532,8 @@ pub(crate) fn parse_value_source(
     options: &JsonParseOptions,
     require_eof: bool,
 ) -> Result<JsonParseSuccess, LispError> {
-    let source = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let source =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     parse_text_source(interp, &source.text, source.multibyte, options, require_eof)
 }
 
@@ -651,7 +651,7 @@ pub(crate) fn make_hash_table_with_capacity(
 }
 
 pub(crate) fn hash_table_entry_list_len(value: &Value) -> usize {
-    let mut cursor = value.clone();
+    let mut cursor = *value;
     let mut len = 0;
     while let Value::Cons(cell) = cursor {
         len += 1;
@@ -740,8 +740,8 @@ fn convert_source(text: &str, multibyte: bool) -> Result<ConvertedSource, LispEr
 
 fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOptions) -> Value {
     match node {
-        JsonNode::Null => options.null_object.clone(),
-        JsonNode::False => options.false_object.clone(),
+        JsonNode::Null => options.null_object,
+        JsonNode::False => options.false_object,
         JsonNode::True => Value::T,
         JsonNode::Integer(value) => Value::Integer(value),
         JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
@@ -882,8 +882,8 @@ fn serialize_array(
 }
 
 fn serialize_string(value: &Value) -> Result<String, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let mut rendered = String::from("\"");
     for ch in string.text.chars() {
         if ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some() {
@@ -918,10 +918,7 @@ fn serialize_hash_table(
 ) -> Result<String, LispError> {
     let depth = json_nested_depth(depth)?;
     let Some((_, entries)) = hash_table_entries(interp, value) else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            value.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *value));
     };
     serialize_object_entries(
         interp,
@@ -953,7 +950,7 @@ fn serialize_hash_table_literal(
     let mut index = 0usize;
     while index + 1 < fields.len() {
         let key = fields[index].as_symbol()?.to_string();
-        let value = fields[index + 1].clone();
+        let value = fields[index + 1];
         match key.as_str() {
             "test" => test = value.as_symbol()?.to_string(),
             "data" => data = list_to_flat_pairs(&value)?,
@@ -997,24 +994,24 @@ fn serialize_list_object(
     let is_alist = matches!(value.car(), Ok(Value::Cons(_)));
     let mut seen: Vec<String> = Vec::new();
     let mut rendered: Vec<String> = Vec::new();
-    let mut tail = value.clone();
-    let mut tortoise = value.clone();
+    let mut tail = *value;
+    let mut tortoise = *value;
     let mut steps = 0usize;
     while let Some((head, rest)) = tail.cons_values() {
         let (key, entry_value, next) = if is_alist {
             let (key, entry_value) = head
                 .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), head.clone()))?;
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), head))?;
             (key, entry_value, rest)
         } else {
             let (entry_value, next) = rest
                 .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), rest.clone()))?;
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), rest))?;
             (head, entry_value, next)
         };
         let name = key
             .as_symbol()
-            .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), key.clone()))?
+            .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), key))?
             .to_string();
         if !seen.contains(&name) {
             seen.push(name.clone());
@@ -1039,12 +1036,12 @@ fn serialize_list_object(
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
-                value.clone(),
+                *value,
             ])));
         }
     }
     if !tail.is_nil() {
-        return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument("listp".into(), *value));
     }
     Ok(format!("{{{}}}", rendered.join(",")))
 }
@@ -1079,17 +1076,14 @@ fn json_nested_depth(depth: usize) -> Result<usize, LispError> {
 }
 
 fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
-    let string = string_like(value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     if string
         .text
         .chars()
         .any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some())
     {
-        return Err(LispError::WrongTypeArgument(
-            "stringp".into(),
-            value.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     }
     Ok(string.text)
 }
@@ -1125,7 +1119,7 @@ fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
         .map(|entry| {
             entry
                 .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry.clone()))
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry))
         })
         .collect()
 }
@@ -1135,7 +1129,7 @@ fn list_to_flat_pairs(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
     let mut pairs = Vec::new();
     let mut index = 0usize;
     while index + 1 < items.len() {
-        pairs.push((items[index].clone(), items[index + 1].clone()));
+        pairs.push((items[index], items[index + 1]));
         index += 2;
     }
     Ok(pairs)
@@ -1166,7 +1160,7 @@ mod tests {
         let string = parse_text_source(&mut interp, "\"alpha\"", true, &options, true)
             .expect("JSON string")
             .value;
-        let alias = string.clone();
+        let alias = string;
         let mut env = crate::lisp::types::Env::new();
         for (name, args) in [
             (
@@ -1176,7 +1170,7 @@ mod tests {
                     Value::Integer(1),
                     Value::symbol("item"),
                     Value::T,
-                    string.clone(),
+                    string,
                 ],
             ),
             (
@@ -1222,7 +1216,7 @@ mod tests {
         cycle
             .cdr()
             .expect("cycle second cell")
-            .set_car(cycle.clone())
+            .set_car(cycle)
             .expect("close nested alist cycle");
         let error = serialize(
             &mut interp,

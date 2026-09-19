@@ -9,7 +9,7 @@ pub(crate) fn hash_table_user_test_functions(
     if items.len() != 2 {
         return None;
     }
-    Some((items[0].clone(), items[1].clone()))
+    Some((items[0], items[1]))
 }
 
 pub(crate) fn call_hash_table_test_function(
@@ -20,16 +20,10 @@ pub(crate) fn call_hash_table_test_function(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let Value::Record(id) = table else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if !json::is_hash_table(interp, table) {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     }
 
     // fns.c's hash_table_user_defined_call makes only this table immutable
@@ -97,7 +91,7 @@ fn custom_hash_matching_index(
                 interp,
                 table,
                 &compare_fn,
-                &[key.clone(), existing_key],
+                &[*key, existing_key],
                 env,
             )?
             .is_truthy();
@@ -170,14 +164,10 @@ pub(crate) fn hash_table_key_matches(
             let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
                 return Err(LispError::Signal("Invalid hash table test".into()));
             };
-            Ok(call_hash_table_test_function(
-                interp,
-                table,
-                &compare_fn,
-                &[left.clone(), right.clone()],
-                env,
-            )?
-            .is_truthy())
+            Ok(
+                call_hash_table_test_function(interp, table, &compare_fn, &[*left, *right], env)?
+                    .is_truthy(),
+            )
         }
     }
 }
@@ -202,22 +192,13 @@ pub(crate) fn hash_table_metadata_slot(
     default: Value,
 ) -> Result<Value, LispError> {
     let Value::Record(id) = table else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if record.kind != crate::lisp::eval::RecordKind::HashTable {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     }
     Ok(record.slots.get(slot).cloned().unwrap_or(default))
 }
@@ -261,7 +242,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let table = json::make_hash_table(&mut interp, "eq", Vec::new());
-        let Value::Record(table_id) = table.clone() else {
+        let Value::Record(table_id) = table else {
             panic!("hash table is not a record");
         };
         interp.find_record_mut(table_id).expect("new table").slots[5] = Value::symbol("key");
@@ -276,7 +257,7 @@ mod tests {
         let Value::Overlay(id) = overlay else {
             panic!("not an overlay");
         };
-        assert!(interp.equal_hash_put(table_id, overlay.clone(), Value::T, &env));
+        assert!(interp.equal_hash_put(table_id, overlay, Value::T, &env));
         call(&mut interp, "garbage-collect", &[], &mut env).expect("collect attached overlay");
         assert_eq!(
             interp
@@ -286,12 +267,12 @@ mod tests {
             1
         );
 
-        interp.set_global_binding("overlay-root", overlay.clone());
+        interp.set_global_binding("overlay-root", overlay);
         // A self-cycle does not make the detached object an independent root.
         call(
             &mut interp,
             "overlay-put",
-            &[overlay.clone(), Value::symbol("self"), overlay.clone()],
+            &[overlay, Value::symbol("self"), overlay],
             &mut env,
         )
         .expect("set cycle");
@@ -323,7 +304,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let table = json::make_hash_table(&mut interp, "equal", Vec::new());
-        let Value::Record(id) = table.clone() else {
+        let Value::Record(id) = table else {
             panic!("hash table is not a record");
         };
         interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
@@ -335,9 +316,9 @@ mod tests {
         fn insert_keys(interp: &mut Interpreter, id: u64, env: &Env) -> Value {
             let rooted_key = Value::string("rooted key");
             let unrooted_key = Value::string("unrooted key");
-            assert!(interp.equal_hash_put(id, rooted_key.clone(), Value::Integer(1), env));
+            assert!(interp.equal_hash_put(id, rooted_key, Value::Integer(1), env));
             assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env));
-            interp.set_global_binding("weak-key-root", Value::cons(rooted_key.clone(), Value::Nil));
+            interp.set_global_binding("weak-key-root", Value::cons(rooted_key, Value::Nil));
             rooted_key
         }
         let rooted_key = insert_keys(&mut interp, id, &env);
@@ -418,22 +399,22 @@ fn project_embedded_keymaps(
     }
 
     let Some((car, cdr)) = (value).cons_cells() else {
-        return Ok(value.clone());
+        return Ok(*value);
     };
     let identity = car.cell_id();
     if !seen_cons.insert(identity) {
         // Preserve a circular non-keymap cons graph.  The caller's list
         // primitive remains responsible for reporting or traversing it.
-        return Ok(value.clone());
+        return Ok(*value);
     }
-    let original_car = car.borrow().clone();
-    let original_cdr = cdr.borrow().clone();
+    let original_car = *car.borrow();
+    let original_cdr = *cdr.borrow();
     let projected_car = project_embedded_keymaps(interp, &original_car, seen_keymaps, seen_cons)?;
     let projected_cdr = project_embedded_keymaps(interp, &original_cdr, seen_keymaps, seen_cons)?;
     seen_cons.remove(&identity);
 
     if values_eql(&projected_car, &original_car) && values_eql(&projected_cdr, &original_cdr) {
-        Ok(value.clone())
+        Ok(*value)
     } else {
         Ok(Value::cons(projected_car, projected_cdr))
     }
@@ -477,10 +458,7 @@ pub(crate) fn set_hash_table_entries(
     entries: Vec<(Value, Value)>,
 ) -> Result<(), LispError> {
     let Value::Record(id) = table else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if !interp.hash_table_is_mutable(*id) {
         return Err(LispError::Signal("hash table test modifies table".into()));
@@ -492,10 +470,7 @@ pub(crate) fn set_hash_table_entries(
         .and_then(|value| value.as_symbol().ok())
         .map(str::to_string)
     else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     let indexed = matches!(test.as_str(), "eq" | "eql" | "equal") || entries.is_empty();
     let stored_entries = if indexed {
@@ -504,10 +479,7 @@ pub(crate) fn set_hash_table_entries(
         hash_table_entries_to_value(entries.clone())
     };
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "hash-table-p".into(),
-            table.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if record.slots.len() < 2 {
         record.slots.resize(2, Value::Nil);

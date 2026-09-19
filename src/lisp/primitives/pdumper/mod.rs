@@ -81,10 +81,7 @@ fn dump_with_context(
     track_referrers: Option<&Value>,
 ) -> Result<Value, LispError> {
     let Some(name) = string_like(filename).map(|string| string.text) else {
-        return Err(LispError::WrongTypeArgument(
-            "stringp".into(),
-            filename.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("stringp".into(), *filename));
     };
     let filename = super::system::expand_file_name_runtime(interp, env, &name, None)?;
     // ENCODE_FILE: the host receives the expanded name as the same UTF-8
@@ -393,6 +390,9 @@ pub(crate) fn pdumper_load(
         return Err(PdumperLoadError::Error("a dump is already loaded".into()));
     }
     let started = std::time::Instant::now();
+    interp
+        .native_compiler
+        .garbage_collection_note_image_load_start();
     let bytes = match load::ImageBytes::open(path) {
         Ok(bytes) => bytes,
         Err(error) => {

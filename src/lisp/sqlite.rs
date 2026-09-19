@@ -110,10 +110,7 @@ fn sqlite_close(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispE
             }
         }
         Some(SqliteHandleState::Set(_)) => Err(LispError::Signal("Invalid database object".into())),
-        None => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            args[0].clone(),
-        )),
+        None => Err(LispError::WrongTypeArgument("sqlitep".into(), args[0])),
     }
 }
 
@@ -288,15 +285,12 @@ fn sqlite_next(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispEr
             if state.index >= state.rows.len() {
                 return Ok(Value::Nil);
             }
-            let row = state.rows[state.index].clone();
+            let row = state.rows[state.index];
             state.index += 1;
             Ok(row)
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
-        None => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            args[0].clone(),
-        )),
+        None => Err(LispError::WrongTypeArgument("sqlitep".into(), args[0])),
     }
 }
 
@@ -317,10 +311,7 @@ fn sqlite_columns(interp: &Interpreter, args: &[Value]) -> Result<Value, LispErr
             ))
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
-        None => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            args[0].clone(),
-        )),
+        None => Err(LispError::WrongTypeArgument("sqlitep".into(), args[0])),
     }
 }
 
@@ -339,10 +330,7 @@ fn sqlite_more_p(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lisp
             })
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
-        None => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            args[0].clone(),
-        )),
+        None => Err(LispError::WrongTypeArgument("sqlitep".into(), args[0])),
     }
 }
 
@@ -361,10 +349,7 @@ fn sqlite_finalize(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Li
             }
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
-        None => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            args[0].clone(),
-        )),
+        None => Err(LispError::WrongTypeArgument("sqlitep".into(), args[0])),
     }
 }
 
@@ -446,10 +431,7 @@ fn sqlite_errstr(code: i32) -> Option<String> {
 fn sqlite_id(value: &Value) -> Result<u64, LispError> {
     match value {
         Value::Record(id) => Ok(*id),
-        _ => Err(LispError::WrongTypeArgument(
-            "sqlitep".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sqlitep".into(), *value)),
     }
 }
 

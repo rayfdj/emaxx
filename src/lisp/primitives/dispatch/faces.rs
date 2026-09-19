@@ -6,7 +6,7 @@ fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, Lisp
     let mut name = match value {
         Value::Symbol(name) => name.to_string(),
         Value::String(_) | Value::StringObject(_) => string_text(value)?,
-        _ => return Err(wrong_type_argument("symbolp", value.clone())),
+        _ => return Err(wrong_type_argument("symbolp", *value)),
     };
     let mut seen = HashSet::new();
     while seen.insert(name.clone()) {
@@ -40,7 +40,7 @@ fn face_attribute_error(attribute: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("error"),
         Value::string("Invalid face attribute name"),
-        attribute.clone(),
+        *attribute,
     ]))
 }
 
@@ -84,7 +84,7 @@ fn normalize_face_attribute_value(
     let normalized = match attribute {
         ":bold" => {
             if matches!(value, Value::Symbol(symbol) if symbol == "reset") {
-                value.clone()
+                *value
             } else if value.is_nil() {
                 Value::symbol("normal")
             } else {
@@ -93,25 +93,25 @@ fn normalize_face_attribute_value(
         }
         ":italic" => {
             if matches!(value, Value::Symbol(symbol) if symbol == "reset") {
-                value.clone()
+                *value
             } else if value.is_nil() {
                 Value::symbol("normal")
             } else {
                 Value::symbol("italic")
             }
         }
-        _ if special_face_value(value) => value.clone(),
+        _ if special_face_value(value) => *value,
         ":family" | ":foundry" => {
             let text = string_text(value)?;
             if text.is_empty() {
                 return Err(LispError::Signal("Invalid face family".into()));
             }
-            value.clone()
+            *value
         }
         ":height" => match value {
-            Value::Integer(height) if *height > 0 => value.clone(),
-            Value::Float(scale) if scale.is_finite() && scale.get() > 0.0 => value.clone(),
-            Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => value.clone(),
+            Value::Integer(height) if *height > 0 => *value,
+            Value::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
+            Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => *value,
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
         ":weight" => {
@@ -133,7 +133,7 @@ fn normalize_face_attribute_value(
             ) {
                 return Err(LispError::Signal("Invalid face weight".into()));
             }
-            value.clone()
+            *value
         }
         ":slant" => {
             if !valid_named_value(
@@ -148,7 +148,7 @@ fn normalize_face_attribute_value(
             ) {
                 return Err(LispError::Signal("Invalid face slant".into()));
             }
-            value.clone()
+            *value
         }
         ":width" => {
             if !valid_named_value(
@@ -167,25 +167,25 @@ fn normalize_face_attribute_value(
             ) {
                 return Err(LispError::Signal("Invalid face width".into()));
             }
-            value.clone()
+            *value
         }
         ":underline" => {
             if !(matches!(value, Value::Nil | Value::T | Value::Cons(..)) || value.is_string()) {
                 return Err(LispError::Signal("Invalid face underline".into()));
             }
-            value.clone()
+            *value
         }
         ":overline" | ":strike-through" => {
             if !(matches!(value, Value::Nil | Value::T) || value.is_string()) {
                 return Err(LispError::Signal("Invalid face line attribute".into()));
             }
-            value.clone()
+            *value
         }
         ":inverse-video" | ":reverse-video" | ":extend" => {
             if !matches!(value, Value::Nil | Value::T) {
                 return Err(LispError::Signal("Invalid boolean face attribute".into()));
             }
-            value.clone()
+            *value
         }
         ":foreground" | ":distant-foreground" | ":background" => {
             if value.is_nil() {
@@ -195,10 +195,10 @@ fn normalize_face_attribute_value(
                 if text.is_empty() {
                     return Err(LispError::Signal("Empty face color value".into()));
                 }
-                value.clone()
+                *value
             }
         }
-        ":stipple" => value.clone(),
+        ":stipple" => *value,
         ":box" => {
             if !(matches!(
                 value,
@@ -210,15 +210,15 @@ fn normalize_face_attribute_value(
             if matches!(value, Value::T) {
                 Value::Integer(1)
             } else {
-                value.clone()
+                *value
             }
         }
-        ":font" | ":fontset" => value.clone(),
+        ":font" | ":fontset" => *value,
         ":inherit" => {
             if !valid_inherit_value(value) {
                 return Err(LispError::Signal("Invalid face inheritance".into()));
             }
-            value.clone()
+            *value
         }
         _ => return Err(face_attribute_error(&Value::symbol(attribute))),
     };
@@ -263,17 +263,17 @@ fn merge_face_height(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match from {
-        Value::Integer(_) => Ok(from.clone()),
+        Value::Integer(_) => Ok(*from),
         Value::Float(scale) => match to {
             Value::Integer(height) => Ok(Value::Integer((scale.get() * *height as f64) as i64)),
             Value::Float(height) => Ok(Value::float(scale.get() * height.get())),
-            Value::Symbol(symbol) if symbol == "unspecified" => Ok(from.clone()),
-            _ => Ok(from.clone()),
+            Value::Symbol(symbol) if symbol == "unspecified" => Ok(*from),
+            _ => Ok(*from),
         },
         Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => {
-            interp.call_function_value(from.clone(), None, std::slice::from_ref(to), env)
+            interp.call_function_value(*from, None, std::slice::from_ref(to), env)
         }
-        _ => Ok(from.clone()),
+        _ => Ok(*from),
     }
 }
 
@@ -469,7 +469,7 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 let face = args[0]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
                 let target = match args.get(1) {
                     None | Some(Value::Nil) => None,
                     Some(frame) => Some(frames::decode_live_frame(interp, Some(frame), true)?),
@@ -499,10 +499,10 @@ define_dispatch!(
                 need_args(name, args, 4)?;
                 let from = args[0]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
                 let to = args[1]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
                 let (source, target) = if matches!(args[2], Value::T) {
                     (None, None)
                 } else {
@@ -521,7 +521,7 @@ define_dispatch!(
                 need_arg_range(name, args, 3, 4)?;
                 let face_symbol = args[0]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
                 let face = resolve_face_name(interp, &Value::symbol(face_symbol))?;
                 let attribute = args[1].as_symbol()?;
                 let frame = args.get(3).unwrap_or(&Value::Nil);
@@ -585,11 +585,11 @@ define_dispatch!(
                 let attribute = args[0].as_symbol()?;
                 if matches!(&args[1], Value::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "ignore-defface"))
                 {
-                    Ok(args[2].clone())
+                    Ok(args[2])
                 } else if attribute == ":height" {
                     merge_face_height(interp, &args[1], &args[2], env)
                 } else {
-                    Ok(args[1].clone())
+                    Ok(args[1])
                 }
             }
             "internal-get-lisp-face-attribute" => {
@@ -752,19 +752,19 @@ define_dispatch!(
             "internal-set-alternative-font-family-alist" => {
                 need_args(name, args, 1)?;
                 let transformed = transform_font_alist(&args[0], false)?;
-                interp.alternative_font_family_alist = transformed.clone();
+                interp.alternative_font_family_alist = transformed;
                 Ok(transformed)
             }
             "internal-set-alternative-font-registry-alist" => {
                 need_args(name, args, 1)?;
                 let transformed = transform_font_alist(&args[0], true)?;
-                interp.alternative_font_registry_alist = transformed.clone();
+                interp.alternative_font_registry_alist = transformed;
                 Ok(transformed)
             }
             "tty-suppress-bold-inverse-default-colors" => {
                 need_args(name, args, 1)?;
                 interp.tty_suppress_bold_inverse_default_colors = args[0].is_truthy();
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "x-family-fonts" => {
                 need_arg_range(name, args, 0, 2)?;

@@ -137,6 +137,11 @@ impl ThreadContinuation {
             .map(|base| base as usize)
             .or_else(crate::lisp::alloc::os_stack_base)
             .unwrap_or(0);
+        // flush_stack_call_func's spill: the callee-saved registers into
+        // this frame, inside the region, before the switch saves them
+        // below the top recorded here.
+        let mut spill = [0usize; 16];
+        crate::lisp::alloc::spill_registers(&mut spill);
         crate::lisp::alloc::push_driver_region(
             crate::lisp::alloc::approximate_stack_pointer(),
             driver_base,
@@ -145,6 +150,7 @@ impl ThreadContinuation {
         let _stack_guard = StackBaseGuard::enter(self.stack_base);
         let result = self.coroutine.resume(state);
         crate::lisp::alloc::pop_driver_region();
+        std::hint::black_box(&spill);
         result
     }
 
@@ -205,7 +211,12 @@ fn suspend_payload(interpreter: &mut Interpreter) {
         .state
         .take()
         .expect("suspending thread owns editor state");
-    // This coroutine's stack parks from its base down to here.
+    // This coroutine's stack parks from its base down to here: the
+    // callee-saved registers spilled into this frame first, as a thread
+    // blocking inside flush_stack_call_func has them in the scanned
+    // range (the switch saves them below the top recorded here).
+    let mut spill = [0usize; 16];
+    crate::lisp::alloc::spill_registers(&mut spill);
     if let Some(base) = CURRENT_STACK_BASE.get() {
         crate::lisp::alloc::note_parked_stack(
             base as usize,
@@ -216,6 +227,7 @@ fn suspend_payload(interpreter: &mut Interpreter) {
     // remains live until that function returns. It is used only while this
     // same continuation is active; no Send implementation is introduced.
     let state = unsafe { &*yielder }.suspend(state);
+    std::hint::black_box(&spill);
     interpreter.state = Some(state);
 }
 
@@ -472,7 +484,7 @@ mod tests {
             crate::lisp::primitives::call(
                 interpreter,
                 "puthash",
-                &[local[0].clone(), Value::T, table],
+                &[local[0], Value::T, table],
                 &mut Env::new(),
             )?;
             let address = local.as_ptr();

@@ -29,7 +29,7 @@ impl Interpreter {
                     key,
                     ConsMutationStamped::new(
                         crate::lisp::types::ConsMutationSnapshot::tree(&template),
-                        template.clone(),
+                        template,
                     ),
                 );
                 return Ok(template);
@@ -119,7 +119,7 @@ impl Interpreter {
         };
         let tag = self.eval(&tag_form, env)?;
         let depth = env.len();
-        self.active_catch_tags.push(tag.clone());
+        self.active_catch_tags.push(tag);
         let result = self.progn_list(&body, env);
         self.active_catch_tags.pop();
         // A non-local exit unwinds any binding frames pushed between the
@@ -209,10 +209,10 @@ impl Interpreter {
     /// Fcdr does.
     fn let_binding_parts(binding: &Value) -> Result<(Value, Option<Value>), LispError> {
         let Value::Cons(cell) = binding else {
-            return Err(wrong_type_argument("listp", binding.clone()));
+            return Err(wrong_type_argument("listp", *binding));
         };
-        let name = cell.car.borrow().clone();
-        let rest = cell.cdr.borrow().clone();
+        let name = *cell.car.borrow();
+        let rest = *cell.cdr.borrow();
         match &rest {
             Value::Nil => Ok((name, None)),
             Value::Cons(second) => {
@@ -223,13 +223,13 @@ impl Interpreter {
                             Value::String(
                                 String::from("`let' bindings can have only one value-form").into(),
                             ),
-                            binding.clone(),
+                            *binding,
                         ),
                     )));
                 }
-                Ok((name, Some(second.car.borrow().clone())))
+                Ok((name, Some(*second.car.borrow())))
             }
-            other => Err(wrong_type_argument("listp", other.clone())),
+            other => Err(wrong_type_argument("listp", *other)),
         }
     }
 
@@ -242,8 +242,8 @@ impl Interpreter {
     ) -> Result<Option<(Value, Value)>, LispError> {
         match tail {
             Value::Nil => Ok(None),
-            Value::Cons(cell) => Ok(Some((cell.car.borrow().clone(), cell.cdr.borrow().clone()))),
-            _ => Err(wrong_type_argument("listp", varlist.clone())),
+            Value::Cons(cell) => Ok(Some((*cell.car.borrow(), *cell.cdr.borrow()))),
+            _ => Err(wrong_type_argument("listp", *varlist)),
         }
     }
 
@@ -252,7 +252,7 @@ impl Interpreter {
         /// anything else (the binding walk reports the shape itself).
         fn list_length_or_zero(list: &Value) -> usize {
             let mut count = 0;
-            let mut tail = list.clone();
+            let mut tail = *list;
             while let Some((_, next)) = list_next(&tail) {
                 count += 1;
                 tail = next;
@@ -269,7 +269,7 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("let".into(), 0));
         };
         if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
-            return Err(wrong_type_argument("listp", varlist.clone()));
+            return Err(wrong_type_argument("listp", varlist));
         }
         // Flet: the values first (`temps'), then each variable bound --
         // lexically by consing onto `lexenv', dynamically by specbind --
@@ -298,7 +298,7 @@ impl Interpreter {
             }
         };
 
-        let mut tail = varlist.clone();
+        let mut tail = varlist;
         while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
             tail = next;
             match &binding {
@@ -342,7 +342,7 @@ impl Interpreter {
                         lexical_bindings = true;
                     }
                 }
-                _ => return Err(wrong_type_argument("listp", binding.clone())),
+                _ => return Err(wrong_type_argument("listp", binding)),
             }
         }
 
@@ -396,7 +396,7 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("let*".into(), 0));
         };
         if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
-            return Err(wrong_type_argument("listp", varlist.clone()));
+            return Err(wrong_type_argument("listp", varlist));
         }
         // FletX: `lexenv' is the environment at entry; the first lexical
         // binding saves it on the specpdl (a frame), the later ones store
@@ -408,7 +408,7 @@ impl Interpreter {
         let setup = (|| -> Result<(), LispError> {
             // The varlist and each element read in place (FletX's
             // FOR_EACH_TAIL).
-            let mut tail = varlist.clone();
+            let mut tail = varlist;
             while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
                 tail = next;
                 let (name, value) = match &binding {
@@ -440,7 +440,7 @@ impl Interpreter {
                         };
                         (name, value)
                     }
-                    _ => return Err(wrong_type_argument("listp", binding.clone())),
+                    _ => return Err(wrong_type_argument("listp", binding)),
                 };
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, value, env)?;

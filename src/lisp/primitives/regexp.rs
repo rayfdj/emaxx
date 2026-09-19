@@ -198,7 +198,7 @@ fn syntax_property_authorities(
                 .map(|(_, value)| value);
             if let Some(value) = direct {
                 authorities.present |= !value.is_nil();
-                authorities.descriptors.push(value.clone());
+                authorities.descriptors.push(*value);
             }
             if let Some(category) = props
                 .iter()
@@ -211,7 +211,7 @@ fn syntax_property_authorities(
                 if direct.is_none() {
                     authorities.present |= !value.is_nil();
                 }
-                authorities.descriptors.push(value.clone());
+                authorities.descriptors.push(value);
                 authorities.categories.push((category.to_string(), value));
             }
         }
@@ -4187,8 +4187,7 @@ pub(super) fn fast_c_string_match_ignore_case(
     pattern: &Value,
     bytes: &[u8],
 ) -> Result<bool, LispError> {
-    let string =
-        string_like(pattern).ok_or_else(|| wrong_type_argument("stringp", pattern.clone()))?;
+    let string = string_like(pattern).ok_or_else(|| wrong_type_argument("stringp", *pattern))?;
     // GNU converts the regexp before compile_pattern, even when its low
     // bytes change regexp syntax. Reuse the C-owned conversion primitive.
     let pattern = if string.multibyte {
@@ -4681,9 +4680,9 @@ pub(super) fn string_match_impl(
     // Both strings are read in place (search.c's string_match_1 reads the
     // objects' data): a copy of each per call was most of a short match.
     let pattern = borrowed_text(&args[0])
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
     let haystack = borrowed_text(&args[1])
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1]))?;
     // The overwhelmingly common no-START path searches the original string.
     // Counting and copying the full haystack made it O(n) before the regex
     // engine even ran (particularly painful for large buffers/Unicode data).
@@ -4741,9 +4740,9 @@ pub(super) fn posix_string_match_impl(
         ));
     }
     let pattern = string_like(&args[0])
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
     let haystack = string_like(&args[1])
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1]))?;
     let start = if let Some(start) = args.get(2) {
         normalize_string_index(Some(start), 0, haystack.text.chars().count() as i64)? as usize
     } else {
@@ -5074,7 +5073,7 @@ pub(super) fn looking_at_impl(
     env: &Env,
 ) -> Result<Value, LispError> {
     let pattern_text = borrowed_text(pattern_value)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern_value.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *pattern_value))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern_text, env);
     let pos = interp.buffer.point();
     if posix {
@@ -5223,7 +5222,7 @@ pub(super) fn buffer_regex_search(
         ));
     }
     let pattern_text = borrowed_text(&args[0])
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern_text, env);
     let noerror = args.get(2).is_some_and(Value::is_truthy);
     let move_on_failure = search_noerror_moves(args.get(2));

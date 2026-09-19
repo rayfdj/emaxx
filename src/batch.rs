@@ -1067,7 +1067,7 @@ fn call_safe_hook_function(
         // outer handler-bind handlers must not observe a handled signal.
         let handlers = interpreter.push_condition_case_handler(vec![Value::T]);
         let depth = env.len();
-        let result = interpreter.call_function_value(function.clone(), None, &[], env);
+        let result = interpreter.call_function_value(*function, None, &[], env);
         interpreter.pop_handler_bindings(handlers);
         env.truncate(depth);
         let error = match result {
@@ -1083,7 +1083,7 @@ fn call_safe_hook_function(
             &[
                 Value::string("Error in %s (%S): %S"),
                 Value::symbol(hook),
-                function.clone(),
+                *function,
                 condition,
             ],
             env,

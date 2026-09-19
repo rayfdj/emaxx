@@ -246,7 +246,7 @@ fn apply_follows_eval_c_proper_list_contract() {
     match call(
         &mut interp,
         "apply",
-        &[Value::symbol("list"), vector.clone()],
+        &[Value::symbol("list"), vector],
         &mut env,
     ) {
         Err(LispError::WrongTypeArgument(predicate, value)) => {
@@ -599,7 +599,7 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
         &mut interp,
         "make-interpreted-closure",
         &[
-            closure_parameters.clone(),
+            closure_parameters,
             Value::list([Value::Nil]),
             Value::list([Value::T]),
         ],
@@ -609,7 +609,7 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
     let Value::Lambda(lambda) = &interpreted else {
         panic!("make-interpreted-closure must return a lambda")
     };
-    let visible_parameters = interp.interpreted_closure_slots(lambda)[0].clone();
+    let visible_parameters = interp.interpreted_closure_slots(lambda)[0];
     assert_eq!(
         call(
             &mut interp,
@@ -646,7 +646,7 @@ fn defvar_and_defconst_use_gnu_check_symbol_for_positioned_names() {
         .expect("construct a positioned definition name");
         let definition = Value::list([
             Value::Symbol(form.into()),
-            positioned.clone(),
+            positioned,
             Value::Integer(value),
         ]);
         assert_eq!(
@@ -4619,7 +4619,7 @@ fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
     }
     for character in [Value::Integer(-1), Value::Integer(0x400000), Value::Nil] {
         assert!(matches!(
-            call(&mut interp, "internal-char-font", &[Value::Nil, character.clone()], &mut env),
+            call(&mut interp, "internal-char-font", &[Value::Nil, character], &mut env),
             Err(LispError::WrongTypeArgument(predicate, value))
                 if predicate == "characterp" && value == character
         ));
@@ -4723,7 +4723,7 @@ fn fontp_matches_the_gnu_font_record_contract() {
         call(
             &mut interp,
             "fontp",
-            &[font.clone(), Value::Symbol("font-spec".into())],
+            &[font, Value::Symbol("font-spec".into())],
             &mut env,
         )
         .expect("font-spec subtype should match"),
@@ -4733,7 +4733,7 @@ fn fontp_matches_the_gnu_font_record_contract() {
         call(
             &mut interp,
             "fontp",
-            &[font.clone(), Value::Symbol("font-object".into())],
+            &[font, Value::Symbol("font-object".into())],
             &mut env,
         )
         .expect("font-object subtype should not match"),
@@ -5535,7 +5535,7 @@ fn bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata() {
             call(
                 &mut interp,
                 "plist-get",
-                &[plist.clone(), Value::Symbol(":ascii-compatible-p".into())],
+                &[plist, Value::Symbol(":ascii-compatible-p".into())],
                 &mut env,
             )
             .unwrap_or_else(|error| panic!("ascii-compatible {coding}: {error}")),
@@ -6520,7 +6520,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
         )])
     );
 
-    let file_name = result.to_vec().expect("directory entries")[2].clone();
+    let file_name = result.to_vec().expect("directory entries")[2];
     call(
         &mut interp,
         "add-text-properties",
@@ -6528,7 +6528,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
             Value::Integer(0),
             Value::Integer(4),
             Value::list([Value::Symbol("face".into()), Value::Symbol("bold".into())]),
-            file_name.clone(),
+            file_name,
         ],
         &mut env,
     )
@@ -6780,7 +6780,7 @@ fn unicode_property_tables_are_stable_and_preserve_overrides_inner() {
         &mut interp,
         "put-unicode-property-internal",
         &[
-            table.clone(),
+            table,
             Value::Integer('A' as i64),
             Value::Symbol("Po".into()),
         ],
@@ -6791,7 +6791,7 @@ fn unicode_property_tables_are_stable_and_preserve_overrides_inner() {
         call(
             &mut interp,
             "get-unicode-property-internal",
-            &[table.clone(), Value::Integer('A' as i64)],
+            &[table, Value::Integer('A' as i64)],
             &mut env,
         )
         .expect("read the Unicode table override"),
@@ -6879,13 +6879,8 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
     regexp::reset_regexp_syntax_class_render_count();
     for _ in 0..10_000 {
         assert_eq!(
-            call(
-                &mut interp,
-                "string-match",
-                &[pattern.clone(), haystack.clone()],
-                &mut env,
-            )
-            .expect("match a table-independent regexp"),
+            call(&mut interp, "string-match", &[pattern, haystack], &mut env,)
+                .expect("match a table-independent regexp"),
             Value::Integer(13)
         );
     }
@@ -6977,24 +6972,15 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
             env,
         )
         .expect("make a syntax table");
-        call(
-            interp,
-            "set-char-table-parent",
-            &[table.clone(), standard.clone()],
-            env,
-        )
-        .expect("inherit from the standard syntax table");
+        call(interp, "set-char-table-parent", &[table, standard], env)
+            .expect("inherit from the standard syntax table");
         table
     };
     let other = make_syntax_table(&mut interp, &mut env);
     call(
         &mut interp,
         "modify-syntax-entry",
-        &[
-            Value::Integer('!' as i64),
-            Value::String("w".into()),
-            other.clone(),
-        ],
+        &[Value::Integer('!' as i64), Value::String("w".into()), other],
         &mut env,
     )
     .expect("write a table the current one does not inherit from");
@@ -7019,7 +7005,7 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
         &[
             Value::Integer('!' as i64),
             Value::String("w".into()),
-            standard.clone(),
+            standard,
         ],
         &mut env,
     )
@@ -7124,7 +7110,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
             &[
                 Value::String(format!("UNICODE NAME {index}").into()),
                 Value::Integer(index),
-                table.clone(),
+                table,
             ],
             &mut env,
         )
@@ -7135,10 +7121,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
             call(
                 &mut interp,
                 "gethash",
-                &[
-                    Value::String(format!("UNICODE NAME {index}").into()),
-                    table.clone(),
-                ],
+                &[Value::String(format!("UNICODE NAME {index}").into()), table,],
                 &mut env,
             )
             .expect("look up an indexed string key"),
@@ -7151,7 +7134,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
         &[
             make_shared_string_value_with_multibyte("SHARED UNICODE NAME".into(), Vec::new(), true),
             Value::Integer(20_000),
-            table.clone(),
+            table,
         ],
         &mut env,
     )
@@ -7160,7 +7143,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
         call(
             &mut interp,
             "gethash",
-            &[Value::String("SHARED UNICODE NAME".into()), table.clone(),],
+            &[Value::String("SHARED UNICODE NAME".into()), table,],
             &mut env,
         )
         .expect("plain and shared strings compare equal as hash keys"),
@@ -7236,7 +7219,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
         call(
             &mut interp,
             "puthash",
-            &[key, Value::Integer(index), table.clone()],
+            &[key, Value::Integer(index), table],
             &mut env,
         )
         .expect("insert a structurally indexed form");
@@ -7256,13 +7239,8 @@ fn equal_structured_hash_tables_use_structural_buckets() {
             ]),
         ]);
         assert_eq!(
-            call(
-                &mut interp,
-                "gethash",
-                &[equivalent_key, table.clone()],
-                &mut env,
-            )
-            .expect("look up a separately allocated equal form"),
+            call(&mut interp, "gethash", &[equivalent_key, table], &mut env,)
+                .expect("look up a separately allocated equal form"),
             Value::Integer(index)
         );
     }
@@ -7270,11 +7248,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
     call(
         &mut interp,
         "puthash",
-        &[
-            Value::Integer(7),
-            Value::Symbol("number".into()),
-            table.clone(),
-        ],
+        &[Value::Integer(7), Value::Symbol("number".into()), table],
         &mut env,
     )
     .expect("insert a fixnum key");
@@ -7305,7 +7279,7 @@ fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
             call(
                 &mut interp,
                 "memq",
-                &[Value::Symbol("absent-symbol".into()), symbols.clone()],
+                &[Value::Symbol("absent-symbol".into()), symbols],
                 &mut env,
             )
             .expect("scan ordinary symbols"),
@@ -7932,7 +7906,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
         "start-process",
         &[
             Value::String("cat".into()),
-            buffer.clone(),
+            buffer,
             Value::String("/bin/cat".into()),
         ],
         &mut env,
@@ -7963,14 +7937,14 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("secret\n".into())],
+        &[process, Value::String("secret\n".into())],
         &mut env,
     )
     .expect("process-send-string should succeed");
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("second\n".into())],
+        &[process, Value::String("second\n".into())],
         &mut env,
     )
     .expect("second process-send-string should succeed");
@@ -7978,7 +7952,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     call(
         &mut interp,
         "process-send-region",
-        &[process.clone(), Value::Integer(8), Value::Integer(15)],
+        &[process, Value::Integer(8), Value::Integer(15)],
         &mut env,
     )
     .expect("process-send-region should succeed");
@@ -8003,7 +7977,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Integer(60)],
+            &[process, Value::Integer(60)],
             &mut env,
         )
         .expect("accept-process-output should receive the echo");
@@ -8057,7 +8031,7 @@ fn process_list_is_newest_first_and_excludes_deleted_processes() {
 
     assert_eq!(
         call(&mut interp, "process-list", &[], &mut env).expect("list live processes"),
-        Value::list([second.clone(), first.clone()])
+        Value::list([second, first])
     );
     call(
         &mut interp,
@@ -8258,7 +8232,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("hello\n".into())],
+        &[process, Value::String("hello\n".into())],
         &mut env,
     )
     .expect("send PTY input");
@@ -8274,7 +8248,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::float(0.1)],
+            &[process, Value::float(0.1)],
             &mut env,
         )
         .expect("wait for PTY output");
@@ -8318,7 +8292,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("hello\n".into())],
+        &[process, Value::String("hello\n".into())],
         &mut env,
     )
     .expect("send split PTY input");
@@ -8336,7 +8310,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::float(0.1)],
+            &[process, Value::float(0.1)],
             &mut env,
         )
         .expect("wait for split PTY output");
@@ -8385,14 +8359,14 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
     call(
         &mut interp,
         "set-process-sentinel",
-        &[process.clone(), sentinel],
+        &[process, sentinel],
         &mut env,
     )
     .expect("install signal sentinel");
     call(
         &mut interp,
         "signal-process",
-        &[process.clone(), Value::Symbol("SIGPIPE".into())],
+        &[process, Value::Symbol("SIGPIPE".into())],
         &mut env,
     )
     .expect("signal child process");
@@ -8495,7 +8469,7 @@ fn deleted_process_is_not_returned_for_buffer() {
         "start-process",
         &[
             Value::String("cat".into()),
-            buffer.clone(),
+            buffer,
             Value::String("/bin/cat".into()),
         ],
         &mut env,
@@ -9003,7 +8977,7 @@ fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
     let local = call(
         &mut interp,
         "process-contact",
-        &[process.clone(), Value::Symbol(":local".into())],
+        &[process, Value::Symbol(":local".into())],
         &mut env,
     )
     .expect("process-contact should expose the listener address");
@@ -9061,7 +9035,7 @@ fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
     let local = call(
         &mut interp,
         "process-contact",
-        &[process.clone(), Value::Symbol(":local".into())],
+        &[process, Value::Symbol(":local".into())],
         &mut env,
     )
     .expect("process-contact should expose the IPv6 listener address");
@@ -9161,7 +9135,7 @@ fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
     let port = call(
         &mut interp,
         "process-contact",
-        &[server.clone(), Value::Symbol(":service".into())],
+        &[server, Value::Symbol(":service".into())],
         &mut env,
     )
     .expect("server should expose its port");
@@ -9230,7 +9204,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     let port = call(
         &mut interp,
         "process-contact",
-        &[server.clone(), Value::Symbol(":service".into())],
+        &[server, Value::Symbol(":service".into())],
         &mut env,
     )
     .expect("server should expose its port");
@@ -9340,7 +9314,7 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
         call(
             &mut interp,
             "process-tty-name",
-            &[child.clone(), Value::Symbol("stdin".into())],
+            &[child, Value::Symbol("stdin".into())],
             &mut env,
         )
         .expect("pipe-backed child has no tty"),
@@ -15083,13 +15057,8 @@ fn keymap_parent_primitives_keep_constructor_object_identity() {
         let child = call(&mut interp, constructor, &[], &mut env).expect("child map");
         let parent = call(&mut interp, constructor, &[], &mut env).expect("parent map");
         assert!(matches!(child, Value::Cons(_)));
-        let returned = call(
-            &mut interp,
-            "set-keymap-parent",
-            &[child.clone(), parent.clone()],
-            &mut env,
-        )
-        .expect("set parent of the original map");
+        let returned = call(&mut interp, "set-keymap-parent", &[child, parent], &mut env)
+            .expect("set parent of the original map");
         assert!(values_eq_in_env(&interp, &returned, &parent, &env));
         let found = call(
             &mut interp,
@@ -15105,7 +15074,7 @@ fn keymap_parent_primitives_keep_constructor_object_identity() {
         call(
             &mut interp,
             "define-key",
-            &[parent, key.clone(), Value::symbol("ignore")],
+            &[parent, key, Value::symbol("ignore")],
             &mut env,
         )
         .expect("define inherited command");
@@ -15124,32 +15093,22 @@ fn keymap_parent_replacement_keeps_lookup_and_mutation_shared() {
     let first = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("first parent");
     let second = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("second parent");
     let key = Value::vector(vec![Value::Integer(13)]);
-    for (parent, command) in [(first.clone(), "ignore"), (second.clone(), "newline")] {
+    for (parent, command) in [(first, "ignore"), (second, "newline")] {
         call(
             &mut interp,
             "define-key",
-            &[parent, key.clone(), Value::symbol(command)],
+            &[parent, key, Value::symbol(command)],
             &mut env,
         )
         .expect("define parent command");
     }
     for (parent, command) in [(first, "ignore"), (second, "newline")] {
-        let result = call(
-            &mut interp,
-            "set-keymap-parent",
-            &[child.clone(), parent.clone()],
-            &mut env,
-        )
-        .expect("replace parent");
+        let result = call(&mut interp, "set-keymap-parent", &[child, parent], &mut env)
+            .expect("replace parent");
         assert!(values_eq_in_env(&interp, &result, &parent, &env));
         assert_eq!(
-            call(
-                &mut interp,
-                "lookup-key",
-                &[child.clone(), key.clone()],
-                &mut env
-            )
-            .expect("lookup after replacing parent"),
+            call(&mut interp, "lookup-key", &[child, key], &mut env)
+                .expect("lookup after replacing parent"),
             Value::symbol(command)
         );
     }
@@ -15157,7 +15116,7 @@ fn keymap_parent_replacement_keeps_lookup_and_mutation_shared() {
         call(
             &mut interp,
             "set-keymap-parent",
-            &[child.clone(), Value::Nil],
+            &[child, Value::Nil],
             &mut env,
         )
         .expect("detach parent"),
@@ -15504,7 +15463,7 @@ fn set_text_properties_replaces_existing_properties() {
                 Value::Symbol("face".into()),
                 Value::Symbol("underline".into()),
             ]),
-            string.clone(),
+            string,
         ],
         &mut env,
     )
@@ -15651,7 +15610,7 @@ fn next_single_property_change_uses_string_positions() {
             Value::Integer(0),
             Value::Integer(1),
             Value::list([Value::Symbol("help-echo".into()), Value::T]),
-            string.clone(),
+            string,
         ],
         &mut env,
     )
@@ -15800,7 +15759,7 @@ fn overlay_get_inherits_from_category_symbol() {
         &mut interp,
         "overlay-put",
         &[
-            overlay.clone(),
+            overlay,
             Value::Symbol("category".into()),
             Value::Symbol("sample-button-category".into()),
         ],
@@ -15837,7 +15796,7 @@ fn copy_overlay_clones_region_and_properties_with_new_identity() {
         &mut interp,
         "overlay-put",
         &[
-            overlay.clone(),
+            overlay,
             Value::Symbol("display".into()),
             Value::String("".into()),
         ],
@@ -15935,7 +15894,7 @@ fn add_face_text_property_preserves_other_string_properties() {
             Value::Integer(11),
             Value::Symbol("button".into()),
             Value::T,
-            string.clone(),
+            string,
         ],
         &mut env,
     )
@@ -16019,24 +15978,13 @@ fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
     let name = make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
     let second_name =
         make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
-    let first = call(
-        &mut interp,
-        "intern",
-        &[name.clone(), first_table.clone()],
-        &mut env,
-    )
-    .expect("Fintern miss");
-    let again = call(
-        &mut interp,
-        "intern",
-        &[second_name.clone(), first_table],
-        &mut env,
-    )
-    .expect("Fintern hit");
+    let first = call(&mut interp, "intern", &[name, first_table], &mut env).expect("Fintern miss");
+    let again =
+        call(&mut interp, "intern", &[second_name, first_table], &mut env).expect("Fintern hit");
     let other = call(
         &mut interp,
         "intern",
-        &[second_name.clone(), second_table],
+        &[second_name, second_table],
         &mut env,
     )
     .expect("a different obarray owns a distinct symbol");
@@ -16047,7 +15995,7 @@ fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
     };
     assert_eq!(first_symbol.identity_ptr(), again_symbol.identity_ptr());
     assert_ne!(first_symbol.identity_ptr(), other_symbol.identity_ptr());
-    for (symbol, supplied) in [(first, name.clone()), (again, name), (other, second_name)] {
+    for (symbol, supplied) in [(first, name), (again, name), (other, second_name)] {
         let returned = call(&mut interp, "symbol-name", &[symbol], &mut env)
             .expect("SYMBOL_NAME is the stored string, not the internal lookup key");
         assert_eq!(
@@ -16073,7 +16021,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
     let error = call(
         &mut interp,
         "intern",
-        &[bad_name.clone(), Value::Integer(1)],
+        &[bad_name, Value::Integer(1)],
         &mut env,
     )
     .expect_err("CHECK_OBARRAY precedes CHECK_STRING");
@@ -16089,19 +16037,14 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         ]),
     );
     assert!(matches!(
-        call(&mut interp, "intern", &[bad_name, table.clone()], &mut env),
+        call(&mut interp, "intern", &[bad_name, table], &mut env),
         Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "stringp"
     ));
 
     interp.define_special_variable("purify-flag", Value::T);
     let name = make_shared_string_value_with_multibyte("pure-name".into(), Vec::new(), false);
-    let symbol = call(
-        &mut interp,
-        "intern",
-        &[name.clone(), table.clone()],
-        &mut env,
-    )
-    .expect("Fintern purecopy miss");
+    let symbol =
+        call(&mut interp, "intern", &[name, table], &mut env).expect("Fintern purecopy miss");
     let copied = call(
         &mut interp,
         "symbol-name",
@@ -16315,7 +16258,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
         call(
             &mut interp,
             "add-variable-watcher",
-            &[Value::Symbol("header-line-format".into()), watcher.clone(),],
+            &[Value::Symbol("header-line-format".into()), watcher,],
             &mut env,
         )
         .expect("install redisplay watcher"),
@@ -16723,7 +16666,7 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
         &mut interp,
         "keymap-set",
         &[
-            keymap.clone(),
+            keymap,
             Value::String("C-c g".into()),
             Value::Symbol("keymap-tests-command".into()),
         ],
@@ -16787,7 +16730,7 @@ fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
         &mut interp,
         "keymap-set",
         &[
-            keymap.clone(),
+            keymap,
             Value::String("C-c g".into()),
             Value::Symbol("keymap-tests-command".into()),
         ],
@@ -17602,7 +17545,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
             Value::symbol(":name"),
             Value::String("audit".into()),
             Value::symbol(":buffer"),
-            buffer.clone(),
+            buffer,
         ],
         &mut env,
     )
@@ -17610,28 +17553,28 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
 
     let mut surface = Vec::new();
     for (function, arguments) in [
-        ("process-filter", vec![process.clone()]),
-        ("process-sentinel", vec![process.clone()]),
-        ("set-process-filter", vec![process.clone(), Value::Nil]),
-        ("process-filter", vec![process.clone()]),
-        ("set-process-sentinel", vec![process.clone(), Value::Nil]),
-        ("process-sentinel", vec![process.clone()]),
-        ("process-type", vec![process.clone()]),
+        ("process-filter", vec![process]),
+        ("process-sentinel", vec![process]),
+        ("set-process-filter", vec![process, Value::Nil]),
+        ("process-filter", vec![process]),
+        ("set-process-sentinel", vec![process, Value::Nil]),
+        ("process-sentinel", vec![process]),
+        ("process-type", vec![process]),
         ("process-type", vec![Value::String("audit".into())]),
         ("process-type", vec![buffer]),
-        ("process-inherit-coding-system-flag", vec![process.clone()]),
+        ("process-inherit-coding-system-flag", vec![process]),
         (
             "set-process-inherit-coding-system-flag",
-            vec![process.clone(), Value::symbol("yes")],
+            vec![process, Value::symbol("yes")],
         ),
-        ("process-inherit-coding-system-flag", vec![process.clone()]),
+        ("process-inherit-coding-system-flag", vec![process]),
         (
             "set-process-coding-system",
-            vec![process.clone(), Value::Nil, Value::Nil],
+            vec![process, Value::Nil, Value::Nil],
         ),
         (
             "set-process-window-size",
-            vec![process.clone(), Value::Integer(24), Value::Integer(80)],
+            vec![process, Value::Integer(24), Value::Integer(80)],
         ),
     ] {
         surface.push(
@@ -17669,7 +17612,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     call(
         &mut interp,
         "internal-default-process-filter",
-        &[process.clone(), Value::String("out".into())],
+        &[process, Value::String("out".into())],
         &mut env,
     )
     .expect("run native default process filter");
@@ -17688,7 +17631,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     call(
         &mut interp,
         "set-process-sentinel",
-        &[process.clone(), Value::symbol("ignore")],
+        &[process, Value::symbol("ignore")],
         &mut env,
     )
     .expect("suppress automatic delete message");
@@ -19911,7 +19854,7 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
                 Value::symbol("fixnump"),
                 Value::Nil,
             ]),
-            drag_error.clone(),
+            drag_error,
             drag_error,
         ])
     );
@@ -20548,7 +20491,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     call(
         &mut interp,
         "accept-process-output",
-        &[process.clone(), Value::float(1.0)],
+        &[process, Value::float(1.0)],
         &mut env,
     )
     .expect("pump serial process input");
@@ -20560,7 +20503,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("from-emaxx".into())],
+        &[process, Value::String("from-emaxx".into())],
         &mut env,
     )
     .expect("send serial process output");
@@ -20959,7 +20902,7 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
         call(
             &mut interp,
             "internal-default-signal-process",
-            &[stopped.clone(), Value::symbol("STOP")],
+            &[stopped, Value::symbol("STOP")],
             &mut env,
         )
         .expect("force child stop"),
@@ -21140,14 +21083,14 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
     call(
         &mut interp,
         "set-process-filter",
-        &[process.clone(), Value::T],
+        &[process, Value::T],
         &mut env,
     )
     .expect("hold process output");
     call(
         &mut interp,
         "process-send-string",
-        &[process.clone(), Value::String("held\n".into())],
+        &[process, Value::String("held\n".into())],
         &mut env,
     )
     .expect("send held output");
@@ -21155,7 +21098,7 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::float(0.05)],
+            &[process, Value::float(0.05)],
             &mut env,
         )
         .expect("wait while output is held"),
@@ -21172,7 +21115,7 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
     call(
         &mut interp,
         "set-process-filter",
-        &[process.clone(), Value::Nil],
+        &[process, Value::Nil],
         &mut env,
     )
     .expect("restore default process filter");
@@ -21271,7 +21214,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
         call(
             &mut interp,
             "set-process-window-size",
-            &[pipe.clone(), Value::Integer(24), Value::Integer(80)],
+            &[pipe, Value::Integer(24), Value::Integer(80)],
             &mut env,
         )
         .expect("pipe window size"),
@@ -21281,7 +21224,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
         call(
             &mut interp,
             "set-process-window-size",
-            &[pty.clone(), Value::Integer(24), Value::Integer(80)],
+            &[pty, Value::Integer(24), Value::Integer(80)],
             &mut env,
         )
         .expect("PTY window size"),
@@ -22170,7 +22113,7 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
             Value::Nil,
             Value::Nil,
             Value::Nil,
-            history.clone(),
+            history,
         ],
         &mut env,
     );
@@ -22326,12 +22269,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
     call(
         &mut interp,
         "split-window-internal",
-        &[
-            upper.clone(),
-            Value::Integer(12),
-            Value::Nil,
-            Value::float(0.5),
-        ],
+        &[upper, Value::Integer(12), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split succeeds");
@@ -22339,12 +22277,12 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
         .expect("window list")
         .to_vec()
         .expect("list of windows");
-    let lower = windows[1].clone();
+    let lower = windows[1];
     for (window, staged) in [(&upper, 16i64), (&lower, 8i64)] {
         call(
             &mut interp,
             "set-window-new-pixel",
-            &[(*window).clone(), Value::Integer(staged)],
+            &[(*window), Value::Integer(staged)],
             &mut env,
         )
         .expect("staging succeeds");
@@ -22432,7 +22370,7 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     call(
         &mut interp,
         "set-marker",
-        &[marker.clone(), Value::Integer(4)],
+        &[marker, Value::Integer(4)],
         &mut env,
     )
     .expect("marker set");
@@ -22551,7 +22489,7 @@ fn command_remapping_finds_fresh_remap_bindings() {
     let remapped = call(
         &mut interp,
         "command-remapping",
-        &[Value::Symbol("foo".into()), Value::Nil, map.clone()],
+        &[Value::Symbol("foo".into()), Value::Nil, map],
         &mut env,
     )
     .expect("command-remapping resolves");
@@ -23264,7 +23202,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
         &mut interp,
         "split-window-internal",
         &[
-            upper_left.clone(),
+            upper_left,
             Value::Integer(11),
             Value::Nil,
             Value::float(0.5),
@@ -23275,12 +23213,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
     let upper_right = call(
         &mut interp,
         "split-window-internal",
-        &[
-            upper_left.clone(),
-            Value::Integer(40),
-            Value::T,
-            Value::float(0.5),
-        ],
+        &[upper_left, Value::Integer(40), Value::T, Value::float(0.5)],
         &mut env,
     )
     .expect("split right");
@@ -23329,7 +23262,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("split");
-    let Value::Record(lower_id) = lower.clone() else {
+    let Value::Record(lower_id) = lower else {
         panic!("window record");
     };
     // The lower window shows a different buffer with its own point.
@@ -23340,13 +23273,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("buffer");
-    call(
-        &mut interp,
-        "set-window-buffer",
-        &[lower.clone(), other],
-        &mut env,
-    )
-    .expect("set-window-buffer");
+    call(&mut interp, "set-window-buffer", &[lower, other], &mut env).expect("set-window-buffer");
     {
         let saved = interp.current_buffer_id();
         let other = call(
@@ -23363,7 +23290,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     call(
         &mut interp,
         "set-window-point",
-        &[lower.clone(), Value::Integer(9)],
+        &[lower, Value::Integer(9)],
         &mut env,
     )
     .expect("set-window-point");
@@ -23432,7 +23359,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     call(
         &mut interp,
         "set-window-dedicated-p",
-        &[lower.clone(), Value::Symbol("soft".into())],
+        &[lower, Value::Symbol("soft".into())],
         &mut env,
     )
     .expect("dedicate softly");
@@ -24767,7 +24694,7 @@ fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
         let more = call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Integer(10)],
+            &[process, Value::Integer(10)],
             &mut env,
         )
         .expect("accept-process-output with a timeout");
@@ -24824,7 +24751,7 @@ fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
         let found = call(
             &mut interp,
             "re-search-backward",
-            &[Value::String(pattern.into()), bound.clone(), Value::T],
+            &[Value::String(pattern.into()), bound, Value::T],
             &mut env,
         )
         .expect("re-search-backward");

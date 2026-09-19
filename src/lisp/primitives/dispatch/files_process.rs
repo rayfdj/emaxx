@@ -671,12 +671,8 @@ define_dispatch!(
             }
             "get-file-buffer" => {
                 need_args(name, args, 1)?;
-                let expanded = string_text(&super::call(
-                    interp,
-                    "expand-file-name",
-                    &[args[0].clone()],
-                    env,
-                )?)?;
+                let expanded =
+                    string_text(&super::call(interp, "expand-file-name", &[args[0]], env)?)?;
                 Ok(buffer_visiting_exact_file_name(interp, &expanded)
                     .map(|(id, name)| Value::buffer(id, name))
                     .unwrap_or(Value::Nil))
@@ -872,13 +868,13 @@ define_dispatch!(
                 let full = args.get(1).is_some_and(Value::is_truthy);
                 let id_format = args.get(4).cloned().unwrap_or(Value::Nil);
                 let mut directory_files_args = vec![
-                    args[0].clone(),
+                    args[0],
                     args.get(1).cloned().unwrap_or(Value::Nil),
                     args.get(2).cloned().unwrap_or(Value::Nil),
                     args.get(3).cloned().unwrap_or(Value::Nil),
                 ];
                 if let Some(count) = args.get(5) {
-                    directory_files_args.push(count.clone());
+                    directory_files_args.push(*count);
                 }
                 let file_names =
                     super::call(interp, "directory-files", &directory_files_args, env)?;
@@ -898,7 +894,7 @@ define_dispatch!(
                         let attributes = super::call(
                             interp,
                             "file-attributes",
-                            &[Value::String(attribute_path.into()), id_format.clone()],
+                            &[Value::String(attribute_path.into()), id_format],
                             env,
                         )?;
                         Ok(Value::cons(name_value, attributes))
@@ -1408,7 +1404,7 @@ define_dispatch!(
                 } else if args[1].cons_values().is_some() {
                     args[1].to_vec()?
                 } else {
-                    vec![args[1].clone()]
+                    vec![args[1]]
                 };
                 let flags = aspects
                     .iter()
@@ -1417,14 +1413,14 @@ define_dispatch!(
                             crate::lisp::primitives::file_notify_error_with_errno(
                                 "Unknown aspect",
                                 &std::io::Error::from_raw_os_error(libc::EINVAL),
-                                aspect.clone(),
+                                *aspect,
                             )
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 interp.validate_inotify_aspects(&flags)?;
                 let path = string_text(&args[0])?;
-                interp.register_inotify_file_notify_watch(path, flags, args[2].clone())
+                interp.register_inotify_file_notify_watch(path, flags, args[2])
             }
             #[cfg(target_os = "linux")]
             "inotify-rm-watch" => {
@@ -1440,7 +1436,7 @@ define_dispatch!(
                     return Err(crate::lisp::primitives::file_notify_error_with_errno(
                         "Invalid descriptor ",
                         &std::io::Error::last_os_error(),
-                        args[0].clone(),
+                        args[0],
                     ));
                 }
                 interp.remove_inotify_file_notify_watch(&args[0])?;
@@ -1474,7 +1470,7 @@ define_dispatch!(
                     .filter_map(|flag| flag.as_symbol().ok().map(str::to_string))
                     .collect::<Vec<_>>();
                 if !function_value_p(interp, &args[2], env) {
-                    return Err(wrong_type_argument("invalid-function", args[2].clone()));
+                    return Err(wrong_type_argument("invalid-function", args[2]));
                 }
                 // kqueue.c deliberately reserves fifty descriptors for the
                 // rest of Emacs and reports `file-notify-error' before a
@@ -1522,7 +1518,7 @@ define_dispatch!(
                     descriptor,
                     (!remote_watch).then_some(path),
                     flags,
-                    args[2].clone(),
+                    args[2],
                 )?;
                 Ok(Value::Integer(descriptor))
             }
@@ -1532,7 +1528,7 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("file-notify-error".into()),
                         Value::String("Not a watch descriptor".into()),
-                        args[0].clone(),
+                        args[0],
                     ])));
                 }
                 Ok(Value::T)
@@ -1692,7 +1688,7 @@ define_dispatch!(
                 let names = match super::call(
                     interp,
                     "file-name-all-completions",
-                    &[args[0].clone(), args[1].clone()],
+                    &[args[0], args[1]],
                     env,
                 ) {
                     Ok(names) => names,
@@ -1721,11 +1717,7 @@ define_dispatch!(
                 let result = (|| {
                     let matches = all_completions(
                         interp,
-                        &[
-                            args[0].clone(),
-                            names,
-                            args.get(2).cloned().unwrap_or(Value::Nil),
-                        ],
+                        &[args[0], names, args.get(2).cloned().unwrap_or(Value::Nil)],
                         env,
                     )?
                     .to_vec()?;
@@ -1760,11 +1752,7 @@ define_dispatch!(
                     } else {
                         preferred
                     };
-                    try_completion(
-                        interp,
-                        &[args[0].clone(), Value::list(candidates), Value::Nil],
-                        env,
-                    )
+                    try_completion(interp, &[args[0], Value::list(candidates), Value::Nil], env)
                 })();
                 let restore_result = interp.restore_special_dynamic(restore, env);
                 match (result, restore_result) {
@@ -1997,8 +1985,8 @@ define_dispatch!(
             "set-process-plist" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                interp.set_process_plist_value(process_id, args[1].clone());
-                Ok(args[1].clone())
+                interp.set_process_plist_value(process_id, args[1]);
+                Ok(args[1])
             }
             "process-attributes" => {
                 need_args(name, args, 1)?;
@@ -2041,13 +2029,13 @@ define_dispatch!(
                 let filter = if args[1].is_nil() {
                     None
                 } else {
-                    Some(args[1].clone())
+                    Some(args[1])
                 };
                 interp.set_process_filter(process_id, filter)?;
                 Ok(if args[1].is_nil() {
                     Value::symbol("internal-default-process-filter")
                 } else {
-                    args[1].clone()
+                    args[1]
                 })
             }
             "internal-default-process-sentinel" => {
@@ -2060,12 +2048,12 @@ define_dispatch!(
             "set-process-sentinel" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
+                let sentinel = (!args[1].is_nil()).then(|| args[1]);
                 interp.set_process_sentinel(process_id, sentinel);
                 Ok(if args[1].is_nil() {
                     Value::symbol("internal-default-process-sentinel")
                 } else {
-                    args[1].clone()
+                    args[1]
                 })
             }
             "set-process-buffer" => {
@@ -2077,7 +2065,7 @@ define_dispatch!(
                     Some(interp.resolve_buffer_id(&args[1])?)
                 };
                 interp.set_process_buffer_id(process_id, buffer_id);
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "process-sentinel" => {
                 need_args(name, args, 1)?;
@@ -2100,7 +2088,7 @@ define_dispatch!(
                     Some(interp.resolve_thread_id(&args[1])?)
                 };
                 interp.set_process_thread_id(process_id, thread_id)?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "process-datagram-address" => {
                 need_args(name, args, 1)?;
@@ -2118,7 +2106,7 @@ define_dispatch!(
                 };
                 Ok(
                     if interp.set_process_datagram_address(process_id, address)? {
-                        args[1].clone()
+                        args[1]
                     } else {
                         Value::Nil
                     },
@@ -2143,7 +2131,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 interp.set_process_inherit_coding_system_flag(process_id, args[1].is_truthy())?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "set-process-window-size" => {
                 need_args(name, args, 3)?;
@@ -2190,7 +2178,7 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("error".into()),
                         Value::String("Unknown stream".into()),
-                        stream.clone(),
+                        *stream,
                     ])));
                 }
                 // process.c: the name of the process's terminal, nil for a
@@ -2207,7 +2195,7 @@ define_dispatch!(
             "get-process" => {
                 need_args(name, args, 1)?;
                 if matches!(&args[0], Value::Record(_)) {
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 }
                 let requested = string_text(&args[0])?;
                 Ok(interp
@@ -2276,12 +2264,12 @@ define_dispatch!(
                 // into "Unknown or unsupported option".
                 let raw = args[1]
                     .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                    .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
                 let option = crate::lisp::types::visible_symbol_name(raw).to_string();
                 if set_socket_option(fd, &option, &args[1], &args[2])? {
                     // process.c:2990 records the accepted option on the
                     // process's contact plist, which `process-contact' reads.
-                    interp.put_process_contact_option(process_id, &args[1], args[2].clone());
+                    interp.put_process_contact_option(process_id, &args[1], args[2]);
                     return Ok(Value::T);
                 }
                 // process.c:2994-2997.
@@ -2415,7 +2403,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 interp.set_process_query_on_exit_flag(process_id, args[1].is_truthy())?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "process-query-on-exit-flag" => {
                 need_args(name, args, 1)?;
@@ -2454,8 +2442,8 @@ define_dispatch!(
                     "run-hook-with-args-until-success",
                     &[
                         Value::symbol("signal-process-functions"),
-                        args[0].clone(),
-                        args[1].clone(),
+                        args[0],
+                        args[1],
                         args.get(2).cloned().unwrap_or(Value::Nil),
                     ],
                     env,
@@ -2483,7 +2471,7 @@ define_dispatch!(
             "process-send-eof" => {
                 need_arg_range(name, args, 0, 1)?;
                 let process = match args.first() {
-                    Some(value) if !value.is_nil() => value.clone(),
+                    Some(value) if !value.is_nil() => *value,
                     _ => call(interp, "get-buffer-process", &[Value::Nil], env)?,
                 };
                 let process_id = interp.resolve_process_id(&process)?;
@@ -2616,10 +2604,7 @@ define_dispatch!(
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
                 {
-                    return Err(LispError::WrongTypeArgument(
-                        "stringp".into(),
-                        base_url.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("stringp".into(), *base_url));
                 }
                 let source = interp
                     .buffer
@@ -2894,7 +2879,7 @@ define_dispatch!(
                 let marker_id = marker_id_from_value(&args[0])?;
                 let (position, buffer_id) = marker_target(interp, &args[1], args.get(2))?;
                 interp.set_marker(marker_id, position, buffer_id)?;
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "region-beginning" => match interp.buffer.region() {
                 Some((beg, _)) => Ok(Value::Integer(beg as i64)),
@@ -2919,7 +2904,7 @@ fn process_designator_value(
     let requested = designator.cloned().unwrap_or(Value::Nil);
     let process = match designator {
         None | Some(Value::Nil) => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Value::Record(_)) => Some(process.clone()),
+        Some(process @ Value::Record(_)) => Some(*process),
         Some(value) if string_like(value).is_some() => {
             let name = string_text(value)?;
             interp
@@ -3456,8 +3441,8 @@ fn set_socket_option(
             Value::symbol("file-error"),
             Value::string("Cannot set network option"),
             Value::string(&super::super::processes::network_io_error_detail(&error)),
-            option_symbol.clone(),
-            value.clone(),
+            *option_symbol,
+            *value,
         ])));
     }
     Ok(true)

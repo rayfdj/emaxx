@@ -163,9 +163,9 @@ impl Interpreter {
             .rev()
             .find(|(registered, _)| registered == name)
         {
-            *existing = plist.clone();
+            *existing = plist;
         } else {
-            self.charset_plists.push((name.to_string(), plist.clone()));
+            self.charset_plists.push((name.to_string(), plist));
         }
         // charset.c Fdefine_charset_internal: a charset with an ISO final
         // byte enters the ISO_CHARSET_TABLE slot for its dimension and
@@ -174,7 +174,7 @@ impl Interpreter {
         let items = plist.to_vec().unwrap_or_default();
         let property = |key: &str| {
             items.windows(2).find_map(|pair| {
-                matches!(&pair[0], Value::Symbol(name) if name == key).then(|| pair[1].clone())
+                matches!(&pair[0], Value::Symbol(name) if name == key).then(|| pair[1])
             })
         };
         if let Some(final_char) = property(":iso-final-char")
@@ -251,7 +251,7 @@ impl Interpreter {
             .iter()
             .rev()
             .find(|(charset, _)| charset == &canonical)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
     }
 
     pub fn set_charset_plist_value(&mut self, name: &str, value: Value) -> Result<(), LispError> {
@@ -814,7 +814,7 @@ impl Interpreter {
                 .windows(2)
                 .find_map(|pair| {
                     matches!(&pair[0], Value::Symbol(key) if key == ":charset-list")
-                        .then(|| pair[1].clone())
+                        .then(|| pair[1])
                 })
                 .and_then(|list| list.to_vec().ok())
                 .and_then(|charsets| charsets.first().cloned())
@@ -846,8 +846,7 @@ impl Interpreter {
             let g0_ascii_compatible = items
                 .windows(2)
                 .find_map(|pair| {
-                    matches!(&pair[0], Value::Symbol(key) if key == ":designation")
-                        .then(|| pair[1].clone())
+                    matches!(&pair[0], Value::Symbol(key) if key == ":designation").then(|| pair[1])
                 })
                 .and_then(|designation| designation.to_vec().ok())
                 .and_then(|values| {
@@ -902,7 +901,7 @@ impl Interpreter {
             eol_type,
             plist: Value::list(items),
             category,
-            charset_list: charset_list.clone(),
+            charset_list,
             default_char: default_char.unwrap_or(b' ' as u32),
             type_args: type_args.clone(),
         };
@@ -936,9 +935,9 @@ impl Interpreter {
                     base: name.to_string(),
                     kind: definition.kind.clone(),
                     eol_type: Some(variant_eol),
-                    plist: definition.plist.clone(),
+                    plist: definition.plist,
                     category: definition.category,
-                    charset_list: definition.charset_list.clone(),
+                    charset_list: definition.charset_list,
                     default_char: definition.default_char,
                     type_args: definition.type_args.clone(),
                 };

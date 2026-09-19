@@ -6,7 +6,7 @@ pub(crate) fn call_function_value(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    interp.call_function_value(function.clone(), None, args, env)
+    interp.call_function_value(*function, None, args, env)
 }
 
 pub(crate) fn run_change_hooks(
@@ -269,7 +269,7 @@ pub(crate) fn safe_run_named_hooks(
                     &[
                         Value::String("Error in %s (%S): %S".into()),
                         Value::symbol(hook_name),
-                        hook.clone(),
+                        hook,
                         condition,
                     ],
                     env,
@@ -445,7 +445,7 @@ pub(crate) fn overlay_hook_functions(
     match overlay.get_prop(&Value::Symbol(property.into())) {
         Some(value) => value
             .to_vec()
-            .unwrap_or_else(|_| vec![value.clone()])
+            .unwrap_or_else(|_| vec![*value])
             .into_iter()
             .filter(|value| value.is_truthy())
             .collect(),
@@ -774,7 +774,7 @@ pub(crate) fn add_face_text_property(
     args: &[Value],
 ) -> Result<Value, LispError> {
     need_arg_range(name, args, 3, 5)?;
-    let face = args[2].clone();
+    let face = args[2];
     let append = args.get(3).is_some_and(|value| value.is_truthy());
     if let Some(object) = args.get(4)
         && string_like(object).is_some()
@@ -786,13 +786,13 @@ pub(crate) fn add_face_text_property(
             let previous = string_property_at(object, cursor, "face").unwrap_or(Value::Nil);
             let next = font_lock_next_string_property_change(object, cursor, end, "face");
             let updated = if previous.is_nil() {
-                face.clone()
+                face
             } else {
                 combine_font_lock_property_value("face", previous, &face, append)
             };
             modify_shared_string_properties(object, cursor, next, |mut current| {
                 current.retain(|(key, _)| key != "face");
-                current.push(("face".into(), updated.clone()));
+                current.push(("face".into(), updated));
                 current
             })?;
             cursor = next;
@@ -807,7 +807,7 @@ pub(crate) fn add_face_text_property(
     while cursor < end {
         let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, "face")?;
         let updated = if previous.is_nil() {
-            face.clone()
+            face
         } else {
             combine_font_lock_property_value("face", previous, &face, append)
         };
@@ -854,7 +854,7 @@ pub(crate) fn font_lock_put_buffer_property(
         if value.is_nil() {
             buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
         } else {
-            buffer.put_text_property(start, end, prop, value.clone());
+            buffer.put_text_property(start, end, prop, value);
         }
     });
     if !applied {
@@ -925,7 +925,7 @@ pub(crate) fn font_lock_value_items(value: &Value) -> Vec<Value> {
         Ok(items) if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol.starts_with(':')) => {
             items
         }
-        _ => vec![value.clone()],
+        _ => vec![*value],
     }
 }
 

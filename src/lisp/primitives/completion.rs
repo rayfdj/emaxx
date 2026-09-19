@@ -11,7 +11,7 @@ pub(crate) struct CompletionCandidate {
 
 fn completion_result_value(value: &Value, name: &str) -> Value {
     match value {
-        Value::String(_) | Value::StringObject(_) => value.clone(),
+        Value::String(_) | Value::StringObject(_) => *value,
         // minibuf.c's Fall_completions and Ftry_completion answer with
         // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
         // symbol's own name object, which the symbol keeps reachable (a
@@ -54,16 +54,10 @@ pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
     let Value::Record(id) = obarray else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         if record.slots.is_empty() {
@@ -79,10 +73,7 @@ pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result
         }
         record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::Nil;
     } else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     }
     Ok(Value::Nil)
 }
@@ -115,10 +106,7 @@ pub(crate) fn obarray_symbols(
         }
     }
     let Value::Record(id) = obarray else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(*id) {
         return Ok(interp
@@ -133,10 +121,7 @@ pub(crate) fn obarray_symbols(
             .collect());
     }
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         return abbrev_table_entries(interp, obarray).map(|entries| {
@@ -152,10 +137,7 @@ pub(crate) fn obarray_symbols(
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return record.slots.first().cloned().unwrap_or(Value::Nil).to_vec();
     }
-    Err(LispError::WrongTypeArgument(
-        "obarrayp".into(),
-        obarray.clone(),
-    ))
+    Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray))
 }
 
 pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
@@ -176,27 +158,21 @@ pub(crate) fn coerce_legacy_vector_obarray(
     obarray: &Value,
 ) -> Result<Value, LispError> {
     if !is_vector_value(obarray) {
-        return Ok(obarray.clone());
+        return Ok(*obarray);
     }
     let slots = vector_items(obarray)?;
     let Some(current) = slots.first().cloned() else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if is_obarray_like_value(interp, &current) {
         return Ok(current);
     }
     if matches!(current, Value::Integer(0)) {
         let fresh = make_obarray(interp);
-        aset_vector_value(obarray, 0, fresh.clone())?;
+        aset_vector_value(obarray, 0, fresh)?;
         return Ok(fresh);
     }
-    Err(LispError::WrongTypeArgument(
-        "obarrayp".into(),
-        obarray.clone(),
-    ))
+    Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray))
 }
 
 pub(crate) fn intern_in_obarray(
@@ -219,10 +195,7 @@ pub(crate) fn intern_in_obarray_with_name(
 ) -> Result<Value, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(*id) {
         if !interp.standard_obarray_contains_symbol(symbol_name) {
@@ -238,10 +211,7 @@ pub(crate) fn intern_in_obarray_with_name(
         ));
     }
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         if symbol_name.is_empty() {
@@ -259,10 +229,7 @@ pub(crate) fn intern_in_obarray_with_name(
         return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
     }
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     }
     let mut symbols = record
         .slots
@@ -282,7 +249,7 @@ pub(crate) fn intern_in_obarray_with_name(
         crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, *id),
         Some(name),
     ));
-    symbols.push(symbol.clone());
+    symbols.push(symbol);
     let record = interp.find_record_mut(*id).expect("validated obarray");
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
@@ -318,10 +285,7 @@ pub(crate) fn unintern_from_obarray(
 ) -> Result<bool, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(*id) {
         let symbol_name = match target {
@@ -339,16 +303,10 @@ pub(crate) fn unintern_from_obarray(
         return Ok(interp.unintern_standard_symbol_name(&symbol_name));
     }
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     }
     let mut symbols = record
         .slots
@@ -368,10 +326,7 @@ pub(crate) fn unintern_from_obarray(
     }
     let removed = symbols.len() != original_len;
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::WrongTypeArgument(
-            "obarrayp".into(),
-            obarray.clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
@@ -431,39 +386,39 @@ pub(crate) fn substitute_object_recurse(
     seen: &mut HashSet<(u8, usize)>,
 ) -> Result<Value, LispError> {
     if values_eq_for_substitution(subtree, placeholder) {
-        return Ok(object.clone());
+        return Ok(*object);
     }
 
     let Some(key) = substitution_visit_key(subtree) else {
-        return Ok(subtree.clone());
+        return Ok(*subtree);
     };
     if !seen.insert(key) {
-        return Ok(subtree.clone());
+        return Ok(*subtree);
     }
 
     match subtree {
         Value::Vector(vector) => {
             let slot_count = vector.slots().len();
             for index in 0..slot_count {
-                let current = vector.slots()[index].clone();
+                let current = vector.slots()[index];
                 let updated =
                     substitute_object_recurse(interp, object, placeholder, &current, seen)?;
                 vector.slots_mut()[index] = updated;
             }
-            Ok(subtree.clone())
+            Ok(*subtree)
         }
         Value::Cons(_) => {
             let Some((car, cdr)) = subtree.cons_values() else {
-                return Ok(subtree.clone());
+                return Ok(*subtree);
             };
             let Some((car_slot, cdr_slot)) = subtree.cons_cells() else {
-                return Ok(subtree.clone());
+                return Ok(*subtree);
             };
             *car_slot.borrow_mut() =
                 substitute_object_recurse(interp, object, placeholder, &car, seen)?;
             *cdr_slot.borrow_mut() =
                 substitute_object_recurse(interp, object, placeholder, &cdr, seen)?;
-            Ok(subtree.clone())
+            Ok(*subtree)
         }
         Value::StringObject(state) => {
             let mut state = state.borrow_mut();
@@ -473,7 +428,7 @@ pub(crate) fn substitute_object_recurse(
                         substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
                 }
             }
-            Ok(subtree.clone())
+            Ok(*subtree)
         }
         Value::Record(id) => {
             let slot_count = interp
@@ -493,16 +448,16 @@ pub(crate) fn substitute_object_recurse(
                     *slot = updated;
                 }
             }
-            Ok(subtree.clone())
+            Ok(*subtree)
         }
         Value::CharTable(id) => {
             let (default, extra_slots, entries) = match interp.find_char_table(*id) {
                 Some(table) => (
-                    table.default.clone(),
+                    table.default,
                     table.extra_slots.clone(),
                     table.entries.clone(),
                 ),
-                None => return Ok(subtree.clone()),
+                None => return Ok(*subtree),
             };
 
             let default = substitute_object_recurse(interp, object, placeholder, &default, seen)?;
@@ -528,9 +483,9 @@ pub(crate) fn substitute_object_recurse(
                 table.extra_slots = updated_slots;
                 table.replace_entries(updated_entries);
             }
-            Ok(subtree.clone())
+            Ok(*subtree)
         }
-        _ => Ok(subtree.clone()),
+        _ => Ok(*subtree),
     }
 }
 
@@ -598,12 +553,12 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
 }
 
 pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
-    let current = item.borrow().clone();
+    let current = *item.borrow();
     match current {
         Value::String(text) => {
             let shared =
                 make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
-            *item.borrow_mut() = shared.clone();
+            *item.borrow_mut() = shared;
             Ok(shared)
         }
         value => Ok(value),
@@ -614,7 +569,7 @@ pub(crate) fn completion_list_candidates(
     collection: &Value,
 ) -> Result<Vec<CompletionCandidate>, LispError> {
     let mut candidates = Vec::new();
-    let mut current = collection.clone();
+    let mut current = *collection;
     let mut seen = HashSet::new();
 
     loop {
@@ -636,7 +591,7 @@ pub(crate) fn completion_list_candidates(
                 let key = if matches!(item, Value::Cons(_)) {
                     item.car()?
                 } else {
-                    item.clone()
+                    item
                 };
                 if let Ok(name) = completion_display_name(&key) {
                     candidates.push(CompletionCandidate {
@@ -645,7 +600,7 @@ pub(crate) fn completion_list_candidates(
                         predicate_args: vec![item],
                     });
                 }
-                current = cdr.borrow().clone();
+                current = *cdr.borrow();
             }
             // minibuf.c iterates `for (tail = collection; CONSP (tail);
             // tail = XCDR (tail))': any non-cons tail simply ends the
@@ -734,7 +689,7 @@ pub(crate) fn completion_regex_matches(
     pattern: &Value,
 ) -> Result<bool, LispError> {
     let pattern = string_like(pattern)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *pattern))?;
     let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
     regex
         .is_match(candidate)
@@ -808,7 +763,7 @@ pub(crate) fn filtered_completion_matches(
             collection,
             &[
                 Value::String(input.to_string().into()),
-                predicate.clone().unwrap_or(Value::Nil),
+                predicate.unwrap_or(Value::Nil),
                 Value::T,
             ],
             env,
@@ -860,7 +815,7 @@ fn completion_collection_function(
 ) -> Result<Option<Value>, LispError> {
     let function = match collection {
         Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
-        _ if callable_value_p(interp, collection, env) => collection.clone(),
+        _ if callable_value_p(interp, collection, env) => *collection,
         _ => return Ok(None),
     };
     Ok(Some(function))
@@ -1067,17 +1022,9 @@ pub(crate) fn internal_complete_buffer(
             .collect::<Vec<_>>(),
     );
     match &args[2] {
-        Value::Nil => try_completion(
-            interp,
-            &[args[0].clone(), buffer_alist, args[1].clone()],
-            env,
-        ),
+        Value::Nil => try_completion(interp, &[args[0], buffer_alist, args[1]], env),
         Value::T => {
-            let completions = all_completions(
-                interp,
-                &[args[0].clone(), buffer_alist, args[1].clone()],
-                env,
-            )?;
+            let completions = all_completions(interp, &[args[0], buffer_alist, args[1]], env)?;
             if !input.is_empty() {
                 return Ok(completions);
             }
@@ -1095,11 +1042,9 @@ pub(crate) fn internal_complete_buffer(
                 Ok(Value::list(visible))
             }
         }
-        Value::Symbol(flag) if flag == "lambda" => test_completion(
-            interp,
-            &[args[0].clone(), buffer_alist, args[1].clone()],
-            env,
-        ),
+        Value::Symbol(flag) if flag == "lambda" => {
+            test_completion(interp, &[args[0], buffer_alist, args[1]], env)
+        }
         Value::Symbol(flag) if flag == "metadata" => Ok(Value::list([
             Value::Symbol("metadata".into()),
             Value::cons(
@@ -1290,7 +1235,7 @@ pub(crate) fn activate_minibuffer(
     env: &mut Env,
 ) -> Result<ActiveMinibuffer, LispError> {
     let prompt_string =
-        string_like(prompt).ok_or_else(|| wrong_type_argument("stringp", prompt.clone()))?;
+        string_like(prompt).ok_or_else(|| wrong_type_argument("stringp", *prompt))?;
     let prompt_length = prompt_string.text.chars().count();
     let initial_string = string_like(initial_input).unwrap_or_else(|| StringLike {
         text: String::new(),
@@ -1383,17 +1328,12 @@ pub(crate) fn activate_minibuffer(
                     add_face_text_property(
                         interp,
                         "add-face-text-property",
-                        &[
-                            Value::Integer(1),
-                            prompt_end.clone(),
-                            pair[1].clone(),
-                            Value::T,
-                        ],
+                        &[Value::Integer(1), prompt_end, pair[1], Value::T],
                     )?;
                 } else {
                     interp
                         .buffer
-                        .put_text_property(1, 1 + prompt_length, name, pair[1].clone());
+                        .put_text_property(1, 1 + prompt_length, name, pair[1]);
                 }
             }
         }
@@ -1496,7 +1436,7 @@ fn completing_read_initial_input(args: &[Value]) -> Option<String> {
         let value = if matches!(value, Value::Cons(_)) {
             value.car().ok()?
         } else {
-            value.clone()
+            *value
         };
         string_like(&value)
             .map(|string| string.text)
@@ -1562,7 +1502,7 @@ fn completing_read_contents(
         interp,
         "read-from-minibuffer",
         &[
-            args[0].clone(),
+            args[0],
             initial_input
                 .map(|text| Value::String(text.into()))
                 .unwrap_or(Value::Nil),
@@ -1850,7 +1790,7 @@ fn apply_minibuffer_completion(
             &Value::Symbol("completion-try-completion".into()),
             &[
                 Value::String(current.into()),
-                collection.clone(),
+                *collection,
                 predicate.cloned().unwrap_or(Value::Nil),
                 Value::Integer(*cursor as i64),
             ],
@@ -2047,7 +1987,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
     let history_variable = match history_spec {
         Value::Nil => Value::Symbol("minibuffer-history".into()),
         Value::Cons(_) => history_spec.car().unwrap_or(Value::Nil),
-        other => other.clone(),
+        other => *other,
     };
     let history_position = history_spec
         .cdr()

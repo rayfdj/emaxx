@@ -219,7 +219,7 @@ define_dispatch!(
                     _ => {
                         return Err(LispError::WrongTypeArgument(
                             "number-or-marker-p".into(),
-                            args[0].clone(),
+                            args[0],
                         ));
                     }
                 };
@@ -621,8 +621,8 @@ define_dispatch!(
                         if start < 0 || start as usize > hay_chars.len() {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::symbol("args-out-of-range"),
-                                args[1].clone(),
-                                start_pos.clone(),
+                                args[1],
+                                *start_pos,
                             ])));
                         }
                         start as usize

@@ -156,7 +156,7 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
     match function {
         Value::Record(_) => LispError::SignalValue(Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
-            function.clone(),
+            *function,
             Value::Integer(nargs as i64),
         ])),
         _ => LispError::WrongNumberOfArgs("byte-code function".into(), nargs),
@@ -330,7 +330,7 @@ fn unwind_one(
             interp.with_lisp_stack_roots(&handler, |interp| {
                 let is_function = prim(interp, "functionp", std::slice::from_ref(&handler), env)?;
                 if is_function.is_truthy() {
-                    interp.call_function_value(handler.clone(), None, &[], env)?;
+                    interp.call_function_value(handler, None, &[], env)?;
                 } else if let Ok(forms) = handler.to_vec() {
                     for form in &forms {
                         interp.eval(form, env)?;
@@ -472,7 +472,7 @@ fn run_fast(
         match op {
             Op::StackRef(n) => {
                 let index = ops.len() - 1 - n as usize;
-                let value = ops[index].clone();
+                let value = ops[index];
                 ops.push_within_frame(value);
             }
             Op::StackSet(n) => {
@@ -482,7 +482,7 @@ fn run_fast(
                 std::mem::replace(&mut ops[slot], value).discard();
             }
             Op::Dup => {
-                let top = ops.last().expect("validated bytecode").clone();
+                let top = *ops.last().expect("validated bytecode");
                 ops.push_within_frame(top);
             }
             Op::Discard => {
@@ -667,9 +667,9 @@ fn run_fast(
                 let replacement = match ops.last().expect("validated bytecode") {
                     Value::Cons(cell) => {
                         if matches!(op, Op::Car | Op::CarSafe) {
-                            cell.car.borrow().clone()
+                            *cell.car.borrow()
                         } else {
-                            cell.cdr.borrow().clone()
+                            *cell.cdr.borrow()
                         }
                     }
                     Value::Nil => continue,
@@ -716,7 +716,7 @@ impl CachedProgram {
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
         // captured during decoding. End the borrow before Lisp can run.
-        self.constants.slots()[usize::from(index)].clone()
+        self.constants.slots()[usize::from(index)]
     }
 }
 
@@ -869,7 +869,7 @@ fn run_frames(
             // Allocation belongs to their producers; copying a string here
             // splits aliases and shared compiler constants.
             for value in &args[..pushed] {
-                interp.bc_stack.push(value.clone())?;
+                interp.bc_stack.push(*value)?;
             }
             if args.len() > nonrest {
                 interp
@@ -898,7 +898,7 @@ fn run_frames(
                     other => {
                         let error = LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
-                            other.clone(),
+                            *other,
                         ]));
                         return Err(error);
                     }
@@ -914,7 +914,7 @@ fn run_frames(
                 let value = if rest {
                     Value::list(args[index.min(args.len())..].iter().cloned())
                 } else if index < args.len() {
-                    args[index].clone()
+                    args[index]
                 } else if optional {
                     Value::Nil
                 } else {
@@ -1037,7 +1037,7 @@ fn run_frames(
             // Anything that falls through runs the full arm below.
             match op {
                 Op::StackRef(n) => {
-                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize].clone();
+                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
                     push!(value);
                     continue;
                 }
@@ -1048,7 +1048,7 @@ fn run_frames(
                     continue;
                 }
                 Op::Dup => {
-                    let top = interp.bc_stack.last().expect("validated bytecode").clone();
+                    let top = *interp.bc_stack.last().expect("validated bytecode");
                     push!(top);
                     continue;
                 }
@@ -1132,7 +1132,7 @@ fn run_frames(
                     let len = interp.bc_stack.len();
                     if let (Value::Integer(x), Value::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2].clone(), operands[len - 1].clone())
+                        (operands[len - 2], operands[len - 1])
                     } {
                         let fast = match op {
                             Op::Plus => x.checked_add(y),
@@ -1150,7 +1150,7 @@ fn run_frames(
                     let len = interp.bc_stack.len();
                     if let (Value::Integer(x), Value::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2].clone(), operands[len - 1].clone())
+                        (operands[len - 2], operands[len - 1])
                     } {
                         // checked_div/checked_rem refuse y == 0 and the MIN/-1
                         // overflow, which fall through to the full arithmetic
@@ -1170,7 +1170,7 @@ fn run_frames(
                     let len = interp.bc_stack.len();
                     if let (Value::Integer(x), Value::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2].clone(), operands[len - 1].clone())
+                        (operands[len - 2], operands[len - 1])
                     } {
                         let holds = match op {
                             Op::Eqlsign => x == y,
@@ -1200,7 +1200,7 @@ fn run_frames(
                 }
                 Op::Aref => {
                     let len = interp.bc_stack.len();
-                    if let Value::Integer(index) = { interp.bc_stack[len - 1].clone() }
+                    if let Value::Integer(index) = { interp.bc_stack[len - 1] }
                         && index >= 0
                         && let Some(value) = {
                             let operands = &interp.bc_stack;
@@ -1218,7 +1218,7 @@ fn run_frames(
                 Op::Aset => {
                     // Stack: [.. vector index value]; aset returns the value.
                     let len = interp.bc_stack.len();
-                    if let Value::Integer(index) = { interp.bc_stack[len - 2].clone() }
+                    if let Value::Integer(index) = { interp.bc_stack[len - 2] }
                         && index >= 0
                         && {
                             let operands = &interp.bc_stack;
@@ -1251,9 +1251,9 @@ fn run_frames(
                         match operands.last().expect("validated bytecode") {
                             Value::Cons(cell) => {
                                 Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
-                                    cell.car.borrow().clone()
+                                    *cell.car.borrow()
                                 } else {
-                                    cell.cdr.borrow().clone()
+                                    *cell.cdr.borrow()
                                 })
                             }
                             Value::Nil => Step::Keep,
@@ -1282,7 +1282,7 @@ fn run_frames(
             // handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
             match op {
                 Op::StackRef(n) => {
-                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize].clone();
+                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
                     push!(value);
                 }
                 Op::StackSet(n) => {
@@ -1311,7 +1311,7 @@ fn run_frames(
                     pop!();
                 }
                 Op::Dup => {
-                    let top = interp.bc_stack.last().expect("validated bytecode").clone();
+                    let top = *interp.bc_stack.last().expect("validated bytecode");
                     push!(top);
                 }
                 Op::Constant(index) | Op::Constant2(index) => {
@@ -1453,8 +1453,7 @@ fn run_frames(
                         interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
                             match interp.eval(&body, env) {
                                 Err(LispError::Throw(thrown, thrown_value))
-                                    if prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?
-                                        .is_truthy() =>
+                                    if prim(interp, "eq", &[tag, thrown], env)?.is_truthy() =>
                                 {
                                     Ok(thrown_value)
                                 }
@@ -1487,8 +1486,7 @@ fn run_frames(
                     let _ = interp.set_current_buffer_id(buffer_id);
                     prim(interp, "erase-buffer", &[], env)?;
                     let _ = interp.set_current_buffer_id(saved);
-                    let restore =
-                        interp.bind_special_variable("standard-output", buffer.clone(), env)?;
+                    let restore = interp.bind_special_variable("standard-output", buffer, env)?;
                     interp.bc_unwinds.push(UnwindEntry::Binding(restore));
                     push!(buffer);
                 }
@@ -1638,7 +1636,7 @@ fn run_frames(
                     // Bcall: the function is TOP below the arguments; both
                     // stay on the stack until the call returns (GNU keeps
                     // them rooted the same way).
-                    let func = interp.bc_stack[args_start - 1].clone();
+                    let func = interp.bc_stack[args_start - 1];
                     // The fast path for a lexbound byte-code function whose
                     // program is cached: its frame is laid out above the
                     // arguments and the loop continues in it (bytecode.c's
@@ -1657,7 +1655,7 @@ fn run_frames(
                         let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
                         interp.push_backtrace_frame_borrowed(
                             match &func {
-                                Value::Symbol(_) => func.clone(),
+                                Value::Symbol(_) => func,
                                 _ => Value::Record(callee_id),
                             },
                             call_args,
@@ -1707,7 +1705,7 @@ fn run_frames(
                             return Err(stack_overflow());
                         }
                         for index in 0..pushed {
-                            let argument = interp.bc_stack[args_start + index].clone();
+                            let argument = interp.bc_stack[args_start + index];
                             push!(argument);
                         }
                         if argc > nonrest {
@@ -1787,7 +1785,7 @@ fn run_frames(
                     // `throw' consults the interpreter's active-catch
                     // registry before unwinding; a VM catch frame must be
                     // visible there like any `sf_catch' frame.
-                    interp.push_active_catch_tag(tag.clone());
+                    interp.push_active_catch_tag(tag);
                     handlers.push(Handler {
                         kind: HandlerKind::Catch(tag),
                         dest: target as usize,
@@ -1802,8 +1800,7 @@ fn run_frames(
                     // signal-time `handler-bind' dispatch at native-call
                     // boundaries sees this frame before any outer handler,
                     // exactly like an interpreted `condition-case'.
-                    let registry_start =
-                        interp.push_condition_case_handler(vec![conditions.clone()]);
+                    let registry_start = interp.push_condition_case_handler(vec![conditions]);
                     handlers.push(Handler {
                         kind: HandlerKind::ConditionCase(conditions),
                         dest: target as usize,
@@ -2002,11 +1999,11 @@ fn run_frames(
                     let a = pop!();
                     match (&a, op) {
                         (Value::Cons(cell), Op::Car | Op::CarSafe) => {
-                            let value = cell.car.borrow().clone();
+                            let value = *cell.car.borrow();
                             push!(value);
                         }
                         (Value::Cons(cell), _) => {
-                            let value = cell.cdr.borrow().clone();
+                            let value = *cell.cdr.borrow();
                             push!(value);
                         }
                         (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
@@ -2171,12 +2168,8 @@ fn run_frames(
                         }
                         let matched_value = match (&handler.kind, &error) {
                             (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
-                                let same = prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
-                                if same.is_truthy() {
-                                    Some(value.clone())
-                                } else {
-                                    None
-                                }
+                                let same = prim(interp, "eq", &[*tag, *thrown], env)?;
+                                if same.is_truthy() { Some(*value) } else { None }
                             }
                             (HandlerKind::ConditionCase(_), LispError::Throw(_, _))
                             | (HandlerKind::ConditionCase(_), LispError::Terminate(_))
@@ -2635,30 +2628,25 @@ mod native_surface_tests {
         let function = prim(
             &mut interp,
             "make-byte-code",
-            &[
-                Value::Integer(0),
-                code,
-                constants.clone(),
-                Value::Integer(1),
-            ],
+            &[Value::Integer(0), code, constants, Value::Integer(1)],
             &mut env,
         )
         .expect("alloc.c:Fmake_byte_code retains the supplied constants vector");
         let stored = prim(
             &mut interp,
             "aref",
-            &[function.clone(), Value::Integer(2)],
+            &[function, Value::Integer(2)],
             &mut env,
         )
         .expect("CLOSURE_CONSTANTS");
         assert_eq!(
-            prim(&mut interp, "eq", &[constants.clone(), stored], &mut env)
+            prim(&mut interp, "eq", &[constants, stored], &mut env)
                 .expect("original vector identity"),
             Value::T,
         );
         assert_eq!(
             interp
-                .call_function_value(function.clone(), None, &[], &mut env)
+                .call_function_value(function, None, &[], &mut env)
                 .expect("first execution"),
             Value::Integer(11),
         );
@@ -2694,12 +2682,7 @@ mod native_surface_tests {
         let function = prim(
             &mut interp,
             "make-byte-code",
-            &[
-                Value::Integer(257),
-                code,
-                constants.clone(),
-                Value::Integer(3),
-            ],
+            &[Value::Integer(257), code, constants, Value::Integer(3)],
             &mut env,
         )
         .expect("bytecode function with one stack argument");
@@ -2727,12 +2710,7 @@ mod native_surface_tests {
             Vec::new(),
             false,
         );
-        let slots = [
-            Value::Integer(0),
-            code,
-            constants.clone(),
-            Value::Integer(1),
-        ];
+        let slots = [Value::Integer(0), code, constants, Value::Integer(1)];
         let object = ByteCodeObject::from_slots(&slots)
             .expect("valid bytecode")
             .expect("bytecode slots");
@@ -2801,15 +2779,10 @@ mod native_surface_tests {
         let argument = Value::String("shared constant".into());
         for _ in 0..2 {
             let returned = interp
-                .call_function_value(
-                    object.clone(),
-                    None,
-                    std::slice::from_ref(&argument),
-                    &mut env,
-                )
+                .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
                 .expect("return the original argument");
             assert_eq!(
-                prim(&mut interp, "eq", &[argument.clone(), returned], &mut env,)
+                prim(&mut interp, "eq", &[argument, returned], &mut env,)
                     .expect("compare Lisp object identity"),
                 Value::T,
                 "the argument prologue must not allocate a different string",
@@ -2840,16 +2813,10 @@ mod native_surface_tests {
         let compact = Value::String("native diagnostic".into());
         for _ in 0..2 {
             let returned = interp
-                .call_function_value(
-                    object.clone(),
-                    None,
-                    std::slice::from_ref(&compact),
-                    &mut env,
-                )
+                .call_function_value(object, None, std::slice::from_ref(&compact), &mut env)
                 .expect("bytecode returns the original argument");
             assert_eq!(
-                prim(&mut interp, "eq", &[compact.clone(), returned], &mut env)
-                    .expect("string identity"),
+                prim(&mut interp, "eq", &[compact, returned], &mut env).expect("string identity"),
                 Value::T,
             );
         }
@@ -2870,13 +2837,7 @@ mod native_surface_tests {
             .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
             .unwrap();
         assert_eq!(
-            prim(
-                &mut interp,
-                "eq",
-                &[argument.clone(), value.clone()],
-                &mut env
-            )
-            .expect("same diagnostic object"),
+            prim(&mut interp, "eq", &[argument, value], &mut env).expect("same diagnostic object"),
             Value::T,
         );
         assert_eq!(
@@ -2898,7 +2859,7 @@ mod native_surface_tests {
                 Value::Integer(1),
                 Value::Symbol("field".into()),
                 Value::Symbol("command-output".into()),
-                value.clone(),
+                value,
             ],
             &mut env,
         )
@@ -2907,11 +2868,7 @@ mod native_surface_tests {
             prim(
                 &mut interp,
                 "get-text-property",
-                &[
-                    Value::Integer(0),
-                    Value::Symbol("field".into()),
-                    argument.clone(),
-                ],
+                &[Value::Integer(0), Value::Symbol("field".into()), argument,],
                 &mut env,
             )
             .unwrap(),
@@ -2919,7 +2876,7 @@ mod native_surface_tests {
         );
         // Ferror_message_string's allocation-free (error STRING) branch
         // returns that exact string, including its properties.
-        let plain_error = Value::list([Value::symbol("error"), argument.clone()]);
+        let plain_error = Value::list([Value::symbol("error"), argument]);
         let returned = prim(
             &mut interp,
             "error-message-string",

@@ -384,7 +384,7 @@ impl Interpreter {
             .parameters
             .iter()
             .rfind(|(key, _)| key == parameter)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
     }
     pub fn set_terminal_parameter(&mut self, parameter: Value, value: Value) -> Value {
         self.set_terminal_parameter_on(self.selected_terminal_id(), parameter, value)
@@ -423,7 +423,7 @@ impl Interpreter {
                 .parameters
                 .iter()
                 .rev()
-                .map(|(key, value)| Value::cons(key.clone(), value.clone())),
+                .map(|(key, value)| Value::cons(*key, *value)),
         )
     }
     /// window.c stores the owning frame on every window, including internal
@@ -500,23 +500,13 @@ impl Interpreter {
             for (bytes, key) in &device.keys {
                 let sequence = Value::string(&String::from_utf8_lossy(bytes));
                 let event = Value::vector([Value::symbol(key)]);
-                p::call(
-                    self,
-                    "define-key",
-                    &[decode.clone(), sequence, event],
-                    &mut env,
-                )?;
+                p::call(self, "define-key", &[decode, sequence, event], &mut env)?;
             }
             let local = p::call(self, "make-sparse-keymap", &[], &mut env)?;
             let parent = self
                 .lookup_var("function-key-map", &env)
                 .unwrap_or(Value::Nil);
-            p::call(
-                self,
-                "set-keymap-parent",
-                &[local.clone(), parent],
-                &mut env,
-            )?;
+            p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
             keyboard.insert("input-decode-map".into(), decode);
             keyboard.insert("local-function-key-map".into(), local);
             self.terminals.insert(
@@ -811,7 +801,7 @@ impl Interpreter {
             .find(|terminal| terminal.id == id)
             .and_then(|terminal| terminal.keyboard.get_mut(name))
         {
-            *slot = value.clone();
+            *slot = *value;
             true
         } else {
             false

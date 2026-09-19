@@ -140,7 +140,7 @@ impl Interpreter {
         let var = match list_car(args) {
             Value::Symbol(s) => Some(s),
             Value::Nil => None,
-            other => return Err(wrong_type_argument("symbolp", other.clone())),
+            other => return Err(wrong_type_argument("symbolp", other)),
         };
         let bodyform = list_nth(args, 1);
         let handlers = list_cdr(&list_cdr(args));
@@ -177,12 +177,7 @@ impl Interpreter {
                     {
                         continue;
                     }
-                    return self.eval_condition_case_handler(
-                        var.as_ref(),
-                        val.clone(),
-                        &parts[1..],
-                        env,
-                    );
+                    return self.eval_condition_case_handler(var.as_ref(), val, &parts[1..], env);
                 }
                 Ok(val)
             }

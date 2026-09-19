@@ -281,7 +281,7 @@ impl Interpreter {
             .get(&from_buffer_id)
             .into_iter()
             .flat_map(|locals| locals.iter())
-            .map(|(name, value)| (name.as_str().to_owned(), value.clone()))
+            .map(|(name, value)| (name.as_str().to_owned(), *value))
             .collect::<Vec<_>>();
         for (name, value) in locals {
             self.set_buffer_local_value(to_buffer_id, &name, value);
@@ -339,7 +339,7 @@ impl Interpreter {
             .map(|locals| {
                 locals
                     .iter()
-                    .map(|(name, value)| (name.as_str().to_owned(), value.clone()))
+                    .map(|(name, value)| (name.as_str().to_owned(), *value))
                     .collect()
             })
             .unwrap_or_default()
@@ -620,7 +620,7 @@ impl Interpreter {
                     return None;
                 };
                 if matches {
-                    return Some(value_cell.car.borrow().clone());
+                    return Some(*value_cell.car.borrow());
                 }
                 let after = value_cell.cdr.borrow();
                 match &*after {
@@ -644,17 +644,17 @@ impl Interpreter {
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
         let index = self.symbol_property_index(name)?;
-        let mut tail = self.symbol_properties[index].1.clone();
+        let mut tail = self.symbol_properties[index].1;
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
         while let Value::Cons(cell) = tail {
-            let rest = cell.cdr.borrow().clone();
+            let rest = *cell.cdr.borrow();
             let (value_cell, next_cell) = rest.cons_cells()?;
             if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
-                return Some(value_cell.borrow().clone());
+                return Some(*value_cell.borrow());
             }
-            tail = next_cell.borrow().clone();
+            tail = *next_cell.borrow();
             if tortoise.cycle(&tail) {
                 return None;
             }
@@ -669,11 +669,11 @@ impl Interpreter {
         self.note_definition_changed();
         let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
-            let plist = self.symbol_properties[index].1.clone();
-            let mut tail = plist.clone();
+            let plist = self.symbol_properties[index].1;
+            let mut tail = plist;
             let mut tortoise = Brent::new(&tail);
             while let Value::Cons(cell) = tail {
-                let rest = cell.cdr.borrow().clone();
+                let rest = *cell.cdr.borrow();
                 let Some((value_cell, next_cell)) = (rest).cons_cells() else {
                     return;
                 };
@@ -681,7 +681,7 @@ impl Interpreter {
                     *value_cell.borrow_mut() = value;
                     return;
                 }
-                let next = next_cell.borrow().clone();
+                let next = *next_cell.borrow();
                 if next.is_nil() {
                     *next_cell.borrow_mut() =
                         Value::list([Value::Symbol(property.to_string().into()), value]);
@@ -734,7 +734,7 @@ impl Interpreter {
     /// may hide symbols in their property values, so walk iteratively with an
     /// identity guard instead of assuming a proper tree.
     pub(crate) fn intern_symbols_in_value(&mut self, value: &Value) {
-        let mut pending = vec![value.clone()];
+        let mut pending = vec![*value];
         let mut seen_cons_cells = HashSet::new();
         let mut seen_strings = HashSet::new();
         let mut seen_vectors = HashSet::new();
@@ -750,8 +750,8 @@ impl Interpreter {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
                     if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cons_cell)) {
-                        pending.push(cdr.borrow().clone());
-                        pending.push(car.borrow().clone());
+                        pending.push(*cdr.borrow());
+                        pending.push(*car.borrow());
                     }
                 }
                 Value::Vector(vector) if seen_vectors.insert(vector.identity()) => {
@@ -761,7 +761,7 @@ impl Interpreter {
                     for span in &state.borrow().props {
                         for (property, property_value) in &span.props {
                             self.intern_symbol_name(property);
-                            pending.push(property_value.clone());
+                            pending.push(*property_value);
                         }
                     }
                 }
@@ -773,7 +773,7 @@ impl Interpreter {
                 // constant vector out of the standard obarray.
                 Value::ReaderForm(form) => match form.as_ref() {
                     crate::lisp::types::ReaderForm::CircularLabel { payload, .. } => {
-                        pending.push(payload.clone());
+                        pending.push(*payload);
                     }
                     crate::lisp::types::ReaderForm::CircularReference(_) => {}
                     crate::lisp::types::ReaderForm::HashTable { fields }
@@ -825,8 +825,8 @@ impl Interpreter {
                     .cons
                     .insert(crate::lisp::types::ConsCell::identity(&cell))
                 {
-                    let car = cell.car.borrow().clone();
-                    let cdr = cell.cdr.borrow().clone();
+                    let car = *cell.car.borrow();
+                    let cdr = *cell.cdr.borrow();
                     let car = self.intern_read_symbols_in_obarray(car, obarray, seen)?;
                     let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen)?;
                     *cell.car.borrow_mut() = car;
@@ -846,11 +846,8 @@ impl Interpreter {
                 let mut borrowed = state.borrow_mut();
                 for span in &mut borrowed.props {
                     for (_, property_value) in &mut span.props {
-                        *property_value = self.intern_read_symbols_in_obarray(
-                            property_value.clone(),
-                            obarray,
-                            seen,
-                        )?;
+                        *property_value =
+                            self.intern_read_symbols_in_obarray(*property_value, obarray, seen)?;
                     }
                 }
                 drop(borrowed);
@@ -862,11 +859,7 @@ impl Interpreter {
                 let mapped = match form.as_ref() {
                     ReaderForm::CircularLabel { id, payload } => ReaderForm::CircularLabel {
                         id: *id,
-                        payload: self.intern_read_symbols_in_obarray(
-                            payload.clone(),
-                            obarray,
-                            seen,
-                        )?,
+                        payload: self.intern_read_symbols_in_obarray(*payload, obarray, seen)?,
                     },
                     ReaderForm::CircularReference(id) => ReaderForm::CircularReference(*id),
                     ReaderForm::HashTable { fields } => ReaderForm::HashTable {
@@ -928,18 +921,18 @@ impl Interpreter {
         let Some(index) = self.symbol_property_index(name) else {
             return;
         };
-        let mut tail = self.symbol_properties[index].1.clone();
+        let mut tail = self.symbol_properties[index].1;
         let mut previous_value_cell: Option<Value> = None;
         let mut seen = HashSet::new();
         while let Value::Cons(cell) = tail {
             if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                 return;
             }
-            let rest = cell.cdr.borrow().clone();
+            let rest = *cell.cdr.borrow();
             let Some((_, next_cell)) = rest.cons_cells() else {
                 return;
             };
-            let next = next_cell.borrow().clone();
+            let next = *next_cell.borrow();
             if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
                 self.note_definition_changed();
                 if let Some(previous) = previous_value_cell {
@@ -962,7 +955,7 @@ impl Interpreter {
 
     pub fn symbol_plist(&self, name: &str) -> Value {
         self.symbol_property_index(name)
-            .map(|index| self.symbol_properties[index].1.clone())
+            .map(|index| self.symbol_properties[index].1)
             .unwrap_or(Value::Nil)
     }
 
@@ -977,11 +970,11 @@ impl Interpreter {
                 self.note_obarray_removal();
             }
         } else if let Some(existing) = self.symbol_property_index(name) {
-            self.symbol_properties[existing].1 = Self::stored_value(plist.clone());
+            self.symbol_properties[existing].1 = Self::stored_value(plist);
         } else {
             let index = self.symbol_properties.len();
             self.symbol_properties
-                .push((name.to_string(), Self::stored_value(plist.clone())));
+                .push((name.to_string(), Self::stored_value(plist)));
             self.symbol_properties_index.insert(name.to_string(), index);
             self.note_symbol_plist_added(name, index);
         }
@@ -1019,11 +1012,11 @@ impl Interpreter {
                 .iter()
                 .any(|existing| existing == &watcher)
             {
-                self.variable_watchers[index].1.push(watcher.clone());
+                self.variable_watchers[index].1.push(watcher);
             }
         } else {
             self.variable_watchers
-                .push((SymbolName::intern_str(&resolved), vec![watcher.clone()]));
+                .push((SymbolName::intern_str(&resolved), vec![watcher]));
         }
         // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
         // symbol's stores notify from now on.
@@ -1046,7 +1039,7 @@ impl Interpreter {
                 self.variable_watchers.remove(index);
             }
         }
-        Ok(watcher.clone())
+        Ok(*watcher)
     }
 
     pub fn clear_variable_watchers(&mut self, name: &str) {
@@ -1092,9 +1085,9 @@ impl Interpreter {
                 None,
                 &[
                     Value::Symbol(name.to_string().into()),
-                    value.clone(),
+                    value,
                     Value::Symbol(action.to_string().into()),
-                    buffer.clone(),
+                    buffer,
                 ],
                 env,
             )?;
@@ -1386,11 +1379,11 @@ impl Interpreter {
             return;
         }
         match name {
-            "quit-flag" => self.quit_flag = value.clone(),
-            "inhibit-quit" => self.inhibit_quit = value.clone(),
-            "throw-on-input" => self.throw_on_input = value.clone(),
-            "overriding-plist-environment" => self.overriding_plist_environment = value.clone(),
-            "load-path" => self.load_path = value.clone(),
+            "quit-flag" => self.quit_flag = *value,
+            "inhibit-quit" => self.inhibit_quit = *value,
+            "throw-on-input" => self.throw_on_input = *value,
+            "overriding-plist-environment" => self.overriding_plist_environment = *value,
+            "load-path" => self.load_path = *value,
             "max-lisp-eval-depth" => {
                 if let Ok(depth) = value.as_integer() {
                     self.max_lisp_eval_depth = depth;
@@ -1406,11 +1399,11 @@ impl Interpreter {
 
     pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
         match name {
-            "quit-flag" => Some(self.quit_flag.clone()),
-            "inhibit-quit" => Some(self.inhibit_quit.clone()),
-            "throw-on-input" => Some(self.throw_on_input.clone()),
-            "overriding-plist-environment" => Some(self.overriding_plist_environment.clone()),
-            "load-path" => Some(self.load_path.clone()),
+            "quit-flag" => Some(self.quit_flag),
+            "inhibit-quit" => Some(self.inhibit_quit),
+            "throw-on-input" => Some(self.throw_on_input),
+            "overriding-plist-environment" => Some(self.overriding_plist_environment),
+            "load-path" => Some(self.load_path),
             "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
                 self.max_lisp_eval_depth,
             )),
@@ -1463,7 +1456,7 @@ impl Interpreter {
     }
 
     pub(crate) fn quit_flag_value(&self) -> Value {
-        self.quit_flag.clone()
+        self.quit_flag
     }
 
     pub(crate) fn inhibit_quit_is_truthy(&self) -> bool {
@@ -1471,11 +1464,11 @@ impl Interpreter {
     }
 
     pub(crate) fn throw_on_input_value(&self) -> Value {
-        self.throw_on_input.clone()
+        self.throw_on_input
     }
 
     pub(crate) fn overriding_plist_environment_value(&self) -> Value {
-        self.overriding_plist_environment.clone()
+        self.overriding_plist_environment
     }
 
     /// fns.c:Fget's `NILP (Voverriding_plist_environment)' read.
@@ -1643,7 +1636,7 @@ impl Interpreter {
                 .binding_buffer_id
                 .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
-                value = restore.previous.clone();
+                value = restore.previous;
             } else {
                 break;
             }
@@ -1674,7 +1667,7 @@ impl Interpreter {
                 .binding_buffer_id
                 .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
-                value = restore.previous.clone();
+                value = restore.previous;
             } else {
                 break;
             }
@@ -1690,7 +1683,7 @@ impl Interpreter {
                     && restore.name == name
                     && matches!(restore.scope, SpecialBindingScope::Global)
             })
-            .map(|restore| restore.previous.clone())
+            .map(|restore| restore.previous)
     }
 
     pub(super) fn active_buffer_local_toplevel_value(
@@ -1705,7 +1698,7 @@ impl Interpreter {
                     && restore.name == name
                     && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
             })
-            .map(|restore| restore.previous.clone())
+            .map(|restore| restore.previous)
     }
 
     pub(super) fn set_active_global_toplevel_value(
@@ -1770,7 +1763,7 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        if !self.set_active_global_toplevel_value(&resolved, Some(value.clone())) {
+        if !self.set_active_global_toplevel_value(&resolved, Some(value)) {
             self.set_global_binding(&resolved, value);
         }
     }
@@ -1789,7 +1782,7 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        if !self.set_active_buffer_local_toplevel_value(buffer_id, &resolved, Some(value.clone())) {
+        if !self.set_active_buffer_local_toplevel_value(buffer_id, &resolved, Some(value)) {
             self.set_buffer_local_value(buffer_id, &resolved, value);
         }
     }
@@ -2175,7 +2168,7 @@ impl Interpreter {
         self.next_special_binding_id += 1;
         if name == "buffer-undo-list" {
             let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer);
-            self.notify_variable_watchers(name, value.clone(), "let", Some(buffer_id), env)?;
+            self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
             let previous_undo_state = self.buffer.take_undo_state();
             self.set_symbol_value_cell_resolved(&resolved, value);
             let restore = SpecialBindingRestore {
@@ -2196,13 +2189,7 @@ impl Interpreter {
         // bound or void, makes the let SPECPDL_LET_LOCAL.
         let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
             let previous = Some(local.unwrap_or(Value::Unbound));
-            self.notify_variable_watchers_symbol(
-                &resolved,
-                value.clone(),
-                "let",
-                Some(buffer_id),
-                env,
-            )?;
+            self.notify_variable_watchers_symbol(&resolved, value, "let", Some(buffer_id), env)?;
             self.set_buffer_local_value_symbol(buffer_id, &resolved, value);
             SpecialBindingRestore {
                 binding_id,
@@ -2235,13 +2222,7 @@ impl Interpreter {
                 .globals
                 .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
                 .then_some(buffer_id);
-            self.notify_variable_watchers_symbol(
-                &resolved,
-                value.clone(),
-                "let",
-                where_heard,
-                env,
-            )?;
+            self.notify_variable_watchers_symbol(&resolved, value, "let", where_heard, env)?;
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
@@ -2493,7 +2474,7 @@ impl Interpreter {
                 };
                 self.notify_variable_watchers_symbol(
                     &restore.name,
-                    restore.previous.clone().unwrap_or(Value::Nil),
+                    restore.previous.unwrap_or(Value::Nil),
                     action,
                     where_heard,
                     env,
@@ -2513,7 +2494,7 @@ impl Interpreter {
             SpecialBindingScope::BufferLocal(buffer_id) => {
                 self.notify_variable_watchers_symbol(
                     &restore.name,
-                    restore.previous.clone().unwrap_or(Value::Nil),
+                    restore.previous.unwrap_or(Value::Nil),
                     "unlet",
                     Some(buffer_id),
                     env,
@@ -2674,7 +2655,7 @@ impl Interpreter {
         // a path that records it) is owned.
         let function = match source_form {
             Value::Cons(cell) => FrameFunction::Form(cell.as_ptr()),
-            other => FrameFunction::Owned(other.clone()),
+            other => FrameFunction::Owned(*other),
         };
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
@@ -2892,7 +2873,7 @@ impl Interpreter {
         for frame in frames.into_iter().skip(start + index) {
             for (name, value) in frame.locals() {
                 if !merged.iter().any(|(existing, _)| existing == name) {
-                    merged.push((*name, value.clone()));
+                    merged.push((*name, *value));
                 }
             }
         }
@@ -2926,9 +2907,9 @@ impl Interpreter {
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.extend(
-            bindings.iter().map(|(conditions, handler)| {
-                ActiveHandler::Bind(conditions.clone(), handler.clone())
-            }),
+            bindings
+                .iter()
+                .map(|(conditions, handler)| ActiveHandler::Bind(conditions.clone(), *handler)),
         );
         start
     }
@@ -3096,7 +3077,7 @@ impl Interpreter {
                         continue;
                     }
                     let result = self.call_function_value(
-                        handler.clone(),
+                        *handler,
                         None,
                         std::slice::from_ref(&error_value),
                         env,
@@ -3124,7 +3105,7 @@ impl Interpreter {
         }
         self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
         if handled {
-            self.dispatched_signal = Some(error_value.clone());
+            self.dispatched_signal = Some(error_value);
             Err(LispError::SignalValue(error_value))
         } else {
             Err(error)
@@ -3276,7 +3257,7 @@ struct Brent {
 impl Brent {
     fn new(head: &Value) -> Self {
         Self {
-            tortoise: head.clone(),
+            tortoise: *head,
             power: 2,
             steps: 0,
         }
@@ -3291,7 +3272,7 @@ impl Brent {
             return true;
         }
         if self.steps == self.power {
-            self.tortoise = tail.clone();
+            self.tortoise = *tail;
             self.power <<= 1;
             self.steps = 0;
         }

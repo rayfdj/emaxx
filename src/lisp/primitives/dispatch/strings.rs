@@ -53,7 +53,7 @@ define_dispatch!(
                 if length < 0 {
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
-                let init = args[1].clone();
+                let init = args[1];
                 let items: Vec<Value> = std::iter::repeat_n(init, length as usize).collect();
                 let mut result = vec![Value::symbol("vector-literal")];
                 result.extend(items);
@@ -116,7 +116,7 @@ define_dispatch!(
             }
             "record" => {
                 need_args(name, args, 1)?;
-                Ok(interp.create_record_with_type(args[0].clone(), args[1..].to_vec()))
+                Ok(interp.create_record_with_type(args[0], args[1..].to_vec()))
             }
             "make-record" => {
                 need_args(name, args, 3)?;
@@ -125,8 +125,8 @@ define_dispatch!(
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
                 Ok(interp.create_record_with_type(
-                    args[0].clone(),
-                    std::iter::repeat_n(args[2].clone(), length as usize).collect(),
+                    args[0],
+                    std::iter::repeat_n(args[2], length as usize).collect(),
                 ))
             }
             "make-finalizer" => {
@@ -134,12 +134,9 @@ define_dispatch!(
                 // alloc.c:Fmake_finalizer: CHECK_TYPE (FUNCTIONP (function),
                 // Qfunctionp, function), then the object joins `finalizers'.
                 if !function_value_p(interp, &args[0], env) {
-                    return Err(LispError::WrongTypeArgument(
-                        "functionp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("functionp".into(), args[0]));
                 }
-                Ok(interp.make_finalizer(args[0].clone()))
+                Ok(interp.make_finalizer(args[0]))
             }
 
             // ── String operations ──
@@ -196,7 +193,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
                             Value::Symbol("sequencep".into()),
-                            a.clone(),
+                            *a,
                         ])));
                     }
                 }
@@ -297,9 +294,8 @@ define_dispatch!(
                     ));
                 }
                 // editfns.c Fsubstring's check is CHECK_ARRAY: `arrayp'.
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("arrayp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("arrayp".into(), args[0]))?;
                 let chars: Vec<char> = string.text.chars().collect();
                 let len = chars.len() as i64;
                 let from = normalize_string_index(args.get(1), 0, len)? as usize;
@@ -323,9 +319,8 @@ define_dispatch!(
             }
             "string-to-unibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 if !string.multibyte {
                     return Ok(string_like_value_with_multibyte(
                         string.text,
@@ -347,9 +342,8 @@ define_dispatch!(
             }
             "string-to-multibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 Ok(make_shared_string_value_with_multibyte(
                     string.text,
                     string.props,
@@ -358,9 +352,8 @@ define_dispatch!(
             }
             "string-make-multibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 // character.c's unibyte_char_to_multibyte under the
                 // harness's unibyte environment: a non-ASCII byte becomes
                 // an eight-bit character ((string-make-multibyte "\300")
@@ -395,9 +388,8 @@ define_dispatch!(
                 // stood here pushed RAW_BYTE8_BASE + byte into a char,
                 // which is beyond char::MAX and panicked on any 8-bit byte.
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 if string.multibyte {
                     return Ok(string_like_value_with_multibyte(
                         string.text,
@@ -414,9 +406,8 @@ define_dispatch!(
             }
             "string-make-unibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 if !string.multibyte {
                     return Ok(string_like_value_with_multibyte(
                         string.text,
@@ -442,9 +433,8 @@ define_dispatch!(
                 // and signalled beyond, which is `string-make-unibyte's
                 // business, not this primitive's.
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 if !string.multibyte {
                     return Ok(string_like_value_with_multibyte(
                         string.text,
@@ -514,7 +504,7 @@ define_dispatch!(
                     && let Some(arg) = args.get(1)
                     && string_like(arg).is_some()
                 {
-                    return Ok(arg.clone());
+                    return Ok(*arg);
                 }
                 let mut result = String::new();
                 let mut result_props = Vec::new();
@@ -865,9 +855,8 @@ define_dispatch!(
             }
             "string-to-char" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 Ok(string
                     .text
                     .chars()
@@ -918,7 +907,7 @@ define_dispatch!(
                     description.push_str(&string_text(&suffix)?);
                 }
                 interp.insert_current_buffer(&description);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "syntax-class-to-char" => {
                 need_args(name, args, 1)?;
@@ -945,9 +934,8 @@ define_dispatch!(
             }
             "string-bytes" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0]).ok_or_else(|| {
-                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
-                })?;
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 Ok(Value::Integer(string.byte_len()? as i64))
             }
             "multibyte-string-p" => {
@@ -995,10 +983,7 @@ define_dispatch!(
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
@@ -1012,10 +997,7 @@ define_dispatch!(
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "char-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
@@ -1100,9 +1082,9 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
         if let Value::Cons(entry) = &*cell.car.borrow()
             && entry.car.borrow().as_symbol().ok() == Some(property)
         {
-            return Some(entry.cdr.borrow().clone());
+            return Some(*entry.cdr.borrow());
         }
-        let rest = cell.cdr.borrow().clone();
+        let rest = *cell.cdr.borrow();
         tail = rest;
     }
 }
@@ -1110,7 +1092,7 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
 fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
     match value {
         Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(*character as u32),
-        _ => Err(wrong_type_argument("characterp", value.clone())),
+        _ => Err(wrong_type_argument("characterp", *value)),
     }
 }
 
@@ -1159,21 +1141,21 @@ fn encode_unicode_property_value(
     value: &Value,
 ) -> Result<Value, LispError> {
     let Some(Value::Integer(encoder)) = interp.char_table_extra_slot(table_id, 2) else {
-        return Ok(value.clone());
+        return Ok(*value);
     };
     match encoder {
         0 => {
             if value.is_nil()
                 || matches!(value, Value::Integer(character) if (0..=0x3f_ffff).contains(character))
             {
-                Ok(value.clone())
+                Ok(*value)
             } else {
-                Err(wrong_type_argument("integerp", value.clone()))
+                Err(wrong_type_argument("integerp", *value))
             }
         }
         1 | 2 => {
             if encoder == 2 && !matches!(value, Value::Integer(_)) {
-                return Err(wrong_type_argument("fixnump", value.clone()));
+                return Err(wrong_type_argument("fixnump", *value));
             }
             let vector = interp
                 .char_table_extra_slot(table_id, 4)
@@ -1199,13 +1181,13 @@ fn encode_unicode_property_value(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-type-argument".into()),
                         Value::String("Unicode property value".into()),
-                        value.clone(),
+                        *value,
                     ])));
                 }
             };
             Ok(Value::Integer(index as i64))
         }
-        _ => Ok(value.clone()),
+        _ => Ok(*value),
     }
 }
 

@@ -716,11 +716,7 @@ fn character_table_reader_literals_preserve_ascii_root_default_and_extras() {
     ]);
     assert_eq!(
         result,
-        Value::list([
-            expected_table.clone(),
-            expected_table.clone(),
-            expected_table
-        ])
+        Value::list([expected_table, expected_table, expected_table])
     );
 }
 
@@ -1000,14 +996,13 @@ fn file_replacement_and_offset_writes_share_gnu_file_io_contracts() {
         .to_vec()
         .expect("first replacement result")[0]
         .to_vec()
-        .expect("insert-file result")[0]
-        .clone();
+        .expect("insert-file result")[0];
     assert_eq!(
         result,
         Value::list([
             Value::String("foobaz".into()),
             Value::list([
-                Value::list([file_name.clone(), Value::Integer(0)]),
+                Value::list([file_name, Value::Integer(0)]),
                 Value::String("foo".into()),
                 Value::Integer(1),
             ]),
@@ -7562,11 +7557,7 @@ fn faceup_directory_load_context_matches_across_load_eval_buffer_and_eval_defun(
                            faceup-test-resources-directory))"#,
             ),
             Value::list([
-                Value::list([
-                    expected_directory.clone(),
-                    expected_directory.clone(),
-                    expected_directory.clone(),
-                ]),
+                Value::list([expected_directory, expected_directory, expected_directory,]),
                 expected_directory,
             ])
         );

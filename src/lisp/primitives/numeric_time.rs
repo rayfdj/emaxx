@@ -170,7 +170,7 @@ pub(crate) fn lambda_arity_value(params: &[impl AsRef<str>]) -> Value {
 fn invalid_function_arity(function: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("invalid-function".into()),
-        function.clone(),
+        *function,
     ]))
 }
 
@@ -183,7 +183,7 @@ fn arity_bare_symbol(
     positions_enabled: bool,
 ) -> Option<Value> {
     if value.is_symbol() {
-        return Some(value.clone());
+        return Some(*value);
     }
     positions_enabled
         .then(|| symbol_with_pos_parts(interp, value))
@@ -219,7 +219,7 @@ fn closure_arity_value(
     let mut maximum = 0i64;
     let mut optional = false;
     let positions_enabled = symbols_with_pos_enabled(interp, env);
-    let mut cursor = argument_spec.clone();
+    let mut cursor = *argument_spec;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let Value::Cons(cell) = cursor else {
@@ -235,8 +235,8 @@ fn closure_arity_value(
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(invalid_function_arity(function));
         }
-        let parameter = cell.car.borrow().clone();
-        cursor = cell.cdr.borrow().clone();
+        let parameter = *cell.car.borrow();
+        cursor = *cell.cdr.borrow();
         let Some(parameter) = arity_bare_symbol(interp, &parameter, positions_enabled) else {
             return Err(invalid_function_arity(function));
         };
@@ -305,10 +305,7 @@ pub(crate) fn function_arity_value(
             }) =>
         {
             let record = interp.find_record(*id).expect("record checked above");
-            Ok(Value::cons(
-                record.slots[1].clone(),
-                record.slots[2].clone(),
-            ))
+            Ok(Value::cons(record.slots[1], record.slots[2]))
         }
         Value::Record(id) if interp.modules.functions.contains_key(id) => {
             let function = &interp.modules.functions[id];
@@ -335,10 +332,7 @@ pub(crate) fn function_arity_value(
             Ok(lambda_arity_value(&parameters))
         }
         Value::Cons(_) => Err(invalid_function_arity(function)),
-        _ => Err(LispError::WrongTypeArgument(
-            "functionp".into(),
-            function.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("functionp".into(), *function)),
     }
 }
 
@@ -348,12 +342,10 @@ pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i6
         Value::Marker(id) => interp
             .marker_position(*id)
             .map(|pos| pos as i64)
-            .ok_or_else(|| {
-                LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
-            }),
+            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
-            value.clone(),
+            *value,
         )),
     }
 }
@@ -368,12 +360,10 @@ pub(crate) fn integer_like_bigint(
         Value::Marker(id) => interp
             .marker_position(*id)
             .map(BigInt::from)
-            .ok_or_else(|| {
-                LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
-            }),
+            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
-            value.clone(),
+            *value,
         )),
     }
 }
@@ -381,9 +371,9 @@ pub(crate) fn integer_like_bigint(
 pub(crate) fn numeric_to_f64(interp: &Interpreter, value: &Value) -> Result<f64, LispError> {
     match value {
         Value::Float(f) => Ok(f.get()),
-        Value::BigInteger(n) => n.to_f64().ok_or_else(|| {
-            LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
-        }),
+        Value::BigInteger(n) => n
+            .to_f64()
+            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Ok(integer_like_i64(interp, value)? as f64),
     }
 }
@@ -436,10 +426,7 @@ pub(crate) fn integer_rounding_value(
         ));
     }
     if float_result && !matches!(args[0], Value::Float(_)) {
-        return Err(LispError::WrongTypeArgument(
-            "floatp".into(),
-            args[0].clone(),
-        ));
+        return Err(LispError::WrongTypeArgument("floatp".into(), args[0]));
     }
 
     // floatfns.c:rounding_driver receives a fixed second C argument and uses
@@ -456,7 +443,7 @@ pub(crate) fn integer_rounding_value(
             )));
         }
         return match &args[0] {
-            Value::Integer(_) | Value::BigInteger(_) => Ok(args[0].clone()),
+            Value::Integer(_) | Value::BigInteger(_) => Ok(args[0]),
             _ => rounded_f64_to_number_value(apply_rounding_kind(
                 kind,
                 numeric_to_f64(interp, &args[0])?,
@@ -662,9 +649,9 @@ pub(crate) fn expt_value(
     let exponent_bigint = exponent_bigint?;
     if exponent_bigint.is_negative() {
         let base_value = integer_like_i64(interp, base)? as f64;
-        let exponent_value = exponent_bigint.to_f64().ok_or_else(|| {
-            LispError::WrongTypeArgument("number-or-marker-p".into(), exponent.clone())
-        })?;
+        let exponent_value = exponent_bigint
+            .to_f64()
+            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *exponent))?;
         return Ok(Value::float(base_value.powf(exponent_value)));
     }
 
@@ -699,7 +686,7 @@ pub(crate) fn exact_binary_rational(
         Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
-            value.clone(),
+            *value,
         )),
     }
 }
@@ -1459,7 +1446,7 @@ fn explicit_zone_spec_from_value(
         Value::BigInteger(value) => {
             let offset = value
                 .to_i32()
-                .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), zone.clone()))?;
+                .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), *zone))?;
             Ok(ZoneSpec {
                 offset_seconds: offset,
                 abbreviation: format_numeric_zone_name(offset),
@@ -1486,14 +1473,11 @@ fn explicit_zone_spec_from_value(
             }
             let offset = match &items[0] {
                 Value::Integer(value) => *value as i32,
-                Value::BigInteger(value) => value.to_i32().ok_or_else(|| {
-                    LispError::WrongTypeArgument("integerp".into(), items[0].clone())
-                })?,
+                Value::BigInteger(value) => value
+                    .to_i32()
+                    .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), items[0]))?,
                 _ => {
-                    return Err(LispError::WrongTypeArgument(
-                        "integerp".into(),
-                        items[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("integerp".into(), items[0]));
                 }
             };
             let abbreviation = items
@@ -2038,7 +2022,7 @@ pub(crate) fn decoded_seconds_value(
 pub(crate) fn integer_field(interp: &Interpreter, value: &Value) -> Result<i32, LispError> {
     integer_like_bigint(interp, value)?
         .to_i32()
-        .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), value.clone()))
+        .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), *value))
 }
 
 pub(crate) fn value_is_unspecified(value: Option<&Value>) -> bool {
@@ -2097,7 +2081,7 @@ define_dispatch!(
                 let rule = if args[0].is_nil() {
                     Value::Symbol("wall".into())
                 } else {
-                    args[0].clone()
+                    args[0]
                 };
                 if !local_time_zone_rule_is_wall(&rule) {
                     let _ = explicit_zone_spec_from_value(&rule, Some(&now))?;
@@ -2226,7 +2210,7 @@ define_dispatch!(
                 // Ftime_convert: a nil FORM is `list' under
                 // `current-time-list' and t otherwise.
                 let form = match args.get(1) {
-                    Some(form) if !form.is_nil() => form.clone(),
+                    Some(form) if !form.is_nil() => *form,
                     _ if current_time_list_is_set(interp) => Value::Symbol("list".into()),
                     _ => Value::T,
                 };
@@ -2412,7 +2396,7 @@ pub(crate) fn numeric_ordering(
         ) {
             return Err(LispError::WrongTypeArgument(
                 "number-or-marker-p".into(),
-                value.clone(),
+                *value,
             ));
         }
     }
@@ -2508,12 +2492,15 @@ pub(crate) fn numeric_result_value(
         Value::Integer(number) => Ok(Value::Integer(*number)),
         Value::BigInteger(number) => Ok(normalize_bigint_value((*number).into())),
         Value::Float(number) => Ok(Value::Float(*number)),
-        Value::Marker(id) => Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
-            LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
-        })? as i64)),
+        Value::Marker(id) => Ok(Value::Integer(
+            interp
+                .marker_position(*id)
+                .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value))?
+                as i64,
+        )),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
-            value.clone(),
+            *value,
         )),
     }
 }
@@ -2695,7 +2682,7 @@ pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
         Value::Float(f) => Ok(crate::lisp::types::format_float(f.get())),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
-            value.clone(),
+            *value,
         )),
     }
 }

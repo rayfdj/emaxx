@@ -173,11 +173,11 @@ pub(crate) fn lcms_default_viewing_conditions(white_point: CIEXYZ) -> ViewingCon
 
 pub(crate) fn parse_lcms_numeric_prefix<const N: usize>(value: &Value) -> Option<[f64; N]> {
     let mut result = [0.0; N];
-    let mut current = value.clone();
+    let mut current = *value;
     for item in &mut result {
         let (car, cdr) = current.cons_cells()?;
         *item = car.borrow().as_float().ok()?;
-        current = cdr.borrow().clone();
+        current = *cdr.borrow();
     }
     Some(result)
 }

@@ -193,7 +193,7 @@ impl Interpreter {
 
     pub fn process_plist_value(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .map(|process| process.plist.clone())
+            .map(|process| process.plist)
     }
 
     /// GNU's `Vprocess_alist' membership: a process stays visible to
@@ -235,16 +235,13 @@ impl Interpreter {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };
-        drop(std::mem::replace(
-            &mut process.gnutls.boot_parameters,
-            parameters,
-        ));
+        process.gnutls.boot_parameters = parameters;
         true
     }
 
     pub(crate) fn process_gnutls_boot_parameters(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .map(|process| process.gnutls.boot_parameters.clone())
+            .map(|process| process.gnutls.boot_parameters)
     }
 
     pub(crate) fn clear_process_gnutls_boot_parameters(&mut self, record_id: u64) -> bool {
@@ -314,16 +311,13 @@ impl Interpreter {
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
         process.gnutls.initstage = 9;
         process.gnutls.peer_status = Self::stored_value(peer_status);
-        drop(std::mem::replace(
-            &mut process.gnutls.boot_parameters,
-            Value::Nil,
-        ));
+        process.gnutls.boot_parameters = Value::Nil;
         Ok(())
     }
 
     pub(crate) fn process_gnutls_peer_status(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .map(|process| process.gnutls.peer_status.clone())
+            .map(|process| process.gnutls.peer_status)
     }
 
     pub(crate) fn process_gnutls_bye(
@@ -376,7 +370,7 @@ impl Interpreter {
             {
                 Ok(*id)
             }
-            other => Err(wrong_type_argument("threadp", other.clone())),
+            other => Err(wrong_type_argument("threadp", *other)),
         }
     }
 
@@ -389,7 +383,7 @@ impl Interpreter {
             {
                 Ok(*id)
             }
-            other => Err(wrong_type_argument("mutexp", other.clone())),
+            other => Err(wrong_type_argument("mutexp", *other)),
         }
     }
 
@@ -402,7 +396,7 @@ impl Interpreter {
             {
                 Ok(*id)
             }
-            other => Err(wrong_type_argument("condition-variable-p", other.clone())),
+            other => Err(wrong_type_argument("condition-variable-p", *other)),
         }
     }
 
@@ -415,7 +409,7 @@ impl Interpreter {
             {
                 Ok(*id)
             }
-            other => Err(wrong_type_argument("processp", other.clone())),
+            other => Err(wrong_type_argument("processp", *other)),
         }
     }
 
@@ -429,7 +423,7 @@ impl Interpreter {
         let id = self.resolve_process_id(value)?;
         let process = self.find_process_state_mut(id).expect("resolved process");
         if process.kind != ProcessKind::Pipe {
-            return Err(wrong_type_argument("pipe-process-p", value.clone()));
+            return Err(wrong_type_argument("pipe-process-p", *value));
         }
         let io_error = || {
             let error = std::io::Error::last_os_error();
@@ -488,7 +482,7 @@ impl Interpreter {
         // <N> on collision), not the program.
         let name = self.unique_process_name(&name.or_else(|| program.clone()).unwrap_or_default());
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process.clone() else {
+        let Value::Record(record_id) = process else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
@@ -578,7 +572,7 @@ impl Interpreter {
             | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
         };
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process.clone() else {
+        let Value::Record(record_id) = process else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
@@ -648,7 +642,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let name = self.unique_process_name(name);
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process.clone() else {
+        let Value::Record(record_id) = process else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
@@ -705,7 +699,7 @@ impl Interpreter {
     /// the full contact plist for a network process.
     pub fn process_contact_plist(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .map(|process| process.contact.clone())
+            .map(|process| process.contact)
     }
 
     pub fn process_name(&self, record_id: u64) -> Option<String> {
@@ -787,7 +781,7 @@ impl Interpreter {
 
     pub fn process_sentinel(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .and_then(|process| process.sentinel.clone())
+            .and_then(|process| process.sentinel)
     }
 
     /// GNU exposes the native default sentinel as an ordinary function
@@ -796,7 +790,6 @@ impl Interpreter {
         self.find_process_state(record_id).map(|process| {
             process
                 .sentinel
-                .clone()
                 .unwrap_or_else(|| Value::symbol("internal-default-process-sentinel"))
         })
     }
@@ -922,7 +915,7 @@ impl Interpreter {
 
     pub fn process_log_function(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .and_then(|process| process.log.clone())
+            .and_then(|process| process.log)
     }
 
     pub fn process_parent_server(&self, record_id: u64) -> Option<u64> {
@@ -997,7 +990,7 @@ impl Interpreter {
         // symbol -- so `(process-contact p t)' followed by `plist-get' with
         // the interned keyword legitimately misses a foreign-obarray key,
         // exactly as it does in GNU.
-        items.push(option.clone());
+        items.push(*option);
         items.push(value);
         process.contact = Value::list(items);
     }
@@ -1383,7 +1376,7 @@ impl Interpreter {
 
     pub fn process_filter(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .and_then(|process| process.filter.clone())
+            .and_then(|process| process.filter)
     }
 
     /// GNU exposes the native default filter as an ordinary function object.
@@ -1392,7 +1385,6 @@ impl Interpreter {
         self.find_process_state(record_id).map(|process| {
             process
                 .filter
-                .clone()
                 .unwrap_or_else(|| Value::symbol("internal-default-process-filter"))
         })
     }
@@ -1423,10 +1415,7 @@ impl Interpreter {
         let process = self
             .find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
-        Ok(Value::cons(
-            process.decoding.clone(),
-            process.encoding.clone(),
-        ))
+        Ok(Value::cons(process.decoding, process.encoding))
     }
 
     pub fn set_process_coding_system(
@@ -1997,7 +1986,7 @@ impl Interpreter {
         let candidates: Vec<(Value, Vec<Value>)> = self
             .pending_timers
             .iter()
-            .map(|timer| (timer.function.clone(), timer.args.clone()))
+            .map(|timer| (timer.function, timer.args.clone()))
             .collect();
         let empty_env = crate::lisp::types::Env::new();
         if let Some(index) = candidates.iter().position(|(candidate, timer_args)| {
@@ -2089,11 +2078,11 @@ impl Interpreter {
                 && watched.trim_end_matches('/') != source_normalized
                 && watch.flags.iter().any(|flag| flag == "rename")
             {
-                paired.push((watch.descriptor.clone(), watch.callback.clone()));
+                paired.push((watch.descriptor, watch.callback));
             } else if covers_source && watch.flags.iter().any(|flag| flag == "rename") {
-                source_only.push((watch.descriptor.clone(), watch.callback.clone()));
+                source_only.push((watch.descriptor, watch.callback));
             } else if covers_target && watch.flags.iter().any(|flag| flag == "create") {
-                target_only.push((watch.descriptor.clone(), watch.callback.clone()));
+                target_only.push((watch.descriptor, watch.callback));
             }
         }
         self.refresh_file_notify_fingerprints_for_path(source);
@@ -2124,11 +2113,11 @@ impl Interpreter {
             if watched.trim_end_matches('/') == normalized
                 && watch.flags.iter().any(|f| f == "revoke")
             {
-                exact_callbacks.push((watch.descriptor.clone(), watch.callback.clone()));
+                exact_callbacks.push((watch.descriptor, watch.callback));
             } else if file_notify_watch_covers(watched, path)
                 && watch.flags.iter().any(|f| f == "delete")
             {
-                parent_callbacks.push((watch.descriptor.clone(), watch.callback.clone()));
+                parent_callbacks.push((watch.descriptor, watch.callback));
             }
         }
         self.refresh_file_notify_fingerprints_for_path(path);
@@ -2485,7 +2474,7 @@ impl Interpreter {
         self.file_notify_watches.insert(
             internal_key,
             FileNotifyWatch {
-                descriptor: descriptor.clone(),
+                descriptor,
                 path: Some(path),
                 flags,
                 callback: Self::stored_value(callback),
@@ -2640,7 +2629,7 @@ impl Interpreter {
                     .filter(|_| watch.active)
                     .filter(|_| watch.flags.iter().any(|flag| flag == backend_flag))
                     .filter(|watched| file_notify_watch_covers(watched, path))
-                    .map(|_| (watch.descriptor.clone(), watch.callback.clone()))
+                    .map(|_| (watch.descriptor, watch.callback))
             })
             .collect()
     }
@@ -2931,9 +2920,7 @@ impl Interpreter {
                     .filter_map(|watch| {
                         name.clone()
                             .or_else(|| watch.path.clone())
-                            .map(|event_name| {
-                                (watch.descriptor.clone(), watch.callback.clone(), event_name)
-                            })
+                            .map(|event_name| (watch.descriptor, watch.callback, event_name))
                     })
                     .collect::<Vec<_>>();
                 // inotify.c keeps logical watches for one kernel descriptor
@@ -2948,7 +2935,7 @@ impl Interpreter {
                 });
                 for (descriptor, callback, event_name) in recipients {
                     let raw_event = Value::list([
-                        descriptor.clone(),
+                        descriptor,
                         inotify_aspects(event.mask),
                         Value::String(event_name.into()),
                         Value::Integer(i64::from(event.cookie)),
@@ -3036,12 +3023,7 @@ impl Interpreter {
             let mut callbacks = std::mem::take(&mut notification.callbacks).into_iter();
             while let Some(callback) = callbacks.next() {
                 let outcome = if let Some(event) = &notification.raw_event {
-                    primitives::deliver_raw_file_notification(
-                        self,
-                        env,
-                        event.clone(),
-                        vec![callback],
-                    )
+                    primitives::deliver_raw_file_notification(self, env, *event, vec![callback])
                 } else {
                     primitives::deliver_file_notification(
                         self,
@@ -3093,7 +3075,7 @@ impl Interpreter {
         while let Some(timer) = pending.next() {
             if let Some(repeat) = timer.repeat {
                 self.pending_timers.push(ScheduledTimer {
-                    function: timer.function.clone(),
+                    function: timer.function,
                     original_name: timer.original_name.clone(),
                     args: timer.args.clone(),
                     due: Some(now + std::time::Duration::from_secs_f64(repeat)),
@@ -3165,7 +3147,7 @@ impl Interpreter {
         while let Some(call) = self.pending_funcalls.pop() {
             let values = call.to_vec()?;
             if let Some(function) = values.first() {
-                self.safe_funcall(function.clone(), &values[1..], env)?;
+                self.safe_funcall(*function, &values[1..], env)?;
             }
         }
         let native_ran = self.run_pending_native_timers(env)?;
@@ -3223,7 +3205,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // thread.c:Fmake_thread stores FUNCTION unchanged. Callability is
         // checked by the child's ordinary funcall, not by a body classifier.
-        let continuation = continuations::ThreadContinuation::new(function.clone())
+        let continuation = continuations::ThreadContinuation::new(function)
             .map_err(|_| LispError::Signal("Could not start a new thread".into()))?;
         let value = self.create_pseudovector(RecordKind::Thread, "thread", Vec::new());
         let Value::Record(record_id) = value else {
@@ -3450,10 +3432,7 @@ impl Interpreter {
             Value::T => BufferDisposition::Preserve,
             Value::Symbol(symbol) if symbol == "silently" => BufferDisposition::Silently,
             other => {
-                return Err(wrong_type_argument(
-                    "thread-buffer-disposition",
-                    other.clone(),
-                ));
+                return Err(wrong_type_argument("thread-buffer-disposition", *other));
             }
         };
         let thread = self
@@ -3464,7 +3443,7 @@ impl Interpreter {
     }
 
     pub fn thread_last_error(&mut self, cleanup: bool) -> Value {
-        let value = self.last_thread_error.clone().unwrap_or(Value::Nil);
+        let value = self.last_thread_error.unwrap_or(Value::Nil);
         if cleanup {
             self.last_thread_error = None;
         }
@@ -3550,7 +3529,7 @@ impl Interpreter {
         let target = self
             .find_thread_state(record_id)
             .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
-        let snapshot = (target.signal_condition.clone(), target.signal_data.clone());
+        let snapshot = (target.signal_condition, target.signal_data);
         let thread_id = self.active_thread_id;
         self.with_lisp_stack_roots(&snapshot, |interpreter| {
             let wait: Result<(), LispError> = (|| {
@@ -3571,15 +3550,13 @@ impl Interpreter {
             wait?;
             if !snapshot.0.is_nil() {
                 return Err(LispError::SignalValue(build_signal_value(
-                    snapshot.0.clone(),
-                    snapshot.1.clone(),
+                    snapshot.0, snapshot.1,
                 )));
             }
             Ok(interpreter
                 .find_thread_state(record_id)
                 .expect("joined thread")
                 .outcome
-                .clone()
                 .unwrap_or(Value::Nil))
         })
     }

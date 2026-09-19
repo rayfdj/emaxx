@@ -502,7 +502,7 @@ impl Interpreter {
             Value::list(
                 detached
                     .into_iter()
-                    .map(|(name, value)| pair(Value::symbol(name), value.clone())),
+                    .map(|(name, value)| pair(Value::symbol(name), *value)),
             ),
         ));
         // charset.c: charset_table (dump_charset_table) and
@@ -518,7 +518,7 @@ impl Interpreter {
                     .iter()
                     .rev()
                     .find(|(registered, _)| registered == name)
-                    .map(|(_, plist)| plist.clone())
+                    .map(|(_, plist)| *plist)
                     .unwrap_or(Value::Nil);
                 Value::vector([
                     Value::symbol(name),
@@ -583,9 +583,9 @@ impl Interpreter {
                     Value::symbol(&coding.base),
                     Value::symbol(&coding.kind),
                     coding.eol_type.map_or(Value::Nil, Value::Integer),
-                    coding.plist.clone(),
+                    coding.plist,
                     Value::Integer(coding.category as i64),
-                    coding.charset_list.clone(),
+                    coding.charset_list,
                     Value::Integer(i64::from(coding.default_char)),
                     Value::vector(coding.type_args.iter().cloned()),
                 ])
@@ -620,7 +620,7 @@ impl Interpreter {
         groups.push((
             RootSlot::CclProgramTable,
             Value::vector(self.ccl_programs.iter().map(|entry| match entry {
-                Some((name, program)) => pair(Value::symbol(name), program.clone()),
+                Some((name, program)) => pair(Value::symbol(name), *program),
                 None => Value::Nil,
             })),
         ));
@@ -701,7 +701,7 @@ impl Interpreter {
                 Value::vector([
                     Value::string(&face.name),
                     face.id.map_or(Value::Nil, Value::Integer),
-                    face.global.clone().unwrap_or(Value::Nil),
+                    face.global.unwrap_or(Value::Nil),
                 ])
             })),
         ));
@@ -715,11 +715,11 @@ impl Interpreter {
         ));
         groups.push((
             RootSlot::AlternativeFontFamilyAlist,
-            self.alternative_font_family_alist.clone(),
+            self.alternative_font_family_alist,
         ));
         groups.push((
             RootSlot::AlternativeFontRegistryAlist,
-            self.alternative_font_registry_alist.clone(),
+            self.alternative_font_registry_alist,
         ));
         // fringe.c: the bitmaps `define-fringe-bitmap' made and their faces.
         groups.push((
@@ -729,8 +729,8 @@ impl Interpreter {
                     Value::symbol(&bitmap.name),
                     Value::Integer(bitmap.id),
                     bool_value(bitmap.standard),
-                    bitmap.definition.clone().unwrap_or(Value::Nil),
-                    bitmap.face.clone(),
+                    bitmap.definition.unwrap_or(Value::Nil),
+                    bitmap.face,
                 ])
             })),
         ));
@@ -739,7 +739,7 @@ impl Interpreter {
             RootSlot::Compositions,
             Value::list(self.composition_states.iter().map(|composition| {
                 Value::vector([
-                    composition.components.clone(),
+                    composition.components,
                     bool_value(composition.relative),
                     Value::Integer(composition.width),
                 ])
@@ -752,7 +752,7 @@ impl Interpreter {
             Value::list(self.ert_tests.iter().map(|test| {
                 Value::vector([
                     Value::symbol(&test.name),
-                    test.body.clone(),
+                    test.body,
                     opt_string(test.source_file.as_deref()),
                     symbol_list(&test.tags),
                     Value::symbol(&test.expected_result),
@@ -766,7 +766,7 @@ impl Interpreter {
                 self.buffer_value(restriction.buffer_id).map(|buffer| {
                     Value::vector([
                         buffer,
-                        restriction.label.clone().unwrap_or(Value::Nil),
+                        restriction.label.unwrap_or(Value::Nil),
                         Value::Marker(restriction.beg_marker_id),
                         Value::Marker(restriction.end_marker_id),
                     ])
@@ -780,7 +780,7 @@ impl Interpreter {
             RootSlot::TimerList,
             Value::list(self.pending_timers.iter().map(|timer| {
                 Value::vector([
-                    timer.function.clone(),
+                    timer.function,
                     Value::list(timer.args.iter().cloned()),
                     timer.due.map_or(Value::Nil, |due| {
                         Value::float(due.saturating_duration_since(now).as_secs_f64())
@@ -793,7 +793,7 @@ impl Interpreter {
         // thread.c: last_thread_error.
         groups.push((
             RootSlot::LastThreadError,
-            self.last_thread_error.clone().unwrap_or(Value::Nil),
+            self.last_thread_error.unwrap_or(Value::Nil),
         ));
         // PDUMPER_REMEMBER_SCALAR: the native state beside the Lisp
         // objects that a loaded session must start from -- the id
@@ -1039,7 +1039,7 @@ mod install {
                         let name = expect_symbol(&fields[0], "charset name")?;
                         self.charset_ids
                             .push((name.clone(), expect_int(&fields[1], "charset id")?));
-                        self.charset_plists.push((name.clone(), fields[2].clone()));
+                        self.charset_plists.push((name.clone(), fields[2]));
                         if fields[3].is_truthy() {
                             self.charset_supplementary.insert(name.clone());
                         }
@@ -1098,10 +1098,10 @@ mod install {
                             base: expect_symbol(&fields[1], "coding system base")?,
                             kind: expect_symbol(&fields[2], "coding system kind")?,
                             eol_type: opt_of(&fields[3], |v| expect_int(v, "eol type"))?,
-                            plist: fields[4].clone(),
+                            plist: fields[4],
                             category: usize::try_from(expect_int(&fields[5], "category")?)
                                 .map_err(|_| "category out of range".to_owned())?,
-                            charset_list: fields[6].clone(),
+                            charset_list: fields[6],
                             default_char: u32::try_from(expect_int(&fields[7], "default char")?)
                                 .map_err(|_| "default char out of range".to_owned())?,
                             type_args: expect_vector(&fields[8], "type args")?,
@@ -1242,7 +1242,7 @@ mod install {
                         faces.push(LispFaceState {
                             name: expect_string(&fields[0], "face name")?,
                             id: opt_of(&fields[1], |v| expect_int(v, "face id"))?,
-                            global: opt_of(&fields[2], |v| Ok(v.clone()))?,
+                            global: opt_of(&fields[2], |v| Ok(*v))?,
                             frames: HashMap::new(),
                         });
                     }
@@ -1258,10 +1258,10 @@ mod install {
                     }
                 }
                 RootSlot::AlternativeFontFamilyAlist => {
-                    self.alternative_font_family_alist = value.clone();
+                    self.alternative_font_family_alist = *value;
                 }
                 RootSlot::AlternativeFontRegistryAlist => {
-                    self.alternative_font_registry_alist = value.clone();
+                    self.alternative_font_registry_alist = *value;
                 }
                 RootSlot::FringeBitmaps => {
                     let mut bitmaps = Vec::new();
@@ -1274,8 +1274,8 @@ mod install {
                             name: expect_symbol(&fields[0], "fringe bitmap name")?,
                             id: expect_int(&fields[1], "fringe bitmap id")?,
                             standard: fields[2].is_truthy(),
-                            definition: opt_of(&fields[3], |v| Ok(v.clone()))?,
-                            face: fields[4].clone(),
+                            definition: opt_of(&fields[3], |v| Ok(*v))?,
+                            face: fields[4],
                         });
                     }
                     self.fringe_bitmap_states = bitmaps;
@@ -1288,7 +1288,7 @@ mod install {
                             return Err("composition: three fields expected".into());
                         }
                         compositions.push(CompositionState {
-                            components: fields[0].clone(),
+                            components: fields[0],
                             relative: fields[1].is_truthy(),
                             width: expect_int(&fields[2], "composition width")?,
                         });
@@ -1304,7 +1304,7 @@ mod install {
                         }
                         tests.push(ErtTestDefinition {
                             name: expect_symbol(&fields[0], "test name")?,
-                            body: fields[1].clone(),
+                            body: fields[1],
                             source_file: opt_of(&fields[2], |v| expect_string(v, "source file"))?,
                             tags: symbol_names(&fields[3], "test tags")?,
                             expected_result: expect_symbol(&fields[4], "expected result")?,
@@ -1321,7 +1321,7 @@ mod install {
                         }
                         restrictions.push(LabeledRestriction {
                             buffer_id: expect_buffer(&fields[0], "restriction buffer")?,
-                            label: opt_of(&fields[1], |v| Ok(v.clone()))?,
+                            label: opt_of(&fields[1], |v| Ok(*v))?,
                             beg_marker_id: expect_marker(&fields[2], "restriction start")?,
                             end_marker_id: expect_marker(&fields[3], "restriction end")?,
                         });
@@ -1342,7 +1342,7 @@ mod install {
                         })?
                         .map(|seconds| now + std::time::Duration::from_secs_f64(seconds.max(0.0)));
                         timers.push(ScheduledTimer {
-                            function: fields[0].clone(),
+                            function: fields[0],
                             args: expect_list(&fields[1], "timer args")?,
                             due,
                             repeat: opt_of(&fields[3], |v| {
@@ -1355,7 +1355,7 @@ mod install {
                     self.pending_timers = timers;
                 }
                 RootSlot::LastThreadError => {
-                    self.last_thread_error = opt_of(value, |v| Ok(v.clone()))?;
+                    self.last_thread_error = opt_of(value, |v| Ok(*v))?;
                 }
                 RootSlot::RememberedScalars => {
                     for entry in expect_list(value, "remembered scalars")? {

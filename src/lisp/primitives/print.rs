@@ -209,7 +209,7 @@ pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<V
         | crate::lisp::eval::RecordKind::Process
         | crate::lisp::eval::RecordKind::Obarray => None,
         _ => Some(
-            std::iter::once(record.type_tag.clone())
+            std::iter::once(record.type_tag)
                 .chain(record.slots.iter().cloned())
                 .collect(),
         ),
@@ -325,7 +325,7 @@ pub(crate) fn sync_print_number_table(
                 .ok()
                 .flatten()
         })
-        .map(|binding| binding.cdr.borrow().clone())
+        .map(|binding| *binding.cdr.borrow())
     else {
         return;
     };
@@ -367,7 +367,7 @@ fn collect_print_sharing(
                 PrintLabel {
                     number: *next_label,
                     printed: false,
-                    object: object.clone(),
+                    object: *object,
                 },
             );
             *next_label += 1;
@@ -386,7 +386,7 @@ fn walk_print_graph(
     options: PrintOptions,
     mut visit: impl FnMut(PrintRefKey, &Value) -> bool,
 ) -> Result<(), LispError> {
-    let mut pending = vec![value.clone()];
+    let mut pending = vec![*value];
     while let Some(value) = pending.pop() {
         if let Some(key) = print_ref_key(interp, &value, options)
             && !visit(key, &value)
@@ -459,7 +459,7 @@ pub(crate) fn print_preprocess(
     // GNU's Vprint_number_table is a real special variable.  Update its
     // active dynamic binding, not merely a lexical frame passed to the
     // primitive.
-    interp.set_variable("print-number-table", table.clone(), env);
+    interp.set_variable("print-number-table", table, env);
 
     let options = print_options(interp, env);
     let mut entries = json::hash_table_entries(interp, &table)
@@ -500,7 +500,7 @@ pub(crate) fn print_preprocess(
         };
         let descend = !continuous_gensym;
         positions.insert(key, entries.len());
-        entries.push((object.clone(), state));
+        entries.push((*object, state));
         descend
     })?;
 
@@ -537,7 +537,7 @@ pub(crate) fn render_prin1_list(
     // just printed; the tortoise teleports on a doubling period, so a
     // circular list prints its elements until the hare laps it and then
     // closes with `. #TORTOISE-INDEX'.
-    let mut tortoise = value.clone();
+    let mut tortoise = *value;
     let mut tortoise_countdown: i64 = 2;
     let mut tortoise_period: i64 = 2;
     let mut tortoise_index: i64 = 0;
@@ -571,7 +571,7 @@ pub(crate) fn render_prin1_list(
                         tortoise_index += tortoise_period;
                         tortoise_period <<= 1;
                         tortoise_countdown = tortoise_period;
-                        tortoise = tail.clone();
+                        tortoise = tail;
                     } else if same_cons_cell(&tail, &tortoise) {
                         return Ok(format!("({} . #{})", rendered.join(" "), tortoise_index));
                     }
@@ -654,7 +654,7 @@ pub(crate) fn render_prin1_with_context(
                 PrintLabel {
                     number,
                     printed: true,
-                    object: value.clone(),
+                    object: *value,
                 },
             );
             context.active.insert(key.clone(), depth);
@@ -1010,7 +1010,7 @@ pub(crate) fn render_prin1_body(
         if !function.is_truthy() {
             return Ok(None);
         }
-        let rendered = call_function_value(interp, &function, &[value.clone(), Value::T], env)?;
+        let rendered = call_function_value(interp, &function, &[*value, Value::T], env)?;
         if matches!(rendered, Value::T) {
             return Ok(Some(String::new()));
         }
@@ -1338,7 +1338,6 @@ pub(crate) fn finish_print_number_table(
     }
     let table = context
         .number_table
-        .clone()
         .unwrap_or_else(|| json::make_hash_table(interp, "eq", Vec::new()));
     let mut entries = json::hash_table_entries(interp, &table)
         .map(|(_, entries)| entries)
@@ -1349,7 +1348,7 @@ pub(crate) fn finish_print_number_table(
     entries.extend(labels.into_iter().map(|label| {
         let number = i64::try_from(label.number).unwrap_or(i64::MAX);
         let state = if label.printed { number } else { -number };
-        (label.object.clone(), Value::Integer(state))
+        (label.object, Value::Integer(state))
     }));
     set_hash_table_entries(interp, &table, entries)?;
     // This is a native special variable, so update its active dynamic value
@@ -1612,7 +1611,7 @@ fn materialize_positioned_symbols(
             crate::lisp::types::ReaderForm::Record { slots } => {
                 let slots = slots
                     .iter()
-                    .map(|slot| materialize_positioned_symbols(interp, slot.clone(), seen))
+                    .map(|slot| materialize_positioned_symbols(interp, *slot, seen))
                     .collect();
                 Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
                     crate::lisp::types::ReaderForm::Record { slots },
@@ -1621,7 +1620,7 @@ fn materialize_positioned_symbols(
             crate::lisp::types::ReaderForm::HashTable { fields } => {
                 let fields = fields
                     .iter()
-                    .map(|field| materialize_positioned_symbols(interp, field.clone(), seen))
+                    .map(|field| materialize_positioned_symbols(interp, *field, seen))
                     .collect();
                 Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
                     crate::lisp::types::ReaderForm::HashTable { fields },
@@ -1632,10 +1631,10 @@ fn materialize_positioned_symbols(
         Value::Cons(cell) => {
             let pointer = cell.as_ptr();
             if seen.insert(pointer) {
-                let car = cell.car.borrow().clone();
+                let car = *cell.car.borrow();
                 let car = materialize_positioned_symbols(interp, car, seen);
                 *cell.car.borrow_mut() = car;
-                let cdr = cell.cdr.borrow().clone();
+                let cdr = *cell.cdr.borrow();
                 let cdr = materialize_positioned_symbols(interp, cdr, seen);
                 *cell.cdr.borrow_mut() = cdr;
             }
@@ -1680,9 +1679,9 @@ pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
         && let [Value::Symbol(symbol), inner] = items.as_slice()
         && symbol == "quote"
     {
-        return inner.clone();
+        return *inner;
     }
-    value.clone()
+    *value
 }
 
 pub(crate) fn record_literal_aref(
@@ -1694,8 +1693,8 @@ pub(crate) fn record_literal_aref(
     let slot = items.get(idx + 1).cloned().ok_or_else(|| {
         LispError::SignalValue(Value::list([
             Value::Symbol("args-out-of-range".into()),
-            object.clone(),
-            idx_value.clone(),
+            *object,
+            *idx_value,
         ]))
     })?;
     Ok(record_literal_slot_data(&slot))
@@ -1710,15 +1709,12 @@ pub(crate) fn read_from_callable_source(
     let original_name = source.as_symbol().ok();
     let mut text = String::new();
     loop {
-        let next = interp.call_function_value(callable.clone(), original_name, &[], env)?;
+        let next = interp.call_function_value(callable, original_name, &[], env)?;
         let Some(code) = (match next {
             Value::Integer(code) => Some(code),
             Value::Nil => None,
             other => {
-                return Err(LispError::WrongTypeArgument(
-                    "integerp".into(),
-                    other.clone(),
-                ));
+                return Err(LispError::WrongTypeArgument("integerp".into(), other));
             }
         }) else {
             break;
@@ -1820,27 +1816,27 @@ fn materialize_char_table_literals_inner(
     }
     if let Value::Vector(vector) = value {
         if !seen.insert(vector.identity()) {
-            return Ok(value.clone());
+            return Ok(*value);
         }
         let slots = vector.slots().to_vec();
         for (index, slot) in slots.iter().enumerate() {
             vector.slots_mut()[index] =
                 materialize_char_table_literals_inner(interp, slot, env, seen)?;
         }
-        return Ok(value.clone());
+        return Ok(*value);
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(value.clone());
+        return Ok(*value);
     };
     let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
-        return Ok(value.clone());
+        return Ok(*value);
     }
-    let car = car_cell.borrow().clone();
+    let car = *car_cell.borrow();
     *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, env, seen)?;
-    let cdr = cdr_cell.borrow().clone();
+    let cdr = *cdr_cell.borrow();
     *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, env, seen)?;
-    Ok(value.clone())
+    Ok(*value)
 }
 
 fn invalid_char_table_literal(message: &str) -> LispError {
@@ -2211,29 +2207,29 @@ fn materialize_hash_table_literals_inner(
     }
     if let Value::Vector(vector) = value {
         if !seen.insert(vector.identity()) {
-            return Ok(value.clone());
+            return Ok(*value);
         }
         let slots = vector.slots().to_vec();
         for (index, slot) in slots.iter().enumerate() {
             vector.slots_mut()[index] =
                 materialize_hash_table_literals_inner(interp, slot, env, seen)?;
         }
-        return Ok(value.clone());
+        return Ok(*value);
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(value.clone());
+        return Ok(*value);
     };
     let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
-        return Ok(value.clone());
+        return Ok(*value);
     }
-    let car = car_cell.borrow().clone();
+    let car = *car_cell.borrow();
     let new_car = materialize_hash_table_literals_inner(interp, &car, env, seen)?;
     *car_cell.borrow_mut() = new_car;
-    let cdr = cdr_cell.borrow().clone();
+    let cdr = *cdr_cell.borrow();
     let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, env, seen)?;
     *cdr_cell.borrow_mut() = new_cdr;
-    Ok(value.clone())
+    Ok(*value)
 }
 
 fn hash_table_from_literal_fields(
@@ -2253,7 +2249,7 @@ fn hash_table_from_literal_fields(
             continue;
         };
         let key = key.to_string();
-        let field_value = fields[index + 1].clone();
+        let field_value = fields[index + 1];
         match key.as_str() {
             "test" => test = field_value.as_symbol()?.to_string(),
             "weakness" => weakness = field_value,
@@ -2262,10 +2258,9 @@ fn hash_table_from_literal_fields(
                 let items = field_value.to_vec()?;
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
-                    let entry_key =
-                        interp.materialize_read_object_literals(items[cursor].clone(), env)?;
+                    let entry_key = interp.materialize_read_object_literals(items[cursor], env)?;
                     let entry_value =
-                        interp.materialize_read_object_literals(items[cursor + 1].clone(), env)?;
+                        interp.materialize_read_object_literals(items[cursor + 1], env)?;
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }
@@ -2435,8 +2430,8 @@ pub(crate) fn md5_source_bytes(
             if b < buffer.point_min() || e > buffer.point_max() {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("args-out-of-range"),
-                    start.clone(),
-                    end.clone(),
+                    *start,
+                    *end,
                 ])));
             }
             let multibyte = buffer.is_multibyte();
@@ -2450,7 +2445,7 @@ pub(crate) fn md5_source_bytes(
                     let default = interp
                         .lookup_var("buffer-file-coding-system", env)
                         .unwrap_or(Value::Nil);
-                    coding = default.clone();
+                    coding = default;
                     let local = call(
                         interp,
                         "local-variable-p",
@@ -2472,12 +2467,7 @@ pub(crate) fn md5_source_bytes(
                         let selected = interp.call_function_value(
                             Value::symbol("find-operation-coding-system"),
                             Some("find-operation-coding-system"),
-                            &[
-                                Value::symbol("write-region"),
-                                b.clone(),
-                                e.clone(),
-                                filename,
-                            ],
+                            &[Value::symbol("write-region"), b, e, filename],
                             env,
                         )?;
                         if let Some((_, value)) = selected.cons_values()
@@ -2499,7 +2489,7 @@ pub(crate) fn md5_source_bytes(
                         coding = interp.call_function_value(
                             selector,
                             None,
-                            &[b.clone(), e.clone(), coding.clone(), Value::Nil],
+                            &[b, e, coding, Value::Nil],
                             env,
                         )?;
                     }
@@ -2507,7 +2497,7 @@ pub(crate) fn md5_source_bytes(
                         coding = Value::symbol("raw-text");
                     }
                 }
-                coding = validate(interp, coding.clone())?;
+                coding = validate(interp, coding)?;
             }
             call(interp, "buffer-substring-no-properties", &[b, e], env)
         })();
@@ -2528,7 +2518,7 @@ pub(crate) fn md5_source_bytes(
             };
         }
         coding = validate(interp, coding)?;
-        source.clone()
+        *source
     } else if matches!(source, Value::Symbol(name) if name == "iv-auto") {
         if !matches!(start, Value::Integer(number) if *number >= 0) {
             return Err(LispError::Signal(
@@ -2548,7 +2538,7 @@ pub(crate) fn md5_source_bytes(
             if source.is_nil() {
                 Value::string("nil")
             } else {
-                source.clone()
+                *source
             },
         ])));
     };
@@ -2563,7 +2553,7 @@ pub(crate) fn md5_source_bytes(
             if !interp.has_coding_system(name) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("coding-system-error"),
-                    coding.clone(),
+                    coding,
                 ])));
             }
             Some(name)
@@ -2586,10 +2576,7 @@ pub(crate) fn md5_source_bytes(
             } else {
                 *index
             }),
-            _ => Err(LispError::WrongTypeArgument(
-                "integerp".into(),
-                value.clone(),
-            )),
+            _ => Err(LispError::WrongTypeArgument("integerp".into(), *value)),
         }
     };
     let b = endpoint(start, 0)?;
@@ -2598,8 +2585,8 @@ pub(crate) fn md5_source_bytes(
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("args-out-of-range"),
             object,
-            start.clone(),
-            end.clone(),
+            *start,
+            *end,
         ])));
     }
     Ok(bytes[b as usize..e as usize].to_vec())
@@ -2647,7 +2634,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let a = Value::list([Value::symbol("a")]);
         let b = Value::list([Value::symbol("b")]);
-        let object = Value::list([a.clone(), b.clone(), a.clone(), b.clone()]);
+        let object = Value::list([a, b, a, b]);
         let mut env = preprocess_env(&mut interp, Value::Nil);
 
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess shared list");
@@ -2664,7 +2651,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let object = Value::cons(Value::Integer(1), Value::Nil);
         let (_, cdr) = object.cons_cells().expect("cons");
-        *cdr.borrow_mut() = object.clone();
+        *cdr.borrow_mut() = object;
         let mut env = preprocess_env(&mut interp, Value::Nil);
 
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess cyclic list");
@@ -2683,13 +2670,9 @@ mod tests {
         let mut interp = Interpreter::new();
         let existing = Value::list([Value::symbol("existing")]);
         let repeated = Value::list([Value::symbol("repeated")]);
-        let table = json::make_hash_table(
-            &mut interp,
-            "eq",
-            vec![(existing.clone(), Value::Integer(-7))],
-        );
-        let object = Value::list([existing.clone(), repeated.clone(), repeated.clone()]);
-        let mut env = preprocess_env(&mut interp, table.clone());
+        let table = json::make_hash_table(&mut interp, "eq", vec![(existing, Value::Integer(-7))]);
+        let object = Value::list([existing, repeated, repeated]);
+        let mut env = preprocess_env(&mut interp, table);
 
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess existing table");
 

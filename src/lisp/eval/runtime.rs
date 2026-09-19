@@ -938,17 +938,17 @@ impl Interpreter {
             .parameter_overrides
             .iter()
             .find(|(parameter, _)| parameter == name)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
     }
 
     pub(crate) fn frame_name_value(&self) -> Value {
         self.selected_frame_state()
-            .map(|frame| frame.name.clone())
+            .map(|frame| frame.name)
             .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
-        self.frame_and_buffer_state.clone()
+        self.frame_and_buffer_state
     }
 
     pub(crate) fn set_frame_and_buffer_state(&mut self, state: Value) {
@@ -1321,7 +1321,7 @@ impl Interpreter {
         self.finalizer_functions
             .iter()
             .find(|(candidate, _)| *candidate == id)
-            .map(|(_, function)| function.clone())
+            .map(|(_, function)| *function)
     }
 
     /// alloc.c:queue_doomed_finalizers, run after the mark phase and
@@ -1333,7 +1333,7 @@ impl Interpreter {
             if live.contains(id) || function.is_nil() {
                 true
             } else {
-                doomed.push(function.clone());
+                doomed.push(*function);
                 false
             }
         });
@@ -1360,7 +1360,7 @@ impl Interpreter {
             let function = self.doomed_finalizers.remove(0);
             self.finalizers_run += 1;
             let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
-            let result = self.call_function_value(function.clone(), None, &[], env);
+            let result = self.call_function_value(function, None, &[], env);
             match result {
                 Ok(_) => {}
                 Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
@@ -1568,7 +1568,7 @@ impl Interpreter {
             _ => {
                 return Err(LispError::WrongTypeArgument(
                     "integer-or-marker-p".into(),
-                    value.clone(),
+                    *value,
                 ));
             }
         }
@@ -1706,7 +1706,7 @@ impl Interpreter {
             entries
                 .get(index)
                 .zip(slot_indices.get(index))
-                .map(|((key, value), slot)| (*slot, key.clone(), value.clone())),
+                .map(|((key, value), slot)| (*slot, *key, *value)),
         )
     }
 
@@ -1730,7 +1730,7 @@ impl Interpreter {
                     state
                         .entries
                         .get(index)
-                        .map(|(key, value)| (index, key.clone(), value.clone()))
+                        .map(|(key, value)| (index, *key, *value))
                 })
                 .collect(),
         )
@@ -1972,7 +1972,7 @@ impl Interpreter {
                     .find(|(existing, _)| {
                         self.runtime_hash_keys_match(state.test, existing, key, env)
                     })
-                    .map(|(_, value)| value.clone()),
+                    .map(|(_, value)| *value),
             );
         }
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
@@ -1981,7 +1981,7 @@ impl Interpreter {
                 .bucket_entry(hash, |existing| {
                     self.runtime_hash_keys_match(state.test, existing, key, env)
                 })
-                .map(|index| state.entries[index].1.clone()),
+                .map(|index| state.entries[index].1),
         )
     }
 
@@ -2273,7 +2273,7 @@ impl Interpreter {
     pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
         let table = self.find_char_table(id)?;
         if let Some(entry) = table.explicit_entry(key) {
-            return Some(entry.value.clone());
+            return Some(entry.value);
         }
         if let Some(parent_id) = table.parent
             && let Some(value) = self.char_table_get(parent_id, key)
@@ -2286,7 +2286,7 @@ impl Interpreter {
         {
             return Some(value);
         }
-        Some(table.default.clone())
+        Some(table.default)
     }
 
     /// Resolve the first explicit entry in a character-table parent chain
@@ -2323,14 +2323,14 @@ impl Interpreter {
             .rev()
             .find(|entry| entry.start == start.min(end) && entry.end == start.max(end))
         {
-            return Some(entry.value.clone());
+            return Some(entry.value);
         }
         if let Some(parent_id) = table.parent
             && let Some(value) = self.char_table_range(parent_id, start, end)
         {
             return Some(value);
         }
-        Some(table.default.clone())
+        Some(table.default)
     }
 
     /// Enumerate the effective explicit ranges in an append-only character
@@ -2371,7 +2371,7 @@ impl Interpreter {
     pub fn char_table_explicit_get(&self, id: u64, key: u32) -> Option<Value> {
         let table = self.find_char_table(id)?;
         if let Some(entry) = table.explicit_entry(key) {
-            return Some(entry.value.clone());
+            return Some(entry.value);
         }
         if let Some(parent_id) = table.parent {
             return self.char_table_explicit_get(parent_id, key);
@@ -2483,19 +2483,19 @@ impl Interpreter {
         let Value::Record(id) = prototype else {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
-                prototype.clone(),
+                *prototype,
             ));
         };
         let Some(record) = self.find_record(*id) else {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
-                prototype.clone(),
+                *prototype,
             ));
         };
         if record.kind != RecordKind::Closure {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
-                prototype.clone(),
+                *prototype,
             ));
         }
         let mut slots = record.slots.clone();
@@ -2595,7 +2595,7 @@ impl Interpreter {
         let mut seen = std::collections::HashSet::new();
         let mut owned_ids = Vec::new();
         let mut watched_cells = Vec::new();
-        let mut tail = view.clone();
+        let mut tail = *view;
         while let Value::Cons(cell) = tail {
             let cell_id = crate::lisp::types::ConsCell::identity(&cell);
             if !seen.insert(cell_id) {
@@ -2622,7 +2622,7 @@ impl Interpreter {
             // A binding pair is itself mutable keymap structure.  Do not
             // claim arbitrary binding definitions or included keymap roots;
             // those either are not structure or have their own owner.
-            let entry = cell.car.borrow().clone();
+            let entry = *cell.car.borrow();
             if let Value::Cons(entry_cell) = &entry
                 && !matches!(entry.car(), Ok(Value::Symbol(ref name)) if name == "keymap")
             {
@@ -2634,7 +2634,7 @@ impl Interpreter {
                     .or_default()
                     .push(keymap_id);
             }
-            tail = cell.cdr.borrow().clone();
+            tail = *cell.cdr.borrow();
         }
         self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
         let watch = crate::lisp::types::ConsMutationSnapshot::cells(watched_cells.iter());
@@ -2665,7 +2665,7 @@ impl Interpreter {
                 let view = record
                     .slots
                     .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)?;
-                view.is_cons().then(|| (record.id, view.clone()))
+                view.is_cons().then_some((record.id, *view))
             })
             .collect::<Vec<_>>();
         for (id, view) in views {
@@ -2962,11 +2962,11 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
         while let Value::Cons(cell) = tail {
-            let next = cell.cdr.borrow().clone();
+            let next = *cell.cdr.borrow();
             if next.is_nil() {
                 let last = cell.car.borrow();
                 if matches!(&*last, Value::String(_) | Value::StringObject(_)) {
-                    file = last.clone();
+                    file = *last;
                 }
             }
             seen += 1;
@@ -3166,7 +3166,7 @@ impl Interpreter {
         let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
         let handlers = self.push_condition_case_handler(vec![Value::T]);
         let depth = env.len();
-        let result = self.call_function_value(function.clone(), None, args, env);
+        let result = self.call_function_value(function, None, args, env);
         self.pop_handler_bindings(handlers);
         env.truncate(depth);
         let result = match result {
@@ -3367,7 +3367,7 @@ mod runtime_index_tests {
 
         let descriptor = interp.create_record("descriptor", vec![Value::symbol("public-type")]);
         interp
-            .retag_record(first_id, descriptor.clone())
+            .retag_record(first_id, descriptor)
             .expect("record must accept an arbitrary Lisp type descriptor");
         assert_eq!(interp.record_ids_by_type("after"), vec![second_id]);
         assert_eq!(

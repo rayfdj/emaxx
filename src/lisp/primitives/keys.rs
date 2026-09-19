@@ -108,7 +108,7 @@ pub(crate) fn event_convert_list_value(
         } else if base.is_some() {
             return Err(LispError::Signal("Two bases given in one event".into()));
         } else {
-            base = Some(item.clone());
+            base = Some(*item);
         }
     }
 
@@ -226,11 +226,10 @@ pub(crate) fn parse_event_symbol_modifiers(
     }
 
     let base = crate::lisp::types::interned_symbol_value(base.to_string());
-    let element_mask = Value::list([base.clone(), Value::Integer(modifiers)]);
-    let elements =
-        Value::list(std::iter::once(base.clone()).chain(event_modifier_elements(modifiers)));
+    let element_mask = Value::list([base, Value::Integer(modifiers)]);
+    let elements = Value::list(std::iter::once(base).chain(event_modifier_elements(modifiers)));
     interp.put_symbol_property(symbol, "event-symbol-element-mask", element_mask);
-    interp.put_symbol_property(symbol, "event-symbol-elements", elements.clone());
+    interp.put_symbol_property(symbol, "event-symbol-elements", elements);
     Ok(elements)
 }
 
@@ -385,14 +384,14 @@ pub(crate) fn normalize_lucid_key_events(
     env: &Env,
 ) -> Result<Value, LispError> {
     let Ok(events) = vector_items(key) else {
-        return Ok(key.clone());
+        return Ok(*key);
     };
     let positions_enabled = symbols_with_pos_enabled(interp, env);
     if !events.iter().any(|event| {
         lucid_event_type_list_p(event)
             || (positions_enabled && symbol_with_pos_parts(interp, event).is_some())
     }) {
-        return Ok(key.clone());
+        return Ok(*key);
     }
     let mut converted = vec![Value::Symbol("vector-literal".into())];
     for event in events {
@@ -420,10 +419,10 @@ pub(crate) fn normalize_xemacs_macro_definition(
     def: &Value,
 ) -> Result<Value, LispError> {
     let Ok(events) = vector_items(def) else {
-        return Ok(def.clone());
+        return Ok(*def);
     };
     if !matches!(events.first(), Some(Value::Cons(_))) {
-        return Ok(def.clone());
+        return Ok(*def);
     }
     let mut converted = vec![Value::Symbol("vector-literal".into())];
     for event in events {
@@ -635,12 +634,9 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
             .map(normalize_key_description_event)
             .collect()),
         Value::Integer(_) | Value::Symbol(_) => {
-            Ok(vec![normalize_key_description_event(sequence.clone())])
+            Ok(vec![normalize_key_description_event(*sequence)])
         }
-        _ => Err(LispError::WrongTypeArgument(
-            "arrayp".into(),
-            sequence.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("arrayp".into(), *sequence)),
     }
 }
 
@@ -697,14 +693,14 @@ pub(crate) fn concat_character_value(value: &Value) -> Result<(char, bool), Lisp
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
-            value.clone(),
+            *value,
         ])));
     };
     if *code < 0 {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
-            value.clone(),
+            *value,
         ])));
     }
     if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(code) {
@@ -715,7 +711,7 @@ pub(crate) fn concat_character_value(value: &Value) -> Result<(char, bool), Lisp
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
-            value.clone(),
+            *value,
         ])));
     };
     Ok((ch, !is_raw_byte_regex_char(ch) && (*code as u32) > 0x7F))
@@ -1055,7 +1051,7 @@ pub(crate) fn resolve_keymap_without_autoload(
     let is_keymap_list =
         |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
     if is_keymap_list(object) {
-        return Ok(object.clone());
+        return Ok(*object);
     }
     if object.as_symbol().is_ok() {
         let function = call(
@@ -1068,10 +1064,7 @@ pub(crate) fn resolve_keymap_without_autoload(
             return Ok(function);
         }
     }
-    Err(LispError::WrongTypeArgument(
-        "keymapp".into(),
-        object.clone(),
-    ))
+    Err(LispError::WrongTypeArgument("keymapp".into(), *object))
 }
 
 /// keymap.c copy_keymap_1: a fresh `(keymap ...)' spine whose char-table
@@ -1120,7 +1113,7 @@ fn copy_runtime_keymap(
     let name = string_like(&name).map(|string| string.text);
     let copy = make_runtime_keymap(interp, name.as_deref());
     let copy_id = keymap_record_id(interp, &copy)
-        .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), copy.clone()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), copy))?;
     let mut copied_bindings = Vec::new();
     for entry in bindings.to_vec()? {
         let mut items = entry.to_vec()?;
@@ -1217,7 +1210,7 @@ fn copy_keymap_char_table(
     let mut replaced = Vec::with_capacity(entries.len());
     let mut changed = false;
     for entry in entries {
-        let item = syntax::char_table_public_value(interp, copy_id, entry.value.clone());
+        let item = syntax::char_table_public_value(interp, copy_id, entry.value);
         let copied = copy_keymap_item(interp, &item, depth, env)?;
         if crate::lisp::primitives::values_eq_in_env(interp, &copied, &item, env) {
             replaced.push(entry);
@@ -1248,7 +1241,7 @@ fn copy_keymap_item(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let Some((car, cdr)) = elt.cons_values() else {
-        return Ok(elt.clone());
+        return Ok(*elt);
     };
     let is_keymap_list =
         |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
@@ -1296,5 +1289,5 @@ fn copy_keymap_item(
     if matches!(&car, Value::Symbol(head) if head == "keymap") {
         return copy_keymap_1(interp, elt, depth, env);
     }
-    Ok(elt.clone())
+    Ok(*elt)
 }

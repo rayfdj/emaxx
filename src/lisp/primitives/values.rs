@@ -84,22 +84,22 @@ fn values_equal_signaling_depth(
             entry.push(right_key);
         }
     }
-    let mut l = left.clone();
-    let mut r = right.clone();
-    let mut tortoise = left.clone();
+    let mut l = *left;
+    let mut r = *right;
+    let mut tortoise = *left;
     let mut steps = 0usize;
     let mut limit = 2usize;
-    while let Value::Cons(lc) = l.clone() {
-        let Value::Cons(rc) = r.clone() else {
+    while let Value::Cons(lc) = l {
+        let Value::Cons(rc) = r else {
             return Ok(false);
         };
-        let left_car = lc.car.borrow().clone();
-        let right_car = rc.car.borrow().clone();
+        let left_car = *lc.car.borrow();
+        let right_car = *rc.car.borrow();
         if !values_equal_signaling_depth(interp, &left_car, &right_car, env, depth + 1, memo)? {
             return Ok(false);
         }
-        let left_cdr = lc.cdr.borrow().clone();
-        let right_cdr = rc.cdr.borrow().clone();
+        let left_cdr = *lc.cdr.borrow();
+        let right_cdr = *rc.cdr.borrow();
         if let (Value::Cons(a), Value::Cons(b)) = (&left_cdr, &right_cdr)
             && crate::lisp::types::SharedCons::ptr_eq(a, b)
         {
@@ -112,12 +112,12 @@ fn values_equal_signaling_depth(
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
-                left.clone(),
+                *left,
             ])));
         }
         steps += 1;
         if steps == limit {
-            tortoise = l.clone();
+            tortoise = l;
             steps = 0;
             limit *= 2;
         }
@@ -272,7 +272,7 @@ pub(crate) fn record_equals_record_literal_form(
         }
     }
 
-    let expected_fields = std::iter::once(record.type_tag.clone())
+    let expected_fields = std::iter::once(record.type_tag)
         .chain(record.slots.iter().cloned())
         .collect::<Vec<_>>();
     let actual_fields = &items[1..];
@@ -611,13 +611,13 @@ pub(crate) fn plist_type_error(plist: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),
         Value::Symbol("plistp".into()),
-        plist.clone(),
+        *plist,
     ]))
 }
 
 pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut len = 0i64;
-    let mut current = list.clone();
+    let mut current = *list;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
@@ -628,7 +628,7 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
                     return len;
                 }
                 len += 1;
-                current = cdr.borrow().clone();
+                current = *cdr.borrow();
             }
             Value::Nil => return len,
             _ => return len,
@@ -641,18 +641,15 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
         Value::Integer(n) => BigInt::from(*n),
         Value::BigInteger(n) => (*n).into(),
         _ => {
-            return Err(LispError::WrongTypeArgument(
-                "integerp".into(),
-                count.clone(),
-            ));
+            return Err(LispError::WrongTypeArgument("integerp".into(), *count));
         }
     };
 
     if remaining <= BigInt::zero() {
-        return Ok(list.clone());
+        return Ok(*list);
     }
 
-    let mut current = list.clone();
+    let mut current = *list;
     let mut visited = HashMap::new();
     let mut steps = 0usize;
 
@@ -661,7 +658,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
             return Ok(current);
         }
 
-        match current.clone() {
+        match current {
             Value::Nil => return Ok(Value::Nil),
             Value::Cons(cons_cell) => {
                 let cdr = &cons_cell.cdr;
@@ -680,7 +677,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
 
                 remaining -= 1;
                 steps += 1;
-                current = cdr.borrow().clone();
+                current = *cdr.borrow();
             }
             other => return Err(wrong_type_argument("listp", other)),
         }
@@ -726,16 +723,10 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
                 // pseudovectors.  Flength accepts none of them here; bool
                 // vectors and keymaps were projected through their GNU public
                 // sequence representations above.
-                _ => Err(LispError::WrongTypeArgument(
-                    "sequencep".into(),
-                    value.clone(),
-                )),
+                _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
             }
         }
-        _ => Err(LispError::WrongTypeArgument(
-            "sequencep".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
 
@@ -802,7 +793,7 @@ pub(crate) fn values_equal_including_properties_recursive(
                 if span.start <= pos && pos < span.end {
                     for (key, value) in &span.props {
                         if !out.iter().any(|(existing, _)| existing == key) {
-                            out.push((key.clone(), value.clone()));
+                            out.push((key.clone(), *value));
                         }
                     }
                 }
@@ -967,16 +958,13 @@ pub(crate) fn order_from_option(ordering: Option<Ordering>) -> ValueOrder {
 pub(crate) fn type_mismatch_signal(left: &Value, right: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("type-mismatch".into()),
-        left.clone(),
-        right.clone(),
+        *left,
+        *right,
     ]))
 }
 
 pub(crate) fn circular_signal(value: &Value) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol("circular".into()),
-        value.clone(),
-    ]))
+    LispError::SignalValue(Value::list([Value::Symbol("circular".into()), *value]))
 }
 
 pub(crate) fn is_number_value(value: &Value) -> bool {
@@ -1276,10 +1264,10 @@ pub(crate) fn value_ordering(
                     return Err(circular_signal(left));
                 }
                 let result = (|| {
-                    let left_head = left_cell.car.borrow().clone();
-                    let left_tail = left_cell.cdr.borrow().clone();
-                    let right_head = right_cell.car.borrow().clone();
-                    let right_tail = right_cell.cdr.borrow().clone();
+                    let left_head = *left_cell.car.borrow();
+                    let left_tail = *left_cell.cdr.borrow();
+                    let right_head = *right_cell.car.borrow();
+                    let right_tail = *right_cell.cdr.borrow();
                     let head_order =
                         value_ordering(interp, &left_head, &right_head, env, seen_lists)?;
                     if matches!(head_order, ValueOrder::Less | ValueOrder::Greater) {
@@ -1461,10 +1449,7 @@ pub(crate) fn remove_equal(
                 .filter(|item| !values_equal(interp, item, elt))
                 .collect::<Vec<_>>(),
         )),
-        _ => Err(LispError::WrongTypeArgument(
-            "sequencep".into(),
-            sequence.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *sequence)),
     }
 }
 
@@ -1488,10 +1473,10 @@ pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
         let is_last = index + 1 == args.len();
         if is_last {
             if let Some(tail_cell) = tail {
-                tail_cell.set_cdr(value.clone())?;
-                return Ok(head.unwrap_or_else(|| value.clone()));
+                tail_cell.set_cdr(*value)?;
+                return Ok(head.unwrap_or(*value));
             }
-            return Ok(value.clone());
+            return Ok(*value);
         }
 
         if value.is_nil() {
@@ -1500,9 +1485,9 @@ pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
 
         let last_cell = last_nconc_cell(value)?;
         if let Some(tail_cell) = &tail {
-            tail_cell.set_cdr(value.clone())?;
+            tail_cell.set_cdr(*value)?;
         } else {
-            head = Some(value.clone());
+            head = Some(*value);
         }
         tail = Some(last_cell);
     }
@@ -1512,7 +1497,7 @@ pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
 
 pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() || is_vector_value(value) {
-        return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument("listp".into(), *value));
     }
     let items = value.to_vec()?;
     let mut copied = Vec::with_capacity(items.len());
@@ -1570,14 +1555,11 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
 }
 
 pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
-    let mut current = value.clone();
+    let mut current = *value;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let Some((car, cdr)) = (current.clone()).cons_cells() else {
-            return Err(LispError::WrongTypeArgument(
-                "consp".into(),
-                current.clone(),
-            ));
+            return Err(LispError::WrongTypeArgument("consp".into(), current));
         };
         let cell_id = car.cell_id();
         if seen.step(cell_id) {
@@ -1586,8 +1568,8 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
                 Value::string("Circular list"),
             ])));
         }
-        match cdr.borrow().clone() {
-            Value::Cons(_) => current = cdr.borrow().clone(),
+        match *cdr.borrow() {
+            Value::Cons(_) => current = *cdr.borrow(),
             _ => return Ok(current),
         }
     }
@@ -1645,7 +1627,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Value::Lambda(_)
             | Value::ReaderForm(_) => false,
             Value::Cons(_) => {
-                let mut tail = value.clone();
+                let mut tail = *value;
                 let limit = if depth < SXHASH_MAX_DEPTH {
                     SXHASH_MAX_LEN
                 } else {
@@ -2000,7 +1982,7 @@ pub(crate) fn hash_value_equal_at(
             // elements, and only while the structure is shallower than
             // `SXHASH_MAX_DEPTH'; whatever tail remains is folded in one
             // level deeper, which is what terminates a circular list.
-            let mut tail = value.clone();
+            let mut tail = *value;
             if depth < SXHASH_MAX_DEPTH {
                 for _ in 0..SXHASH_MAX_LEN {
                     let Some((car, cdr)) = tail.cons_values() else {
@@ -2326,9 +2308,9 @@ pub(crate) fn resolve_callable(
     let callable = if symbols_with_pos_enabled(interp, env) {
         symbol_with_pos_parts(interp, value)
             .map(|(symbol, _)| symbol)
-            .unwrap_or_else(|| value.clone())
+            .unwrap_or_else(|| *value)
     } else {
-        value.clone()
+        *value
     };
     match &callable {
         Value::Symbol(name) => interp.lookup_function(name, env),
@@ -2371,9 +2353,9 @@ pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -
     let symbol_value = if symbols_with_pos_enabled(interp, env) {
         symbol_with_pos_parts(interp, value)
             .map(|(symbol, _)| symbol)
-            .unwrap_or_else(|| value.clone())
+            .unwrap_or_else(|| *value)
     } else {
-        value.clone()
+        *value
     };
     let symbol = symbol_value.as_symbol().ok();
     if symbol
@@ -2381,7 +2363,7 @@ pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -
     {
         return false;
     }
-    let resolved = resolve_callable(interp, value, env).unwrap_or_else(|_| value.clone());
+    let resolved = resolve_callable(interp, value, env).unwrap_or(*value);
     let autoloaded_function =
         symbol.is_some() && autoload_parts(&resolved).is_some_and(|(_, _, kind)| kind.is_nil());
     callable_value_p(interp, &resolved, env) || autoloaded_function
@@ -2402,18 +2384,12 @@ pub(crate) fn value_matches_with_test(
             "equal" => Ok(values_equal_in_env(interp, left, right, env)),
             _ => {
                 let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
-                Ok(
-                    invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
-                        .is_truthy(),
-                )
+                Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
             }
         },
         Some(other) => {
             let func = resolve_callable(interp, other, env)?;
-            Ok(
-                invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
-                    .is_truthy(),
-            )
+            Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
         }
     }
 }
@@ -2424,7 +2400,7 @@ pub(crate) fn invoke_function_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    interp.call_function_value(func.clone(), None, args, env)
+    interp.call_function_value(*func, None, args, env)
 }
 
 pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
@@ -2491,7 +2467,7 @@ pub(crate) fn runtime_keymap_public_view(interp: &Interpreter, keymap: &Value) -
 }
 
 pub(crate) fn public_keymap_value(interp: &Interpreter, value: &Value) -> Value {
-    runtime_keymap_public_view(interp, value).unwrap_or_else(|| value.clone())
+    runtime_keymap_public_view(interp, value).unwrap_or(*value)
 }
 
 pub(crate) fn refresh_runtime_keymap_public_view(
@@ -2585,7 +2561,7 @@ pub(crate) fn refresh_runtime_keymap_public_view(
         return Ok(());
     };
     record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
-    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view.clone();
+    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view;
     interp.register_keymap_public_cons_owners(keymap_id, &view);
     Ok(())
 }
@@ -2668,7 +2644,7 @@ pub(crate) fn keymap_bindings(
                         (!parts.is_empty()).then_some(parts)
                     })
                 }),
-                value: items[1].clone(),
+                value: items[1],
                 after_prompt: items.get(2).is_some_and(Value::is_truthy),
             });
             continue;
@@ -2754,7 +2730,7 @@ pub(crate) fn keymap_direct_bindings(
                 matches!(binding.parts.as_deref(),
                     Some([part]) if canonical_key_part(part) == "remap")
             })
-            .map(|binding| binding.value.clone());
+            .map(|binding| binding.value);
         let entry = CachedKeymapIndex {
             bindings: std::rc::Rc::clone(&bindings),
             remap_map,
@@ -2824,7 +2800,7 @@ pub(crate) fn replace_runtime_keymap_tail(
         return Ok(false);
     };
     if let Some(view) = runtime_keymap_public_view(interp, keymap) {
-        view.set_cdr(tail.clone())?;
+        view.set_cdr(*tail)?;
     }
     sync_runtime_keymap_from_public_view(interp, id)?;
     Ok(true)
@@ -2848,19 +2824,19 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
     loop {
         let Value::Cons(cell) = &tail else {
             if !tail.is_nil() {
-                return Err(wrong_type_argument("listp", tail.clone()));
+                return Err(wrong_type_argument("listp", tail));
             }
             return Ok((items, Value::Nil));
         };
         if !seen.insert(crate::lisp::types::ConsCell::identity(cell)) {
             return Ok((items, Value::Nil));
         }
-        let item = cell.car.borrow().clone();
+        let item = *cell.car.borrow();
         if matches!(&item, Value::Symbol(name) if name == "keymap") {
             return Ok((items, tail));
         }
         items.push(item);
-        let next = cell.cdr.borrow().clone();
+        let next = *cell.cdr.borrow();
         tail = next;
     }
 }
@@ -2920,7 +2896,7 @@ fn parse_runtime_keymap_public_view(
             if range.start != range.end || range.value.is_nil() || range.value == Value::T {
                 continue;
             }
-            let entry = Value::cons(Value::Integer(i64::from(range.start)), range.value.clone());
+            let entry = Value::cons(Value::Integer(i64::from(range.start)), range.value);
             if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry, false)? {
                 from_table.push(binding);
             }
@@ -2952,7 +2928,7 @@ pub(crate) fn sync_runtime_keymap_from_public_view(
     record.slots[KEYMAP_PARENT_SLOT] = parsed.parent;
     record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(parsed.bindings);
     record.slots[KEYMAP_CHAR_TABLE_SLOT] = parsed.char_table;
-    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view.clone();
+    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view;
     interp.register_keymap_public_cons_owners(keymap_id, &view);
     Ok(())
 }
@@ -3115,7 +3091,7 @@ pub(crate) fn keymap_define_binding_with_placement(
                 keymap,
                 &head.join(" "),
                 Some(head.to_vec()),
-                prefix.clone(),
+                prefix,
                 after_prompt,
             )?;
             prefix
@@ -3155,7 +3131,7 @@ pub(crate) fn keymap_define_binding_with_placement(
         if let Value::Integer(code) = event
             && (0..=0x3f_ffff).contains(&code)
         {
-            interp.char_table_set(table_id, code as u32, binding.clone())?;
+            interp.char_table_set(table_id, code as u32, binding)?;
         }
     }
 
@@ -3400,7 +3376,7 @@ fn keymap_lookup_direct_binding_exact_parts(
     let bindings = keymap_direct_bindings(interp, keymap)?;
     for binding in bindings.iter() {
         if binding_matches_key_parts(binding, key_parts) {
-            return Ok(binding.value.clone());
+            return Ok(binding.value);
         }
     }
     Ok(Value::Nil)
@@ -3408,7 +3384,7 @@ fn keymap_lookup_direct_binding_exact_parts(
 
 fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
     if is_keymap_value(interp, binding) {
-        return Some(binding.clone());
+        return Some(*binding);
     }
     let Value::Symbol(name) = binding else {
         return None;
@@ -3444,7 +3420,7 @@ fn keymap_lookup_binding_exact_parts_bounded(
     let bindings = keymap_direct_bindings(interp, keymap)?;
     for binding in bindings.iter() {
         if binding_matches_key_parts(binding, key_parts) {
-            return Ok(binding.value.clone());
+            return Ok(binding.value);
         }
     }
     // A shorter binding to a prefix keymap resolves the remaining events in
@@ -3471,7 +3447,7 @@ fn keymap_lookup_binding_exact_parts_bounded(
     if accept_default && key_parts.len() == 1 && key_parts != ["<t>".to_string()] {
         for binding in bindings.iter() {
             if binding_key_parts(binding) == ["<t>".to_string()] {
-                return Ok(binding.value.clone());
+                return Ok(binding.value);
             }
         }
     }
@@ -3570,7 +3546,7 @@ pub(crate) fn keymap_lookup_sequence_value_with_default(
     // GNU returns the map (or stack of maps) itself for an empty sequence.
     // Help uses that identity operation to propagate root-level shadow maps.
     if key_parts.is_empty() {
-        return Ok(keymap_or_maps.clone());
+        return Ok(*keymap_or_maps);
     }
 
     if is_keymap_value(interp, keymap_or_maps) {
@@ -3602,8 +3578,7 @@ pub(crate) fn keymap_lookup_sequence_value_with_default(
             let Some((event, definition)) = entry.cons_values() else {
                 continue;
             };
-            let event_sequence =
-                Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let event_sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
             let Ok(event_parts) = key_sequence_keymap_parts(&event_sequence) else {
                 continue;
             };
@@ -3654,7 +3629,7 @@ pub(crate) fn keymap_get_keyelt(
     autoload: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut current = object.clone();
+    let mut current = *object;
     loop {
         let Value::Cons(_) = current else {
             return Ok(current);
@@ -3708,7 +3683,7 @@ pub(crate) fn keymap_reference_map(
     env: &Env,
 ) -> Option<Value> {
     if is_keymap_value(interp, value) {
-        return Some(value.clone());
+        return Some(*value);
     }
     let Value::Symbol(symbol) = value else {
         return None;
@@ -3724,10 +3699,10 @@ pub(crate) fn unwrap_function_quote(value: &Value) -> Value {
         .to_vec()
         .ok()
         .and_then(|items| match items.as_slice() {
-            [Value::Symbol(symbol), inner] if symbol == "function" => Some(inner.clone()),
+            [Value::Symbol(symbol), inner] if symbol == "function" => Some(*inner),
             _ => None,
         })
-        .unwrap_or_else(|| value.clone())
+        .unwrap_or(*value)
 }
 
 pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
@@ -3947,7 +3922,7 @@ pub(crate) fn accessible_keymaps(
         }
         queue.push((prefix_parts, target));
     } else if is_keymap_value(interp, &args[0]) {
-        queue.push((Vec::new(), args[0].clone()));
+        queue.push((Vec::new(), args[0]));
     } else {
         return Ok(Value::Nil);
     }
@@ -4319,7 +4294,7 @@ pub(crate) fn where_is_internal_maps(
         // A single keymap means that map followed by the global map.  A
         // one-element LIST of keymaps is the GNU spelling for searching only
         // that map; help.el deliberately uses both forms for its fallback.
-        let mut maps = vec![arg.clone()];
+        let mut maps = vec![*arg];
         let global_map = interp.current_global_map_value();
         if is_keymap_value(interp, &global_map)
             && keymap_value_identity(interp, &global_map) != keymap_value_identity(interp, arg)
@@ -4771,7 +4746,7 @@ fn remap_probe(
                 _ => false,
             };
             if matches && !binding.value.is_nil() {
-                return Ok(RemapProbe::Found(binding.value.clone()));
+                return Ok(RemapProbe::Found(binding.value));
             }
         }
     }

@@ -1032,7 +1032,7 @@ fn write_process_output_accepts_a_shared_string_buffer_name() {
         &[
             Value::String("sample".into()),
             Value::Nil,
-            destination.clone(),
+            destination,
             Value::Nil,
         ],
         &mut env,
@@ -1254,20 +1254,10 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
     ];
 
     for (label, value) in cases {
-        let left = call(
-            &mut interp,
-            "vector",
-            &[value.clone(), Value::Integer(1)],
-            &mut env,
-        )
-        .expect("create left vector");
-        let right = call(
-            &mut interp,
-            "vector",
-            &[value.clone(), Value::Integer(2)],
-            &mut env,
-        )
-        .expect("create right vector");
+        let left = call(&mut interp, "vector", &[value, Value::Integer(1)], &mut env)
+            .expect("create left vector");
+        let right = call(&mut interp, "vector", &[value, Value::Integer(2)], &mut env)
+            .expect("create right vector");
         let result = call(&mut interp, "value<", &[left, right], &mut env)
             .unwrap_or_else(|error| panic!("{label}: value< errored: {error:?}"));
         assert_eq!(
@@ -1382,24 +1372,20 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     );
     let record_head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
     let record_mid = make_record(&mut interp, &mut env, &[sym("c"), sym("d")]);
-    let record_nested_e = make_record(
-        &mut interp,
-        &mut env,
-        &[record_head.clone(), record_mid.clone(), sym("e")],
-    );
+    let record_nested_e = make_record(&mut interp, &mut env, &[record_head, record_mid, sym("e")]);
     let record_nested_f = make_record(&mut interp, &mut env, &[record_head, record_mid, sym("f")]);
     let cases = vec![
         ("number", parse("1"), parse("2")),
         ("number_neg_neg", parse("-2"), parse("-1")),
         ("number_neg_pos", parse("-2"), parse("1")),
         ("number_neg_pos_2", parse("-1"), parse("2")),
-        ("bignum_inc", big.clone(), big_plus_one),
-        ("bignum_neg_pos", neg_big_minus_one.clone(), big.clone()),
-        ("bignum_neg_chain", neg_big_minus_one, neg_big.clone()),
-        ("fixnum_bignum", parse("1"), big.clone()),
-        ("fixnum_neg_bignum", parse("-1"), big.clone()),
-        ("bignum_fixnum_neg", neg_big.clone(), parse("-1")),
-        ("bignum_fixnum_pos", neg_big.clone(), parse("1")),
+        ("bignum_inc", big, big_plus_one),
+        ("bignum_neg_pos", neg_big_minus_one, big),
+        ("bignum_neg_chain", neg_big_minus_one, neg_big),
+        ("fixnum_bignum", parse("1"), big),
+        ("fixnum_neg_bignum", parse("-1"), big),
+        ("bignum_fixnum_neg", neg_big, parse("-1")),
+        ("bignum_fixnum_pos", neg_big, parse("1")),
         ("float", parse("1.5"), parse("1.6")),
         ("float_neg_neg", parse("-1.3"), parse("-1.2")),
         ("float_neg_pos", parse("-13.0"), parse("12.0")),
@@ -1407,7 +1393,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         ("float_fixnum", parse("1.9"), parse("2")),
         ("float_fixnum_neg_pos", parse("-2.0"), parse("1")),
         ("fixnum_float_neg_pos", parse("-2"), parse("1.0")),
-        ("bignum_float", big.clone(), float_double_big),
+        ("bignum_float", big, float_double_big),
         ("float_bignum", float_big, double_big),
         ("symbol", parse("a"), parse("b")),
         ("symbol_nil", parse("nil"), parse("nix")),
@@ -1418,19 +1404,15 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             Value::Symbol("a".into()),
         ),
         ("symbol_case", parse("A"), parse("a")),
-        (
-            "symbol_uninterned",
-            uninterned_a.clone(),
-            uninterned_b.clone(),
-        ),
+        ("symbol_uninterned", uninterned_a, uninterned_b),
         (
             "symbol_plain_uninterned",
             Value::Symbol("a".into()),
-            uninterned_b.clone(),
+            uninterned_b,
         ),
         (
             "symbol_uninterned_plain",
-            uninterned_a.clone(),
+            uninterned_a,
             Value::Symbol("b".into()),
         ),
         ("string", parse("\"a\""), parse("\"b\"")),
@@ -1524,9 +1506,9 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             make_bool_vector_value(&mut interp, [true, false, true]),
             make_bool_vector_value(&mut interp, [true, false, true, false]),
         ),
-        ("record_type", record_a23.clone(), record_b34),
+        ("record_type", record_a23, record_b34),
         ("record_prefix", record_b, record_ba),
-        ("record_same_type", record_a23.clone(), record_a3.clone()),
+        ("record_same_type", record_a23, record_a3),
         ("record_same_type_longer", record_a23, record_a32),
         ("record_nested", record_nested_e, record_nested_f),
         (
@@ -1587,11 +1569,11 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             Value::Marker(mark3_id),
             Value::Marker(mark4_id),
         ),
-        ("live_buffers", buf1.clone(), buf2),
+        ("live_buffers", buf1, buf2),
         (
             "dead_buffer_before_live",
             Value::buffer(buf3_id, " *three*"),
-            buf1.clone(),
+            buf1,
         ),
         (
             "dead_buffer_before_live_2",
@@ -1603,38 +1585,20 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     ];
 
     for (label, left, right) in cases {
-        let forward = call(
-            &mut interp,
-            "value<",
-            &[left.clone(), right.clone()],
-            &mut env,
-        )
-        .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
+        let forward = call(&mut interp, "value<", &[left, right], &mut env)
+            .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
         assert_eq!(forward, Value::T, "{label}: expected left < right");
 
-        let backward = call(
-            &mut interp,
-            "value<",
-            &[right.clone(), left.clone()],
-            &mut env,
-        )
-        .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
+        let backward = call(&mut interp, "value<", &[right, left], &mut env)
+            .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
         assert_eq!(backward, Value::Nil, "{label}: expected right !< left");
 
         let vector_forward = call(
             &mut interp,
             "value<",
             &[
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    left.clone(),
-                    Value::Integer(2),
-                ]),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    right.clone(),
-                    Value::Integer(1),
-                ]),
+                Value::list([Value::symbol("vector-literal"), left, Value::Integer(2)]),
+                Value::list([Value::symbol("vector-literal"), right, Value::Integer(1)]),
             ],
             &mut env,
         )
@@ -1649,16 +1613,8 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    right.clone(),
-                    Value::Integer(1),
-                ]),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    left.clone(),
-                    Value::Integer(2),
-                ]),
+                Value::list([Value::symbol("vector-literal"), right, Value::Integer(1)]),
+                Value::list([Value::symbol("vector-literal"), left, Value::Integer(2)]),
             ],
             &mut env,
         )
@@ -1673,16 +1629,8 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    left.clone(),
-                    Value::Integer(1),
-                ]),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    left.clone(),
-                    Value::Integer(2),
-                ]),
+                Value::list([Value::symbol("vector-literal"), left, Value::Integer(1)]),
+                Value::list([Value::symbol("vector-literal"), left, Value::Integer(2)]),
             ],
             &mut env,
         )
@@ -1697,11 +1645,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    right.clone(),
-                    Value::Integer(1),
-                ]),
+                Value::list([Value::symbol("vector-literal"), right, Value::Integer(1)]),
                 Value::list([Value::symbol("vector-literal"), right, Value::Integer(2)]),
             ],
             &mut env,
@@ -1792,30 +1736,20 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     ];
 
     for (label, left, right) in cases {
-        let forward = call(
-            &mut interp,
-            "value<",
-            &[left.clone(), right.clone()],
-            &mut env,
-        )
-        .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
+        let forward = call(&mut interp, "value<", &[left, right], &mut env)
+            .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
         assert_eq!(forward, Value::Nil, "{label}: expected left !< right");
 
-        let backward = call(
-            &mut interp,
-            "value<",
-            &[right.clone(), left.clone()],
-            &mut env,
-        )
-        .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
+        let backward = call(&mut interp, "value<", &[right, left], &mut env)
+            .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
         assert_eq!(backward, Value::Nil, "{label}: expected right !< left");
 
         let forward_cons = call(
             &mut interp,
             "value<",
             &[
-                Value::cons(left.clone(), Value::Integer(1)),
-                Value::cons(right.clone(), Value::Integer(2)),
+                Value::cons(left, Value::Integer(1)),
+                Value::cons(right, Value::Integer(2)),
             ],
             &mut env,
         )
@@ -1900,22 +1834,12 @@ fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
             let (left_label, left) = &values[index];
             let (right_label, right) = &values[other];
             let label = format!("{left_label}_vs_{right_label}");
-            let forward = call(
-                &mut interp,
-                "value<",
-                &[left.clone(), right.clone()],
-                &mut env,
-            );
+            let forward = call(&mut interp, "value<", &[*left, *right], &mut env);
             assert!(
                 is_type_mismatch(&forward),
                 "{label}: expected forward type-mismatch, got {forward:?}"
             );
-            let backward = call(
-                &mut interp,
-                "value<",
-                &[right.clone(), left.clone()],
-                &mut env,
-            );
+            let backward = call(&mut interp, "value<", &[*right, *left], &mut env);
             assert!(
                 is_type_mismatch(&backward),
                 "{label}: expected reverse type-mismatch, got {backward:?}"
@@ -1990,90 +1914,46 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
     let mut disabled_env = Env::new();
     interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::Nil);
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), foo1.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled eq same"),
+        call(&mut interp, "eq", &[foo1, foo1], &mut disabled_env).expect("disabled eq same"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), foo1.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled equal same"),
+        call(&mut interp, "equal", &[foo1, foo1], &mut disabled_env).expect("disabled equal same"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), foo2.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled eq different pos"),
+        call(&mut interp, "eq", &[foo1, foo2], &mut disabled_env)
+            .expect("disabled eq different pos"),
         Value::Nil
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), foo2.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled equal different pos"),
+        call(&mut interp, "equal", &[foo1, foo2], &mut disabled_env)
+            .expect("disabled equal different pos"),
         Value::Nil
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), foo3.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled eq same pos"),
+        call(&mut interp, "eq", &[foo1, foo3], &mut disabled_env).expect("disabled eq same pos"),
         Value::Nil
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), foo3.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled equal same pos"),
+        call(&mut interp, "equal", &[foo1, foo3], &mut disabled_env)
+            .expect("disabled equal same pos"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), plain.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled eq plain"),
+        call(&mut interp, "eq", &[foo1, plain], &mut disabled_env).expect("disabled eq plain"),
         Value::Nil
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), plain.clone()],
-            &mut disabled_env
-        )
-        .expect("disabled equal plain"),
+        call(&mut interp, "equal", &[foo1, plain], &mut disabled_env)
+            .expect("disabled equal plain"),
         Value::Nil
     );
     assert_eq!(
         call(
             &mut interp,
             "equal-including-properties",
-            &[foo1.clone(), plain.clone()],
+            &[foo1, plain],
             &mut disabled_env
         )
         .expect("disabled equal-including-properties plain"),
@@ -2083,60 +1963,32 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
     let mut enabled_env = Env::new();
     interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), foo2.clone()],
-            &mut enabled_env
-        )
-        .expect("enabled eq different pos"),
+        call(&mut interp, "eq", &[foo1, foo2], &mut enabled_env).expect("enabled eq different pos"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), foo2.clone()],
-            &mut enabled_env
-        )
-        .expect("enabled equal different pos"),
+        call(&mut interp, "equal", &[foo1, foo2], &mut enabled_env)
+            .expect("enabled equal different pos"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), foo3.clone()],
-            &mut enabled_env
-        )
-        .expect("enabled eq same pos"),
+        call(&mut interp, "eq", &[foo1, foo3], &mut enabled_env).expect("enabled eq same pos"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "equal",
-            &[foo1.clone(), foo3.clone()],
-            &mut enabled_env
-        )
-        .expect("enabled equal same pos"),
+        call(&mut interp, "equal", &[foo1, foo3], &mut enabled_env)
+            .expect("enabled equal same pos"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "eq",
-            &[foo1.clone(), plain.clone()],
-            &mut enabled_env
-        )
-        .expect("enabled eq plain"),
+        call(&mut interp, "eq", &[foo1, plain], &mut enabled_env).expect("enabled eq plain"),
         Value::T
     );
     assert_eq!(
         call(
             &mut interp,
             "equal-including-properties",
-            &[foo1.clone(), plain.clone()],
+            &[foo1, plain],
             &mut enabled_env
         )
         .expect("enabled equal-including-properties plain"),

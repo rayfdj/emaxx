@@ -988,6 +988,22 @@ one interpreter), the mark as an epoch word, the sweep order.  With
 every `Value' variant a cell address or an immediate, `Value: Copy'
 is the step after (phase B, step 4).
 
+Checkpoint 20k (2026-09-19) is the adversarial audit of the
+representation phase and its corrections, ahead of further speed
+work: the call path's argument count and pre-evaluation arity signal
+as eval_sub's (nine arguments to a fixed-arity subr wrote past the
+eight-slot stack array before); the collection threshold fed the
+blocks' objects without the image's, as gcstat is (six million conses
+collect GNU's number of times now, 120, not 3); the parking thread's
+registers spilled into the scanned range as flush_stack_call_func's
+are; alloc.c's cells per block for every kind; `Value: Copy'; the
+audit's probes in `tools/perf/'.  Measured with nothing else running: at GNU's rate every allocating probe is two to four times GNU (the lexical loop 4.01 s against 1.12, six million conses 7.5 against 1.96), where the tables of 20g to 20j, under the old rate, showed one to two; the non-allocating loops moved the other way (dynamic 1.17 against 0.45, byte-code call 0.55 against 0.21).  One collection of the booted heap: 148 M instructions, 110 M in the mark phase (220 an object), 35 M rebuilding string sets of the symbol tables for the roots, 6 M in the sweeps.  Still not C, the
+full list in the audit section: the image's objects in the swept
+blocks (the per-collection cost that follows is the next target), the
+native heap as a second representation, the id-addressed kinds, the
+symbol's cells outside the symbol, the stack zeroing after a
+collection, no global lock.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

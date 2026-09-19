@@ -23,7 +23,7 @@ fn hash_cons_insert(
     env: &Env,
 ) -> Value {
     if let Some(id) = table {
-        interp.equal_hash_put(id, value.clone(), value.clone(), env);
+        interp.equal_hash_put(id, value, value, env);
     }
     value
 }
@@ -35,11 +35,11 @@ fn purecopy_cons_chain(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if is_vector_value(value) && vector_items(value)?.is_empty() {
-        return Ok(value.clone());
+        return Ok(*value);
     }
 
     let mut source_cells = Vec::new();
-    let mut cursor = value.clone();
+    let mut cursor = *value;
     let tail = loop {
         if let Some(cached) = hash_cons_lookup(interp, table, &cursor, env) {
             break cached;
@@ -68,7 +68,7 @@ fn purecopy_vector(
     if items.is_empty() {
         // GNU's zero-length vector is a static pure object, so PURE_P makes
         // alloc.c:purecopy return it unchanged.
-        return Ok(value.clone());
+        return Ok(*value);
     }
     let mut copied = Vec::with_capacity(items.len() + 1);
     copied.push(Value::symbol("vector-literal"));
@@ -188,7 +188,7 @@ fn purecopy_inner(
     {
         // SYMBOLP includes PVEC_SYMBOL_WITH_POS while this flag is active,
         // so alloc.c:Fpurecopy returns it unchanged with ordinary symbols.
-        return Ok(value.clone());
+        return Ok(*value);
     }
     if matches!(value, Value::Record(id)
         if interp.find_record(*id).is_some_and(|record|
@@ -196,7 +196,7 @@ fn purecopy_inner(
     {
         // Native compiled functions use GNU's PVEC_SUBR representation and
         // therefore take alloc.c:Fpurecopy's SUBRP already-pure return.
-        return Ok(value.clone());
+        return Ok(*value);
     }
     match value {
         Value::Nil
@@ -205,7 +205,7 @@ fn purecopy_inner(
         | Value::Symbol(_)
         | Value::BuiltinFunc(_)
         | Value::Marker(_)
-        | Value::Overlay(_) => return Ok(value.clone()),
+        | Value::Overlay(_) => return Ok(*value),
         _ => {}
     }
     if let Some(cached) = hash_cons_lookup(interp, table, value, env) {
@@ -275,7 +275,7 @@ pub(crate) fn purecopy_value(
 ) -> Result<Value, LispError> {
     let purify = interp.lookup_var("purify-flag", env).unwrap_or(Value::Nil);
     if purify.is_nil() {
-        return Ok(value.clone());
+        return Ok(*value);
     }
     purecopy_inner(interp, value, purify_table(interp, env), env)
 }

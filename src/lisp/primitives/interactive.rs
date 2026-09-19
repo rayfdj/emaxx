@@ -93,7 +93,7 @@ pub(crate) fn run_pending_user_signal_events(
             .unwrap_or(Value::Nil);
         let binding =
             keymap_lookup_binding_exact_parts(interp, &keymap, std::slice::from_ref(&name))?;
-        interp.set_variable("last-input-event", event.clone(), env);
+        interp.set_variable("last-input-event", event, env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;
             unread.push(event);
@@ -146,7 +146,7 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
     if !interp.kbd_macro_executions.is_empty() {
         return;
     }
-    interp.keyboard_input.recent_keys.push(event.clone());
+    interp.keyboard_input.recent_keys.push(*event);
     let limit = interp.lossage_size.max(0) as usize;
     if interp.keyboard_input.recent_keys.len() > limit {
         let excess = interp.keyboard_input.recent_keys.len() - limit;
@@ -169,7 +169,7 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
         .lookup_var("defining-kbd-macro", env)
         .is_some_and(|value| value.is_truthy())
     {
-        interp.kbd_macro_definition.push(event.clone());
+        interp.kbd_macro_definition.push(*event);
     }
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn function_documentation(
     }
     let value = match value {
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
-        other => other.clone(),
+        other => *other,
     };
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons.
@@ -216,7 +216,7 @@ pub(crate) fn function_documentation(
     let Value::Lambda(lambda) = value else {
         return None;
     };
-    lambda.documentation.clone().filter(|documentation| {
+    lambda.documentation.filter(|documentation| {
         matches!(
             documentation,
             Value::String(_) | Value::StringObject(_) | Value::Integer(_) | Value::Cons(_)
@@ -256,7 +256,7 @@ pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Opti
     if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos || record.slots.len() < 2 {
         return None;
     }
-    Some((record.slots[0].clone(), record.slots[1].as_integer().ok()?))
+    Some((record.slots[0], record.slots[1].as_integer().ok()?))
 }
 
 #[cfg(test)]
@@ -292,10 +292,7 @@ pub(crate) fn checked_symbol_name(
     {
         return Ok(symbol.to_string());
     }
-    Err(LispError::WrongTypeArgument(
-        "symbolp".into(),
-        value.clone(),
-    ))
+    Err(LispError::WrongTypeArgument("symbolp".into(), *value))
 }
 
 /// The same CHECK_SYMBOL/XSYMBOL boundary when the caller stores the symbol
@@ -321,10 +318,7 @@ pub(crate) fn checked_symbol_identity(
             _ => {}
         }
     }
-    Err(LispError::WrongTypeArgument(
-        "symbolp".into(),
-        value.clone(),
-    ))
+    Err(LispError::WrongTypeArgument("symbolp".into(), *value))
 }
 
 #[cfg(test)]
@@ -550,7 +544,7 @@ pub(crate) fn parse_interactive_string(
                 };
                 let require = if code == 'b' { Value::T } else { Value::Nil };
                 let name = call1(interp, env, "read-buffer", &[message, default, require])?;
-                seen = name.clone();
+                seen = name;
                 values.push(name);
             }
             'c' => {
@@ -604,7 +598,7 @@ pub(crate) fn parse_interactive_string(
                     "read-file-name",
                     &[message, Value::Nil, default, mustmatch, initial, predicate],
                 )?;
-                seen = name.clone();
+                seen = name;
                 values.push(name);
             }
             'e' => {
@@ -688,7 +682,7 @@ pub(crate) fn parse_interactive_string(
                     "read-string",
                     &[message, Value::Nil, Value::Nil, Value::Nil, inherit],
                 )?;
-                seen = text.clone();
+                seen = text;
                 values.push(text);
             }
             'S' => {
@@ -699,7 +693,7 @@ pub(crate) fn parse_interactive_string(
                     "read-string",
                     &[message, Value::Nil, Value::Nil, Value::Nil, Value::Nil],
                 )?;
-                seen = text.clone();
+                seen = text;
                 values.push(Value::Symbol(
                     crate::lisp::primitives::string_text(&text)?.into(),
                 ));
@@ -870,7 +864,7 @@ pub(crate) fn pending_keystroke_echo(
         }
         let head = match event {
             Value::Cons(_) => event.car().unwrap_or(Value::Nil),
-            other => other.clone(),
+            other => *other,
         };
         match head {
             Value::Symbol(name) => text.push_str(&name),
@@ -957,7 +951,7 @@ pub(crate) fn resolve_decoded_key_sequence(
     {
         for start in 0..pending.len() {
             let sequence = Value::vector(pending[start..].iter().cloned());
-            let binding = super::call(interp, "lookup-key", &[map.clone(), sequence], env)?;
+            let binding = super::call(interp, "lookup-key", &[map, sequence], env)?;
             if is_keymap_value(interp, &binding) {
                 return Ok(KeyResolution::Prefix);
             }
@@ -994,7 +988,7 @@ pub(crate) fn resolve_key_sequence(
             }
             lookup_events.push(Value::Symbol(head.into()));
         } else {
-            lookup_events.push(event.clone());
+            lookup_events.push(*event);
         }
     }
     let key_vector =
@@ -1016,11 +1010,9 @@ pub(crate) fn resolve_key_sequence(
     // symbol (`Control-X-prefix') whose function cell holds the keymap;
     // GNU resolves through the indirection before dispatching.
     let resolved = if let Value::Symbol(name) = &binding {
-        interp
-            .lookup_function(name, env)
-            .unwrap_or_else(|_| binding.clone())
+        interp.lookup_function(name, env).unwrap_or(binding)
     } else {
-        binding.clone()
+        binding
     };
     if crate::lisp::primitives::is_keymap_value(interp, &resolved) {
         // A keymap bound to a parameterized click pops up as a menu
@@ -1039,13 +1031,8 @@ pub(crate) fn resolve_key_sequence(
             // modal read owns the timing.
             let echo = pending_keystroke_echo(interp, env, pending);
             set_pending_keystroke_echo(Some(echo));
-            let answer = super::call(
-                interp,
-                "x-popup-menu",
-                &[(*event).clone(), resolved.clone()],
-                env,
-            )
-            .unwrap_or(Value::Nil);
+            let answer = super::call(interp, "x-popup-menu", &[(*event), resolved], env)
+                .unwrap_or(Value::Nil);
             let path = answer.to_vec().unwrap_or_default();
             if path.is_empty() {
                 // Cancelled: the sequence dissolves with no command and
@@ -1156,8 +1143,8 @@ fn execute_command_binding_inner(
     // blocks with redisplay frozen (the F10 menu) keeps the old message
     // visible until an explicit `message' repaints the row.
     crate::lisp::primitives::expire_echo_area_message();
-    interp.set_variable("last-command-event", last_event.clone(), env);
-    interp.set_variable("last-input-event", last_event.clone(), env);
+    interp.set_variable("last-command-event", last_event, env);
+    interp.set_variable("last-input-event", last_event, env);
     if !mouse_event_on_menu_bar(&last_event) {
         interp.set_variable("last-nonmenu-event", last_event, env);
     }
@@ -1172,7 +1159,7 @@ fn execute_command_binding_inner(
         ),
         env,
     );
-    interp.set_variable("this-command", binding.clone(), env);
+    interp.set_variable("this-command", binding, env);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
@@ -1199,7 +1186,7 @@ fn execute_command_binding_inner(
     let dispatched = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
-        .unwrap_or_else(|| binding.clone());
+        .unwrap_or(binding);
     // keyboard.c command_loop_1 executes the command through simple.el's
     // `command-execute' (call1 (Qcommand_execute, Vthis_command)): the
     // prefix-arg handoff (current-prefix-arg takes prefix-arg, which
@@ -1407,16 +1394,7 @@ pub(crate) fn run_due_timers(
         if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2], Value::Integer(_)) {
             return None;
         }
-        exact_time_from_old_style(
-            interp,
-            &[
-                slots[1].clone(),
-                slots[2].clone(),
-                slots[3].clone(),
-                slots[8].clone(),
-            ],
-        )
-        .ok()
+        exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
     };
     let wall_now = current_time_value().ok();
     let idle_now = exact_time_from_float(idle_seconds).ok();
@@ -1469,9 +1447,9 @@ pub(crate) fn command_error_echo_text(
     let text = match error {
         LispError::SignalValue(data) => {
             let data = if matches!(data, Value::Symbol(_)) {
-                Value::list([data.clone()])
+                Value::list([*data])
             } else {
-                data.clone()
+                *data
             };
             command_loop_call(
                 interp,
@@ -1660,12 +1638,10 @@ pub(crate) fn unread_command_events(
 pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
     match value {
         Value::Integer(code) if *code >= 0 => modified_event_code_char(*code),
-        Value::Cons(cell) if matches!(cell.car.borrow().clone(), Value::T) => {
-            match cell.cdr.borrow().clone() {
-                Value::Integer(code) if code >= 0 => modified_event_code_char(code),
-                _ => None,
-            }
-        }
+        Value::Cons(cell) if matches!(*cell.car.borrow(), Value::T) => match *cell.cdr.borrow() {
+            Value::Integer(code) if code >= 0 => modified_event_code_char(code),
+            _ => None,
+        },
         Value::String(text) => text.chars().next(),
         Value::StringObject(state) => state.borrow().text.chars().next(),
         _ => None,
@@ -1758,7 +1734,7 @@ pub(crate) fn translated_input_events(value: &Value) -> Result<Vec<Value>, LispE
             .map(Value::Integer)
             .collect());
     }
-    Ok(vec![value.clone()])
+    Ok(vec![*value])
 }
 
 pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
@@ -1870,7 +1846,7 @@ pub(crate) fn update_input_event_symbol(value: &Value, symbol: &str) -> Value {
             }
             Value::list(items)
         }
-        _ => value.clone(),
+        _ => *value,
     }
 }
 
@@ -1891,7 +1867,7 @@ pub(crate) fn translate_mouse_read_key_sequence_event(
     event: Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    interp.set_variable("last-input-event", event.clone(), env);
+    interp.set_variable("last-input-event", event, env);
 
     if input_event_symbol(&event).as_deref() != Some("mouse-1") {
         return Ok(event);
@@ -1911,12 +1887,12 @@ pub(crate) fn translate_mouse_read_key_sequence_event(
     };
 
     if let Some(first) = first_input_from_link_action(&action) {
-        interp.set_variable("last-input-event", first.clone(), env);
+        interp.set_variable("last-input-event", first, env);
         return Ok(first);
     }
     if action.is_truthy() {
         let translated = update_input_event_symbol(&event, "mouse-2");
-        interp.set_variable("last-input-event", translated.clone(), env);
+        interp.set_variable("last-input-event", translated, env);
         return Ok(translated);
     }
 
@@ -2061,14 +2037,10 @@ pub(crate) fn menu_bar_row_items(
         // binding answers its parent's submap, which the identity dedup
         // below drops.
         let mut chain_menus: Vec<Value> = Vec::new();
-        let mut level = map.clone();
+        let mut level = *map;
         for _ in 0..32 {
-            if let Ok(menu) = super::call(
-                interp,
-                "lookup-key",
-                &[level.clone(), menu_bar_key.clone()],
-                env,
-            ) && super::is_keymap_value(interp, &menu)
+            if let Ok(menu) = super::call(interp, "lookup-key", &[level, menu_bar_key], env)
+                && super::is_keymap_value(interp, &menu)
             {
                 let identity = super::keymap_record_id(interp, &menu);
                 let duplicate = chain_menus.iter().any(|earlier| {
@@ -2081,7 +2053,7 @@ pub(crate) fn menu_bar_row_items(
                     chain_menus.push(menu);
                 }
             }
-            match super::call(interp, "keymap-parent", &[level.clone()], env) {
+            match super::call(interp, "keymap-parent", &[level], env) {
                 Ok(parent) if parent.is_truthy() => level = parent,
                 _ => break,
             }
@@ -2112,7 +2084,7 @@ pub(crate) fn menu_bar_row_items(
                         let key = entry.car().unwrap_or(Value::Nil);
                         let item = entry.cdr().unwrap_or(Value::Nil);
                         if !seen.iter().any(|earlier| same_key(earlier, &key)) {
-                            seen.push(key.clone());
+                            seen.push(key);
                             if matches!(&item, Value::Symbol(def) if def == "undefined") {
                                 // An explicit `undefined' discards any
                                 // previously made item for this key.
@@ -2192,7 +2164,7 @@ pub(crate) fn menu_item_details_with_button(
             interp.lookup_var(name, env).unwrap_or(Value::Nil)
         }
         Value::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
-        other => other.clone(),
+        other => *other,
     };
     let car = item.car().ok()?;
     if let Ok(name) = crate::lisp::primitives::string_text(&car) {
@@ -2216,7 +2188,7 @@ pub(crate) fn menu_item_details_with_button(
     }
     // New format (menu-item NAME DEF [CACHE] . PROPS).
     let rest = item.cdr().ok()?.to_vec().ok()?;
-    let name_form = rest.first()?.clone();
+    let name_form = *rest.first()?;
     let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
     let mut index = 2;
     if matches!(rest.get(2), Some(Value::Cons(_))) {
@@ -2241,7 +2213,7 @@ pub(crate) fn menu_item_details_with_button(
                     enabled = false;
                 }
             }
-            ":filter" => filter = Some(value.clone()),
+            ":filter" => filter = Some(*value),
             ":button" => {
                 if let (Ok(Value::Symbol(kind)), Ok(selected)) = (value.car(), value.cdr()) {
                     let selected = eval_property(interp, env, &selected).is_truthy();
@@ -2474,7 +2446,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
             let key = entry.car().unwrap_or(Value::Nil);
             let item = entry.cdr().unwrap_or(Value::Nil);
             if !seen.iter().any(|earlier| same_key(earlier, &key)) {
-                seen.push(key.clone());
+                seen.push(key);
                 if let Some((caption, def, enabled, button)) =
                     menu_item_details_with_button(interp, env, &item)
                 {

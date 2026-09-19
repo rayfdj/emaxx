@@ -319,7 +319,7 @@ define_dispatch!(
                 if args.get(2).is_some_and(Value::is_truthy)
                     && let Some(reuse) = args.get(1)
                 {
-                    let mut tail = reuse.clone();
+                    let mut tail = *reuse;
                     while let Value::Cons(cell) = tail {
                         let marker_id = match &*cell.car.borrow() {
                             Value::Marker(marker_id) => Some(*marker_id),
@@ -329,7 +329,7 @@ define_dispatch!(
                             interp.set_marker(marker_id, None, None)?;
                             *cell.car.borrow_mut() = Value::Nil;
                         }
-                        tail = cell.cdr.borrow().clone();
+                        tail = *cell.cdr.borrow();
                     }
                 }
                 let use_integers = args.first().is_some_and(Value::is_truthy);
@@ -381,21 +381,21 @@ define_dispatch!(
                 else {
                     return Ok(Value::list(items));
                 };
-                let mut tail = reuse.clone();
+                let mut tail = *reuse;
                 let mut previous = None;
                 let mut item_index = 0usize;
                 while let Value::Cons(cell) = tail {
                     *cell.car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
                     item_index += 1;
                     previous = Some(Value::Cons(cell));
-                    tail = cell.cdr.borrow().clone();
+                    tail = *cell.cdr.borrow();
                 }
                 if item_index < items.len()
                     && let Some(previous) = previous
                 {
                     previous.set_cdr(Value::list(items.into_iter().skip(item_index)))?;
                 }
-                Ok(reuse.clone())
+                Ok(*reuse)
             }
             "set-match-data" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -444,7 +444,7 @@ define_dispatch!(
                     restored_buffer_id = Some(buffer.id);
                 }
                 if args.get(1).is_some_and(Value::is_truthy) {
-                    let mut tail = args[0].clone();
+                    let mut tail = args[0];
                     while let Value::Cons(cell) = tail {
                         let marker_id = match &*cell.car.borrow() {
                             Value::Marker(marker_id) => Some(*marker_id),
@@ -454,7 +454,7 @@ define_dispatch!(
                             interp.set_marker(marker_id, None, None)?;
                             *cell.car.borrow_mut() = Value::Nil;
                         }
-                        tail = cell.cdr.borrow().clone();
+                        tail = *cell.cdr.borrow();
                     }
                 }
                 interp.last_match_data = Some(restored);
@@ -464,10 +464,7 @@ define_dispatch!(
             "match-data--translate" => {
                 need_args(name, args, 1)?;
                 let Value::Integer(delta) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "fixnump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 if let Some(match_data) = &mut interp.last_match_data {
                     for entry in match_data.iter_mut().flatten() {
@@ -493,7 +490,7 @@ define_dispatch!(
                     LispError::SignalValue(Value::list([
                         Value::symbol("wrong-type-argument"),
                         Value::symbol("stringp"),
-                        args[0].clone(),
+                        args[0],
                     ]))
                 })?;
                 regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
@@ -526,9 +523,8 @@ define_dispatch!(
                     .or_else(|| match_data.first().and_then(|entry| *entry))
                     .ok_or_else(|| LispError::Signal("No previous search".into()))?;
                 if let Some(source) = args.get(3).filter(|value| !value.is_nil()) {
-                    let source = string_like(source).ok_or_else(|| {
-                        LispError::WrongTypeArgument("stringp".into(), source.clone())
-                    })?;
+                    let source = string_like(source)
+                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *source))?;
                     let matched = regexp::slice_string_chars(&source.text, start, end);
                     let mut replacement = regexp::expand_replace_match_text(
                         &replacement,
@@ -699,10 +695,7 @@ define_dispatch!(
                         }
                     }),
                     Some(value) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "integerp".into(),
-                            value.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("integerp".into(), *value));
                     }
                 };
                 let deadline = match args.get(1) {
@@ -799,7 +792,7 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let mut start = position_from_value(interp, &args[0])?;
                 let mut end = position_from_value(interp, &args[1])?;
-                let label = args[2].clone();
+                let label = args[2];
                 if start > end {
                     std::mem::swap(&mut start, &mut end);
                 }

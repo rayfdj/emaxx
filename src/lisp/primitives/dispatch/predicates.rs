@@ -206,12 +206,7 @@ define_dispatch!(
                 // GNU Fbyte_code (bytecode.c): execute BYTESTR against VECTOR
                 // with MAXDEPTH as an argumentless program.
                 need_args(name, args, 3)?;
-                let slots = [
-                    Value::Integer(0),
-                    args[0].clone(),
-                    args[1].clone(),
-                    args[2].clone(),
-                ];
+                let slots = [Value::Integer(0), args[0], args[1], args[2]];
                 let object = crate::lisp::bytecode::ByteCodeObject::from_slots(&slots)
                     .map_err(|error| LispError::Signal(error.to_string()))?
                     .ok_or_else(|| {
@@ -361,7 +356,7 @@ define_dispatch!(
                     }
                     _ => return Ok(Value::Nil),
                 }
-                let mut link = args[0].clone();
+                let mut link = args[0];
                 while let Value::Symbol(symbol) = &link {
                     if interp
                         .get_symbol_property(symbol, "interactive-form")
@@ -465,7 +460,7 @@ define_dispatch!(
                 if interp.is_constant_symbol(&checked) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
-                        args[0].clone(),
+                        args[0],
                     ])));
                 }
                 if !interp.is_per_buffer_special(&symbol) && interp.default_value(&symbol).is_none()
@@ -473,7 +468,7 @@ define_dispatch!(
                     interp.set_global_binding(&symbol, Value::Nil);
                 }
                 interp.mark_auto_buffer_local(&symbol);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -688,7 +683,7 @@ define_dispatch!(
                     None | Some(Value::Nil) => interp
                         .buffer_identity_value(interp.current_buffer_id())
                         .unwrap_or(Value::Nil),
-                    Some(value) => value.clone(),
+                    Some(value) => *value,
                 };
                 let active = interp
                     .active_minibuffer_buffer_id()

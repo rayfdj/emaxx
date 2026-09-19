@@ -1081,6 +1081,10 @@ impl NativeRuntime {
 
     /// The counters of a process that starts from a dump, once the image
     /// is loaded (see `NativeGcState::baseline_after_image_load').
+    pub(crate) fn garbage_collection_note_image_load_start(&mut self) {
+        self.heap.note_image_load_start();
+    }
+
     pub(crate) fn garbage_collection_baseline_after_image_load(&mut self) {
         self.heap.baseline_after_image_load();
     }
@@ -1478,7 +1482,7 @@ impl NativeRuntime {
                 return escape_buffer;
             };
             let value = match &error {
-                LispError::Throw(_, value) => value.clone(),
+                LispError::Throw(_, value) => *value,
                 LispError::Terminate(_) => unreachable!("termination cannot match a handler"),
                 _ => crate::lisp::eval::error_condition_value(&error),
             };
@@ -2251,7 +2255,7 @@ fn direct_funcall_target(
 ) -> Option<DirectFuncallTarget> {
     let resolved = match function {
         Value::Symbol(name) => interpreter.lookup_function(name, environment).ok()?,
-        other => other.clone(),
+        other => *other,
     };
     match resolved {
         Value::BuiltinFunc(name) => {
@@ -2310,10 +2314,8 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         remember_helper_error(active, error);
         return Some(0);
     }
-    let result = interpreter.with_native_backtrace_frame(
-        original_function.clone(),
-        call_arguments,
-        |interpreter| {
+    let result =
+        interpreter.with_native_backtrace_frame(original_function, call_arguments, |interpreter| {
             interpreter.capture_current_backtrace_context(None, environment, None);
 
             // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
@@ -2355,8 +2357,7 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
                 interpreter.capture_batch_error_backtrace(error, environment);
             }
             result
-        },
-    );
+        });
     interpreter.end_funcall();
 
     Some(match result {
@@ -3360,7 +3361,7 @@ extern "C" fn runtime_wrong_type_argument(predicate: NativeWord, value: NativeWo
             let value = decode_word(active, value)?;
             let predicate = predicate
                 .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", predicate.clone()))?;
+                .map_err(|_| wrong_type_argument("symbolp", predicate))?;
             Err::<(), _>(wrong_type_argument(predicate, value))
         })();
         if let Err(error) = result {
@@ -3413,11 +3414,11 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
             runtime.sync_handlers(interpreter)?;
             let registration = match kind {
                 0 => {
-                    interpreter.push_active_catch_tag(match_value.clone());
+                    interpreter.push_active_catch_tag(match_value);
                     HandlerRegistration::Catch
                 }
                 1 => HandlerRegistration::ConditionCase(
-                    interpreter.push_condition_case_handler(vec![match_value.clone()]),
+                    interpreter.push_condition_case_handler(vec![match_value]),
                 ),
                 _ => {
                     return Err(super::lisp::native_ice(
@@ -3531,12 +3532,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             {
                 return Ok(0);
             }
-            let valid = super::lisp::call(
-                interpreter,
-                environment,
-                "cl-typep",
-                &[value.clone(), kind.clone()],
-            )?;
+            let valid = super::lisp::call(interpreter, environment, "cl-typep", &[value, kind])?;
             if valid.is_truthy() {
                 return Ok(0);
             }
@@ -3546,8 +3542,8 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
                 "message",
                 &[
                     Value::string("Comp sanitizer FAIL for %s with type %s"),
-                    value.clone(),
-                    kind.clone(),
+                    value,
+                    kind,
                 ],
             )?;
             let _ = super::lisp::call(interpreter, environment, "backtrace", &[])?;
@@ -3636,7 +3632,7 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
             let value = decode_word(active, value)?;
             let name = symbol
                 .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", symbol.clone()))?;
+                .map_err(|_| wrong_type_argument("symbolp", symbol))?;
             let restore =
                 unsafe { &mut *active.interpreter }
                     .bind_special_dynamic(name, value, unsafe { &mut *active.environment })?;
@@ -3817,8 +3813,22 @@ struct NativeGcState {
     /// difference between the old and new effective thresholds.
     gc_threshold: i64,
     /// The allocator census captured by the most recent collection, matching
-    /// the `gcstat' input to `total_bytes_of_live_objects'.
+    /// the `gcstat' input to `total_bytes_of_live_objects': the objects in
+    /// the allocator's blocks that the image did not bring (see
+    /// `image_bytes').
     live_bytes: usize,
+    /// The bytes the image loader allocated (GNU sizes), as `baseline_after_image_load'
+    /// left them.  alloc.c's `total_bytes_of_live_objects' sums `gcstat',
+    /// which the sweep of the allocator's blocks fills: a dumped object is in
+    /// pdumper's mapped region, never in a block, so it never counts toward
+    /// `consing_threshold'.  This loader puts the image's objects in the
+    /// blocks, so the census counts them; taking the image's bytes back out
+    /// is C's rule under this loader (to go when the image is a mapped
+    /// region of its own).
+    image_bytes: usize,
+    /// `lisp_allocated_bytes' when the image load began (`image_bytes' is
+    /// the growth to the baseline).
+    image_load_started: u64,
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
@@ -3839,6 +3849,8 @@ impl Default for NativeGcState {
             consing_until_gc: 0,
             gc_threshold: 0,
             live_bytes: 0,
+            image_bytes: 0,
+            image_load_started: 0,
             observed_allocated_bytes: lisp_allocated_bytes(),
             trigger_allocated_bytes: 0,
             collections: 0,
@@ -3879,11 +3891,22 @@ impl NativeGcState {
     /// `maybe_garbage_collect' retunes the counters from the Lisp
     /// variables, and pdumper's objects are not consing.  The bytes the
     /// loader allocated are the baseline from here on.
+    /// The counter as the image load begins: the loader's allocations
+    /// from here to `baseline_after_image_load' are the image's.
+    fn note_image_load_start(&mut self) {
+        self.image_load_started = lisp_allocated_bytes();
+    }
+
     fn baseline_after_image_load(&mut self) {
         self.consing_until_gc = 0;
         self.gc_threshold = 0;
         self.live_bytes = 0;
         self.observed_allocated_bytes = lisp_allocated_bytes();
+        self.image_bytes = usize::try_from(
+            self.observed_allocated_bytes
+                .saturating_sub(self.image_load_started),
+        )
+        .unwrap_or(usize::MAX);
         self.publish_trigger();
     }
 
@@ -3939,7 +3962,7 @@ impl NativeGcState {
     fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
         self.collections += 1;
         self.observed_allocated_bytes = lisp_allocated_bytes();
-        self.live_bytes = live_bytes;
+        self.live_bytes = live_bytes.saturating_sub(self.image_bytes);
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
         self.consing_until_gc = self.gc_threshold;
         self.publish_trigger();
@@ -4087,8 +4110,7 @@ impl NativeMark<'_> {
                     self.heap.handles[index]
                         .as_ref()
                         .expect("live native handle has an owning slot")
-                        .value
-                        .clone(),
+                        .value,
                 );
             }
         }
@@ -4355,6 +4377,10 @@ impl NativeHeap {
         self.gc.collection_might_be_due()
     }
 
+    fn note_image_load_start(&mut self) {
+        self.gc.note_image_load_start();
+    }
+
     fn baseline_after_image_load(&mut self) {
         self.gc.baseline_after_image_load();
     }
@@ -4552,8 +4578,8 @@ impl NativeHeap {
         // Register a cell before queuing its fields, so shared and cyclic
         // edges reuse its address while the worklist finishes the graph.
         while let Some(cell) = pending.pop() {
-            let car = cell.car.borrow().clone();
-            let cdr = cell.cdr.borrow().clone();
+            let car = *cell.car.borrow();
+            let cdr = *cell.cdr.borrow();
             let car = self.encode_inner(&car, &mut pending)?;
             let cdr = self.encode_inner(&cdr, &mut pending)?;
             let native = ConsCell::native_words(&cell);
@@ -4777,7 +4803,7 @@ impl NativeHeap {
                     rust_changed = true;
                 }
             } else if rust_dirty {
-                let field_value = slot.borrow().clone();
+                let field_value = *slot.borrow();
                 let word = self.encode(&field_value)?;
                 if word != current[field] {
                     unsafe {
@@ -4918,14 +4944,14 @@ impl NativeHeap {
         } else {
             let (index, mut native) = if let Some((index, mut native)) = self.free_handles.pop() {
                 debug_assert!(self.handles[index].is_none());
-                native.value = value.clone();
+                native.value = *value;
                 (index, native)
             } else {
                 let index = self.handles.len();
                 (
                     index,
                     Box::new(NativeHandle {
-                        value: value.clone(),
+                        value: *value,
                         tag,
                         identity: identity.clone(),
                     }),
@@ -5036,7 +5062,7 @@ impl NativeHeap {
             // reads need neither a reverse map nor a separate slot table.
             let native = unsafe { self.live_handle(word) }
                 .ok_or_else(|| format!("native Lisp word 0x{word:x} has a mismatched tag"))?;
-            return Ok(native.value.clone());
+            return Ok(native.value);
         }
         let index = self
             .handle_by_address
@@ -5051,7 +5077,7 @@ impl NativeHeap {
         if entry.tag != tag || (&**entry as *const NativeHandle) as usize != address {
             return Err(format!("native Lisp word 0x{word:x} has a mismatched tag"));
         }
-        Ok(entry.value.clone())
+        Ok(entry.value)
     }
 
     #[cfg(test)]
@@ -5465,7 +5491,7 @@ mod tests {
                         environment,
                         call_unary_subr_by_index as *const c_void,
                         NativeCallingConvention::Fixed,
-                        &[Value::Integer(index as i64), value.clone()],
+                        &[Value::Integer(index as i64), *value],
                     )
                     .expect("native type predicate"),
                 expected,
@@ -5535,7 +5561,7 @@ mod tests {
                     &mut environment,
                     call_unary_subr_by_index as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[Value::Integer(index as i64), vector.clone()],
+                    &[Value::Integer(index as i64), vector],
                 )
             } else {
                 crate::lisp::primitives::call(
@@ -5558,7 +5584,7 @@ mod tests {
             ));
         }
         for (value, expected) in [
-            (vector.clone(), [false, true, true, false, false]),
+            (vector, [false, true, true, false, false]),
             (
                 Value::cons(vector, Value::Integer(1)),
                 [false, false, true, false, false],
@@ -5686,7 +5712,7 @@ mod tests {
             &mut interpreter,
             &mut runtime,
             &mut environment,
-            closure.clone(),
+            closure,
             Value::T,
         );
         let Value::Record(id) = closure else {
@@ -5942,8 +5968,8 @@ mod tests {
 
         let tag = Value::symbol("native-quit-tag");
         interpreter.set_symbol_value_cell("inhibit-quit", Value::Nil);
-        interpreter.set_symbol_value_cell("throw-on-input", tag.clone());
-        interpreter.set_symbol_value_cell("quit-flag", tag.clone());
+        interpreter.set_symbol_value_cell("throw-on-input", tag);
+        interpreter.set_symbol_value_cell("quit-flag", tag);
         match runtime.invoke(
             &mut interpreter,
             &mut environment,
@@ -5979,7 +6005,7 @@ mod tests {
                     &mut environment,
                     direct_native_get as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[symbol.clone(), property.clone()],
+                    &[symbol, property],
                 )
                 .expect("get from the symbol plist"),
             Value::Integer(41)
@@ -5988,8 +6014,8 @@ mod tests {
         interpreter.set_global_binding(
             "overriding-plist-environment",
             Value::list([Value::cons(
-                symbol.clone(),
-                Value::list([property.clone(), Value::Integer(99)]),
+                symbol,
+                Value::list([property, Value::Integer(99)]),
             )]),
         );
         assert_eq!(
@@ -5999,7 +6025,7 @@ mod tests {
                     &mut environment,
                     direct_native_get as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[symbol.clone(), property.clone()],
+                    &[symbol, property],
                 )
                 .expect("non-nil overriding plist value"),
             Value::Integer(99)
@@ -6007,10 +6033,7 @@ mod tests {
 
         interpreter.set_global_binding(
             "overriding-plist-environment",
-            Value::list([Value::cons(
-                symbol.clone(),
-                Value::list([property.clone(), Value::Nil]),
-            )]),
+            Value::list([Value::cons(symbol, Value::list([property, Value::Nil]))]),
         );
         assert_eq!(
             runtime
@@ -6046,7 +6069,7 @@ mod tests {
         let prototype_constants = Value::list([
             Value::symbol("vector-literal"),
             Value::symbol("placeholder"),
-            retained.clone(),
+            retained,
         ]);
         let prototype = interpreter.create_pseudovector(
             crate::lisp::eval::RecordKind::Closure,
@@ -6054,7 +6077,7 @@ mod tests {
             vec![
                 Value::Nil,
                 Value::string("bytecode"),
-                prototype_constants.clone(),
+                prototype_constants,
                 Value::Integer(2),
             ],
         );
@@ -6065,7 +6088,7 @@ mod tests {
                 &mut environment,
                 direct_native_make_closure as *const c_void,
                 NativeCallingConvention::Many,
-                &[prototype.clone(), captured.clone()],
+                &[prototype, captured],
             )
             .expect("copy closure");
 
@@ -6089,7 +6112,7 @@ mod tests {
         assert_eq!(
             crate::lisp::primitives::vector_items(&prototype_constants)
                 .expect("prototype constants remain unchanged"),
-            vec![Value::symbol("placeholder"), constants[1].clone()]
+            vec![Value::symbol("placeholder"), constants[1]]
         );
 
         let error = runtime
@@ -6120,7 +6143,7 @@ mod tests {
             crate::lisp::primitives::call(
                 &mut interpreter,
                 "puthash",
-                &[Value::symbol(key), Value::Integer(value), table.clone()],
+                &[Value::symbol(key), Value::Integer(value), table],
                 &mut environment,
             )
             .expect("populate hash table");
@@ -6158,11 +6181,7 @@ mod tests {
             crate::lisp::primitives::call(
                 &mut interpreter,
                 "puthash",
-                &[
-                    Value::symbol(key),
-                    destructive_table.clone(),
-                    destructive_table.clone(),
-                ],
+                &[Value::symbol(key), destructive_table, destructive_table],
                 &mut environment,
             )
             .expect("populate destructive hash table");
@@ -6174,10 +6193,7 @@ mod tests {
                     &mut environment,
                     call_maphash as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[
-                        Value::BuiltinFunc("remhash".into()),
-                        destructive_table.clone(),
-                    ],
+                    &[Value::BuiltinFunc("remhash".into()), destructive_table,],
                 )
                 .expect("maphash may remove its current entry"),
             Value::Nil
@@ -6187,7 +6203,7 @@ mod tests {
                 crate::lisp::primitives::call(
                     &mut interpreter,
                     "gethash",
-                    &[Value::symbol(key), destructive_table.clone()],
+                    &[Value::symbol(key), destructive_table],
                     &mut environment,
                 )
                 .expect("removed hash lookup"),
@@ -6209,7 +6225,7 @@ mod tests {
                 &mut environment,
                 call_mapcar as *const c_void,
                 NativeCallingConvention::Fixed,
-                &[Value::symbol("identity"), sequence.clone()],
+                &[Value::symbol("identity"), sequence],
             )
             .expect("mapcar over a proper list");
         assert_eq!(
@@ -6286,7 +6302,7 @@ mod tests {
         );
 
         let cycle = Value::cons(Value::symbol("cycle"), Value::Nil);
-        cycle.set_cdr(cycle.clone()).expect("create self cycle");
+        cycle.set_cdr(cycle).expect("create self cycle");
         let error = runtime
             .invoke(
                 &mut interpreter,
@@ -6371,7 +6387,7 @@ mod tests {
         assert_eq!(error.condition_type(), "wrong-type-argument");
 
         let cycle = Value::cons(Value::symbol("cycle"), Value::Nil);
-        cycle.set_cdr(cycle.clone()).expect("create self cycle");
+        cycle.set_cdr(cycle).expect("create self cycle");
         let error = invoke(&mut runtime, &mut interpreter, &mut environment, cycle)
             .expect_err("circular list");
         assert_eq!(error.condition_type(), "circular-list");
@@ -6412,7 +6428,7 @@ mod tests {
             &mut runtime,
             &mut interpreter,
             &mut environment,
-            &[plist.clone(), Value::symbol("b"), Value::Nil],
+            &[plist, Value::symbol("b"), Value::Nil],
         )
         .expect("existing property");
         assert_eq!(found.cons_id(), expected_tail.cons_id());
@@ -6433,7 +6449,7 @@ mod tests {
             &mut interpreter,
             &mut environment,
             &[
-                strings.clone(),
+                strings,
                 Value::string("a"),
                 Value::BuiltinFunc("equal".into()),
             ],
@@ -6455,7 +6471,7 @@ mod tests {
         assert_eq!(error.condition_type(), "wrong-type-argument");
 
         let property = Value::cons(Value::symbol("a"), Value::Nil);
-        let value = Value::cons(Value::Integer(1), property.clone());
+        let value = Value::cons(Value::Integer(1), property);
         property.set_cdr(value).expect("create plist cycle");
         let error = invoke(
             &mut runtime,
@@ -6606,7 +6622,7 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let keymap = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, None);
         let definition = Value::symbol("describe-chinese-environment-map");
-        let tail = Value::list([Value::cons(Value::symbol("Chinese"), definition.clone())]);
+        let tail = Value::list([Value::cons(Value::symbol("Chinese"), definition)]);
 
         assert_eq!(
             runtime
@@ -6615,7 +6631,7 @@ mod tests {
                     &mut environment,
                     replace_cons_cdr as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[keymap.clone(), tail],
+                    &[keymap, tail],
                 )
                 .expect("native keymap mutation"),
             Value::T
@@ -6682,20 +6698,19 @@ mod tests {
         let second = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 2);
         let symbols_before = crate::lisp::types::census_live_uninterned_symbols();
         // Flet's environment: the closure's slot two is this alist itself.
-        let public = crate::lisp::types::EnvFrame::bindings(
+        let public = *crate::lisp::types::EnvFrame::bindings(
             [(first, Value::Integer(7)), (second, Value::Integer(8))],
             &Value::Nil,
         )
-        .environment()
-        .clone();
-        let sibling = public.clone();
+        .environment();
+        let sibling = public;
         assert_eq!(
             crate::lisp::types::census_live_uninterned_symbols(),
             symbols_before
         );
 
         for (symbol, expected, position) in [(first, 7, 1), (second, 8, 0)] {
-            let entry = public.to_vec().expect("lexical alist")[position].clone();
+            let entry = public.to_vec().expect("lexical alist")[position];
             let Value::Symbol(key) = entry.car().expect("binding symbol") else {
                 panic!("lexical binding lost its symbol");
             };
@@ -6707,7 +6722,7 @@ mod tests {
                         &mut environment,
                         call_assq as *const c_void,
                         NativeCallingConvention::Fixed,
-                        &[Value::Symbol(symbol), alist.clone()],
+                        &[Value::Symbol(symbol), *alist],
                     )
                     .expect("native assq on captured binding");
                 let (Value::Cons(result), Value::Cons(expected_entry)) = (result, &entry) else {
@@ -6754,7 +6769,7 @@ mod tests {
         let alist = Value::list([
             Value::Integer(1),
             Value::cons(Value::symbol("other"), Value::Integer(3)),
-            match_entry.clone(),
+            match_entry,
         ]);
 
         let result = runtime
@@ -6830,7 +6845,7 @@ mod tests {
                     &mut environment,
                     direct_native_eq as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[shared_string.clone(), shared_string],
+                    &[shared_string, shared_string],
                 )
                 .expect("eq on one string object"),
             Value::T
@@ -6951,7 +6966,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let matching_tail = Value::list([Value::symbol("match"), Value::Integer(9)]);
-        let list = Value::cons(Value::Integer(1), matching_tail.clone());
+        let list = Value::cons(Value::Integer(1), matching_tail);
 
         let result = runtime
             .invoke(
@@ -6974,7 +6989,7 @@ mod tests {
                 &mut environment,
                 call_memq as *const c_void,
                 NativeCallingConvention::Fixed,
-                &[Value::symbol("not-a-list"), improper.clone()],
+                &[Value::symbol("not-a-list"), improper],
             )
             .expect_err("GNU memq rejects an improper list without testing its final atom");
         let LispError::SignalValue(data) = error else {
@@ -7133,7 +7148,7 @@ mod tests {
                     Value::list([
                         Value::symbol("wrong-type-argument"),
                         Value::symbol("symbolp"),
-                        invalid.clone(),
+                        invalid,
                     ])
                 );
             }
@@ -7146,7 +7161,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let global = Value::list([Value::Integer(7), Value::symbol("payload")]);
-        interpreter.set_global_binding("native-hot-global", global.clone());
+        interpreter.set_global_binding("native-hot-global", global);
         Interpreter::push_bindings(
             &mut environment,
             vec![("native-hot-global".into(), Value::Integer(99))],
@@ -7180,7 +7195,7 @@ mod tests {
             "a cached native word retains the plain global value"
         );
         let replacement = Value::list([Value::Integer(8), Value::symbol("replacement")]);
-        interpreter.set_global_binding("native-hot-global", replacement.clone());
+        interpreter.set_global_binding("native-hot-global", replacement);
         assert_eq!(
             runtime
                 .invoke(
@@ -7419,24 +7434,21 @@ mod tests {
         let positioned = crate::lisp::primitives::call(
             &mut interpreter,
             "position-symbol",
-            &[bare.clone(), Value::Integer(19)],
+            &[bare, Value::Integer(19)],
             &mut environment,
         )
         .expect("allocate a positioned symbol through the ordinary primitive");
-        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial);
         let result = runtime
             .invoke(
                 &mut interpreter,
                 &mut environment,
                 eq_across_position_flag_binding as *const c_void,
                 NativeCallingConvention::Fixed,
-                &[flag, bound.clone(), bare, positioned],
+                &[flag, bound, bare, positioned],
             )
             .expect("bind and restore the flag inside one native call");
-        assert_eq!(
-            result,
-            Value::list([initial.clone(), bound, initial.clone()])
-        );
+        assert_eq!(result, Value::list([initial, bound, initial]));
         assert_eq!(
             interpreter
                 .symbol_value_cell("symbols-with-pos-enabled")
@@ -7465,7 +7477,7 @@ mod tests {
         let positioned = crate::lisp::primitives::call(
             &mut interpreter,
             "position-symbol",
-            &[bare.clone(), Value::Integer(19)],
+            &[bare, Value::Integer(19)],
             &mut environment,
         )
         .expect("allocate the positioned symbol for the Fset control");
@@ -7477,7 +7489,7 @@ mod tests {
                     &mut environment,
                     set_position_flag_then_eq as *const c_void,
                     NativeCallingConvention::Fixed,
-                    &[flag.clone(), next.clone(), bare.clone(), positioned.clone()],
+                    &[flag, next, bare, positioned],
                 )
                 .expect("Fset changes the live C flag without another native invocation");
             assert_eq!(result, next);
@@ -7498,7 +7510,7 @@ mod tests {
             // bindings are exercised by the specbind controls above.
             let mut environment =
                 crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
-                    [("symbols-with-pos-enabled".into(), opposite.clone())],
+                    [("symbols-with-pos-enabled".into(), opposite)],
                     &Value::Nil,
                 )]);
             let mut runtime = NativeRuntime::default();
@@ -7506,11 +7518,11 @@ mod tests {
             let positioned = crate::lisp::primitives::call(
                 &mut interpreter,
                 "position-symbol",
-                &[bare.clone(), Value::Integer(19)],
+                &[bare, Value::Integer(19)],
                 &mut environment,
             )
             .expect("allocate the positioned symbol for the detachment control");
-            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial);
             for detached in [false, true] {
                 if detached {
                     crate::lisp::primitives::call(
@@ -7520,7 +7532,7 @@ mod tests {
                         &mut environment,
                     )
                     .expect("detach the symbol without changing its C boolean");
-                    interpreter.set_symbol_value_cell("symbols-with-pos-enabled", opposite.clone());
+                    interpreter.set_symbol_value_cell("symbols-with-pos-enabled", opposite);
                     assert_eq!(
                         interpreter
                             .symbol_value_cell("symbols-with-pos-enabled")
@@ -7533,7 +7545,7 @@ mod tests {
                         crate::lisp::primitives::call(
                             &mut interpreter,
                             name,
-                            &[bare.clone(), positioned.clone()],
+                            &[bare, positioned],
                             &mut environment,
                         )
                         .expect("ordinary equality reads the live C flag"),
@@ -7553,7 +7565,7 @@ mod tests {
                                 &mut environment,
                                 function,
                                 NativeCallingConvention::Fixed,
-                                &[bare.clone(), positioned.clone()],
+                                &[bare, positioned],
                             )
                             .expect("native equality reads the live C flag"),
                         initial,
@@ -7580,7 +7592,7 @@ mod tests {
                             &mut environment,
                             eq_native_cons_and_object as *const c_void,
                             NativeCallingConvention::Fixed,
-                            &[object.clone(), reverse],
+                            &[object, reverse],
                         )
                         .expect("GNU EQ compares distinct object identities"),
                     Value::Nil
@@ -7603,7 +7615,7 @@ mod tests {
         let right = Value::BigInteger(number.into());
         for positions_enabled in [Value::T, Value::Nil] {
             interpreter.set_symbol_value_cell("symbols-with-pos-enabled", positions_enabled);
-            let arguments = [left.clone(), right.clone()];
+            let arguments = [left, right];
             let ordinary =
                 crate::lisp::primitives::call(&mut interpreter, "eq", &arguments, &mut environment)
                     .expect("ordinary eq on distinct bignums");
@@ -7624,7 +7636,7 @@ mod tests {
                         &mut environment,
                         direct_native_eq as *const c_void,
                         NativeCallingConvention::Fixed,
-                        &[left.clone(), left.clone()],
+                        &[left, left],
                     )
                     .expect("copies retain the same bignum object"),
                 Value::T
@@ -7666,21 +7678,21 @@ mod tests {
                 crate::lisp::primitives::call(
                     &mut interpreter,
                     "position-symbol",
-                    &[bare.clone(), Value::Integer(position)],
+                    &[bare, Value::Integer(position)],
                     &mut environment,
                 )
                 .expect("data.c:Fposition_symbol")
             });
             let mut runtime = NativeRuntime::default();
             for enabled in [Value::T, Value::Nil] {
-                interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled.clone());
+                interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled);
                 for (left, right, expected) in [
-                    (positions[0].clone(), bare.clone(), enabled.clone()),
-                    (bare.clone(), positions[0].clone(), enabled.clone()),
-                    (positions[0].clone(), positions[1].clone(), enabled.clone()),
-                    (positions[0].clone(), positions[0].clone(), Value::T),
-                    (positions[0].clone(), Value::vector(Vec::new()), Value::Nil),
-                    (positions[0].clone(), Value::symbol("different"), Value::Nil),
+                    (positions[0], bare, enabled),
+                    (bare, positions[0], enabled),
+                    (positions[0], positions[1], enabled),
+                    (positions[0], positions[0], Value::T),
+                    (positions[0], Value::vector(Vec::new()), Value::Nil),
+                    (positions[0], Value::symbol("different"), Value::Nil),
                 ] {
                     for function in [
                         direct_native_eq as *const c_void,
@@ -7693,7 +7705,7 @@ mod tests {
                                     &mut environment,
                                     function,
                                     NativeCallingConvention::Fixed,
-                                    &[left.clone(), right.clone()],
+                                    &[left, right],
                                 )
                                 .expect("native EQ follows lisp.h positioned-symbol identity"),
                             expected,
@@ -7916,7 +7928,7 @@ mod tests {
             let cell = Value::list([Value::Integer(123)]);
             let body = vec![Value::list([
                 Value::symbol("setcar"),
-                Value::list([Value::symbol("quote"), cell.clone()]),
+                Value::list([Value::symbol("quote"), cell]),
                 Value::Nil,
             ])];
             let cleanup = if function {
@@ -8226,7 +8238,7 @@ mod tests {
         let left_list = Value::list([Value::Integer(1), Value::Integer(2)]);
         let mutated_cell = left_list.cdr().expect("second list cell");
         let right_list = Value::list([Value::Integer(1), Value::Integer(3)]);
-        let left_record = interpreter.create_record("sample", vec![left_list.clone()]);
+        let left_record = interpreter.create_record("sample", vec![left_list]);
         let right_record = interpreter.create_record("sample", vec![right_list]);
 
         assert_eq!(
@@ -8394,7 +8406,7 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let handlers = Value::list([Value::cons(Value::string("x"), Value::symbol("first"))]);
-        interpreter.set_global_binding("file-name-handler-alist", handlers.clone());
+        interpreter.set_global_binding("file-name-handler-alist", handlers);
         let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&handlers).expect("encode handlers");
@@ -8437,7 +8449,7 @@ mod tests {
             &[
                 Value::symbol("second"),
                 Value::symbol("operations"),
-                operations.clone(),
+                operations,
             ],
             &mut environment,
         )
@@ -8597,7 +8609,7 @@ mod tests {
             .spawn(|| {
                 for through_car in [false, true] {
                     let leaf = Value::cons(Value::Integer(37), Value::Nil);
-                    let mut root = leaf.clone();
+                    let mut root = leaf;
                     for _ in 0..100_000 {
                         root = if through_car {
                             Value::cons(root, Value::Nil)
@@ -8606,7 +8618,7 @@ mod tests {
                         };
                     }
                     let mut heap = NativeHeapOwner::new();
-                    let shared = Value::cons(root.clone(), root.clone());
+                    let shared = Value::cons(root, root);
                     let word = heap.encode(&shared).expect("deep shared graph");
                     let native = word.wrapping_sub(TAG_CONS) as *const NativeCons;
                     let mut next = unsafe { (*native).car() };
@@ -8633,7 +8645,7 @@ mod tests {
                 let Value::Cons(cell) = &cycle else {
                     unreachable!();
                 };
-                *cell.cdr.borrow_mut() = cycle.clone();
+                *cell.cdr.borrow_mut() = cycle;
                 let mut heap = NativeHeapOwner::new();
                 let word = heap.encode(&cycle).expect("cyclic graph");
                 let native = word.wrapping_sub(TAG_CONS) as *const NativeCons;
@@ -8806,7 +8818,7 @@ mod tests {
             let root = if generated {
                 heap.cons(0, cdr_word)
             } else {
-                heap.encode(&Value::cons(Value::Nil, cdr.clone()))
+                heap.encode(&Value::cons(Value::Nil, cdr))
                     .expect("primitive cons")
             };
             let value = heap.decode(root).expect("existing cons view");
@@ -8831,7 +8843,7 @@ mod tests {
 
             let reached = marking.trace_words();
 
-            assert_eq!(reached, [value.clone(), car, cdr]);
+            assert_eq!(reached, [value, car, cdr]);
             assert_eq!(cell.native_words_agreed(), [car_word, cdr_word]);
             assert_eq!(
                 unrelated_cell.native_words_agreed(),
@@ -9137,7 +9149,7 @@ mod tests {
             crate::lisp::primitives::call(
                 interpreter,
                 "puthash",
-                &[key.clone(), Value::T, table.clone()],
+                &[key, Value::T, *table],
                 &mut Env::new(),
             )
             .expect("install weak key");
@@ -9147,11 +9159,11 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Value::Record(id) = table.clone() else {
+        let Value::Record(id) = table else {
             panic!("hash table record");
         };
         interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-        interpreter.set_global_binding("native-caught-signal-table", table.clone());
+        interpreter.set_global_binding("native-caught-signal-table", table);
         runtime.begin_call(std::ptr::null_mut(), &interpreter);
         let condition = runtime
             .heap
@@ -9207,11 +9219,11 @@ mod tests {
             let key = heap.decode(key_word).expect("weak table key");
             let value = heap.decode(value_word).expect("weak table value");
             let table = crate::lisp::json::make_hash_table(interpreter, "equal", Vec::new());
-            let Value::Record(id) = table.clone() else {
+            let Value::Record(id) = table else {
                 panic!("hash table record");
             };
             interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-            assert!(interpreter.equal_hash_put(id, key.clone(), value, environment));
+            assert!(interpreter.equal_hash_put(id, key, value, environment));
             interpreter.set_global_binding("native-gc-weak-table", table);
             (
                 [key_word ^ HIDE, value_word ^ HIDE],
@@ -9287,8 +9299,7 @@ mod tests {
             let y = heap.decode(y_word).expect("y");
             let z = heap.decode(z_word).expect("z");
             let mut tables = Vec::new();
-            for (name, key, value) in [("weak-first", x.clone(), y), ("weak-second", z.clone(), x)]
-            {
+            for (name, key, value) in [("weak-first", x, y), ("weak-second", z, x)] {
                 let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
                 let Value::Record(id) = table else {
                     panic!("hash table record");
@@ -9463,7 +9474,7 @@ mod tests {
         #[inline(never)]
         fn build(heap: &mut NativeHeapOwner, interpreter: &mut Interpreter) -> [usize; 2] {
             let value = Value::list([Value::Integer(7), Value::Integer(8)]);
-            interpreter.set_global_binding("native-gc-detach-witness", value.clone());
+            interpreter.set_global_binding("native-gc-detach-witness", value);
             let word = heap.encode(&value).expect("encode externally owned list");
             let tail_word = unsafe { (*(word.wrapping_sub(TAG_CONS) as *const NativeCons)).cdr() };
             unsafe {

@@ -6566,7 +6566,7 @@ fn translate_region_uses_char_tables() {
     );
     let items = value.to_vec().unwrap();
     assert_eq!(items[0], Value::Integer(15));
-    assert_string_value(items[1].clone(), "Fhcre-frperg grkg");
+    assert_string_value(items[1], "Fhcre-frperg grkg");
 }
 
 #[test]
@@ -7410,7 +7410,7 @@ fn executable_find_observes_dynamic_exec_path_and_empty_path_entries() {
                     (executable-find "sample-tool")))
                 "#
         )),
-        Value::list([expected.clone(), expected])
+        Value::list([expected, expected])
     );
     assert_eq!(
         eval_str_with_upstream_batch(

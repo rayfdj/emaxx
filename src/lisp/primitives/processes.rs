@@ -742,16 +742,16 @@ pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispE
     // process.c: :coding accepts either one coding system used for both
     // directions, or a (DECODING . ENCODING) cons.
     if let Value::Symbol(_) = value {
-        return Ok((value.clone(), value.clone()));
+        return Ok((*value, *value));
     }
     if let Some((decoding, encoding)) = value.cons_values() {
         return Ok((decoding, encoding));
     }
     let items = value.to_vec()?;
     if items.len() == 2 {
-        return Ok((items[0].clone(), items[1].clone()));
+        return Ok((items[0], items[1]));
     }
-    Err(LispError::WrongTypeArgument("consp".into(), value.clone()))
+    Err(LispError::WrongTypeArgument("consp".into(), *value))
 }
 
 fn process_creation_coding_systems(
@@ -769,9 +769,7 @@ fn process_creation_coding_systems(
                 .unwrap_or(Value::Nil),
         )
     } else {
-        coding
-            .cons_values()
-            .unwrap_or_else(|| (coding.clone(), coding.clone()))
+        coding.cons_values().unwrap_or((*coding, *coding))
     }
 }
 
@@ -822,8 +820,8 @@ pub(crate) fn parse_make_process_args(
                 program = Some(parsed_program);
                 argv = parsed_argv;
             }
-            ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
-            ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
+            ":filter" => filter = (!value.is_nil()).then_some(*value),
+            ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
             ":coding" if value.is_nil() => coding = None,
             ":coding" => coding = Some(process_coding_pair(value)?),
             ":stderr" if !value.is_nil() => {
@@ -838,11 +836,11 @@ pub(crate) fn parse_make_process_args(
             // CHECK_TYPE accepts this compatibility keyword only when its
             // value is nil.
             ":stop" if value.is_truthy() => {
-                return Err(wrong_type_argument("null", value.clone()));
+                return Err(wrong_type_argument("null", *value));
             }
             ":stop" => {}
             ":file-handler" => {}
-            ":connection-type" => connection_type = Some(value.clone()),
+            ":connection-type" => connection_type = Some(*value),
             _ => {}
         }
     }
@@ -1031,7 +1029,7 @@ pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command
 pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
     let environment = match value.cons_values() {
         Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
-        _ => value.clone(),
+        _ => *value,
     };
     environment
         .to_vec()?
@@ -1050,9 +1048,9 @@ pub(crate) fn getenv_in_environment(
     // lookup (a `getenv' of the last of 140 entries).
     let environment = match environment.cons_values() {
         Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
-        _ => environment.clone(),
+        _ => *environment,
     };
-    let mut cursor = environment.clone();
+    let mut cursor = environment;
     while let Some((item, rest)) = cursor.cons_values() {
         let owned;
         let entry = match item.as_string() {
@@ -1461,7 +1459,7 @@ pub(crate) fn contact_plist_get(plist: &Value, key: &str) -> Value {
     let mut index = 0;
     while index + 1 < items.len() {
         if items[index].as_symbol().is_ok_and(|name| name == key) {
-            return items[index + 1].clone();
+            return items[index + 1];
         }
         index += 2;
     }
@@ -1642,7 +1640,7 @@ fn activate_network_client(
 ) -> Result<Value, LispError> {
     let process_id = interp.resolve_process_id(&process)?;
     if !tls_parameters.is_nil() {
-        interp.set_process_gnutls_boot_parameters(process_id, tls_parameters.clone());
+        interp.set_process_gnutls_boot_parameters(process_id, *tls_parameters);
     }
     if nowait {
         interp.mark_network_process_connecting(process_id);
@@ -1718,10 +1716,10 @@ pub(crate) fn make_network_process(
                 });
             }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
-            ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
-            ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
-            ":log" => log = (!value.is_nil()).then(|| value.clone()),
-            ":plist" => plist = value.clone(),
+            ":filter" => filter = (!value.is_nil()).then_some(*value),
+            ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
+            ":log" => log = (!value.is_nil()).then_some(*value),
+            ":plist" => plist = *value,
             ":server" => is_server = value.is_truthy(),
             ":type" => match value {
                 Value::Nil => datagram = false,
@@ -1729,12 +1727,12 @@ pub(crate) fn make_network_process(
                 _ => return Err(LispError::Signal("Unsupported connection type".into())),
             },
             ":nowait" => nowait = value.is_truthy(),
-            ":coding" => coding = value.clone(),
+            ":coding" => coding = *value,
             ":tls-parameters" => {
                 value
                     .to_vec()
-                    .map_err(|_| wrong_type_argument("listp", value.clone()))?;
-                tls_parameters = value.clone();
+                    .map_err(|_| wrong_type_argument("listp", *value))?;
+                tls_parameters = *value;
             }
             ":family" => {
                 family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
@@ -2087,7 +2085,7 @@ fn plist_member_value(items: &[Value], key: &str) -> Option<Value> {
         pair[0]
             .as_symbol()
             .is_ok_and(|candidate| candidate == key)
-            .then(|| pair[1].clone())
+            .then(|| pair[1])
     })
 }
 
@@ -2169,10 +2167,10 @@ fn serial_configuration(
         flow_control: serial_flow_control(&flowcontrol)?,
     };
     plist_items_put(&mut contact_items, ":speed", Value::Integer(speed.into()));
-    plist_items_put(&mut contact_items, ":bytesize", bytesize.clone());
-    plist_items_put(&mut contact_items, ":parity", parity.clone());
-    plist_items_put(&mut contact_items, ":stopbits", stopbits.clone());
-    plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol.clone());
+    plist_items_put(&mut contact_items, ":bytesize", bytesize);
+    plist_items_put(&mut contact_items, ":parity", parity);
+    plist_items_put(&mut contact_items, ":stopbits", stopbits);
+    plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol);
     let parity_summary = match parity {
         Value::Symbol(symbol) if symbol == "even" => 'E',
         Value::Symbol(symbol) if symbol == "odd" => 'O',
@@ -2322,7 +2320,7 @@ fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result
         .find_map(|key| plist_member_value(args, key).filter(Value::is_truthy));
     let process = match requested.as_ref() {
         None => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Value::Record(_)) => Some(process.clone()),
+        Some(process @ Value::Record(_)) => Some(*process),
         Some(value) if string_like(value).is_some() => {
             let text = string_text(value)?;
             interp

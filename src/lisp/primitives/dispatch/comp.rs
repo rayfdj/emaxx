@@ -4,7 +4,7 @@ use crate::lisp::eval::RecordKind;
 fn string_argument(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
-        .ok_or_else(|| wrong_type_argument("stringp", value.clone()))
+        .ok_or_else(|| wrong_type_argument("stringp", *value))
 }
 
 fn md5_prefix(bytes: &[u8]) -> String {
@@ -110,12 +110,7 @@ pub(crate) fn comp_el_to_eln_rel_filename(
 ) -> Result<String, LispError> {
     string_argument(filename)?;
     // Use the realpath so that any symlink always compares equal (bug#44701).
-    let expanded = c_primitive(
-        interp,
-        env,
-        "expand-file-name",
-        &[filename.clone(), Value::Nil],
-    )?;
+    let expanded = c_primitive(interp, env, "expand-file-name", &[*filename, Value::Nil])?;
     let mut filename = match fs::canonicalize(string_argument(&expanded)?) {
         Ok(canonical) => canonical.display().to_string(),
         Err(_) => string_argument(&expanded)?,
@@ -171,12 +166,7 @@ fn try_make_directory(
     env: &mut Env,
     directory: &Value,
 ) -> Result<bool, LispError> {
-    match lisp(
-        interp,
-        env,
-        "make-directory",
-        &[directory.clone(), Value::T],
-    ) {
+    match lisp(interp, env, "make-directory", &[*directory, Value::T]) {
         Ok(_) => Ok(true),
         Err(error @ (LispError::Throw(..) | LispError::Terminate(..))) => Err(error),
         Err(_) => Ok(false),
@@ -188,7 +178,7 @@ fn comp_el_to_eln_filename(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let source_filename = args[0].clone();
+    let source_filename = args[0];
     let relative = comp_el_to_eln_rel_filename(interp, &args[0], env)?;
     // If BASE-DIR was not specified, search `native-comp-eln-load-path' for
     // the first directory where we have write access.
@@ -229,7 +219,7 @@ fn comp_el_to_eln_filename(
             "Cannot find suitable directory for output in `native-comp-eln-load-path'.".into(),
         ));
     };
-    if !c_primitive(interp, env, "file-name-absolute-p", &[base_dir.clone()])?.is_truthy() {
+    if !c_primitive(interp, env, "file-name-absolute-p", &[base_dir])?.is_truthy() {
         let invocation_directory = interp
             .lookup_var("invocation-directory", env)
             .unwrap_or(Value::Nil);
@@ -303,12 +293,7 @@ fn file_in_eln_sys_dir(
         &[system_directory, Value::Nil],
     )?;
     let quoted = c_primitive(interp, env, "regexp-quote", &[expanded_directory])?;
-    let expanded_file = c_primitive(
-        interp,
-        env,
-        "expand-file-name",
-        &[filename.clone(), Value::Nil],
-    )?;
+    let expanded_file = c_primitive(interp, env, "expand-file-name", &[*filename, Value::Nil])?;
     Ok(c_primitive(
         interp,
         env,
@@ -330,7 +315,7 @@ pub(crate) fn native_elisp_load(
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("native-lisp-load-failed"),
             Value::string("file does not exists"),
-            filename.clone(),
+            *filename,
         ])));
     }
     // comp.c:Fnative_elisp_load allocates this zeroed pseudovector before
@@ -349,7 +334,7 @@ pub(crate) fn native_elisp_load(
         interp,
         env,
         "gethash",
-        &[filename.clone(), loaded_units, Value::Nil],
+        &[*filename, loaded_units, Value::Nil],
     )?
     .is_truthy();
     let library = if loaded_before
@@ -368,12 +353,7 @@ pub(crate) fn native_elisp_load(
             interp,
             env,
             "make-temp-file-internal",
-            &[
-                filename.clone(),
-                Value::Nil,
-                Value::string(".eln.tmp"),
-                Value::Nil,
-            ],
+            &[*filename, Value::Nil, Value::string(".eln.tmp"), Value::Nil],
         )?;
         if c_primitive(
             interp,
@@ -387,7 +367,7 @@ pub(crate) fn native_elisp_load(
                 interp,
                 env,
                 "rename-file",
-                &[filename.clone(), temporary.clone(), Value::T],
+                &[*filename, temporary, Value::T],
             )?;
             let opened =
                 crate::lisp::native_comp::open_unit(filename, &string_argument(&temporary)?);
@@ -395,7 +375,7 @@ pub(crate) fn native_elisp_load(
                 interp,
                 env,
                 "rename-file",
-                &[temporary, filename.clone(), Value::Nil],
+                &[temporary, *filename, Value::Nil],
             )?;
             opened?
         } else {
@@ -410,7 +390,7 @@ pub(crate) fn native_elisp_load(
     interp
         .find_record_mut(candidate_id)
         .expect("new native compilation unit remains live")
-        .slots[0] = filename.clone();
+        .slots[0] = *filename;
     let lambda_guard = crate::lisp::json::make_hash_table(interp, "eq", Vec::new());
     interp
         .find_record_mut(candidate_id)
@@ -499,15 +479,15 @@ define_dispatch!(
             "comp--install-trampoline" => {
                 need_args(name, args, 2)?;
                 let Value::Symbol(symbol) = &args[0] else {
-                    return Err(wrong_type_argument("symbolp", args[0].clone()));
+                    return Err(wrong_type_argument("symbolp", args[0]));
                 };
                 let Value::Record(trampoline_id) = args[1] else {
-                    return Err(wrong_type_argument("subrp", args[1].clone()));
+                    return Err(wrong_type_argument("subrp", args[1]));
                 };
                 if !interp.find_record(trampoline_id).is_some_and(|record| {
                     record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                 }) {
-                    return Err(wrong_type_argument("subrp", args[1].clone()));
+                    return Err(wrong_type_argument("subrp", args[1]));
                 }
                 let original = interp.lookup_function(symbol, env)?;
                 let Value::BuiltinFunc(original_name) = original else {
@@ -518,7 +498,7 @@ define_dispatch!(
                     LispError::SignalValue(Value::list([
                         Value::symbol("error"),
                         Value::string("Trying to install trampoline for non existent subr"),
-                        args[0].clone(),
+                        args[0],
                     ]))
                 })?;
                 crate::lisp::native_comp::install_trampoline(
@@ -533,7 +513,7 @@ define_dispatch!(
                     interp,
                     env,
                     "puthash",
-                    &[args[0].clone(), args[1].clone(), installed],
+                    &[args[0], args[1], installed],
                 )?;
                 Ok(Value::T)
             }

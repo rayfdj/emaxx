@@ -73,7 +73,7 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
         .map(|(start, end, face)| crate::buffer::TextPropertySpan {
             start: *start,
             end: *end,
-            props: vec![("face".into(), face.clone())],
+            props: vec![("face".into(), *face)],
         })
         .collect();
     let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props);
@@ -169,7 +169,7 @@ fn redisplay_safe_call(
             .push_handler_bindings(&[(vec!["error".into()], Value::symbol("debug-early--muted"))]);
     }
     let depth = env.len();
-    let result = interp.call_function_value(function.clone(), None, args, env);
+    let result = interp.call_function_value(function, None, args, env);
     interp.pop_handler_bindings(handler_start);
     env.truncate(depth);
     let result = match result {
@@ -274,7 +274,7 @@ pub(crate) fn echo_area_message() -> Option<String> {
 }
 
 fn echo_area_message_value() -> Option<Value> {
-    ECHO_AREA_MESSAGE_VALUE.with_borrow(|slot| slot.clone())
+    ECHO_AREA_MESSAGE_VALUE.with_borrow(|slot| *slot)
 }
 
 #[cfg(test)]
@@ -321,7 +321,7 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
                 .iter()
                 .find(|(name, _)| name == "face")
                 .or_else(|| span.props.iter().find(|(name, _)| name == "font-lock-face"));
-            face.map(|(_, face)| (span.start, span.end, face.clone()))
+            face.map(|(_, face)| (span.start, span.end, *face))
                 .filter(|(_, _, face)| !face.is_nil())
         })
         .collect()
@@ -471,20 +471,20 @@ fn image_hot_spot_contains(area: &Value, x: i64, y: i64) -> bool {
         "rect" => {
             let Ok((top_left, bottom_right)) = shape
                 .cons_values()
-                .ok_or_else(|| wrong_type_argument("consp", shape.clone()))
+                .ok_or_else(|| wrong_type_argument("consp", shape))
             else {
                 return false;
             };
             let Ok((x0, y0)) = top_left
                 .cons_values()
-                .ok_or_else(|| wrong_type_argument("consp", top_left.clone()))
+                .ok_or_else(|| wrong_type_argument("consp", top_left))
                 .and_then(|(x, y)| Ok((x.as_integer()?, y.as_integer()?)))
             else {
                 return false;
             };
             let Ok((x1, y1)) = bottom_right
                 .cons_values()
-                .ok_or_else(|| wrong_type_argument("consp", bottom_right.clone()))
+                .ok_or_else(|| wrong_type_argument("consp", bottom_right))
                 .and_then(|(x, y)| Ok((x.as_integer()?, y.as_integer()?)))
             else {
                 return false;
@@ -564,7 +564,7 @@ fn decode_live_frame(
         None => Ok(interp.selected_frame_value()),
         Some(Value::Nil) if nil_defaults_to_selected => Ok(interp.selected_frame_value()),
         Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(Value::Frame(*id)),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.clone())),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
     }
 }
 
@@ -573,7 +573,7 @@ fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<
     interp
         .decode_terminal_id(value)
         .map(|_| ())
-        .ok_or_else(|| wrong_type_argument("terminal-live-p", value.clone()))
+        .ok_or_else(|| wrong_type_argument("terminal-live-p", *value))
 }
 
 // window.c accepts either a live frame or a valid leaf/interior window in
@@ -694,7 +694,7 @@ fn window_id_or_selected(interp: &Interpreter, value: &Value) -> Result<u64, Lis
         return Ok(interp.selected_window_id());
     }
     window_record_id_from_value(interp, value)
-        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), value.clone()))
+        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *value))
 }
 
 fn window_parameter_value(interp: &Interpreter, window_id: u64, parameter: &Value) -> Value {
@@ -735,7 +735,7 @@ fn set_window_parameter_value(
         Err(_) => true,
     });
     if value.is_truthy() {
-        items.push(Value::cons(parameter, value.clone()));
+        items.push(Value::cons(parameter, value));
     }
     let Some(record) = interp.find_record_mut(window_id) else {
         return Err(LispError::TypeError("window".into(), "deleted".into()));
@@ -767,7 +767,7 @@ fn set_window_slot_value(
     if record.slots.len() <= slot {
         record.slots.resize(slot + 1, Value::Nil);
     }
-    record.slots[slot] = value.clone();
+    record.slots[slot] = value;
     Ok(value)
 }
 
@@ -1050,7 +1050,7 @@ fn tty_supports_face_attributes(
     // arrives here as the one-element face-reference list `((:box t))'.
     // Walk those lists just as merge_face_ref does instead of mistaking an
     // empty top-level plist for "every requested attribute is supported".
-    let mut pending = vec![attributes.clone()];
+    let mut pending = vec![*attributes];
     while let Some(reference) = pending.pop() {
         let Ok(items) = reference.to_vec() else {
             continue;
@@ -1061,7 +1061,7 @@ fn tty_supports_face_attributes(
         }
         for pair in items.as_chunks::<2>().0 {
             if let Value::Symbol(key) = &pair[0] {
-                pairs.push((key.to_string(), pair[1].clone()));
+                pairs.push((key.to_string(), pair[1]));
             }
         }
     }
@@ -1069,7 +1069,7 @@ fn tty_supports_face_attributes(
         pairs
             .iter()
             .find(|(key, _)| key == wanted)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
     };
     for (key, _) in &pairs {
         if matches!(
@@ -1213,12 +1213,7 @@ pub(crate) fn resolve_tty_face_attrs(
             .call_function_value(
                 Value::Symbol("face-attribute".into()),
                 Some("face-attribute"),
-                &[
-                    face.clone(),
-                    Value::Symbol(name.into()),
-                    Value::Nil,
-                    Value::T,
-                ],
+                &[*face, Value::Symbol(name.into()), Value::Nil, Value::T],
                 env,
             )
             .ok()
@@ -1367,12 +1362,7 @@ fn resolve_tty_face_attr_options(
             .call_function_value(
                 Value::Symbol("face-attribute".into()),
                 Some("face-attribute"),
-                &[
-                    face.clone(),
-                    Value::Symbol(name.into()),
-                    Value::Nil,
-                    Value::T,
-                ],
+                &[*face, Value::Symbol(name.into()), Value::Nil, Value::T],
                 env,
             )
             .ok()
@@ -1719,7 +1709,7 @@ fn select_window_value(
             interp.record_buffer_front(buffer_id);
         }
     }
-    Ok(window.clone())
+    Ok(*window)
 }
 
 fn split_window_tree(
@@ -1891,7 +1881,7 @@ fn split_window_tree(
         Value::Record(first),
     )?;
     set_window_slot_value(interp, second, WINDOW_NEXT_SIBLING_SLOT, Value::Nil)?;
-    set_window_slot_value(interp, new_id, WINDOW_NEW_NORMAL_SLOT, normal_size.clone())?;
+    set_window_slot_value(interp, new_id, WINDOW_NEW_NORMAL_SLOT, *normal_size)?;
     for (window_id, pixel_size) in [
         (parent_id, available),
         (old_id, available - requested),
@@ -2083,7 +2073,7 @@ fn window_buffer_id_or_selected(
         Some(window) => {
             window_id_or_selected(interp, window)?;
             window_buffer_id(interp, window)
-                .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.clone()))
+                .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))
         }
     }
 }
@@ -2417,7 +2407,7 @@ define_dispatch!(
                         .lookup_var("mode-line-format", env)
                         .unwrap_or(Value::Nil)
                 } else {
-                    args[0].clone()
+                    args[0]
                 };
                 let text = render_mode_line_construct(interp, env, &format, 0)?;
                 Ok(Value::String(text.into()))
@@ -2475,14 +2465,13 @@ define_dispatch!(
                         // replace the string or consume it entirely
                         // (set-minibuffer-message displays it inside the
                         // active minibuffer instead of the echo area).
-                        let mut display = formatted.clone();
+                        let mut display = formatted;
                         if let Some(function) = interp
                             .lookup_var("set-message-function", env)
                             .filter(|function| !function.is_nil())
                         {
-                            let string = formatted
-                                .clone()
-                                .unwrap_or_else(|| Value::String(text.clone().into()));
+                            let string =
+                                formatted.unwrap_or_else(|| Value::String(text.clone().into()));
                             if let Ok(result) =
                                 interp.call_function_value(function, None, &[string], env)
                             {
@@ -2570,7 +2559,7 @@ define_dispatch!(
                 // print.c:Ferror_message_string returns the original object
                 // for (error STRING), without allocating or losing properties.
                 if condition == "error" && items.len() == 2 && items[1].is_string() {
-                    return Ok(items[1].clone());
+                    return Ok(items[1]);
                 }
                 // A file-error condition promotes its first datum to the
                 // message ("Opening input file: ...").
@@ -2662,7 +2651,7 @@ define_dispatch!(
                 // kill-emacs -1.  The previous arm computed the message and
                 // discarded it, silently converting a should-fail batch run
                 // into a clean exit (2026-08-23 audit finding 80).
-                let message = super::call(interp, "error-message-string", &[args[0].clone()], env)?;
+                let message = super::call(interp, "error-message-string", &[args[0]], env)?;
                 let rendered = string_text(&message).unwrap_or_default();
                 if interp
                     .lookup_var("noninteractive", env)
@@ -2816,7 +2805,7 @@ define_dispatch!(
                     sync_print_number_table(env, args.get(2), &print_env);
                     let stream = printer_stream_value(interp, &print_env, args.get(1));
                     write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 };
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
@@ -2825,7 +2814,7 @@ define_dispatch!(
                 {
                     record_batch_standard_output_char(interp, stream.as_ref(), env, last);
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "princ" => {
                 if args.is_empty() {
@@ -2840,7 +2829,7 @@ define_dispatch!(
                 {
                     record_batch_standard_output_char(interp, stream.as_ref(), env, last);
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "print" => {
                 if args.is_empty() {
@@ -2850,7 +2839,7 @@ define_dispatch!(
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
                 record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "terpri" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2863,7 +2852,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("error".into()),
                             Value::String("Unsupported function argument".into()),
-                            function.clone(),
+                            *function,
                         ])));
                     }
                     let noninteractive_stdout = interp
@@ -2910,7 +2899,7 @@ define_dispatch!(
                 if let Some(last) = rendered.chars().last() {
                     record_batch_standard_output_char(interp, stream.as_ref(), env, last);
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "redirect-debugging-output" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2930,7 +2919,7 @@ define_dispatch!(
                     .map(|value| value.text)
                     .unwrap_or(format_char_conversion(&args[0])?);
                 append_external_debugging_output(interp, &rendered)?;
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "print--preprocess" => {
                 need_args(name, args, 1)?;
@@ -3174,7 +3163,7 @@ define_dispatch!(
                     if !valid {
                         return Err(LispError::WrongTypeArgument(
                             "characterp".into(),
-                            character.clone(),
+                            *character,
                         ));
                     }
                 } else {
@@ -3183,7 +3172,7 @@ define_dispatch!(
                     {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("args-out-of-range".into()),
-                            args[0].clone(),
+                            args[0],
                             Value::Integer(interp.buffer.point_min() as i64),
                             Value::Integer(interp.buffer.point_max() as i64),
                         ])));
@@ -3198,7 +3187,7 @@ define_dispatch!(
                         if !valid {
                             return Err(LispError::WrongTypeArgument(
                                 "wholenump".into(),
-                                character.clone(),
+                                *character,
                             ));
                         }
                     }
@@ -3262,7 +3251,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 2)?;
                 if let Some(animation_cache) = args.get(1).filter(|value| !value.is_nil()) {
                     if animation_cache.cons_values().is_none() {
-                        return Err(wrong_type_argument("consp", animation_cache.clone()));
+                        return Err(wrong_type_argument("consp", *animation_cache));
                     }
                     return Ok(Value::Nil);
                 }
@@ -3374,7 +3363,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
                 let Value::Integer(requested) = args[1] else {
-                    return Err(wrong_type_argument("fixnump", args[1].clone()));
+                    return Err(wrong_type_argument("fixnump", args[1]));
                 };
                 set_window_hscroll_value(interp, window_id, requested)
             }
@@ -3395,12 +3384,7 @@ define_dispatch!(
                 };
                 let result = set_window_hscroll_value(interp, window_id, requested)?;
                 if args.get(1).is_some_and(Value::is_truthy) {
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_MIN_HSCROLL_SLOT,
-                        result.clone(),
-                    )?;
+                    set_window_slot_value(interp, window_id, WINDOW_MIN_HSCROLL_SLOT, result)?;
                 }
                 Ok(result)
             }
@@ -3477,9 +3461,7 @@ define_dispatch!(
                     interp.selected_window_id()
                 } else {
                     crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| {
-                        LispError::WrongTypeArgument("windowp".into(), args[0].clone())
-                    })?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
                 };
                 let margin = |value: Option<&Value>| -> Result<Option<i64>, LispError> {
                     match value {
@@ -3498,9 +3480,7 @@ define_dispatch!(
                     interp.selected_window_id()
                 } else {
                     crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| {
-                        LispError::WrongTypeArgument("windowp".into(), args[0].clone())
-                    })?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
                 };
                 let (left, right) = interp.window_margins(window_id);
                 let to_value =
@@ -3519,7 +3499,7 @@ define_dispatch!(
                 let local_x = x - left;
                 let local_y = y - top;
                 let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
-                    .ok_or_else(|| wrong_type_argument("window-live-p", args[1].clone()))?;
+                    .ok_or_else(|| wrong_type_argument("window-live-p", args[1]))?;
                 let tab_line = window_line_height(interp, buffer_id, "tab-line-format", env);
                 let header_line = window_line_height(interp, buffer_id, "header-line-format", env);
                 let mode_line = window_line_height(interp, buffer_id, "mode-line-format", env);
@@ -3557,9 +3537,8 @@ define_dispatch!(
                 let window = args.get(1).filter(|value| !value.is_nil());
                 let window_id = live_window_id_or_selected(interp, window)?;
                 let buffer_id = if let Some(window) = window {
-                    window_buffer_id(interp, window).ok_or_else(|| {
-                        LispError::WrongTypeArgument("windowp".into(), window.clone())
-                    })?
+                    window_buffer_id(interp, window)
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))?
                 } else {
                     interp.selected_window_buffer_id()
                 };
@@ -3801,7 +3780,7 @@ define_dispatch!(
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
                     && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
                 {
-                    return Err(LispError::WrongTypeArgument("framep".into(), frame.clone()));
+                    return Err(LispError::WrongTypeArgument("framep".into(), *frame));
                 }
                 let horizontal = args.get(1).is_some_and(Value::is_truthy);
                 let root = frame_root_window_value(interp);
@@ -3815,7 +3794,7 @@ define_dispatch!(
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
                     && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
                 {
-                    return Err(LispError::WrongTypeArgument("framep".into(), frame.clone()));
+                    return Err(LispError::WrongTypeArgument("framep".into(), *frame));
                 }
                 Ok(Value::T)
             }
@@ -3967,7 +3946,7 @@ define_dispatch!(
                 let mut pos = point_min;
                 while pos < point_max {
                     let display = interp.buffer.text_property_at(pos, "display");
-                    if let Some(display_value) = display.clone().filter(|value| !value.is_nil()) {
+                    if let Some(display_value) = display.filter(|value| !value.is_nil()) {
                         let mut end = pos;
                         while end < point_max
                             && interp.buffer.text_property_at(end, "display") == display
@@ -4033,11 +4012,11 @@ define_dispatch!(
                     return Ok(current_bidi_paragraph_direction_value(interp, env));
                 };
                 let Value::Buffer(buffer_value) = buffer else {
-                    return Err(wrong_type_argument("bufferp", buffer.clone()));
+                    return Err(wrong_type_argument("bufferp", *buffer));
                 };
                 let buffer_id = buffer_value.id;
                 if !interp.has_buffer_id(buffer_id) {
-                    return Err(wrong_type_argument("bufferp", buffer.clone()));
+                    return Err(wrong_type_argument("bufferp", *buffer));
                 }
                 let saved_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
@@ -4168,7 +4147,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 for coordinate in args {
                     if !matches!(coordinate, Value::Integer(_)) {
-                        return Err(wrong_type_argument("fixnump", coordinate.clone()));
+                        return Err(wrong_type_argument("fixnump", *coordinate));
                     }
                 }
                 // Mouse-face/help-echo redisplay is absent from the headless
@@ -4192,9 +4171,8 @@ define_dispatch!(
                 let window_id = if args[0].is_nil() {
                     interp.selected_window_id()
                 } else {
-                    window_record_id_from_value(interp, &args[0]).ok_or_else(|| {
-                        LispError::WrongTypeArgument("windowp".into(), args[0].clone())
-                    })?
+                    window_record_id_from_value(interp, &args[0])
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
                 };
                 interp.set_window_cursor_visible(window_id, args[1].is_truthy());
                 Ok(Value::Nil)
@@ -4203,11 +4181,8 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = match args.first() {
                     None | Some(Value::Nil) => interp.selected_window_id(),
-                    Some(window) => {
-                        window_record_id_from_value(interp, window).ok_or_else(|| {
-                            LispError::WrongTypeArgument("windowp".into(), window.clone())
-                        })?
-                    }
+                    Some(window) => window_record_id_from_value(interp, window)
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))?,
                 };
                 Ok(if interp.window_cursor_visible(window_id) {
                     Value::T
@@ -4247,7 +4222,7 @@ define_dispatch!(
                         LispError::SignalValue(Value::list([
                             Value::symbol("error"),
                             Value::string("Invalid color"),
-                            value.clone(),
+                            *value,
                         ]))
                     })
                 };
@@ -4262,7 +4237,7 @@ define_dispatch!(
                 };
                 if let Some(metric) = args.get(3).filter(|metric| !metric.is_nil()) {
                     return interp.call_function_value(
-                        metric.clone(),
+                        *metric,
                         metric.as_symbol().ok(),
                         &[as_list(left), as_list(right)],
                         env,
@@ -4330,7 +4305,7 @@ define_dispatch!(
                         .frame_state_mut(frame)
                         .expect("decoded frame has state")
                         .selected_window_id = window;
-                    Ok(args[1].clone())
+                    Ok(args[1])
                 }
             }
             "select-window" => {
@@ -4376,10 +4351,7 @@ define_dispatch!(
             "window-configuration-frame" => {
                 need_args(name, args, 1)?;
                 if !interp.is_window_configuration_value(&args[0]) {
-                    return Err(wrong_type_argument(
-                        "window-configuration-p",
-                        args[0].clone(),
-                    ));
+                    return Err(wrong_type_argument("window-configuration-p", args[0]));
                 }
                 let Value::Record(id) = args[0] else {
                     unreachable!()
@@ -4387,8 +4359,7 @@ define_dispatch!(
                 Ok(interp
                     .find_record(id)
                     .expect("allocated window has a record")
-                    .slots[7]
-                    .clone())
+                    .slots[7])
             }
             "force-window-update" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4424,7 +4395,7 @@ define_dispatch!(
                     && !frame.is_nil()
                     && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
                 {
-                    return Err(wrong_type_argument("frame-live-p", frame.clone()));
+                    return Err(wrong_type_argument("frame-live-p", *frame));
                 }
                 let original_window = interp.selected_window_id();
                 let original_buffer = interp.current_buffer_id();
@@ -4550,10 +4521,7 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 if window_record_id_from_value(interp, &window).is_none() {
-                    return Err(LispError::WrongTypeArgument(
-                        "windowp".into(),
-                        window.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 }
                 let Some(buffer_id) = window_buffer_id(interp, &window) else {
                     return Ok(Value::Nil);
@@ -4587,13 +4555,10 @@ define_dispatch!(
                 let window = if args[0].is_nil() {
                     interp.selected_window_value()
                 } else {
-                    args[0].clone()
+                    args[0]
                 };
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "windowp".into(),
-                        window.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 };
                 let buffer_id = interp.resolve_buffer_id(&args[1])?;
                 let changes_buffer =
@@ -4623,10 +4588,7 @@ define_dispatch!(
                     interp.set_selected_window_buffer_id(buffer_id);
                 } else {
                     let Some(record) = interp.find_record_mut(window_id) else {
-                        return Err(LispError::WrongTypeArgument(
-                            "windowp".into(),
-                            window.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("windowp".into(), window));
                     };
                     if record.slots.len() == WINDOW_BUFFER_SLOT {
                         record.slots.resize(WINDOW_BUFFER_SLOT + 1, Value::Nil);
@@ -4710,7 +4672,7 @@ define_dispatch!(
                         }
                     });
                 let window = window_id_or_selected(interp, &start)?;
-                if Some(frame.clone()) != interp.window_frame_id(window).map(Value::Frame) {
+                if Some(frame) != interp.window_frame_id(window).map(Value::Frame) {
                     return Err(LispError::Signal("Window is on a different frame".into()));
                 }
                 let Value::Frame(frame) = frame else {
@@ -4803,7 +4765,7 @@ define_dispatch!(
             "set-window-prev-buffers" => {
                 need_args(name, args, 2)?;
                 let window_id = window_id_or_selected(interp, &args[0])?;
-                set_window_slot_value(interp, window_id, WINDOW_PREV_BUFFERS_SLOT, args[1].clone())
+                set_window_slot_value(interp, window_id, WINDOW_PREV_BUFFERS_SLOT, args[1])
             }
             "window-next-buffers" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4818,7 +4780,7 @@ define_dispatch!(
             "set-window-next-buffers" => {
                 need_args(name, args, 2)?;
                 let window_id = window_id_or_selected(interp, &args[0])?;
-                set_window_slot_value(interp, window_id, WINDOW_NEXT_BUFFERS_SLOT, args[1].clone())
+                set_window_slot_value(interp, window_id, WINDOW_NEXT_BUFFERS_SLOT, args[1])
             }
             "window-parameter" => {
                 need_args(name, args, 2)?;
@@ -4828,7 +4790,7 @@ define_dispatch!(
             "set-window-parameter" => {
                 need_args(name, args, 3)?;
                 let window_id = window_id_or_selected(interp, &args[0])?;
-                set_window_parameter_value(interp, window_id, args[1].clone(), args[2].clone())
+                set_window_parameter_value(interp, window_id, args[1], args[2])
             }
             "window-parameters" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4853,7 +4815,7 @@ define_dispatch!(
                     .ok()
                     == Some(DELETED_WINDOW_KIND)
                 {
-                    return Err(wrong_type_argument("window-valid-p", value.clone()));
+                    return Err(wrong_type_argument("window-valid-p", *value));
                 }
                 Ok(interp
                     .window_frame_id(id)
@@ -4951,12 +4913,7 @@ define_dispatch!(
                     ));
                 }
                 if name == "set-window-combination-limit" {
-                    set_window_slot_value(
-                        interp,
-                        window_id,
-                        WINDOW_COMBINATION_LIMIT_SLOT,
-                        args[1].clone(),
-                    )
+                    set_window_slot_value(interp, window_id, WINDOW_COMBINATION_LIMIT_SLOT, args[1])
                 } else {
                     Ok(window_slot_value(
                         interp,
@@ -4973,10 +4930,7 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "windowp".into(),
-                        window.clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
                 };
                 let is_minibuffer = interp
                 .find_record(window_id)
@@ -5022,9 +4976,7 @@ define_dispatch!(
                 let hooks = hook_values(interp, "window-scroll-functions", env, Some(buffer_id));
                 let mut result = Ok(Value::Nil);
                 for hook in hooks {
-                    if let Err(error) =
-                        call_function_value(interp, &hook, &[window.clone(), start.clone()], env)
-                    {
+                    if let Err(error) = call_function_value(interp, &hook, &[window, start], env) {
                         result = Err(error);
                         break;
                     }
@@ -5041,7 +4993,7 @@ define_dispatch!(
             "set-window-dedicated-p" => {
                 need_args(name, args, 2)?;
                 let window_id = window_id_or_selected(interp, &args[0])?;
-                set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, args[1].clone())
+                set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, args[1])
             }
             "posn-at-x-y" => {
                 need_arg_range(name, args, 2, 4)?;
@@ -5125,7 +5077,7 @@ define_dispatch!(
                 Ok(Value::list([
                     interp.selected_window_value(),
                     Value::Integer(pos as i64),
-                    xy.clone(),
+                    xy,
                     Value::Integer(0),
                     Value::Nil,
                     Value::Integer(pos as i64),
@@ -5165,7 +5117,7 @@ define_dispatch!(
                 } else {
                     WINDOW_CURSOR_TYPE_SLOT
                 };
-                set_window_slot_value(interp, window_id, slot, args[1].clone())
+                set_window_slot_value(interp, window_id, slot, args[1])
             }
             "window-fringes" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5259,7 +5211,7 @@ define_dispatch!(
             "set-minibuffer-window" => {
                 need_args(name, args, 1)?;
                 let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {
-                    return Err(wrong_type_argument("windowp", args[0].clone()));
+                    return Err(wrong_type_argument("windowp", args[0]));
                 };
                 let is_minibuffer = interp
                 .find_record(window_id)
@@ -5273,7 +5225,7 @@ define_dispatch!(
                     ));
                 }
                 interp.set_minibuffer_window_id(window_id);
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "minibuffer-selected-window" => Ok(interp
                 .minibuffer_selected_window_id()
@@ -5317,7 +5269,7 @@ define_dispatch!(
                     WINDOW_POINT_SLOT,
                     Value::Integer(pos as i64),
                 )?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "set-window-vscroll" => {
                 need_arg_range(name, args, 2, 4)?;
@@ -5355,7 +5307,7 @@ fn render_mode_line_element(
     match element {
         value if value.is_string() => {
             let string =
-                string_like(value).ok_or_else(|| wrong_type_argument("stringp", value.clone()))?;
+                string_like(value).ok_or_else(|| wrong_type_argument("stringp", *value))?;
             let (text, display_offsets) = if glass && !string.props.is_empty() {
                 render_mode_line_string_display_properties(
                     interp,
@@ -5392,7 +5344,7 @@ fn render_mode_line_element(
                                 .iter()
                                 .find(|(name, _)| name == "font-lock-face")
                         })
-                        .map(|(_, face)| face.clone())
+                        .map(|(_, face)| *face)
                     else {
                         continue;
                     };
@@ -5468,7 +5420,7 @@ fn render_mode_line_element(
                     // nested :propertize face lands after it and wins on
                     // overlap when the spans apply in order.
                     let face = items[2..].chunks(2).find_map(|pair| match pair {
-                        [Value::Symbol(key), value] if key == "face" => Some(value.clone()),
+                        [Value::Symbol(key), value] if key == "face" => Some(*value),
                         _ => None,
                     });
                     let span_index = face.map(|face| {
@@ -6061,7 +6013,7 @@ mod tests {
             &mut interp,
             &[192, 193, 10, 11, 68, 73, 136, 196, 135],
             vec![
-                observed.clone(),
+                observed,
                 Value::Integer(0),
                 Value::symbol("inhibit-quit"),
                 Value::symbol("inhibit-redisplay"),
@@ -6177,13 +6129,13 @@ mod tests {
         let callback = bytecode_callback(
             &mut interp,
             &[192, 193, 194, 34, 135],
-            vec![Value::symbol("throw"), tag.clone(), Value::Integer(7)],
+            vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
         interp.set_variable("clear-message-function", callback, &mut env);
         interp.set_variable("inhibit-quit", Value::Nil, &mut env);
         interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
         set_echo_area_message(Some("not reached".into()));
-        interp.push_active_catch_tag(tag.clone());
+        interp.push_active_catch_tag(tag);
         let result = clear_message(&mut interp, &mut env, true, true);
         interp.pop_active_catch_tag();
         assert!(matches!(
@@ -6209,7 +6161,7 @@ mod tests {
             &mut interp,
             &[192, 193, 194, 32, 195, 32, 196, 32, 69, 73, 135],
             vec![
-                observed.clone(),
+                observed,
                 Value::Integer(0),
                 Value::symbol("active-minibuffer-window"),
                 Value::symbol("selected-window"),
@@ -6255,10 +6207,10 @@ mod tests {
         let callback = bytecode_callback(
             &mut interp,
             &[192, 193, 194, 34, 135],
-            vec![Value::symbol("throw"), tag.clone(), Value::Integer(7)],
+            vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
         interp.set_variable("clear-message-function", callback, &mut env);
-        interp.push_active_catch_tag(tag.clone());
+        interp.push_active_catch_tag(tag);
         let result = crate::lisp::primitives::activate_minibuffer(
             &mut interp,
             &Value::String("Prompt: ".into()),

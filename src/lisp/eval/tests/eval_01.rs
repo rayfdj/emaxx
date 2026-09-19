@@ -83,7 +83,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let kept = Value::cons(Value::Integer(37), Value::Nil);
-    interp.set_variable("emaxx-gc-test-kept", kept.clone(), &mut env);
+    interp.set_variable("emaxx-gc-test-kept", kept, &mut env);
     let before = crate::lisp::types::census_live_conses();
     let floats_before = crate::lisp::types::census_live_floats();
     let (hidden, serial) = build_chain();
@@ -2423,6 +2423,25 @@ fn macro_missing_required_args_signals_wrong_number_of_arguments() {
     );
 }
 
+#[test]
+fn fixed_arity_subr_past_its_maximum_signals_before_evaluating_arguments() {
+    // eval_sub's SUBRP arm: `list_length' of the argument forms, then
+    // `wrong-number-of-arguments' with the count, before any argument is
+    // evaluated.  (Nine arguments to `car' reached the eight-slot
+    // argvals path without a count before, and wrote past it.)
+    assert_eq!(
+        eval_str(
+            "(condition-case e
+                 (car (setq emaxx-arity-probe 1) 2 3 4 5 6 7 8 9)
+               (wrong-number-of-arguments
+                (if (and (equal (cdr e) '(car 9)) (not (boundp 'emaxx-arity-probe)))
+                    'unevaluated
+                  (list e (boundp 'emaxx-arity-probe)))))"
+        ),
+        Value::Symbol("unevaluated".into())
+    );
+}
+
 fn assert_eval_string_ops() {
     assert_eq!(
         eval_str(r#"(concat "hello" " " "world")"#),
@@ -3576,7 +3595,7 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
                            (put 'emaxx-cache-keep-unrelated 'operations '(copy-file))
                            (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))))"#,
         ),
-        Value::list([handler.clone(), handler.clone()])
+        Value::list([handler, handler])
     );
     assert_eq!(crate::lisp::primitives::file_name_handler_scan_count(), 1);
 
@@ -3600,25 +3619,25 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler nil)
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
-        handler.clone(),
+        handler,
         3,
     );
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler '(operations (file-exists-p)))
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
-        handler.clone(),
+        handler,
         4,
     );
     step(
         r#"(find-file-name-handler "/tmp/cache-keep" 'file-exists-p)"#,
-        handler.clone(),
+        handler,
         4,
     );
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler
                             (cddr (symbol-plist 'emaxx-cache-keep-handler)))
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
-        handler.clone(),
+        handler,
         5,
     );
 
@@ -3630,7 +3649,7 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
                   (list (cons "\\(?:\\cl\\)?" 'emaxx-cache-keep-handler))))
              (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
                    (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
-        Value::list([handler.clone(), handler.clone()]),
+        Value::list([handler, handler]),
         7,
     );
     step(
@@ -3638,7 +3657,7 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
                   (list (cons "\\(?:\\sw\\)?" 'emaxx-cache-keep-handler))))
              (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
                    (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
-        Value::list([handler.clone(), handler]),
+        Value::list([handler, handler]),
         9,
     );
 }
@@ -8395,8 +8414,8 @@ fn gnu_faces_color_at_point_skips_unspecified_faces() {
                          (foreground-color-at-point))))"#,
     );
     let items = value.to_vec().unwrap();
-    assert_string_value(items[0].clone(), "black");
-    assert_string_value(items[1].clone(), "black");
+    assert_string_value(items[0], "black");
+    assert_string_value(items[1], "black");
 }
 
 #[test]
@@ -8600,10 +8619,10 @@ fn hash_table_copy_and_clear_string_cover_password_cache_cases() {
             Value::Nil,
             Value::Integer(2),
             Value::Integer(1),
-            items[4].clone(),
+            items[4],
         ]
     );
-    assert_string_value(items[4].clone(), "\0\0\0");
+    assert_string_value(items[4], "\0\0\0");
 }
 
 #[test]
@@ -9151,7 +9170,7 @@ fn define_derived_mode_installs_callable_mode_body() {
     );
     let items = value.to_vec().unwrap();
     assert_eq!(items[0], Value::Symbol("sample-child-mode".into()));
-    assert_string_value(items[1].clone(), "Child");
+    assert_string_value(items[1], "Child");
     assert_eq!(items[2], Value::T);
     assert_eq!(items[3], Value::T);
 }
@@ -9356,7 +9375,7 @@ fn evaporating_overlays_die_empty_and_revive_through_move_overlay() {
         "overlay-put of evaporate on an empty overlay deletes it"
     );
     assert!(!values[1].is_nil(), "move-overlay revives it with a span");
-    assert_string_value(values[2].clone(), "{");
+    assert_string_value(values[2], "{");
     assert!(values[3].is_nil(), "moving to an empty span deletes again");
     assert_eq!(
         values[4],

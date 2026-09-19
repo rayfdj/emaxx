@@ -313,9 +313,9 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
                 base: base.base.clone(),
                 kind: base.kind.clone(),
                 eol_type: Some(eol_type),
-                plist: base.plist.clone(),
+                plist: base.plist,
                 category: base.category,
-                charset_list: base.charset_list.clone(),
+                charset_list: base.charset_list,
                 default_char: base.default_char,
                 type_args: base.type_args.clone(),
             });

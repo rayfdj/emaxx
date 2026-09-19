@@ -525,7 +525,7 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
     let cycle = Value::list(vec![Value::Nil; 5]);
     nthcdr_value(&Value::Integer(4), &cycle)
         .expect("nthcdr should reach the last cons")
-        .set_cdr(cycle.clone())
+        .set_cdr(cycle)
         .expect("last cons should become circular");
 
     let one_step = nthcdr_value(&Value::Integer(1), &cycle).expect("small nthcdr should work");
@@ -871,7 +871,7 @@ fn fillarray_mutates_supported_sequences() {
     call(
         &mut interp,
         "fillarray",
-        &[vector.clone(), Value::Symbol("x".into())],
+        &[vector, Value::Symbol("x".into())],
         &mut env,
     )
     .expect("fillarray should fill vectors");
@@ -894,7 +894,7 @@ fn fillarray_mutates_supported_sequences() {
     call(
         &mut interp,
         "fillarray",
-        &[string.clone(), Value::Integer('b' as i64)],
+        &[string, Value::Integer('b' as i64)],
         &mut env,
     )
     .expect("fillarray should fill strings");
@@ -909,13 +909,8 @@ fn fillarray_mutates_supported_sequences() {
         &mut env,
     )
     .expect("make-bool-vector should succeed");
-    call(
-        &mut interp,
-        "fillarray",
-        &[bool_vector.clone(), Value::T],
-        &mut env,
-    )
-    .expect("fillarray should fill bool-vectors");
+    call(&mut interp, "fillarray", &[bool_vector, Value::T], &mut env)
+        .expect("fillarray should fill bool-vectors");
     assert_eq!(
         bool_vector_bits(&interp, &bool_vector).expect("filled bool-vector"),
         vec![true, true, true, true]
@@ -925,7 +920,7 @@ fn fillarray_mutates_supported_sequences() {
     call(
         &mut interp,
         "fillarray",
-        &[char_table.clone(), Value::Symbol("z".into())],
+        &[char_table, Value::Symbol("z".into())],
         &mut env,
     )
     .expect("fillarray should fill char-tables");
@@ -951,7 +946,7 @@ fn modify_syntax_entry_accepts_character_ranges() {
     call(
         &mut interp,
         "modify-syntax-entry",
-        &[range, Value::String("w".into()), table.clone()],
+        &[range, Value::String("w".into()), table],
         &mut env,
     )
     .expect("modify-syntax-entry should accept a cons character range");
@@ -960,7 +955,7 @@ fn modify_syntax_entry_accepts_character_ranges() {
         call(
             &mut interp,
             "char-table-range",
-            &[table.clone(), Value::Integer('A' as i64)],
+            &[table, Value::Integer('A' as i64)],
             &mut env,
         )
         .expect("range start should be set"),
@@ -990,7 +985,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
         &[
             Value::Integer('a' as i64),
             Value::String(". 1234".into()),
-            table.clone(),
+            table,
         ],
         &mut env,
     )
@@ -999,7 +994,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
         call(
             &mut interp,
             "aref",
-            &[table.clone(), Value::Integer('a' as i64)],
+            &[table, Value::Integer('a' as i64)],
             &mut env,
         )
         .expect("aref should expose encoded syntax descriptor"),
@@ -1009,7 +1004,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
         call(
             &mut interp,
             "char-table-range",
-            &[table.clone(), Value::Integer('a' as i64)],
+            &[table, Value::Integer('a' as i64)],
             &mut env,
         )
         .expect("char-table-range should expose encoded syntax descriptor"),
@@ -1022,7 +1017,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
         &[
             Value::Integer('(' as i64),
             Value::String("(] 1234".into()),
-            table.clone(),
+            table,
         ],
         &mut env,
     )
@@ -1064,7 +1059,7 @@ fn plist_put_appends_absent_property_in_place() {
         &mut interp,
         "plist-put",
         &[
-            plist.clone(),
+            plist,
             Value::Symbol(":save-function".into()),
             Value::Symbol("save".into()),
         ],
@@ -1382,7 +1377,7 @@ fn selected_window_is_a_record_and_tracks_window_start() {
         call(
             &mut interp,
             "set-window-start",
-            &[window.clone(), Value::Integer(2)],
+            &[window, Value::Integer(2)],
             &mut env,
         )
         .expect("set-window-start"),

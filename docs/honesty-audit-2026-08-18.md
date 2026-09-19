@@ -12912,3 +12912,184 @@ and 1 in 23 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
 in 284 s), 2,717 scheduled and observed; fmt and strict clippy exit 0
 before and after.  First run, nothing else on the machine but a
 read-only review.
+
+## 2026-09-19 Checkpoint 20k: an adversarial audit of the representation phase, and what it found (Value: Copy; the collection rate as alloc.c's; the call path's count; the parked stacks' registers; C's block geometry)
+
+*What prompted it.*  The question put to the work after checkpoint
+20j: is it closer to C, and how much of what the four
+representation checkpoints (20g to 20j) did is a shortcut.  The
+answer to the first is in the numbers below and in every table since
+20g: the interpreted loops are a fifth to a quarter faster than at
+20f and still 1.3 to 2.9 times GNU.  The answer to the second came
+from an adversarial pass over the four commits, read against alloc.c,
+eval.c and lisp.h, with the standing rule that every step be C's
+structure first: no benchmark-shaped shortcut, no work C does
+skipped, no deviation left unstated.  It found no code keyed on a
+test, a benchmark or a harness variable.  It found five things worth
+acting on, each confirmed in the code before it was touched, and
+they are this checkpoint, ahead of any further speed work.  (The
+self-written "Which of these mirror C" paragraphs of 20g to 20j were
+not an independent review; from here each checkpoint's list of what
+is not C is carried forward in full, not only its own additions.)
+
+*Done.*
+
+1. **The call path's count (a stack overflow, 20i).**  `eval_call'
+   took eval_sub's `argvals[8]' for a fixed-arity subr of at most
+   eight without counting the argument forms, and evaluated every
+   form into the eight slots: nine arguments to `car' wrote past the
+   array.  eval_sub takes `list_length (args_left)' for every callee
+   and, for a SUBR, signals `wrong-number-of-arguments' on the count
+   before any argument is evaluated.  Both now: the count first, the
+   arity signal before evaluation (the argument forms of
+   `(car (setq x 1) 2 3 4 5 6 7 8 9)' are not evaluated, as in GNU;
+   before, `x' was set and the error came from the subr's dispatch).
+   The skipped count was an invented saving, and 20i's audit said the
+   opposite ("the count taken first as C's `list_length' is").
+
+2. **The collection rate as alloc.c's.**  `consing_threshold' and
+   `bump_consing_until_gc' were alloc.c's arithmetic on the wrong
+   input: `total_bytes_of_live_objects' counted the image's objects,
+   which this loader allocates into the blocks (143,895 conses,
+   318,314 strings, 4.6 MB of text: 19 MB), where GNU's sums `gcstat',
+   filled by the sweep of the blocks alone, and a dumped object is in
+   pdumper's mapped region, never a block.  With batch's
+   `gc-cons-percentage' of 1.0 the threshold was 19 MB against GNU's
+   0.8 MB: six million conses ran 3 collections here and 120 in GNU,
+   and every consing number since 20g was taken under that rate (20g
+   said so once; 20h to 20j carried it without restating it).  Now
+   the bytes the loader allocated between the start of the load and
+   the baseline are taken out of the census before the threshold is
+   computed: C's input under this loader.  The rate is GNU's (the
+   table); the cost of each collection is not, and is now the visible
+   target (below).  This stays an approximation until the image is a
+   mapped region of its own that the sweep does not visit.
+
+3. **The parked stacks' registers.**  A Lisp thread parking its
+   coroutine recorded the range to scan as its stack pointer to its
+   base, then switched; the switch saves the callee-saved registers
+   below that pointer, outside the range.  A thread blocking in GNU
+   does so inside `flush_stack_call_func', its registers spilled into
+   the scanned range.  Now the registers are spilled into the parking
+   frame before the top is recorded, on both sides of the switch (the
+   parked coroutine and the driving stack), and the spill is kept
+   live across it.
+
+4. **C's block geometry.**  The blocks were 128 KiB for every kind and
+   labelled alloc.c's `BLOCK_BYTES': 1,170 conses, 8,192 floats, 2,730
+   strings and 2,340 symbols to a block against C's 2,030, 4,031, 31
+   and 21 (`CONS_BLOCK_SIZE', `FLOAT_BLOCK_SIZE', `STRING_BLOCK_SIZE',
+   `SYMBOL_BLOCK_SIZE' with the C sizes).  A string or symbol block
+   was therefore given back when 2,730 or 2,340 cells were free, in
+   practice never, and the mem tree had a fraction of C's nodes.  Now
+   each kind's cells per block are C's numbers; a block is as many
+   bytes as those cells take here.
+
+5. **Value: Copy (phase B, step 4).**  Every variant a cell address or
+   an immediate since 20j, `Value' is `Copy': the manual `Clone' with
+   its immediate test is gone, and the 3,800 lines of `.clone()' on
+   values across 103 files with it (a mechanical change; the diff is
+   dereferences for clones).
+
+6. **A test restated and the probes in the tree.**  20j had weakened
+   `uninterned_symbol_names_remain_reclaimable' to assert only that
+   the symbol existed; it asserts again that a collection frees the
+   unreached uninterned symbol and drops it from the book.  The
+   probes every table since 20a quotes were in the scratchpad; they
+   are `tools/perf/' now (interp-loops.el, call-loop-10m.el,
+   consing.el, gcs-per-conses.el, cg-interp-dynamic.el,
+   cg-interp-lexical.el, cg-call-loop.el), with the invocation in
+   each.  A regression test for item 1
+   (`fixed_arity_subr_past_its_maximum_signals_before_evaluating_arguments').
+
+*Measured.*  Wall clock, three interleaved rounds with nothing
+else on the machine, seconds (min / median); w23 is checkpoint 20j,
+w24 this one, GNU on the same machine; the probes are `tools/perf/'
+(interp-loops.el, call-loop-10m.el, consing.el, gcs-per-conses.el).
+
+| probe | w23 (20j) | w24 (20k) | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 1.590 / 1.602 | 4.007 / 4.013 | 1.117 / 1.164 |
+| interpreted dynamic loop, 2 M | 1.219 / 1.239 | 1.171 / 1.171 | 0.449 / 0.465 |
+| 1 M interpreted defun calls | 0.773 / 0.774 | 3.161 / 3.218 | 0.735 / 0.759 |
+| byte-code call loop, 10 M | 0.597 / 0.619 | 0.554 / 0.559 | 0.214 / 0.216 |
+| 300 k conses pushed | 0.242 / 0.242 | 0.475 / 0.482 | 0.100 / 0.100 |
+| the collection after them | 0.056 / 0.058 | 0.064 / 0.065 | 0.013 / 0.014 |
+| ten collections of the idle booted heap | 0.289 / 0.298 | 0.380 / 0.384 | 0.071 / 0.074 |
+| mapcar over 100 k, twenty times | 0.512 / 0.527 | 2.082 / 2.084 | 0.232 / 0.235 |
+| six million conses (`gcs-per-conses.el') | 3 collections, 3.13 / 3.17 s | 120 collections, 7.48 / 7.63 s | 120 collections, 1.96 / 2.00 s |
+
+The rate is GNU's and the price of each collection is now in every
+allocating row: the lexical loop 1.59 to 4.01 s (its `let' conses a
+binding cell per iteration), the interpreted defun call 0.77 to 3.16
+(its argument list), `mapcar' 0.51 to 2.08, six million conses 3.1 to
+7.5 s, against GNU's 1.12, 0.74, 0.23 and 1.96; the dynamic loop and
+the byte-code call loop, which allocate nothing, 1.22 to 1.17 and 0.60
+to 0.55 (`Value: Copy' and the count).  A collection of the booted
+heap 29 to 38 ms (GNU 7.1): C's block sizes put the strings in 10,300
+blocks of 31 and the symbols in 860 of 21, and the sweep walks them.
+Callgrind, instructions an iteration (`callgrind-diff.sh', which
+differences two run lengths, so a loop that collects at GNU's rate
+now carries its collections): the dynamic loop 7,036 to 6,499 (GNU
+3,234), the lexical loop 8,000 to 12,747 (GNU 5,477, of which its
+collections are a fifth), the byte-code call loop 953 to 887 (GNU
+330).  The corpus rows (two rounds, the minimum): ucs-names GNU 2.23
+s, 20j 7.78, 20k 8.47; fns-tests-sort 1.43, 6.11, 7.16;
+pcase-tests-macro 0.10, 0.41, 0.59; undo-test4 1.00, 3.23, 7.92.
+
+*What did not move, and what was learned.*  Nothing here was meant to move but the rate, and
+the rate moved the rest: the honest position after 20k is that every
+allocating probe is two to four times GNU where the tables of 20g to
+20j showed one to two, because a collection of the booted heap costs
+38 ms here and 7 in GNU and now runs as often as GNU's.  Callgrind on
+one collection of the idle booted heap (148 M instructions): the mark
+phase (`LispReachability::trace_pending') 110 M, some 220
+instructions an object over the 500 k objects reachable from the
+image (GNU's `mark_object' walks the same graph in about 20 M); five
+name-keyed tables rebuilt as string sets for the static roots
+(`known_symbols_shared' and its inserts) 35 M; the sweeps 6 M
+(strings 4.4, conses 1.3, vectors 0.5).  So the next step is the mark
+phase: its cost per object, and the symbol's cells in the symbol
+(phase C, step 2), so that the obarray is the one root and no
+name-keyed table is enumerated at all, as in `mark_object' of a
+symbol.  The block release rule fires for strings and symbols now
+that a block is 31 or 21 cells; whether the suite's peak resident
+size moves with it is not measured here (the full suite was not run
+outside the gate).
+
+*Which of these mirror C, and which do not.*  C: the count and the
+arity signal before evaluation (eval_sub), the spill before parking
+(flush_stack_call_func), the cells per block (alloc.c's four
+constants), the threshold's input (gcstat's objects of the blocks),
+the value copied as a word.  Not C, the standing list carried
+forward: the image's objects in the swept blocks, subtracted for the
+threshold rather than kept out of the sweep (pdumper's region); the
+per-collection cost that follows (the sweep visits 144 k conses and
+318 k strings GNU never sweeps); the stack zeroed after a collection
+(Boehm's, for one weak-key test; GNU does not); the native heap as a
+second representation with an agreement word per cons field; the
+native handles to conses and symbols as permanent roots; markers,
+overlays, char-tables, records, frames, terminals and finalizers as
+ids in the interpreter's tables; the symbol's value, function and
+plist cells in the interpreter's tables, not in the symbol; the
+uninterned symbol's identity through a name-keyed book; the sweep
+order (strings last); the never-swept records' retention pass, which
+counts what only a dead record reaches as live; no global lock behind
+the one-Lisp-thread assumption (the gate runs one test thread); the
+subr's minimum arity still policed by the primitive after its
+arguments are evaluated (the manifest carries the maximum); a string
+object's bytes uncounted by the sweep while its cell is borrowed.
+The audit tables of 20g to 20j were each taken beside other work on
+the machine (20i's beside two stress hours), which is why the same
+binary reads 2.31 s in 20g's table and 1.73 s in 20h's; from here a
+table is taken with nothing else running, GNU interleaved, three
+rounds, and says so.
+
+*Verified.*  The focused groups on the gate build (collection,
+census, sort, let, symbol, roots, bytecode, pdumper, native runtime,
+gc, threshold, continuations, threads, blocks: 393 tests) and the two
+new tests; `cargo clippy --all-targets -- -D warnings' and `cargo fmt
+--check' clean; the nine probes above on the release build; the
+collection count on the six-million-cons loop 120 here and in GNU.
+
+*Gate.*  GATE-PLACEHOLDER

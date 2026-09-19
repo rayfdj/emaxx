@@ -1102,15 +1102,14 @@ fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
     let mut env = crate::lisp::types::Env::new();
     Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
     let captured = crate::lisp::types::current_environment_value(&env);
-    let Value::Lambda(lambda) =
-        Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured.clone())
+    let Value::Lambda(lambda) = Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured)
     else {
         unreachable!("Value::lambda constructs a lambda");
     };
 
     interp.set_variable("cell", Value::Integer(23), &mut env);
     assert_eq!(interp.lookup_var("cell", &env), Some(Value::Integer(23)));
-    let environment = interp.interpreted_closure_slots(&lambda)[2].clone();
+    let environment = interp.interpreted_closure_slots(&lambda)[2];
     assert!(Interpreter::same_environment(&environment, &captured));
     assert_eq!(
         environment
@@ -2470,7 +2469,7 @@ fn cl_defun_supports_destructuring_arglists() {
     assert_eq!(items.len(), 4);
     assert_eq!(items[0], Value::Integer(1));
     assert_eq!(items[1], Value::list([Value::Symbol("changed".into())]));
-    assert_string_value(items[2].clone(), "/tmp/file");
+    assert_string_value(items[2], "/tmp/file");
     assert_eq!(items[3], Value::Integer(9));
 }
 

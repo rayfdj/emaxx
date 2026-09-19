@@ -294,7 +294,7 @@ mod tests {
         primitives::call(
             interpreter,
             "puthash",
-            &[key.clone(), Value::T, table.clone()],
+            &[*key, Value::T, *table],
             &mut Env::new(),
         )
         .expect("insert weak key");

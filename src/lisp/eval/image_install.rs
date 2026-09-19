@@ -142,7 +142,7 @@ impl Interpreter {
         let handler = primitives::call(
             self,
             "find-file-name-handler",
-            &[directory.clone(), Value::T],
+            &[directory, Value::T],
             &mut crate::lisp::types::Env::new(),
         )?;
         if handler.is_truthy() && primitives::string_text(&directory)? != "/" {
@@ -153,7 +153,7 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             )?;
         }
-        self.set_buffer_local_value(scratch, "default-directory", directory.clone());
+        self.set_buffer_local_value(scratch, "default-directory", directory);
         let minibuffer = self
             .find_buffer(" *Minibuf-0*")
             .map(|(id, _)| id)
@@ -231,7 +231,7 @@ impl Interpreter {
         self.globals.install_cell(
             &symbol.symbol,
             SymbolCellSnapshot {
-                value: symbol.value.clone(),
+                value: symbol.value,
                 alias: symbol.alias,
                 flags,
             },
@@ -285,7 +285,7 @@ impl Interpreter {
         {
             return;
         }
-        self.set_function_binding(name, Some(function.clone()));
+        self.set_function_binding(name, Some(*function));
     }
 
     fn install_plist(&mut self, name: &str, plist: &Value) {
@@ -293,7 +293,7 @@ impl Interpreter {
             return;
         }
         // Replacing the plist keeps the property index coherent.
-        let _ = self.set_symbol_plist(name, plist.clone());
+        let _ = self.set_symbol_plist(name, *plist);
     }
 
     fn install_watchers(&mut self, name: &str, watchers: &[Value]) {
@@ -314,18 +314,18 @@ impl Interpreter {
     /// are installed elsewhere.
     fn install_root_slot(&mut self, slot: RootSlot, value: &Value) {
         match slot {
-            RootSlot::QuitFlag => self.quit_flag = value.clone(),
-            RootSlot::InhibitQuit => self.inhibit_quit = value.clone(),
-            RootSlot::ThrowOnInput => self.throw_on_input = value.clone(),
+            RootSlot::QuitFlag => self.quit_flag = *value,
+            RootSlot::InhibitQuit => self.inhibit_quit = *value,
+            RootSlot::ThrowOnInput => self.throw_on_input = *value,
             RootSlot::OverridingPlistEnvironment => {
-                self.overriding_plist_environment = value.clone();
+                self.overriding_plist_environment = *value;
             }
-            RootSlot::LoadPath => self.load_path = value.clone(),
-            RootSlot::LoadsInProgress => self.loads_in_progress = value.clone(),
-            RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = value.clone(),
-            RootSlot::FrameAndBufferState => self.frame_and_buffer_state = value.clone(),
+            RootSlot::LoadPath => self.load_path = *value,
+            RootSlot::LoadsInProgress => self.loads_in_progress = *value,
+            RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
+            RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,
             RootSlot::CurrentGlobalMap => {
-                self.current_global_map = (!matches!(value, Value::Unbound)).then(|| value.clone());
+                self.current_global_map = (!matches!(value, Value::Unbound)).then_some(*value);
             }
             _ => {}
         }

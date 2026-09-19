@@ -75,7 +75,7 @@ define_dispatch!(
                     Some(other) => {
                         return Err(crate::lisp::primitives::wrong_type_argument(
                             "wholenump",
-                            other.clone(),
+                            *other,
                         ));
                     }
                 };
@@ -186,7 +186,7 @@ define_dispatch!(
                         env,
                     )?
                 } else {
-                    after_field.clone()
+                    after_field
                 };
                 let mut at_field_start = false;
                 let mut at_field_end = false;
@@ -411,7 +411,7 @@ define_dispatch!(
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::Buffer(_) => Ok(args[0].clone()),
+                    Value::Buffer(_) => Ok(args[0]),
                     _ => match string_like(&args[0]) {
                         Some(name) => match interp.find_buffer(&name.text) {
                             Some((id, buffer_name)) => Ok(Value::buffer(id, buffer_name)),
@@ -430,7 +430,7 @@ define_dispatch!(
                 // buffer.c:Fget_buffer_create returns buffer objects as given,
                 // even when renamed or dead; only strings select by name.
                 if matches!(&args[0], Value::Buffer(_)) {
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 }
                 let buf_name = string_text(&args[0]).map_err(|_| {
                     LispError::TypeError("string-or-buffer".into(), args[0].type_name())
@@ -574,7 +574,7 @@ define_dispatch!(
                     interp.call_function_value(
                         callback,
                         Some("uniquify--rename-buffer-advice"),
-                        &[args[0].clone(), args.get(1).cloned().unwrap_or(Value::Nil)],
+                        &[args[0], args.get(1).cloned().unwrap_or(Value::Nil)],
                         env,
                     )?;
                 }
@@ -635,10 +635,7 @@ define_dispatch!(
                         .or_else(|| interp.symbol_value_cell(&symbol).ok()),
                 };
                 value.ok_or_else(|| {
-                    LispError::SignalValue(Value::list([
-                        Value::symbol("void-variable"),
-                        args[0].clone(),
-                    ]))
+                    LispError::SignalValue(Value::list([Value::symbol("void-variable"), args[0]]))
                 })
             }
             "buffer-local-variables" => {
@@ -693,7 +690,7 @@ define_dispatch!(
                 if interp.is_constant_symbol(&symbol) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
-                        args[0].clone(),
+                        args[0],
                     ])));
                 }
                 let buffer_id = interp.current_buffer_id();
@@ -729,13 +726,13 @@ define_dispatch!(
             }
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
-                interp.add_variable_watcher(args[0].as_symbol()?, args[1].clone())?;
-                Ok(args[1].clone())
+                interp.add_variable_watcher(args[0].as_symbol()?, args[1])?;
+                Ok(args[1])
             }
             "remove-variable-watcher" => {
                 need_args(name, args, 2)?;
                 interp.remove_variable_watcher(args[0].as_symbol()?, &args[1])?;
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
@@ -743,7 +740,7 @@ define_dispatch!(
             }
             "command-modes" => {
                 need_args(name, args, 1)?;
-                let mut function = args[0].clone();
+                let mut function = args[0];
                 while let Value::Symbol(symbol) = &function {
                     if let Some(modes) = interp.get_symbol_property(symbol, "command-modes")
                         && !modes.is_nil()
@@ -769,7 +766,7 @@ define_dispatch!(
             "indirect-function" => {
                 need_arg_range(name, args, 1, 2)?;
                 let mut seen = Vec::new();
-                let mut current = args[0].clone();
+                let mut current = args[0];
                 loop {
                     let symbol = match &current {
                         Value::Symbol(symbol) => *symbol,
@@ -828,16 +825,12 @@ define_dispatch!(
                         }) =>
                     {
                         let record = interp.find_record(*id).expect("record checked above");
-                        Ok(Value::cons(
-                            record.slots[1].clone(),
-                            record.slots[2].clone(),
-                        ))
+                        Ok(Value::cons(record.slots[1], record.slots[2]))
                     }
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp",
-                        other.clone(),
+                        "subrp", *other,
                     )),
                 }
             }
@@ -851,7 +844,7 @@ define_dispatch!(
                     {
                         cdr
                     } else {
-                        value.clone()
+                        *value
                     }
                 };
                 let function = resolve_callable(interp, &args[0], env)?;
@@ -873,8 +866,7 @@ define_dispatch!(
                         Ok(Value::string(&name))
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp",
-                        other.clone(),
+                        "subrp", *other,
                     )),
                 }
             }
@@ -889,14 +881,13 @@ define_dispatch!(
                     {
                         let record = interp.find_record(*id).expect("record checked above");
                         Ok(if record.slots[10].is_truthy() {
-                            record.slots[9].clone()
+                            record.slots[9]
                         } else {
                             Value::T
                         })
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp",
-                        other.clone(),
+                        "subrp", *other,
                     )),
                 }
             }
@@ -914,8 +905,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let Value::BuiltinFunc(symbol) = &args[0] else {
                     return Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp",
-                        args[0].clone(),
+                        "subrp", args[0],
                     ));
                 };
                 let arity = builtin_arity_value(symbol)
@@ -1022,11 +1012,10 @@ define_dispatch!(
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        Ok(interp.find_record(*id).expect("record checked above").slots[8].clone())
+                        Ok(interp.find_record(*id).expect("record checked above").slots[8])
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp",
-                        other.clone(),
+                        "subrp", *other,
                     )),
                 }
             }
@@ -1070,21 +1059,18 @@ define_dispatch!(
                     ));
                 }
                 if record.slots.is_empty() {
-                    record.slots.push(args[1].clone());
+                    record.slots.push(args[1]);
                 } else {
-                    record.slots[0] = args[1].clone();
+                    record.slots[0] = args[1];
                 }
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "decode-char" => {
                 need_args(name, args, 2)?;
                 // CHECK_CHARSET_GET_CHARSET: an unknown charset signals.
                 let charset = args[0].as_symbol()?;
                 if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument(
-                        "charsetp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[0]));
                 }
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
@@ -1107,10 +1093,7 @@ define_dispatch!(
                     .map_err(|_| LispError::Signal("Invalid character".into()))?;
                 let charset = args[1].as_symbol()?;
                 if !interp.has_charset(charset) {
-                    return Err(LispError::WrongTypeArgument(
-                        "charsetp".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("charsetp".into(), args[1]));
                 }
                 // ENCODE_CHAR takes GNU's character number as given (a raw
                 // byte at #x3fff80..#x3fffff belongs to `eight-bit' only).
@@ -1127,10 +1110,7 @@ define_dispatch!(
                     .and_then(|value| u32::try_from(value).ok())
                     .filter(|value| *value <= 0x3f_ffff)
                 else {
-                    return Err(LispError::WrongTypeArgument(
-                        "characterp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
                 };
                 // ENCODE_CHAR takes GNU's character number as given, as in
                 // the `encode-char' arm above.
@@ -1144,7 +1124,7 @@ define_dispatch!(
                     // A list RESTRICTION: the first charset that encodes
                     // CH wins, in list order; every entry must name a
                     // charset (CHECK_CHARSET_GET_CHARSET).
-                    let mut tail = (*restriction).clone();
+                    let mut tail = *restriction;
                     while let Some((head, rest)) = tail.cons_values() {
                         let charset = head
                             .as_symbol()
@@ -1152,10 +1132,7 @@ define_dispatch!(
                             .filter(|charset| interp.has_charset(charset))
                             .map(str::to_string);
                         let Some(charset) = charset else {
-                            return Err(LispError::WrongTypeArgument(
-                                "charsetp".into(),
-                                head.clone(),
-                            ));
+                            return Err(LispError::WrongTypeArgument("charsetp".into(), head));
                         };
                         if encode_charset_char(interp, &charset, internal).is_some() {
                             return Ok(head);
@@ -1179,7 +1156,7 @@ define_dispatch!(
                 let Some(coding) = known else {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("coding-system-error".into()),
-                        (*restriction).clone(),
+                        (*restriction),
                     ])));
                 };
                 // char_charset substitutes the full charset priority order
@@ -1300,7 +1277,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let function = args[0].clone();
+                let function = args[0];
                 let charset = args[1].as_symbol()?.to_string();
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
                 let from = args
@@ -1319,10 +1296,7 @@ define_dispatch!(
                     call_function_value(
                         interp,
                         &function,
-                        &[
-                            Value::cons(Value::Integer(start), Value::Integer(end)),
-                            arg.clone(),
-                        ],
+                        &[Value::cons(Value::Integer(start), Value::Integer(end)), arg],
                         env,
                     )?;
                 }
@@ -1334,7 +1308,7 @@ define_dispatch!(
                 need_args(name, args, 17)?;
                 let charset = args[0].as_symbol()?.to_string();
                 let supplementary = args[9].is_truthy();
-                interp.define_charset(&charset, args[16].clone(), supplementary);
+                interp.define_charset(&charset, args[16], supplementary);
                 Ok(Value::Nil)
             }
             "define-charset-alias" => {
@@ -1347,8 +1321,8 @@ define_dispatch!(
             "set-charset-plist" => {
                 need_args(name, args, 2)?;
                 let charset = args[0].as_symbol()?;
-                interp.set_charset_plist_value(charset, args[1].clone())?;
-                Ok(args[1].clone())
+                interp.set_charset_plist_value(charset, args[1])?;
+                Ok(args[1])
             }
             "unify-charset" => {
                 // charset.c:1330 Funify_charset.
@@ -1395,7 +1369,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("error".into()),
                             Value::string("Bad unify-map"),
-                            map.clone(),
+                            *map,
                         ])));
                     }
                     // charset.c:1362: an explicit map replaces the
@@ -1408,11 +1382,11 @@ define_dispatch!(
                             .position(|item| matches!(item, Value::Symbol(k) if k == ":unify-map"));
                         match key {
                             Some(index) if index + 1 < items.len() => {
-                                items[index + 1] = map.clone();
+                                items[index + 1] = *map;
                             }
                             _ => {
                                 items.push(Value::Symbol(":unify-map".into()));
-                                items.push(map.clone());
+                                items.push(*map);
                             }
                         }
                         interp.set_charset_plist_value(charset, Value::list(items))?;
@@ -1483,10 +1457,7 @@ define_dispatch!(
                     .and_then(|value| u32::try_from(value).ok())
                     .filter(|value| *value <= 0x3f_ffff)
                 else {
-                    return Err(LispError::WrongTypeArgument(
-                        "characterp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
                 };
                 let (charset, code) = char_charset(interp, character);
                 let dimension =
@@ -1560,7 +1531,7 @@ define_dispatch!(
                     value => value,
                 };
                 let completion_args = [
-                    args[0].clone(),
+                    args[0],
                     collection,
                     Value::Nil,
                     Value::T,
@@ -1640,8 +1611,8 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let coding = checked_coding_symbol(interp, &args[0])?;
                 let key = args[1].as_symbol()?;
-                interp.set_coding_system_plist_property(&coding, key, args[2].clone())?;
-                Ok(args[2].clone())
+                interp.set_coding_system_plist_property(&coding, key, args[2])?;
+                Ok(args[2])
             }
             "coding-system-eol-type" => {
                 need_args(name, args, 1)?;
@@ -1727,10 +1698,7 @@ define_dispatch!(
                 // in-range fixnum passes and oversized codes fall to
                 // the "Invalid code" validation below (oracle rows).
                 if code < 0 {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 }
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
@@ -1768,10 +1736,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let character = args[0].as_fixnum()?;
                 if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument(
-                        "characterp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
                 }
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
@@ -1800,10 +1765,7 @@ define_dispatch!(
                 let code = args[0].as_fixnum()?;
                 // CHECK_FIXNAT as above: `wholenump', no upper bound.
                 if code < 0 {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 }
                 let invalid = || LispError::Signal(format!("Invalid code: {code}"));
                 if code <= 0x7F {
@@ -1833,10 +1795,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let character = args[0].as_fixnum()?;
                 if !(0..=0x3FFFFF).contains(&character) {
-                    return Err(LispError::WrongTypeArgument(
-                        "characterp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[0]));
                 }
                 if character <= 0x7F {
                     return Ok(Value::Integer(character));
@@ -1858,7 +1817,7 @@ define_dispatch!(
                 let target = args.first().unwrap_or(&Value::Nil);
                 let id = interp
                     .decode_terminal_id(target)
-                    .ok_or_else(|| wrong_type_argument("terminal-live-p", target.clone()))?;
+                    .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
                 let terminal = interp
                     .terminal_state(id)
                     .expect("decoded terminal has state");
@@ -1878,7 +1837,7 @@ define_dispatch!(
                 let target = args.get(1).unwrap_or(&Value::Nil);
                 let id = interp
                     .decode_terminal_id(target)
-                    .ok_or_else(|| wrong_type_argument("terminal-live-p", target.clone()))?;
+                    .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
                 let coding = checked_coding_name(interp, &args[0])?;
                 let terminal = interp
                     .terminals
@@ -1965,7 +1924,7 @@ define_dispatch!(
                     kind,
                     plist,
                     eol_type,
-                    args[3].clone(),
+                    args[3],
                     default_char,
                     args.get(13..).unwrap_or(&[]).to_vec(),
                 )?;

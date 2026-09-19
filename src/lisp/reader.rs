@@ -15,7 +15,7 @@ static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
     match value {
         Value::ReaderForm(form) => match form.as_ref() {
-            ReaderForm::CircularLabel { id, payload } => Some((*id, payload.clone())),
+            ReaderForm::CircularLabel { id, payload } => Some((*id, *payload)),
             _ => None,
         },
         _ => None,
@@ -54,7 +54,7 @@ fn nonsensical_circular_self_reference() -> LispError {
 }
 
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
-    let mut pending = vec![value.clone()];
+    let mut pending = vec![*value];
     let mut seen_cons = HashSet::new();
     let mut seen_vectors = HashSet::new();
     while let Some(value) = pending.pop() {
@@ -67,8 +67,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                     continue;
                 };
                 if seen_cons.insert(car.cell_id()) {
-                    pending.push(cdr.borrow().clone());
-                    pending.push(car.borrow().clone());
+                    pending.push(*cdr.borrow());
+                    pending.push(*car.borrow());
                 }
             }
             Value::Vector(vector) => {
@@ -169,7 +169,7 @@ fn resolve_circular_read_syntax_inner(
     value: &Value,
     labels: &mut HashMap<u32, Value>,
 ) -> Result<Value, LispError> {
-    Ok(resolve_changed(value, labels)?.unwrap_or_else(|| value.clone()))
+    Ok(resolve_changed(value, labels)?.unwrap_or(*value))
 }
 
 /// The resolved form of VALUE, or None when VALUE holds no reader form
@@ -204,7 +204,7 @@ fn resolve_changed(
             Value::cons(Value::Nil, Value::Nil)
         } else {
             let resolved = resolve_circular_read_syntax_inner(&template, labels)?;
-            labels.insert(id, resolved.clone());
+            labels.insert(id, resolved);
             return Ok(Some(resolved));
         };
 
@@ -212,7 +212,7 @@ fn resolve_changed(
         // numbers can therefore be reused for separate circular subobjects
         // inside one top-level form; later #N# references bind to the newest
         // definition without changing already materialized cycles.
-        labels.insert(id, placeholder.clone());
+        labels.insert(id, placeholder);
         fill_circular_label_value(&template, &placeholder, labels)?;
         return Ok(Some(placeholder));
     }
@@ -226,7 +226,7 @@ fn resolve_changed(
                     changed = true;
                     resolved.push(item);
                 }
-                None => resolved.push(item.clone()),
+                None => resolved.push(*item),
             }
         }
         if !changed {
@@ -247,7 +247,7 @@ fn resolve_changed(
             // as a value of its own (a `(quote HASH-TABLE)' tail included).
             let mut items = Vec::new();
             let mut changed = false;
-            let mut cursor = value.clone();
+            let mut cursor = *value;
             let mut first = true;
             while let Some((car, cdr)) = cursor.cons_values() {
                 if !first
@@ -319,7 +319,7 @@ fn resolve_changed(
                 return Ok(None);
             }
             state.borrow_mut().props = resolved_spans;
-            Ok(Some(value.clone()))
+            Ok(Some(*value))
         }
         Value::ReaderForm(form) => {
             let resolve_fields = |fields: &[Value], labels: &mut HashMap<u32, Value>| {
@@ -373,7 +373,7 @@ pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispEr
 pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut seen = std::collections::HashSet::new();
     let mut seen_vectors = std::collections::HashSet::new();
-    let mut stack = vec![value.clone()];
+    let mut stack = vec![*value];
     while let Some(current) = stack.pop() {
         match &current {
             Value::ReaderForm(_) => return true,
@@ -384,8 +384,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 if !seen.insert(ptr) {
                     continue;
                 }
-                stack.push(car_cell.borrow().clone());
-                stack.push(cdr_cell.borrow().clone());
+                stack.push(*car_cell.borrow());
+                stack.push(*cdr_cell.borrow());
             }
             Value::Vector(vector) => {
                 if seen_vectors.insert(vector.identity()) {
@@ -395,7 +395,7 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
             Value::StringObject(state) => {
                 for span in &state.borrow().props {
                     for (_, prop_value) in &span.props {
-                        stack.push(prop_value.clone());
+                        stack.push(*prop_value);
                     }
                 }
             }
@@ -1866,10 +1866,7 @@ impl<'a> Reader<'a> {
             let mut span_props = Vec::new();
             let mut cursor = 0usize;
             while cursor + 1 < plist.len() {
-                span_props.push((
-                    plist[cursor].as_symbol()?.to_string(),
-                    plist[cursor + 1].clone(),
-                ));
+                span_props.push((plist[cursor].as_symbol()?.to_string(), plist[cursor + 1]));
                 cursor += 2;
             }
             props.push(StringPropertySpan {
@@ -2650,7 +2647,7 @@ mod tests {
     fn circular_syntax_scan_handles_already_materialized_cycles() {
         let cycle = Value::list([Value::Integer(1)]);
         let (_, cdr) = cycle.cons_cells().expect("one-element list");
-        *cdr.borrow_mut() = cycle.clone();
+        *cdr.borrow_mut() = cycle;
 
         assert!(!contains_circular_read_syntax(&cycle));
 

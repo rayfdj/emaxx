@@ -596,7 +596,7 @@ impl ArgSpec {
                     rest: packed & 0x80 != 0,
                 })
             }
-            Value::Nil | Value::Cons(_) => Ok(ArgSpec::Legacy(value.clone())),
+            Value::Nil | Value::Cons(_) => Ok(ArgSpec::Legacy(*value)),
             other => Err(ByteCodeError::MalformedObject(format!(
                 "argument spec must be an integer or list, got {}",
                 other.type_name()
@@ -1154,8 +1154,8 @@ pub(crate) mod tests {
         let _constant_payload = vector.slots_mut();
         assert!(slots_are_genuine_bytecode(&[
             Value::Integer(0),
-            code.clone(),
-            constants.clone(),
+            code,
+            constants,
             Value::Integer(1),
         ]));
     }

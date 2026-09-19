@@ -12,7 +12,7 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
             let interp = Interpreter::new();
             let leaf = Value::String("deep reachable leaf".into());
             for along_car in [false, true] {
-                let mut root = leaf.clone();
+                let mut root = leaf;
                 for _ in 0..100_000 {
                     root = if along_car {
                         Value::cons(root, Value::Nil)
@@ -27,11 +27,11 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
                 assert!(reached.pending.is_empty());
                 let _ = root;
             }
-            let cycle = Value::cons(Value::vector([leaf.clone()]), Value::Nil);
+            let cycle = Value::cons(Value::vector([leaf]), Value::Nil);
             let Value::Cons(cell) = &cycle else {
                 unreachable!("constructed cons");
             };
-            *cell.cdr.borrow_mut() = cycle.clone();
+            *cell.cdr.borrow_mut() = cycle;
             let mut reached = LispReachability::default();
             assert!(reached.mark(&interp, &cycle));
             assert!(reached.contains(&leaf));

@@ -228,7 +228,7 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
                 *pos as i64
             }),
         ),
-        UndoEntry::Combined { display, .. } | UndoEntry::Opaque(display) => display.clone(),
+        UndoEntry::Combined { display, .. } | UndoEntry::Opaque(display) => *display,
         UndoEntry::Boundary => Value::Nil,
     }
 }
@@ -1170,7 +1170,7 @@ impl Buffer {
         self.text_properties_at_ref(pos)
             .iter()
             .find(|(name, _)| name == prop)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| *value)
     }
 
     pub(crate) fn text_properties_at_ref(&self, pos: usize) -> &[(String, Value)] {
@@ -1216,9 +1216,9 @@ impl Buffer {
             // `text-properties-at' lists later additions first.
             for (name, value) in props {
                 if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
-                    *existing = value.clone();
+                    *existing = *value;
                 } else {
-                    current.insert(0, (name.clone(), value.clone()));
+                    current.insert(0, (name.clone(), *value));
                 }
             }
             current
@@ -1228,9 +1228,9 @@ impl Buffer {
     pub fn put_text_property(&mut self, start: usize, end: usize, name: &str, value: Value) {
         self.modify_text_properties(start, end, |mut current| {
             if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
-                *existing = value.clone();
+                *existing = value;
             } else {
-                current.insert(0, (name.to_string(), value.clone()));
+                current.insert(0, (name.to_string(), value));
             }
             current
         });
@@ -1653,7 +1653,7 @@ impl Buffer {
         if let Some(view) = self.undo_list_view.0.borrow().as_ref()
             && view.undo_len == self.undo_list.len()
         {
-            return view.value.clone();
+            return view.value;
         }
 
         let entries = self
@@ -1664,7 +1664,7 @@ impl Buffer {
             .collect::<Vec<_>>();
         let value = Value::list(entries);
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
-            value: value.clone(),
+            value,
             undo_len: self.undo_list.len(),
         });
         value
@@ -1701,7 +1701,7 @@ impl Buffer {
         if let Some(view) = view.as_mut()
             && view.undo_len + 1 == self.undo_list.len()
         {
-            view.value = Value::cons(entry_value, view.value.clone());
+            view.value = Value::cons(entry_value, view.value);
             view.undo_len += 1;
             return;
         }
@@ -1739,7 +1739,7 @@ impl Buffer {
             *view = None;
             return;
         };
-        let head = head.borrow().clone();
+        let head = *head.borrow();
         let Some((_, end)) = head.cons_cells() else {
             *view = None;
             return;
@@ -2175,12 +2175,8 @@ impl Buffer {
                                 !text_property_values_eq(old_value, new_value)
                             });
                         if value_changed {
-                            undo_records.push(property_undo_entry(
-                                name,
-                                old_value.clone(),
-                                seg_start,
-                                seg_end,
-                            ));
+                            undo_records
+                                .push(property_undo_entry(name, *old_value, seg_start, seg_end));
                         }
                     }
                     for (name, _) in &next {
@@ -2554,10 +2550,10 @@ fn map_undo_entry_through_newer(entry: &UndoEntry, newer_groups: &[Vec<UndoEntry
             markers: markers.clone(),
         },
         UndoEntry::Combined { display, entries } => UndoEntry::Combined {
-            display: display.clone(),
+            display: *display,
             entries: map_group_through_newer(entries, newer_groups),
         },
-        UndoEntry::Opaque(value) => UndoEntry::Opaque(value.clone()),
+        UndoEntry::Opaque(value) => UndoEntry::Opaque(*value),
         UndoEntry::Boundary => UndoEntry::Boundary,
     }
 }

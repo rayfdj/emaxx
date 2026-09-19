@@ -4,14 +4,14 @@ fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(),
     match frame {
         None | Some(Value::Nil) => Ok(()),
         Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.clone())),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
     }
 }
 
 fn require_any_frame(frame: Option<&Value>) -> Result<(), LispError> {
     match frame {
         None | Some(Value::Nil | Value::Frame(_)) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("framep", frame.clone())),
+        Some(frame) => Err(wrong_type_argument("framep", *frame)),
     }
 }
 
@@ -27,7 +27,7 @@ fn require_fixnum(value: &Value) -> Result<(), LispError> {
     if matches!(value, Value::Integer(_)) {
         Ok(())
     } else {
-        Err(wrong_type_argument("fixnump", value.clone()))
+        Err(wrong_type_argument("fixnump", *value))
     }
 }
 
@@ -37,11 +37,11 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
     }
     let items = position
         .to_vec()
-        .map_err(|_| wrong_type_argument("listp", position.clone()))?;
+        .map_err(|_| wrong_type_argument("listp", *position))?;
     if let Some(Value::Cons(_)) = items.first() {
         let coordinates = items[0]
             .to_vec()
-            .map_err(|_| wrong_type_argument("listp", items[0].clone()))?;
+            .map_err(|_| wrong_type_argument("listp", items[0]))?;
         if coordinates.len() >= 2 {
             require_fixnum(&coordinates[0])?;
             require_fixnum(&coordinates[1])?;
@@ -52,7 +52,7 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
                         if interp.find_record(*id).is_some_and(|record|
                             record.kind == crate::lisp::eval::RecordKind::Window));
             if !valid_window {
-                return Err(wrong_type_argument("windowp", window.clone()));
+                return Err(wrong_type_argument("windowp", *window));
             }
         }
     }
@@ -65,7 +65,7 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
     }
     let items = menu
         .to_vec()
-        .map_err(|_| wrong_type_argument("listp", menu.clone()))?;
+        .map_err(|_| wrong_type_argument("listp", *menu))?;
     if items.iter().all(|item| is_keymap_value(interp, item)) && !items.is_empty() {
         return Ok(());
     }
@@ -76,7 +76,7 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
     for pane in items.iter().skip(1) {
         let pane_items = pane
             .to_vec()
-            .map_err(|_| wrong_type_argument("listp", pane.clone()))?;
+            .map_err(|_| wrong_type_argument("listp", *pane))?;
         let pane_title = pane_items.first().cloned().unwrap_or(Value::Nil);
         if !pane_title.is_string() {
             return Err(wrong_type_argument("stringp", pane_title));
@@ -94,7 +94,7 @@ fn popup_position_xy(position: &Value) -> Option<(i64, i64)> {
             {
                 return Some((x, y));
             }
-            let mut tail = position.clone();
+            let mut tail = *position;
             while let Value::Cons(_) = tail {
                 if let Ok(car) = tail.car()
                     && let Some(xy) = popup_position_xy(&car)
@@ -172,7 +172,7 @@ fn tty_popup_menu(
         Some(crate::lisp::primitives::TtyMenuOutcome::Selected(index)) => Ok(Value::list([pane
             .items
             .get(index)
-            .map(|item| item.key.clone())
+            .map(|item| item.key)
             .unwrap_or(Value::Nil)])),
         Some(
             direction @ (crate::lisp::primitives::TtyMenuOutcome::NextMenu
@@ -276,7 +276,7 @@ define_dispatch!(
                     Value::Frame(id) if interp.frame_is_live(*id) => {}
                     Value::Terminal(id) if *id == 0 && interp.terminal_live() => {}
                     terminal => {
-                        return Err(wrong_type_argument("frame-live-p", terminal.clone()));
+                        return Err(wrong_type_argument("frame-live-p", *terminal));
                     }
                 }
                 Err(window_system_unavailable())
@@ -285,13 +285,13 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 args[0]
                     .to_vec()
-                    .map_err(|_| wrong_type_argument("listp", args[0].clone()))?;
+                    .map_err(|_| wrong_type_argument("listp", args[0]))?;
                 Err(window_system_unavailable())
             }
             "x-show-tip" => {
                 need_arg_range(name, args, 1, 6)?;
                 if !args[0].is_string() {
-                    return Err(wrong_type_argument("stringp", args[0].clone()));
+                    return Err(wrong_type_argument("stringp", args[0]));
                 }
                 string_text(&args[0])?;
                 require_live_frame(interp, args.get(1))?;
@@ -300,7 +300,7 @@ define_dispatch!(
             "x-open-connection" => {
                 need_arg_range(name, args, 1, 3)?;
                 if !args[0].is_string() {
-                    return Err(wrong_type_argument("stringp", args[0].clone()));
+                    return Err(wrong_type_argument("stringp", args[0]));
                 }
                 string_text(&args[0])?;
                 // The Nextstep implementation ignores the optional resource and
@@ -322,7 +322,7 @@ define_dispatch!(
                 }
                 let contents = args[1]
                     .to_vec()
-                    .map_err(|_| wrong_type_argument("listp", args[1].clone()))?;
+                    .map_err(|_| wrong_type_argument("listp", args[1]))?;
                 let title = contents.first().cloned().unwrap_or(Value::Nil);
                 if !title.is_string() {
                     return Err(wrong_type_argument("stringp", title));

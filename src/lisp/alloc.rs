@@ -33,14 +33,44 @@ pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
 pub use vectors::{VectorHeader, VectorRef, VectorlikeRef};
 pub(crate) use vectors::{live_string_object_census, live_vector_census, sweep_vectors};
 
-/// alloc.c's `BLOCK_BYTES': the size of one cons block.  Cells here are
-/// wider than `struct Lisp_Cons' (the native words, the borrow flags and
-/// the serial ride along until the representation shrinks), so the
-/// block is wider too, for the same number of cells per block.
-pub(crate) const CONS_BLOCK_BYTES: usize = 1 << 17;
+/// alloc.c's block geometry: the cells per block that its formulas give
+/// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'
+/// = BLOCK_ALIGN - sizeof (struct ablocks *), `MALLOC_SIZE_NEAR (1024)'
+/// = 1016 under glibc's 16-byte alignment).  A cell here is wider than
+/// its `struct' (the native words, the borrow flags and the serial ride
+/// along until the representation shrinks), so a block is wider than
+/// C's, for C's number of cells: the mem tree has C's number of nodes
+/// and a block is given back when C's would be.
+const C_BLOCK_BYTES: usize = (1 << 15) - 8;
+const C_MALLOC_SIZE_NEAR_1024: usize = 1016;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
-pub(crate) const CELLS_PER_BLOCK: usize = CONS_BLOCK_BYTES / CELL_SIZE;
+/// `CONS_BLOCK_SIZE': the block's bytes less the block pointer and the
+/// padding, times CHAR_BIT, over the cons's bits plus its mark bit, with
+/// a 16-byte cons.
+pub(crate) const CELLS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8 - (16 - 8)) * 8) / (16 * 8 + 1);
+/// `FLOAT_BLOCK_SIZE', with an 8-byte float.
+pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 1);
+/// `STRING_BLOCK_SIZE': (MALLOC_SIZE_NEAR (1024) - sizeof (struct
+/// string_block *)) / sizeof (struct Lisp_String), a 32-byte string.
+pub(crate) const STRINGS_PER_BLOCK: usize = (C_MALLOC_SIZE_NEAR_1024 - 8) / 32;
+/// `SYMBOL_BLOCK_SIZE': (1020 - sizeof (struct symbol_block *)) /
+/// sizeof (struct Lisp_Symbol), a 48-byte symbol.
+pub(crate) const SYMBOLS_PER_BLOCK: usize = (1020 - 8) / 48;
 const BLOCK_ALIGN: usize = 4096;
+
+/// The bytes of a block of KIND: its cells, rounded up to the alignment.
+fn block_bytes(kind: BlockKind) -> usize {
+    let cells = match kind {
+        BlockKind::Cons => CELLS_PER_BLOCK * CELL_SIZE,
+        BlockKind::Float => FLOATS_PER_BLOCK * FLOAT_CELL_SIZE,
+        BlockKind::String => STRINGS_PER_BLOCK * STRING_CELL_SIZE,
+        BlockKind::Symbol => SYMBOLS_PER_BLOCK * symbols::SYMBOL_CELL_SIZE,
+        BlockKind::VectorBlock | BlockKind::LargeVector => {
+            unreachable!("vector storage is allocated by its own module")
+        }
+    };
+    cells.div_ceil(BLOCK_ALIGN) * BLOCK_ALIGN
+}
 
 /// The mark word of a cell on the free list (alloc.c sets the mark bit
 /// of free cells so the sweep skips them; a live cell carries its
@@ -105,7 +135,6 @@ static FLOAT_BUMP_END: AtomicUsize = AtomicUsize::new(0);
 static LIVE_FLOATS: AtomicUsize = AtomicUsize::new(0);
 static FREE_FLOATS: AtomicUsize = AtomicUsize::new(0);
 const FLOAT_CELL_SIZE: usize = std::mem::size_of::<FloatCell>();
-pub(crate) const FLOATS_PER_BLOCK: usize = CONS_BLOCK_BYTES / FLOAT_CELL_SIZE;
 
 /// alloc.c's `struct Lisp_Float': the double, and (here, in the cell
 /// rather than in the block's bitmap) the mark word.
@@ -276,7 +305,7 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
     }
     FLOAT_FREE_LIST.store(free_list, Ordering::Relaxed);
     for start in released {
-        release_block(start);
+        release_block(start, BlockKind::Float);
     }
     LIVE_FLOATS.store(num_used, Ordering::Relaxed);
     FREE_FLOATS.store(num_free, Ordering::Relaxed);
@@ -305,7 +334,6 @@ static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRING_BYTES: AtomicUsize = AtomicUsize::new(0);
 static FREE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 const STRING_CELL_SIZE: usize = std::mem::size_of::<StringCell>();
-pub(crate) const STRINGS_PER_BLOCK: usize = CONS_BLOCK_BYTES / STRING_CELL_SIZE;
 
 /// The storage size of a text that is not a Lisp string allocation at
 /// all (a symbol's host-side key): counted nowhere.
@@ -515,7 +543,7 @@ pub(crate) fn sweep_strings(epoch: u32) -> (usize, usize) {
     }
     STRING_FREE_LIST.store(free_list, Ordering::Relaxed);
     for start in released {
-        release_block(start);
+        release_block(start, BlockKind::String);
     }
     LIVE_STRINGS.store(num_used, Ordering::Relaxed);
     LIVE_STRING_BYTES.store(used_bytes, Ordering::Relaxed);
@@ -1177,10 +1205,10 @@ fn bump_cell() -> *mut ConsCell {
 
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
 /// (the sweep found nothing live in it).
-fn release_block(start: usize) {
+fn release_block(start: usize, kind: BlockKind) {
     unregister_block(start);
-    let layout = std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN)
-        .expect("cons block layout");
+    let layout =
+        std::alloc::Layout::from_size_align(block_bytes(kind), BLOCK_ALIGN).expect("block layout");
     // SAFETY: a block `new_block' allocated with this layout, unregistered
     // above; every cell is free (nothing reaches it).
     unsafe { std::alloc::dealloc(start as *mut u8, layout) };
@@ -1189,7 +1217,7 @@ fn release_block(start: usize) {
 /// alloc.c's `lisp_align_malloc' of a block of KIND: every cell free.
 fn new_block(kind: BlockKind) -> usize {
     let layout =
-        std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN).expect("block layout");
+        std::alloc::Layout::from_size_align(block_bytes(kind), BLOCK_ALIGN).expect("block layout");
     // SAFETY: a non-zero layout.
     let block = unsafe { std::alloc::alloc(layout) };
     assert!(!block.is_null(), "out of memory for a block");
@@ -1412,7 +1440,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     }
     FREE_LIST.store(free_list, Ordering::Relaxed);
     for start in released {
-        release_block(start);
+        release_block(start, BlockKind::Cons);
     }
     LIVE_CONSES.store(num_used, Ordering::Relaxed);
     FREE_CONSES.store(num_free, Ordering::Relaxed);
@@ -1769,7 +1797,7 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn spill_registers(spill: &mut [usize; 16]) {
+pub(crate) fn spill_registers(spill: &mut [usize; 16]) {
     // SAFETY: reads of the callee-saved registers into the array.
     unsafe {
         std::arch::asm!(
@@ -1787,7 +1815,7 @@ fn spill_registers(spill: &mut [usize; 16]) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn spill_registers(spill: &mut [usize; 16]) {
+pub(crate) fn spill_registers(spill: &mut [usize; 16]) {
     // SAFETY: reads of the callee-saved registers into the array.
     unsafe {
         std::arch::asm!(
@@ -1805,7 +1833,7 @@ fn spill_registers(spill: &mut [usize; 16]) {
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
-fn spill_registers(_spill: &mut [usize; 16]) {}
+pub(crate) fn spill_registers(_spill: &mut [usize; 16]) {}
 
 /// The current stack pointer, approximately: the address of a local.
 #[inline(never)]

@@ -98,7 +98,7 @@ impl Interpreter {
             }
             _ => assq_binding_named(environment, name)?,
         };
-        Ok(binding.map(|binding| binding.cdr.borrow().clone()))
+        Ok(binding.map(|binding| *binding.cdr.borrow()))
     }
 
     fn lookup_var_with_resolved_name(
@@ -247,7 +247,7 @@ impl Interpreter {
             return Some(value);
         }
         if let Some(detached) = self.detached_forwarded_variables.get(name) {
-            return Some(detached.clone());
+            return Some(*detached);
         }
         self.lookup_var(name, env)
     }
@@ -596,7 +596,7 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
-            "load-path" => Some(self.load_path.clone()),
+            "load-path" => Some(self.load_path),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))
@@ -713,12 +713,12 @@ impl Interpreter {
         if let Some(environment) = current_environment(env)
             && let Some(binding) = assq_binding(environment, name)?
         {
-            return Ok(binding.cdr.borrow().clone());
+            return Ok(*binding.cdr.borrow());
         }
         if self.globals.plain_store(name)
             && let Some(value) = self.globals.value(name)
         {
-            return Ok(value.clone());
+            return Ok(*value);
         }
         let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
             name.as_str().into()
@@ -771,7 +771,7 @@ impl Interpreter {
         // reads the function cell whatever `let' bound the name to).
         let _ = env;
         if let Some(v) = self.globals.function(symbol) {
-            return Some(v.clone());
+            return Some(*v);
         }
         // Special forms live in function cells in GNU Emacs, so symbol
         // indirection (indirect-function, fboundp, macrop) must resolve them
@@ -823,7 +823,7 @@ impl Interpreter {
         if primitives::name_facts(name).prefer_override
             && let Some(binding) = self.functions_index.get(name)
         {
-            return Some(binding.clone());
+            return Some(*binding);
         }
         self.raw_function_binding(name, env)
     }
@@ -843,7 +843,7 @@ impl Interpreter {
         }
         let _ = env;
         if let Some(value) = self.functions_index.get(name) {
-            return Some((value.clone(), false));
+            return Some((*value, false));
         }
         if facts.builtin || facts.special_form {
             return Some((Self::builtin_function_value(name), false));
@@ -1116,7 +1116,7 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        if !self.set_lexical_variable_checked(name, value.clone(), env)? {
+        if !self.set_lexical_variable_checked(name, value, env)? {
             self.set_symbol_value_cell(name, value);
         }
         Ok(())
@@ -1185,7 +1185,7 @@ impl Interpreter {
             Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
             _ => None,
         };
-        self.notify_variable_watchers_symbol(resolved, value.clone(), "set", buffer_id, env)?;
+        self.notify_variable_watchers_symbol(resolved, value, "set", buffer_id, env)?;
         self.set_symbol_value_cell_resolved(resolved, value);
         Ok(())
     }
@@ -1290,7 +1290,7 @@ impl Interpreter {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
                     return match &*car.borrow() {
-                        Value::Symbol(head) if head == "macro" => Some(cdr.borrow().clone()),
+                        Value::Symbol(head) if head == "macro" => Some(*cdr.borrow()),
                         _ => None,
                     };
                 }
@@ -1318,7 +1318,7 @@ impl Interpreter {
         let handled = self.call_function_value(
             fsetfun,
             None,
-            &[Value::Symbol(name.to_string().into()), definition.clone()],
+            &[Value::Symbol(name.to_string().into()), *definition],
             env,
         );
         handled.is_ok()
@@ -1330,9 +1330,8 @@ impl Interpreter {
     // entries are renamed out of resolution instead of removed.
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
         self.globals
-            .set_function(&SymbolName::intern_str(name), Some(function.clone()));
-        self.functions_index
-            .insert(name.to_string(), function.clone());
+            .set_function(&SymbolName::intern_str(name), Some(function));
+        self.functions_index.insert(name.to_string(), function);
         let position = self.functions.len();
         self.functions_position.insert(name.to_string(), position);
         self.functions.push((name.to_string(), function));
@@ -1353,9 +1352,9 @@ impl Interpreter {
     pub(crate) fn reindex_function_binding(&mut self, name: &str) {
         match self.functions.iter().rev().find(|(fname, _)| fname == name) {
             Some((_, value)) => {
-                let value = value.clone();
+                let value = *value;
                 self.globals
-                    .set_function(&SymbolName::intern_str(name), Some(value.clone()));
+                    .set_function(&SymbolName::intern_str(name), Some(value));
                 self.functions_index.insert(name.to_string(), value);
             }
             None => {
@@ -1404,9 +1403,9 @@ impl Interpreter {
         match function {
             Some(function) => {
                 if let Some(&index) = self.functions_position.get(name) {
-                    self.functions[index].1 = function.clone();
+                    self.functions[index].1 = function;
                     self.globals
-                        .set_function(&SymbolName::intern_str(name), Some(function.clone()));
+                        .set_function(&SymbolName::intern_str(name), Some(function));
                     self.functions_index.insert(name.to_string(), function);
                     self.note_function_binding_changed();
                 } else {
@@ -1464,7 +1463,7 @@ impl Interpreter {
             if definition.is_nil() {
                 None
             } else {
-                Some(definition.clone())
+                Some(definition)
             },
         );
         Ok(definition)

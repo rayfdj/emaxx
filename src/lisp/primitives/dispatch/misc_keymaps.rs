@@ -45,9 +45,9 @@ fn map_keymap_direct_value(
         if full_table.is_some()
             && let Value::Integer(code) = event
         {
-            character_bindings.push((code, binding.value.clone()));
+            character_bindings.push((code, binding.value));
         } else {
-            sparse_bindings.push((event, binding.value.clone()));
+            sparse_bindings.push((event, binding.value));
         }
     }
     // A direct character binding duplicating its char-table facade entry is
@@ -64,7 +64,7 @@ fn map_keymap_direct_value(
     segments.sort_by_key(|(start, _, _)| *start);
     let mut index = 0;
     while index < segments.len() {
-        let (start, mut end, value) = segments[index].clone();
+        let (start, mut end, value) = segments[index];
         while let Some((next_start, next_end, next_value)) = segments.get(index + 1) {
             if *next_start != end.saturating_add(1) || !values_equal(interp, &value, next_value) {
                 break;
@@ -77,11 +77,11 @@ fn map_keymap_direct_value(
         } else {
             Value::cons(Value::Integer(start), Value::Integer(end))
         };
-        interp.call_function_value(function.clone(), None, &[event, value], env)?;
+        interp.call_function_value(*function, None, &[event, value], env)?;
         index += 1;
     }
     for (event, value) in sparse_bindings {
-        interp.call_function_value(function.clone(), None, &[event, value], env)?;
+        interp.call_function_value(*function, None, &[event, value], env)?;
     }
     Ok(())
 }
@@ -198,7 +198,7 @@ fn describe_vector_value(
             }
             interp.insert_current_buffer(&key);
             insert_description_indent(interp, key.chars().count());
-            interp.call_function_value(describer.clone(), None, &[value], env)?;
+            interp.call_function_value(describer, None, &[value], env)?;
             interp.insert_current_buffer("\n");
         }
         Ok(Value::Nil)
@@ -226,8 +226,8 @@ define_dispatch!(
                     && let [event] = events.as_slice()
                     && let Some((Value::Integer(start), Value::Integer(end))) = event.cons_values()
                 {
-                    keymap_define_character_range(interp, &args[0], start, end, args[2].clone())?;
-                    return Ok(args[2].clone());
+                    keymap_define_character_range(interp, &args[0], start, end, args[2])?;
+                    return Ok(args[2]);
                 }
                 // keymap.c:Fdefine_key converts Lucid-style event lists in
                 // KEY through Fevent_convert_list, and a DEF vector opening
@@ -265,7 +265,7 @@ define_dispatch!(
                         &args[0],
                         &key,
                         Some(key_parts),
-                        def.clone(),
+                        def,
                         false,
                     )?;
                 }
@@ -319,7 +319,7 @@ define_dispatch!(
                     if binding.is_nil() || matches!(binding, Value::Integer(_)) {
                         continue;
                     }
-                    let entry = Value::cons(Value::Symbol(mode.into()), binding.clone());
+                    let entry = Value::cons(Value::Symbol(mode.into()), binding);
                     if keymap_reference_map(interp, &binding, env).is_some() {
                         prefix_bindings.push(entry);
                     } else if prefix_bindings.is_empty() {
@@ -364,10 +364,7 @@ define_dispatch!(
                         .cloned()
                         .unwrap_or(Value::Nil));
                 }
-                Err(LispError::WrongTypeArgument(
-                    "keymapp".into(),
-                    args[0].clone(),
-                ))
+                Err(LispError::WrongTypeArgument("keymapp".into(), args[0]))
             }
             "command-remapping" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -401,7 +398,7 @@ define_dispatch!(
                     if record.slots.len() <= KEYMAP_PARENT_SLOT {
                         record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
                     }
-                    record.slots[KEYMAP_PARENT_SLOT] = parent.clone();
+                    record.slots[KEYMAP_PARENT_SLOT] = parent;
                     refresh_runtime_keymap_public_view(interp, id)?;
                     // keymap.c:Fset_keymap_parent returns the installed parent.
                     return Ok(parent);
@@ -429,10 +426,7 @@ define_dispatch!(
                 keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
                 if !is_keymap_value(interp, &args[1]) {
-                    return Err(LispError::WrongTypeArgument(
-                        "keymapp".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[1]));
                 }
                 map_keymap_direct_value(interp, &args[0], &args[1], env)?;
                 Ok(keymap_parent_values(interp, &args[1])
@@ -444,27 +438,21 @@ define_dispatch!(
             "use-local-map" => {
                 need_args(name, args, 1)?;
                 if !args[0].is_nil() && !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument(
-                        "keymapp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0]));
                 }
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "current-local-map",
-                    args[0].clone(),
+                    args[0],
                 );
                 Ok(Value::Nil)
             }
             "use-global-map" => {
                 need_args(name, args, 1)?;
                 if !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument(
-                        "keymapp".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0]));
                 }
-                interp.set_current_global_map_value(args[0].clone());
+                interp.set_current_global_map_value(args[0]);
                 Ok(Value::Nil)
             }
             "current-local-map" => {
@@ -483,7 +471,7 @@ define_dispatch!(
             }
             "widget-put" => {
                 need_args(name, args, 3)?;
-                widget_put(interp, &args[0], &args[1], args[2].clone())
+                widget_put(interp, &args[0], &args[1], args[2])
             }
             "widget-apply" => {
                 need_arg_range(name, args, 2, usize::MAX)?;
@@ -492,7 +480,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let mut call_args = Vec::with_capacity(args.len());
-                call_args.push(args[0].clone());
+                call_args.push(args[0]);
                 call_args.extend_from_slice(&args[2..]);
                 interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
             }
@@ -677,10 +665,7 @@ define_dispatch!(
                 if let Some(size) = args.first().filter(|size| !size.is_nil()) {
                     let size_value = size.as_fixnum()?;
                     if size_value < 0 {
-                        return Err(LispError::WrongTypeArgument(
-                            "wholenump".into(),
-                            size.clone(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("wholenump".into(), *size));
                     }
                 }
                 Ok(make_obarray(interp))
@@ -708,8 +693,8 @@ define_dispatch!(
             "define-hash-table-test" => {
                 need_args(name, args, 3)?;
                 let symbol = args[0].as_symbol()?;
-                let spec = Value::list([args[1].clone(), args[2].clone()]);
-                interp.put_symbol_property(symbol, "hash-table-test", spec.clone());
+                let spec = Value::list([args[1], args[2]]);
+                interp.put_symbol_property(symbol, "hash-table-test", spec);
                 Ok(spec)
             }
             "make-hash-table" => {
@@ -732,22 +717,22 @@ define_dispatch!(
                                 other => {
                                     return Err(LispError::WrongTypeArgument(
                                         "symbolp".into(),
-                                        other.clone(),
+                                        *other,
                                     ));
                                 }
                             };
                         }
-                        ":size" => size = args[index + 1].clone(),
+                        ":size" => size = args[index + 1],
                         // fns.c accepts these obsolete keyword/value pairs
                         // but deliberately ignores their values.
                         ":rehash-size" | ":rehash-threshold" => {}
                         ":weakness" => {
                             weakness = match &args[index + 1] {
                                 Value::T => Value::Symbol("key-and-value".into()),
-                                other => other.clone(),
+                                other => *other,
                             };
                         }
-                        ":purecopy" => purecopy = args[index + 1].clone(),
+                        ":purecopy" => purecopy = args[index + 1],
                         _ => {
                             return Err(LispError::Signal(format!(
                                 "Invalid hash table parameter: {key}"
@@ -765,12 +750,10 @@ define_dispatch!(
                     .as_integer()
                     .ok()
                     .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| {
-                        LispError::WrongTypeArgument("wholenump".into(), size.clone())
-                    })?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("wholenump".into(), size))?;
                 let table =
                     json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
-                let Value::Record(id) = table.clone() else {
+                let Value::Record(id) = table else {
                     unreachable!("hash tables are represented as records")
                 };
                 let record = interp
@@ -795,22 +778,13 @@ define_dispatch!(
             "copy-hash-table" => {
                 need_args(name, args, 1)?;
                 let Value::Record(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let Some(record) = interp.find_record(id) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 if record.kind != crate::lisp::eval::RecordKind::HashTable {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 let copy = interp.copy_record(id)?;
                 if let Value::Record(copy_id) = copy {
@@ -845,10 +819,7 @@ define_dispatch!(
                     .unwrap_or(default));
                 }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
                 };
                 for (existing_key, value) in entries {
                     if hash_table_key_matches(
@@ -872,9 +843,9 @@ define_dispatch!(
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
                 if let Value::Record(id) = &args[2]
-                    && interp.equal_hash_put(*id, args[0].clone(), args[1].clone(), env)
+                    && interp.equal_hash_put(*id, args[0], args[1], env)
                 {
-                    return Ok(args[1].clone());
+                    return Ok(args[1]);
                 }
                 if let Value::Record(id) = &args[2]
                     && interp.has_custom_hash_table_index(*id)
@@ -885,42 +856,32 @@ define_dispatch!(
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
                         .to_string();
-                    if custom_hash_put_indexed(
-                        interp,
-                        &args[2],
-                        *id,
-                        &test,
-                        args[0].clone(),
-                        args[1].clone(),
-                        env,
-                    )? {
-                        return Ok(args[1].clone());
+                    if custom_hash_put_indexed(interp, &args[2], *id, &test, args[0], args[1], env)?
+                    {
+                        return Ok(args[1]);
                     }
                 }
                 let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[2].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[2]));
                 };
                 touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
                 let mut replaced = false;
                 for (existing_key, existing_value) in &mut entries {
                     if hash_table_key_matches(interp, &args[2], &test, existing_key, &args[0], env)?
                     {
-                        *existing_value = args[1].clone();
+                        *existing_value = args[1];
                         replaced = true;
                         break;
                     }
                 }
                 if !replaced {
-                    entries.push((args[0].clone(), args[1].clone()));
+                    entries.push((args[0], args[1]));
                 }
                 set_hash_table_entries(interp, &args[2], entries)?;
                 if let Value::Record(id) = args[2] {
                     interp.reindex_hash_table_runtime_entries_in_env(id, env);
                 }
-                Ok(args[1].clone())
+                Ok(args[1])
             }
             "maphash" => {
                 need_args(name, args, 2)?;
@@ -932,7 +893,7 @@ define_dispatch!(
                         let Some(capacity) = interp.gnu_hash_table_capacity(*id) else {
                             return Err(LispError::WrongTypeArgument(
                                 "hash-table-p".into(),
-                                args[1].clone(),
+                                args[1],
                             ));
                         };
                         if slot >= capacity {
@@ -952,10 +913,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
                 };
                 for (key, value) in entries {
                     call_function_value(interp, &args[0], &[key, value], env)?;
@@ -988,10 +946,7 @@ define_dispatch!(
                     }
                 }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[1].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
                 };
                 let mut retained = Vec::new();
                 for (existing_key, value) in entries {
@@ -1020,60 +975,45 @@ define_dispatch!(
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
                 if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 if let Value::Record(id) = &args[0]
                     && interp.clear_custom_hash_table(*id)
                 {
-                    return Ok(args[0].clone());
+                    return Ok(args[0]);
                 }
                 set_hash_table_entries(interp, &args[0], Vec::new())?;
-                Ok(args[0].clone())
+                Ok(args[0])
             }
             "hash-table-count" => {
                 need_args(name, args, 1)?;
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 Ok(Value::Integer(entries.len() as i64))
             }
             "hash-table-rehash-size" => {
                 need_args(name, args, 1)?;
                 if !json::is_hash_table(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 Ok(Value::float(1.5))
             }
             "hash-table-rehash-threshold" => {
                 need_args(name, args, 1)?;
                 if !json::is_hash_table(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 Ok(Value::float(0.8125))
             }
             "hash-table-size" => {
                 need_args(name, args, 1)?;
                 let Value::Record(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
-                let capacity = interp.gnu_hash_table_capacity(id).ok_or_else(|| {
-                    LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone())
-                })?;
+                let capacity = interp
+                    .gnu_hash_table_capacity(id)
+                    .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
                 Ok(Value::Integer(capacity as i64))
             }
             "hash-table-test" => {
@@ -1096,14 +1036,11 @@ define_dispatch!(
             "internal--hash-table-index-size" => {
                 need_args(name, args, 1)?;
                 let Value::Record(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
-                let capacity = interp.gnu_hash_table_capacity(id).ok_or_else(|| {
-                    LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone())
-                })?;
+                let capacity = interp
+                    .gnu_hash_table_capacity(id)
+                    .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
                 Ok(Value::Integer(
                     crate::lisp::eval::gnu_hash_table_index_slots(capacity) as i64,
                 ))
@@ -1111,20 +1048,14 @@ define_dispatch!(
             "internal--hash-table-histogram" => {
                 need_args(name, args, 1)?;
                 if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 Ok(Value::Nil)
             }
             "internal--hash-table-buckets" => {
                 need_args(name, args, 1)?;
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument(
-                        "hash-table-p".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 Ok(Value::list(entries.into_iter().map(|(key, value)| {
                     Value::list([Value::cons(key, value)])
@@ -1182,7 +1113,7 @@ define_dispatch!(
                 if let Some(interval) = args.first() {
                     interp.set_variable(
                         "profiler-sampling-interval",
-                        interval.clone(),
+                        *interval,
                         &mut crate::lisp::types::Env::new(),
                     );
                 }
@@ -1267,12 +1198,12 @@ define_dispatch!(
                         condition => vec![condition.as_symbol()?.to_string()],
                     };
                     if !conditions.is_empty() {
-                        active.push((conditions, pair[1].clone()));
+                        active.push((conditions, pair[1]));
                     }
                 }
                 active.reverse();
                 let handler_start = interp.push_handler_bindings(&active);
-                let result = interp.call_function_value(args[0].clone(), None, &[], env);
+                let result = interp.call_function_value(args[0], None, &[], env);
                 interp.pop_handler_bindings(handler_start);
                 result
             }
@@ -1304,7 +1235,7 @@ define_dispatch!(
                     };
                     let evald = if evald { Value::T } else { Value::Nil };
                     interp.call_function_value(
-                        callback.clone(),
+                        callback,
                         None,
                         &[evald, function, Value::list(frame_args), flags],
                         env,
@@ -1320,13 +1251,13 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-type-argument".into()),
                         Value::Symbol("natnump".into()),
-                        args[1].clone(),
+                        args[1],
                     ])));
                 }
-                let mut base = args[2].clone();
+                let mut base = args[2];
                 if let Value::Cons(cell) = &base {
                     frame_offset += cell.car.borrow().as_integer()?;
-                    let function = cell.cdr.borrow().clone();
+                    let function = *cell.cdr.borrow();
                     base = function;
                 }
                 if frame_offset < 0 {
@@ -1384,7 +1315,7 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-type-argument".into()),
                         Value::Symbol("natnump".into()),
-                        args[0].clone(),
+                        args[0],
                     ])));
                 }
                 let index = raw_index as usize;
@@ -1424,7 +1355,7 @@ define_dispatch!(
                         ));
                     }
                 };
-                interp.make_thread(args[0].clone(), thread_name, disposition)
+                interp.make_thread(args[0], thread_name, disposition)
             }
             "thread-live-p" => {
                 need_args(name, args, 1)?;
@@ -1447,12 +1378,7 @@ define_dispatch!(
             }
             "thread-signal" => {
                 need_args(name, args, 3)?;
-                interp.signal_thread(
-                    interp.resolve_thread_id(&args[0])?,
-                    args[1].clone(),
-                    args[2].clone(),
-                    env,
-                )
+                interp.signal_thread(interp.resolve_thread_id(&args[0])?, args[1], args[2], env)
             }
             "thread-last-error" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -1506,7 +1432,7 @@ define_dispatch!(
                 let mutex_id = interp
                     .condition_variable_mutex_id(condvar_id)
                     .ok_or_else(|| {
-                        LispError::WrongTypeArgument("condition-variable-p".into(), args[0].clone())
+                        LispError::WrongTypeArgument("condition-variable-p".into(), args[0])
                     })?;
                 Ok(Value::Record(mutex_id))
             }
@@ -1575,7 +1501,7 @@ define_dispatch!(
                         env,
                     )?;
                     if preserve {
-                        permanent.push((name.clone(), value.clone()));
+                        permanent.push((name.clone(), *value));
                         continue;
                     }
                     interp.mark_buffer_local_special_binding_killed(buffer_id, name);
@@ -1684,16 +1610,10 @@ define_dispatch!(
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
                 let Value::Integer(factor) = args[0] else {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 };
                 if factor < 0 {
-                    return Err(LispError::WrongTypeArgument(
-                        "wholenump".into(),
-                        args[0].clone(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 }
                 if !crate::lisp::native_comp::garbage_collection_maybe_due(interp, factor) {
                     return Ok(Value::Nil);
@@ -1845,7 +1765,7 @@ fn widget_get_inner(
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
-            let widget_type = car.borrow().clone();
+            let widget_type = *car.borrow();
             if let Some(value) = plist_get_exact(&cdr.borrow().clone(), property)? {
                 return Ok(value);
             }
@@ -1873,14 +1793,14 @@ fn widget_put(
     let Some((_, cdr)) = (widget).cons_cells() else {
         return Err(LispError::TypeError("widget".into(), widget.type_name()));
     };
-    let plist = cdr.borrow().clone();
-    let updated = plist_put_exact(plist, property.clone(), value.clone())?;
+    let plist = *cdr.borrow();
+    let updated = plist_put_exact(plist, *property, value)?;
     *cdr.borrow_mut() = updated;
     Ok(value)
 }
 
 fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, LispError> {
-    let mut current = plist.clone();
+    let mut current = *plist;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
@@ -1892,14 +1812,14 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
                 if seen.step(cell_id) {
                     return Ok(None);
                 }
-                if car.borrow().clone() == *property {
-                    return match cdr.borrow().clone() {
-                        Value::Cons(cell) => Ok(Some(cell.car.borrow().clone())),
+                if *car.borrow() == *property {
+                    return match *cdr.borrow() {
+                        Value::Cons(cell) => Ok(Some(*cell.car.borrow())),
                         _ => Ok(Some(Value::Nil)),
                     };
                 }
-                match cdr.borrow().clone() {
-                    Value::Cons(cell) => current = cell.cdr.borrow().clone(),
+                match *cdr.borrow() {
+                    Value::Cons(cell) => current = *cell.cdr.borrow(),
                     _ => return Ok(None),
                 }
             }
@@ -1909,7 +1829,7 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
 }
 
 fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value, LispError> {
-    let mut current = plist.clone();
+    let mut current = plist;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
@@ -1924,8 +1844,8 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                         Value::String("Circular list".into()),
                     ])));
                 }
-                if car.borrow().clone() == property {
-                    return match cdr.borrow().clone() {
+                if *car.borrow() == property {
+                    return match *cdr.borrow() {
                         Value::Cons(cons_cell) => {
                             let existing = &cons_cell.car;
                             let _ = &cons_cell.cdr;
@@ -1935,11 +1855,11 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                         _ => Err(plist_type_error(&plist)),
                     };
                 }
-                match cdr.borrow().clone() {
+                match *cdr.borrow() {
                     Value::Cons(cons_cell) => {
                         let _ = &cons_cell.car;
                         let next = &cons_cell.cdr;
-                        let next_value = next.borrow().clone();
+                        let next_value = *next.borrow();
                         if next_value.is_nil() {
                             *next.borrow_mut() = Value::list([property, value]);
                             return Ok(plist);
@@ -2008,10 +1928,10 @@ pub(super) fn direct_symbol_name(
                     return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
                 }
                 Some((Value::Symbol(symbol), _)) => symbol,
-                _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+                _ => return Err(wrong_type_argument("symbolp", args[0])),
             }
         }
-        _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+        _ => return Err(wrong_type_argument("symbolp", args[0])),
     };
     Ok(symbol_name.lisp_name())
 }

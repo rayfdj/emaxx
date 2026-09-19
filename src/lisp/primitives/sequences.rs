@@ -33,10 +33,7 @@ pub(crate) fn copy_sequence_value(
         {
             interp.copy_record(*id)
         }
-        _ => Err(LispError::WrongTypeArgument(
-            "sequencep".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
 
@@ -80,7 +77,7 @@ pub(crate) fn list_or_vector_type_error(value: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),
         Value::Symbol("list-or-vector-p".into()),
-        value.clone(),
+        *value,
     ]))
 }
 
@@ -118,7 +115,7 @@ fn sort_compare_ordering_resolved(
     }
 
     let left_lt_right = if let Some(function) = lessp {
-        call_function_value(interp, function, &[left.clone(), right.clone()], env)?.is_truthy()
+        call_function_value(interp, function, &[*left, *right], env)?.is_truthy()
     } else {
         default_sort_lt(interp, left, right)?
     };
@@ -127,7 +124,7 @@ fn sort_compare_ordering_resolved(
     }
 
     let right_lt_left = if let Some(function) = lessp {
-        call_function_value(interp, function, &[right.clone(), left.clone()], env)?.is_truthy()
+        call_function_value(interp, function, &[*right, *left], env)?.is_truthy()
     } else {
         default_sort_lt(interp, right, left)?
     };
@@ -307,8 +304,8 @@ pub(crate) fn resolve_direct_sort_operand(
     right: &Value,
 ) -> Result<Value, LispError> {
     match operand {
-        DirectSortOperand::Left => Ok(left.clone()),
-        DirectSortOperand::Right => Ok(right.clone()),
+        DirectSortOperand::Left => Ok(*left),
+        DirectSortOperand::Right => Ok(*right),
         DirectSortOperand::LeftCar => left.car(),
         DirectSortOperand::RightCar => right.car(),
         DirectSortOperand::LeftAbs => direct_sort_abs_value(left),
@@ -324,10 +321,7 @@ pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
         },
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
         Value::Float(number) => Ok(Value::float(number.abs())),
-        _ => Err(LispError::WrongTypeArgument(
-            "numberp".into(),
-            value.clone(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("numberp".into(), *value)),
     }
 }
 
@@ -396,7 +390,7 @@ pub(crate) fn sort_sequence_items(
         let sort_key = if let Some(function) = key {
             call_function_value(interp, function, std::slice::from_ref(&item), env)?
         } else {
-            item.clone()
+            item
         };
         keyed.push((item, sort_key));
     }
@@ -434,7 +428,7 @@ pub(crate) fn sort_sequence_items(
     if let Some(err) = error {
         return Err(err);
     }
-    let mut sorted: Vec<Value> = order.iter().map(|&index| keyed[index].0.clone()).collect();
+    let mut sorted: Vec<Value> = order.iter().map(|&index| keyed[index].0).collect();
 
     if reverse {
         sorted.reverse();
@@ -450,14 +444,14 @@ pub(crate) fn write_sorted_sequence(
 ) -> Result<(), LispError> {
     match kind {
         SortSequenceKind::List => {
-            let mut current = target.clone();
+            let mut current = *target;
             for item in items {
                 match current {
                     Value::Cons(cons_cell) => {
                         let car = &cons_cell.car;
                         let cdr = &cons_cell.cdr;
-                        *car.borrow_mut() = item.clone();
-                        current = cdr.borrow().clone();
+                        *car.borrow_mut() = *item;
+                        current = *cdr.borrow();
                     }
                     Value::Nil => break,
                     _ => return Err(list_or_vector_type_error(target)),
@@ -491,7 +485,7 @@ pub(crate) fn write_vector_items_in_place(
     }
 
     for (index, item) in items.iter().enumerate() {
-        aset_vector_value(target, index, item.clone())?;
+        aset_vector_value(target, index, *item)?;
     }
 
     Ok(())
