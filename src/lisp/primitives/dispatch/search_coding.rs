@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn replacement_case_action(
     interp: &Interpreter,
@@ -234,8 +235,8 @@ fn apply_buffer_replacement_hunks(
     // than a numeric point, is essential here: if a matching character near
     // point survives, point must continue to follow that character.
     let saved_point = interp.buffer.point();
-    let saved_point_marker = match interp.make_marker() {
-        Value::Marker(id) => id,
+    let saved_point_marker = match interp.make_marker().kind() {
+        Kind::Marker(id) => id,
         _ => unreachable!("make_marker returns a marker"),
     };
     interp.set_marker(
@@ -320,9 +321,9 @@ define_dispatch!(
                     && let Some(reuse) = args.get(1)
                 {
                     let mut tail = *reuse;
-                    while let Value::Cons(cell) = tail {
-                        let marker_id = match &*cell.car.borrow() {
-                            Value::Marker(marker_id) => Some(*marker_id),
+                    while let Kind::Cons(cell) = tail.kind() {
+                        let marker_id = match (*cell.car.borrow()).kind() {
+                            Kind::Marker(marker_id) => Some(marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
@@ -349,11 +350,11 @@ define_dispatch!(
                         Some((start, end)) => {
                             if let Some(buffer_id) = source_buffer_id {
                                 let start_marker = interp.make_marker();
-                                let Value::Marker(start_id) = start_marker else {
+                                let Kind::Marker(start_id) = start_marker.kind() else {
                                     unreachable!("make_marker always returns a marker")
                                 };
                                 let end_marker = interp.make_marker();
-                                let Value::Marker(end_id) = end_marker else {
+                                let Kind::Marker(end_id) = end_marker.kind() else {
                                     unreachable!("make_marker always returns a marker")
                                 };
                                 interp.set_marker(start_id, Some(start), Some(buffer_id))?;
@@ -377,14 +378,16 @@ define_dispatch!(
                 {
                     items.push(buffer);
                 }
-                let Some(reuse) = args.get(1).filter(|value| matches!(value, Value::Cons(_)))
+                let Some(reuse) = args
+                    .get(1)
+                    .filter(|value| matches!(value.kind(), Kind::Cons(_)))
                 else {
                     return Ok(Value::list(items));
                 };
                 let mut tail = *reuse;
                 let mut previous = None;
                 let mut item_index = 0usize;
-                while let Value::Cons(cell) = tail {
+                while let Kind::Cons(cell) = tail.kind() {
                     *cell.car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
                     item_index += 1;
                     previous = Some(Value::Cons(cell));
@@ -413,15 +416,15 @@ define_dispatch!(
                 let mut restored_buffer_id = None;
                 let mut index = 0usize;
                 while index + 1 < items.len() {
-                    if let Value::Buffer(buffer) = &items[index] {
+                    if let Kind::Buffer(buffer) = items[index].kind() {
                         restored_buffer_id = Some(buffer.id);
                         break;
                     }
                     for item in [&items[index], &items[index + 1]] {
-                        if let Value::Marker(marker_id) = item
+                        if let Kind::Marker(marker_id) = item.kind()
                             && restored_buffer_id.is_none()
                         {
-                            restored_buffer_id = interp.marker_buffer_id(*marker_id);
+                            restored_buffer_id = interp.marker_buffer_id(marker_id);
                         }
                     }
                     let start = if items[index].is_nil() {
@@ -440,14 +443,14 @@ define_dispatch!(
                     });
                     index += 2;
                 }
-                if let Some(Value::Buffer(buffer)) = items.get(index) {
+                if let Some(Kind::Buffer(buffer)) = items.get(index).map(|v| v.kind()) {
                     restored_buffer_id = Some(buffer.id);
                 }
                 if args.get(1).is_some_and(Value::is_truthy) {
                     let mut tail = args[0];
-                    while let Value::Cons(cell) = tail {
-                        let marker_id = match &*cell.car.borrow() {
-                            Value::Marker(marker_id) => Some(*marker_id),
+                    while let Kind::Cons(cell) = tail.kind() {
+                        let marker_id = match (*cell.car.borrow()).kind() {
+                            Kind::Marker(marker_id) => Some(marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
@@ -463,7 +466,7 @@ define_dispatch!(
             }
             "match-data--translate" => {
                 need_args(name, args, 1)?;
-                let Value::Integer(delta) = args[0] else {
+                let Kind::Integer(delta) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 if let Some(match_data) = &mut interp.last_match_data {
@@ -684,10 +687,10 @@ define_dispatch!(
                 let old_chars: Vec<char> = target_text.chars().collect();
                 let new_chars: Vec<char> = source_text.chars().collect();
 
-                let max_costs = match args.get(2) {
-                    None | Some(Value::Nil) => 1_000_000,
-                    Some(Value::Integer(value)) => (*value).max(0) as usize,
-                    Some(Value::BigInteger(value)) => value.to_usize().unwrap_or_else(|| {
+                let max_costs = match args.get(2).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => 1_000_000,
+                    Some(Kind::Integer(value)) => (value).max(0) as usize,
+                    Some(Kind::BigInteger(value)) => value.to_usize().unwrap_or_else(|| {
                         if value.sign() == Sign::Minus {
                             0
                         } else {
@@ -695,13 +698,16 @@ define_dispatch!(
                         }
                     }),
                     Some(value) => {
-                        return Err(LispError::WrongTypeArgument("integerp".into(), *value));
+                        return Err(LispError::WrongTypeArgument(
+                            "integerp".into(),
+                            value.value(),
+                        ));
                     }
                 };
-                let deadline = match args.get(1) {
-                    None | Some(Value::Nil) => None,
+                let deadline = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
                     Some(value) => {
-                        let seconds = numeric_to_f64(interp, value)?;
+                        let seconds = numeric_to_f64(interp, &value.value())?;
                         if seconds <= 0.0 {
                             Some(Instant::now())
                         } else if seconds.is_finite() {
@@ -947,10 +953,10 @@ define_dispatch!(
                     Return,
                     Buffer(u64),
                 }
-                let destination = match args.get(3) {
-                    None | Some(Value::Nil) => Destination::Replace,
-                    Some(Value::T) => Destination::Return,
-                    Some(buffer) => Destination::Buffer(interp.resolve_buffer_id(buffer)?),
+                let destination = match args.get(3).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Destination::Replace,
+                    Some(Kind::T) => Destination::Return,
+                    Some(buffer) => Destination::Buffer(interp.resolve_buffer_id(&buffer.value())?),
                 };
                 let return_string = matches!(destination, Destination::Return);
                 let transformed = if name == "encode-coding-region" {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SyntaxClass {
@@ -276,18 +277,18 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
     if value.is_nil() {
         return ("default".into(), false);
     }
-    if matches!(value, Value::CharTable(_)) {
+    if matches!(value.kind(), Kind::CharTable(_)) {
         return ("deeper char-table ...".into(), false);
     }
     let Some((car, cdr)) = (value).cons_cells() else {
         return ("invalid".into(), false);
     };
-    let Value::Integer(raw_code) = *car.borrow() else {
+    let Kind::Integer(raw_code) = (*car.borrow()).kind() else {
         return ("invalid".into(), false);
     };
-    let matching = match &*cdr.borrow() {
-        Value::Nil => None,
-        Value::Integer(code) => u32::try_from(*code).ok().and_then(char::from_u32),
+    let matching = match (*cdr.borrow()).kind() {
+        Kind::Nil => None,
+        Kind::Integer(code) => u32::try_from(code).ok().and_then(char::from_u32),
         _ => return ("invalid".into(), false),
     };
     if !cdr.borrow().is_nil() && matching.is_none() {
@@ -450,8 +451,8 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
         }
         None => &terminal.default,
     };
-    let entry = match value {
-        Value::Nil => SyntaxEntry {
+    let entry = match value.kind() {
+        Kind::Nil => SyntaxEntry {
             // A nil entry in a syntax table denotes whitespace.  In
             // particular, `(make-char-table 'syntax-table nil)' is the
             // intentionally blank table used by syntax propertizers to make
@@ -460,7 +461,9 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
             class: SyntaxClass::Whitespace,
             ..SyntaxEntry::default()
         },
-        value => syntax_entry_from_value(value).unwrap_or_else(|| default_syntax_entry(ch)),
+        value => {
+            syntax_entry_from_value(&value.value()).unwrap_or_else(|| default_syntax_entry(ch))
+        }
     };
     if entry.class == SyntaxClass::Inherit && table_id != interp.standard_syntax_table_id() {
         syntax_entry_for_code(interp, interp.standard_syntax_table_id(), code)
@@ -483,9 +486,9 @@ fn syntax_entry_for_char(interp: &Interpreter, table_id: u64, ch: char) -> Synta
 }
 
 fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
-    match value {
-        Value::Integer(code) => {
-            let class = syntax_class_from_code(*code)?;
+    match value.kind() {
+        Kind::Integer(code) => {
+            let class = syntax_class_from_code(code)?;
             Some(SyntaxEntry {
                 class,
                 start_first: code & (1 << 16) != 0,
@@ -499,7 +502,7 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
                 ..SyntaxEntry::default()
             })
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let code = value.car().ok()?.as_integer().ok()?;
             let matching = value
                 .cdr()
@@ -623,10 +626,10 @@ impl SyntaxScan {
             "syntax-table",
         )
         .unwrap_or(Value::Nil);
-        self.effective = match property {
-            Value::CharTable(property_table_id) => EffectiveSyntax::Table(property_table_id),
-            Value::Nil => EffectiveSyntax::Table(self.table_id),
-            property => syntax_entry_from_value(&property)
+        self.effective = match property.kind() {
+            Kind::CharTable(property_table_id) => EffectiveSyntax::Table(property_table_id),
+            Kind::Nil => EffectiveSyntax::Table(self.table_id),
+            property => syntax_entry_from_value(&property.value())
                 .map(EffectiveSyntax::Direct)
                 .unwrap_or(EffectiveSyntax::Table(self.table_id)),
         };
@@ -684,12 +687,12 @@ fn syntax_entry_at_buffer_position(
         "syntax-table",
     )
     .unwrap_or(Value::Nil);
-    match property {
-        Value::CharTable(property_table_id) => {
+    match property.kind() {
+        Kind::CharTable(property_table_id) => {
             Some(syntax_entry_for_char(interp, property_table_id, ch))
         }
-        Value::Nil => None,
-        property => syntax_entry_from_value(&property),
+        Kind::Nil => None,
+        property => syntax_entry_from_value(&property.value()),
     }
     .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
 }
@@ -1154,7 +1157,7 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     if let Some(comment_value) = hidden_items.get(1)
         && !comment_value.is_nil()
         && let Ok(entries) = comment_value.to_vec()
-        && let Some(Value::Symbol(kind)) = entries.first()
+        && let Some(Kind::Symbol(kind)) = entries.first().map(|v| v.kind())
     {
         let start_pos = entries
             .get(1)
@@ -1469,9 +1472,9 @@ fn open_paren_defun_start_enabled(interp: &Interpreter) -> bool {
 // `syntax-table' marks a generic (fence) comment, which this runtime's
 // comment encoding shares with style c (comment_start_at's Fence = 2).
 fn ppss_style_code(value: Option<&Value>) -> u8 {
-    match value {
-        Some(Value::Symbol(name)) if name == "syntax-table" => 2,
-        Some(Value::Integer(style)) => (*style as u8) & 3,
+    match value.map(|v| v.kind()) {
+        Some(Kind::Symbol(name)) if name == "syntax-table" => 2,
+        Some(Kind::Integer(style)) => (style as u8) & 3,
         _ => 0,
     }
 }
@@ -1719,9 +1722,9 @@ fn back_comment_gnu(
         };
         defun_start = comment_end;
         let incomment_matches = if comnested {
-            matches!(items.get(4), Some(Value::Integer(1)))
+            matches!(items.get(4).map(|v| v.kind()), Some(Kind::Integer(1)))
         } else {
-            matches!(items.get(4), Some(Value::T))
+            matches!(items.get(4).map(|v| v.kind()), Some(Kind::T))
         };
         let comstr_start = items
             .get(8)
@@ -2179,10 +2182,10 @@ pub(super) enum CommentStop {
 
 impl CommentStop {
     pub(super) fn from_value(value: Option<&Value>) -> Self {
-        match value {
-            None | Some(Value::Nil) => CommentStop::No,
-            Some(Value::Symbol(name)) if name == "syntax-table" => CommentStop::SyntaxTable,
-            Some(other) if other.is_truthy() => CommentStop::Plain,
+        match value.map(|v| v.kind()) {
+            None | Some(Kind::Nil) => CommentStop::No,
+            Some(Kind::Symbol(name)) if name == "syntax-table" => CommentStop::SyntaxTable,
+            Some(other) if other.value().is_truthy() => CommentStop::Plain,
             Some(_) => CommentStop::No,
         }
     }

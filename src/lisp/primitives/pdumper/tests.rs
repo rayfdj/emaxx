@@ -9,7 +9,7 @@ use super::{RootSource, write_image};
 use crate::buffer::TextPropertySpan;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
-use crate::lisp::types::{SymbolName, Value};
+use crate::lisp::types::{Kind, SymbolName, Value};
 use std::collections::HashMap;
 
 fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
@@ -54,14 +54,12 @@ fn graph_matches(
         (None, None) => {}
         _ => return Err(format!("identity class differs: {a:?} vs {b:?}")),
     }
-    match (a, b) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) | (Value::Unbound, Value::Unbound) => {
-            Ok(())
-        }
-        (Value::Integer(x), Value::Integer(y)) if x == y => Ok(()),
-        (Value::BigInteger(x), Value::BigInteger(y)) if **x == **y => Ok(()),
-        (Value::Float(x), Value::Float(y)) if x.to_bits() == y.to_bits() => Ok(()),
-        (Value::String(_), Value::String(_)) | (Value::StringObject(_), Value::StringObject(_)) => {
+    match (a.kind(), b.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) | (Kind::Unbound, Kind::Unbound) => Ok(()),
+        (Kind::Integer(x), Kind::Integer(y)) if x == y => Ok(()),
+        (Kind::BigInteger(x), Kind::BigInteger(y)) if *x == *y => Ok(()),
+        (Kind::Float(x), Kind::Float(y)) if x.to_bits() == y.to_bits() => Ok(()),
+        (Kind::String(_), Kind::String(_)) | (Kind::StringObject(_), Kind::StringObject(_)) => {
             let x = string_like(a).expect("a string");
             let y = string_like(b).expect("a string");
             if x.text != y.text
@@ -93,9 +91,9 @@ fn graph_matches(
             }
             Ok(())
         }
-        (Value::Symbol(x), Value::Symbol(y)) => {
+        (Kind::Symbol(x), Kind::Symbol(y)) => {
             let name = |symbol: &SymbolName| string_like(&symbol.lisp_name()).map(|s| s.text);
-            if x.as_str() != y.as_str() && name(x) != name(y) {
+            if x.as_str() != y.as_str() && name(&x) != name(&y) {
                 return Err(format!("symbol differs: {x:?} vs {y:?}"));
             }
             if (x.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0)
@@ -105,17 +103,17 @@ fn graph_matches(
             }
             Ok(())
         }
-        (Value::BuiltinFunc(x), Value::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
+        (Kind::BuiltinFunc(x), Kind::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
         // Identity-bearing kinds compared by the tests through the
         // interpreters that own them.
-        (Value::Lambda(_), Value::Lambda(_))
-        | (Value::CharTable(_), Value::CharTable(_))
-        | (Value::Record(_), Value::Record(_)) => Ok(()),
-        (Value::Cons(_), Value::Cons(_)) => {
+        (Kind::Lambda(_), Kind::Lambda(_))
+        | (Kind::CharTable(_), Kind::CharTable(_))
+        | (Kind::Record(_), Kind::Record(_)) => Ok(()),
+        (Kind::Cons(_), Kind::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
             graph_matches(&a.cdr().expect("cdr"), &b.cdr().expect("cdr"), seen)
         }
-        (Value::Vector(x), Value::Vector(y)) => {
+        (Kind::Vector(x), Kind::Vector(y)) => {
             let x = x.slots().to_vec();
             let y = y.slots().to_vec();
             if x.len() != y.len() {
@@ -250,7 +248,9 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
     assert_eq!(root(RootSlot::QuitFlag), Value::Integer(42));
     assert_eq!(root(RootSlot::InhibitQuit), Value::T);
     assert_eq!(root(RootSlot::CurrentGlobalMap), Value::Unbound);
-    assert!(matches!(root(RootSlot::ThrowOnInput), Value::BuiltinFunc(name) if name == "cdr"));
+    assert!(
+        matches!(root(RootSlot::ThrowOnInput).kind(), Kind::BuiltinFunc(name) if name == "cdr")
+    );
     let loaded = root(RootSlot::LoadPath);
     let mut seen = HashMap::new();
     graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
@@ -563,7 +563,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         .expect("root");
     let mut seen = HashMap::new();
     graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
-    let Value::Vector(vector) = &loaded else {
+    let Kind::Vector(vector) = loaded.kind() else {
         panic!("root vector")
     };
     let slots = vector.slots().to_vec();
@@ -571,7 +571,8 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     // Two closures over one environment: the frame is shared, and calling
     // them in the restored interpreter mutates the shared binding.
     let closures = slots[0].to_vec().expect("closure list");
-    let (Value::Lambda(first), Value::Lambda(second)) = (&closures[0], &closures[1]) else {
+    let (Kind::Lambda(first), Kind::Lambda(second)) = (closures[0].kind(), closures[1].kind())
+    else {
         panic!("closures")
     };
     assert!(
@@ -593,7 +594,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(6));
 
     // The char-table with its ranges, subtype, default and extra slot.
-    let Value::CharTable(table_id) = slots[1] else {
+    let Kind::CharTable(table_id) = slots[1].kind() else {
         panic!("char-table")
     };
     let table = target
@@ -622,7 +623,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     );
 
     // The bool-vector's bits came through the cold section.
-    let Value::Record(bits_id) = slots[2] else {
+    let Kind::Record(bits_id) = slots[2].kind() else {
         panic!("bool-vector")
     };
     let bits = target.find_record(bits_id).expect("installed bool-vector");
@@ -638,7 +639,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(set, vec![0, 65, 69]);
 
     // The record's slots, with the shared list being the same object.
-    let Value::Record(record_id) = slots[3] else {
+    let Kind::Record(record_id) = slots[3].kind() else {
         panic!("record")
     };
     let record = target.find_record(record_id).expect("installed record");
@@ -705,7 +706,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         .find(|(slot, _)| *slot == RootSlot::LoadPath)
         .map(|(_, value)| *value)
         .expect("root");
-    let Value::Vector(vector) = &loaded else {
+    let Kind::Vector(vector) = loaded.kind() else {
         panic!("root vector")
     };
     let slots = vector.slots().to_vec();
@@ -800,7 +801,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         call_in(&mut target, "hash-table-count", &[eq_table]),
         Value::Integer(3)
     );
-    let Value::Record(equal_id) = equal_table else {
+    let Kind::Record(equal_id) = equal_table.kind() else {
         panic!("hash table")
     };
     let keys = target
@@ -976,11 +977,11 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .expect("setup parses")
         .expect("setup has a form");
     let graph = interp.eval(&form, &mut env).expect("setup evaluates");
-    let Value::Vector(source_vector) = &graph else {
+    let Kind::Vector(source_vector) = graph.kind() else {
         panic!("root vector")
     };
     let source = source_vector.slots().to_vec();
-    let Value::Buffer(source_buffer) = &source[0] else {
+    let Kind::Buffer(source_buffer) = source[0].kind() else {
         panic!("buffer")
     };
     let source_id = source_buffer.id;
@@ -1008,7 +1009,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
             .map(|(_, value)| *value)
             .unwrap_or_else(|| panic!("root {slot:?} missing"))
     };
-    let Value::Vector(vector) = root(RootSlot::LoadPath) else {
+    let Kind::Vector(vector) = root(RootSlot::LoadPath).kind() else {
         panic!("root vector")
     };
     let slots = vector.slots().to_vec();
@@ -1016,7 +1017,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     // The buffer: text, positions, narrowing, flags, property spans, the
     // side list, the undo entries, the modtime, the local binding, the
     // syntax table, the mark.
-    let Value::Buffer(loaded_buffer) = &slots[0] else {
+    let Kind::Buffer(loaded_buffer) = slots[0].kind() else {
         panic!("buffer")
     };
     assert_eq!(loaded_buffer.id, source_id);
@@ -1078,14 +1079,14 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
 
     // The markers: one into the buffer with its insertion type, one
     // detached.
-    let Value::Marker(m1) = slots[1] else {
+    let Kind::Marker(m1) = slots[1].kind() else {
         panic!("marker")
     };
     let m1 = target.find_marker(m1).expect("marker 1");
     assert_eq!(m1.buffer_id, Some(source_id));
     assert_eq!(m1.position, Some(2));
     assert!(m1.insertion_type);
-    let Value::Marker(m2) = slots[2] else {
+    let Kind::Marker(m2) = slots[2].kind() else {
         panic!("marker")
     };
     let m2 = target.find_marker(m2).expect("marker 2");
@@ -1097,10 +1098,10 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     );
 
     // The finalizers, in list order, with their functions.
-    let Value::Finalizer(f1) = slots[3] else {
+    let Kind::Finalizer(f1) = slots[3].kind() else {
         panic!("finalizer")
     };
-    let Value::Finalizer(f2) = slots[4] else {
+    let Kind::Finalizer(f2) = slots[4].kind() else {
         panic!("finalizer")
     };
     assert_eq!(target.finalizer_ids(), source_finalizers);
@@ -1111,7 +1112,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     // The frame is nilled: a dead frame object of its own, beside the
     // live initial frame of the loading process.  The terminal is nilled
     // likewise: a dead terminal beside the live initial one.
-    let Value::Frame(frame) = slots[5] else {
+    let Kind::Frame(frame) = slots[5].kind() else {
         panic!("frame")
     };
     let state = target.frame_state(frame).expect("dead frame installed");
@@ -1123,7 +1124,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
             .is_some_and(|frame| frame.live)
     );
     assert_ne!(frame, target.selected_frame_id);
-    let Value::Terminal(dead_terminal) = root(RootSlot::QuitFlag) else {
+    let Kind::Terminal(dead_terminal) = root(RootSlot::QuitFlag).kind() else {
         panic!("terminal")
     };
     assert!(
@@ -1138,7 +1139,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert!(target.terminals.first().expect("initial terminal").live);
 
     // The deleted overlay retains its properties without a holding buffer.
-    let Value::Overlay(ov) = slots[6] else {
+    let Kind::Overlay(ov) = slots[6].kind() else {
         panic!("overlay")
     };
     let overlay = target.find_overlay(ov).expect("overlay installed");
@@ -1156,7 +1157,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     );
 
     // The killed buffer is an object with no buffer behind it.
-    let Value::Buffer(killed) = &slots[7] else {
+    let Kind::Buffer(killed) = slots[7].kind() else {
         panic!("killed buffer")
     };
     assert!(target.get_buffer_by_id(killed.id).is_none());
@@ -1331,11 +1332,11 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     assert!(keymap_records.len() >= 2, "{keymap_records:?}");
     let mut resolved = 0;
     for record in &keymap_records {
-        let Value::Record(id) = record else {
+        let Kind::Record(id) = record.kind() else {
             panic!("not a record: {record:?}")
         };
         let view = target
-            .find_record(*id)
+            .find_record(id)
             .expect("keymap record installed")
             .slots
             .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)

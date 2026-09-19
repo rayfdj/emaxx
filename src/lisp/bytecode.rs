@@ -9,7 +9,7 @@
 
 pub mod vm;
 
-use super::types::{Value, VectorRef};
+use super::types::{Kind, Value, VectorRef};
 use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
@@ -582,9 +582,8 @@ pub enum ArgSpec {
 
 impl ArgSpec {
     fn from_value(value: &Value) -> Result<ArgSpec, ByteCodeError> {
-        match value {
-            Value::Integer(packed) => {
-                let packed = *packed;
+        match value.kind() {
+            Kind::Integer(packed) => {
                 if !(0..=0x7FFF).contains(&packed) {
                     return Err(ByteCodeError::MalformedObject(format!(
                         "argument template {packed} out of range"
@@ -596,10 +595,10 @@ impl ArgSpec {
                     rest: packed & 0x80 != 0,
                 })
             }
-            Value::Nil | Value::Cons(_) => Ok(ArgSpec::Legacy(*value)),
+            Kind::Nil | Kind::Cons(_) => Ok(ArgSpec::Legacy(*value)),
             other => Err(ByteCodeError::MalformedObject(format!(
                 "argument spec must be an integer or list, got {}",
-                other.type_name()
+                other.value().type_name()
             ))),
         }
     }
@@ -657,7 +656,7 @@ fn decoded_code(
     code: &[u8],
     constants_len: usize,
 ) -> Result<Rc<DecodedCode>, ByteCodeError> {
-    let Value::String(text) = code_slot else {
+    let Kind::String(text) = code_slot.kind() else {
         // A mutable string object may change: decoded afresh.
         return Ok(Rc::new(DecodedCode::new(code, constants_len)?));
     };
@@ -718,9 +717,9 @@ fn unibyte_bytes(text: &str) -> Result<Vec<u8>, ByteCodeError> {
 }
 
 fn string_text(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.to_string()),
-        Value::StringObject(state) => Some(state.borrow().text.clone()),
+    match value.kind() {
+        Kind::String(text) => Some(text.to_string()),
+        Kind::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }
 }
@@ -730,17 +729,20 @@ fn string_text(value: &Value) -> Option<String> {
 /// Emaxx's byte-compile facade (an executable lambda in slot 0).
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
-        && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_))
+        && matches!(
+            slots[0].kind(),
+            Kind::Integer(_) | Kind::Nil | Kind::Cons(_)
+        )
         && slots[1].is_string()
-        && matches!(slots[2], Value::Vector(_))
-        && matches!(slots[3], Value::Integer(_))
+        && matches!(slots[2].kind(), Kind::Vector(_))
+        && matches!(slots[3].kind(), Kind::Integer(_))
 }
 
 fn constant_vector(value: &Value) -> Option<VectorRef> {
-    let Value::Vector(vector) = value else {
+    let Kind::Vector(vector) = value.kind() else {
         return None;
     };
-    Some(*vector)
+    Some(vector)
 }
 
 impl ByteCodeObject {
@@ -759,7 +761,7 @@ impl ByteCodeObject {
         let constants = constant_vector(&slots[2]).ok_or_else(|| {
             ByteCodeError::MalformedObject("constants slot is not a vector".into())
         })?;
-        let Value::Integer(depth) = slots[3] else {
+        let Kind::Integer(depth) = slots[3].kind() else {
             return Err(ByteCodeError::MalformedObject(
                 "stack depth slot is not an integer".into(),
             ));
@@ -959,7 +961,7 @@ pub(crate) mod tests {
     const ORACLE_ELC: &str = include_str!("bytecode/fixture-oracle-30.2.elc");
 
     fn collect_byte_code_slot_lists(value: &Value, found: &mut Vec<Vec<Value>>) {
-        if let Value::ReaderForm(form) = value {
+        if let Kind::ReaderForm(form) = value.kind() {
             let crate::lisp::types::ReaderForm::Closure { kind, slots } = form.as_ref() else {
                 return;
             };
@@ -992,23 +994,25 @@ pub(crate) mod tests {
         let mut objects = std::collections::HashMap::new();
         for form in &forms {
             let Ok(items) = form.to_vec() else { continue };
-            let [Value::Symbol(head), name_form, object_form] = items.as_slice() else {
+            let kinds = crate::lisp::types::kinds(&items);
+            let [Kind::Symbol(head), name_form, object_form] = kinds.as_slice() else {
                 continue;
             };
             if head != "defalias" {
                 continue;
             }
-            let Ok(name_items) = name_form.to_vec() else {
+            let Ok(name_items) = name_form.value().to_vec() else {
                 continue;
             };
-            let [Value::Symbol(quote), Value::Symbol(name)] = name_items.as_slice() else {
+            let name_kinds = crate::lisp::types::kinds(&name_items);
+            let [Kind::Symbol(quote), Kind::Symbol(name)] = name_kinds.as_slice() else {
                 continue;
             };
             if quote != "quote" {
                 continue;
             }
             let mut slot_lists = Vec::new();
-            collect_byte_code_slot_lists(object_form, &mut slot_lists);
+            collect_byte_code_slot_lists(&object_form.value(), &mut slot_lists);
             if let Some(slots) = slot_lists.first()
                 && let Ok(Some(object)) = ByteCodeObject::from_slots(slots)
             {
@@ -1142,10 +1146,10 @@ pub(crate) mod tests {
             false,
         );
         let constants = Value::vector(std::iter::repeat_n(Value::Integer(1), 4096));
-        let Value::StringObject(string) = &code else {
+        let Kind::StringObject(string) = code.kind() else {
             panic!("mutable code string")
         };
-        let Value::Vector(vector) = &constants else {
+        let Kind::Vector(vector) = constants.kind() else {
             panic!("constant vector")
         };
         // STRINGP and VECTORP inspect tags, not payloads. Exclusive payload

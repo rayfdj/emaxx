@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 const CCL_HEADER_EOF: usize = 1;
 const CCL_HEADER_MAIN: usize = 2;
@@ -87,10 +88,10 @@ fn resolve_ccl_program(
     let mut unresolved = false;
     let mut code = Vec::with_capacity(items.len());
     for item in items {
-        let value = match item {
-            Value::Integer(number) => Some(number),
-            Value::BigInteger(_) => item.as_integer().ok(),
-            Value::Cons(cons_cell) => {
+        let value = match item.kind() {
+            Kind::Integer(number) => Some(number),
+            Kind::BigInteger(_) => item.as_integer().ok(),
+            Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
                 let symbol = car.borrow().as_symbol()?.to_string();
@@ -99,7 +100,7 @@ fn resolve_ccl_program(
                     .get_symbol_property(&symbol, &property)
                     .and_then(|value| value.as_integer().ok())
             }
-            Value::Nil | Value::T | Value::Symbol(_) => {
+            Kind::Nil | Kind::T | Kind::Symbol(_) => {
                 let symbol = item.as_symbol()?.to_string();
                 [
                     "translation-table-id",
@@ -209,12 +210,12 @@ fn register_code_conversion_map(
     let slots = vector_items(&table)?;
     let mut index = None;
     for (candidate, slot) in slots.iter().enumerate() {
-        match slot {
-            Value::Cons(cell) if cell.car.borrow().as_symbol().ok() == Some(symbol.as_str()) => {
+        match slot.kind() {
+            Kind::Cons(cell) if cell.car.borrow().as_symbol().ok() == Some(symbol.as_str()) => {
                 index = Some(candidate);
                 break;
             }
-            Value::Cons(_) => {}
+            Kind::Cons(_) => {}
             _ => {
                 index = Some(candidate);
                 break;

@@ -1,5 +1,6 @@
 use crate::buffer::Buffer;
 use crate::lisp::eval::Interpreter;
+use crate::lisp::types::Kind;
 use crate::lisp::types::Value;
 
 /// The resolved `buffer-invisibility-spec', xdisp.c's
@@ -59,10 +60,11 @@ pub(crate) fn resolve_buffer_invisibility(
             interpreter.lookup_var("buffer-invisibility-spec", &crate::lisp::types::Env::new())
         })
         .unwrap_or(Value::T);
-    match &spec {
-        Value::Nil => InvisibilitySpec::default(),
+    match spec.kind() {
+        Kind::Nil => InvisibilitySpec::default(),
         value
-            if matches!(value, Value::T) || matches!(value, Value::Symbol(name) if name == "t") =>
+            if matches!(value.value().kind(), Kind::T)
+                || matches!(value.value().kind(), Kind::Symbol(name) if name == "t") =>
         {
             InvisibilitySpec {
                 all: true,
@@ -75,8 +77,8 @@ pub(crate) fn resolve_buffer_invisibility(
                 .to_vec()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|entry| match (&entry, entry.car(), entry.cdr()) {
-                    (Value::Cons(_), Ok(atom), Ok(flag)) => (atom, flag.is_truthy()),
+                .map(|entry| match (entry.kind(), entry.car(), entry.cdr()) {
+                    (Kind::Cons(_), Ok(atom), Ok(flag)) => (atom, flag.is_truthy()),
                     _ => (entry, false),
                 })
                 .collect();
@@ -93,10 +95,10 @@ pub(crate) fn resolve_buffer_invisibility(
 /// integers); other object identities answer false, as a pointer EQ
 /// against a fresh value would.
 pub(crate) fn invisibility_atom_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::Nil, Value::Nil) => true,
+    match (a.kind(), b.kind()) {
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::Nil, Kind::Nil) => true,
         _ => false,
     }
 }
@@ -122,9 +124,9 @@ pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u
     if direct != 0 {
         return direct;
     }
-    if matches!(value, Value::Cons(_)) {
+    if matches!(value.kind(), Kind::Cons(_)) {
         let mut tail = *value;
-        while let Value::Cons(_) = tail {
+        while let Kind::Cons(_) = tail.kind() {
             if let Ok(member) = tail.car() {
                 let class = match_atom(&member);
                 if class != 0 {

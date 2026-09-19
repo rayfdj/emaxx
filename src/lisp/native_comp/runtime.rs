@@ -18,8 +18,8 @@ use super::abi::{
 use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
 use crate::lisp::primitives::{symbol_with_pos_parts, wrong_type_argument};
 use crate::lisp::types::{
-    ConsCell, ConsMutationQueue, ConsWords, IdentityBuildHasher, NativeConsMutationRegistration,
-    SharedCons, SymbolName, Value,
+    ConsCell, ConsMutationQueue, ConsWords, IdentityBuildHasher, Kind,
+    NativeConsMutationRegistration, SharedCons, SymbolName, Value,
 };
 use crate::lisp::{
     eval::Interpreter,
@@ -687,8 +687,11 @@ pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, O
         .lookup_var("gc-cons-threshold", environment)
         .and_then(|value| value.as_integer().ok())
         .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
-    let percentage = match interpreter.lookup_var("gc-cons-percentage", environment) {
-        Some(Value::Float(value)) => Some(value.get()),
+    let percentage = match interpreter
+        .lookup_var("gc-cons-percentage", environment)
+        .map(|v| v.kind())
+    {
+        Some(Kind::Float(value)) => Some(value.get()),
         _ => None,
     };
     (threshold, percentage)
@@ -2255,12 +2258,12 @@ fn direct_funcall_target(
     environment: &Env,
     function: &Value,
 ) -> Option<DirectFuncallTarget> {
-    let resolved = match function {
-        Value::Symbol(name) => interpreter.lookup_function(name, environment).ok()?,
-        other => *other,
+    let resolved = match function.kind() {
+        Kind::Symbol(name) => interpreter.lookup_function(&name, environment).ok()?,
+        other => other.value(),
     };
-    match resolved {
-        Value::BuiltinFunc(name) => {
+    match resolved.kind() {
+        Kind::BuiltinFunc(name) => {
             static SUBR_INDICES: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
             let indices = SUBR_INDICES.get_or_init(|| {
                 super::abi::native_subrs()
@@ -2277,7 +2280,7 @@ fn direct_funcall_target(
                 maximum: subroutine.max_args,
             })
         }
-        Value::Record(record_id) => super::loader::active_direct_function(record_id.id)
+        Kind::Record(record_id) => super::loader::active_direct_function(record_id.id)
             .map(|function| DirectFuncallTarget::Native {
                 record_id: record_id.id,
                 function,
@@ -2481,7 +2484,7 @@ fn invoke_native_maphash(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
             return Some(0);
         }
     };
-    let Value::Record(table_id) = table_value else {
+    let Kind::Record(table_id) = table_value.kind() else {
         return None;
     };
     unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id.id, 0)?;
@@ -2826,11 +2829,11 @@ fn native_remove_symbol_position(
     // The active native arguments keep the complete pointed-to object live.
     let handle = unsafe { runtime.heap.live_handle(word) }
         .ok_or_else(|| super::lisp::native_ice("native EQ object has a mismatched tag"))?;
-    let Value::Record(id) = &handle.value else {
+    let Kind::Record(id) = handle.value.kind() else {
         return Ok(word);
     };
     let symbol = unsafe { &*active.interpreter }
-        .find_record(*id)
+        .find_record(id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::SymbolWithPos)
         .and_then(|record| record.slots.first())
         .cloned();
@@ -2881,15 +2884,15 @@ fn native_eql(
     }
     let left_value = decode_word(active, left)?;
     if !matches!(
-        left_value,
-        Value::Float(_) | Value::Integer(_) | Value::BigInteger(_) | Value::Record(_)
+        left_value.kind(),
+        Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_) | Kind::Record(_)
     ) {
         return Ok(false);
     }
     let right_value = decode_word(active, right)?;
     if matches!(
-        left_value,
-        Value::Float(_) | Value::Integer(_) | Value::BigInteger(_)
+        left_value.kind(),
+        Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_)
     ) {
         Ok(crate::lisp::primitives::values_eql(
             &left_value,
@@ -3380,8 +3383,8 @@ extern "C" fn runtime_pseudovector_typep(value: NativeWord, code: i32) -> bool {
             let interpreter = unsafe { &mut *active.interpreter };
             match code {
                 2 => {
-                    matches!(value, Value::BigInteger(_))
-                        || matches!(value, Value::Integer(integer)
+                    matches!(value.kind(), Kind::BigInteger(_))
+                        || matches!(value.kind(), Kind::Integer(integer)
                             if !(MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer))
                 }
                 6 => symbol_with_pos_parts(interpreter, &value).is_some(),
@@ -3668,8 +3671,11 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
             .ok()
             .and_then(|value| value.as_integer().ok())
             .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
-        let percentage = match interpreter.symbol_value_cell("gc-cons-percentage") {
-            Ok(Value::Float(value)) => Some(value.get()),
+        let percentage = match interpreter
+            .symbol_value_cell("gc-cons-percentage")
+            .map(|v| v.kind())
+        {
+            Ok(Kind::Float(value)) => Some(value.get()),
             _ => None,
         };
         if runtime.collect_native_heap(stack_top, threshold, percentage, interpreter, unsafe {
@@ -4129,14 +4135,14 @@ impl NativeMark<'_> {
         // non-cons value (the identity lookup below would miss), and only
         // an attached cons has native words to follow.
         if self.heap.handle_by_value.is_empty()
-            && !matches!(value, Value::Cons(cell) if cell.attached_native_address().is_some())
+            && !matches!(value.kind(), Kind::Cons(cell) if cell.attached_native_address().is_some())
         {
             return (false, Vec::new());
         }
-        if let Value::Cons(cell) = value {
+        if let Kind::Cons(cell) = value.kind() {
             if let Some(address) = cell.attached_native_address()
                 && let Some(mirror) = self.heap.cons_values.get(&address)
-                && SharedCons::ptr_eq(&mirror.value, cell)
+                && SharedCons::ptr_eq(&mirror.value, &cell)
             {
                 // The native walk already supplied this cell's car/cdr
                 // edges. Re-entering the conservative pointer search for
@@ -4151,9 +4157,9 @@ impl NativeMark<'_> {
             }
             return (false, Vec::new());
         }
-        let identity = match value {
-            Value::Nil | Value::T => return (false, Vec::new()),
-            Value::Symbol(symbol) => NativeIdentity::Symbol(symbol.identity_ptr()),
+        let identity = match value.kind() {
+            Kind::Nil | Kind::T => return (false, Vec::new()),
+            Kind::Symbol(symbol) => NativeIdentity::Symbol(symbol.identity_ptr()),
             _ => {
                 handle_identity(value)
                     .expect("non-immediate Lisp object has a native handle identity")
@@ -4276,6 +4282,10 @@ impl Drop for NativeHeap {
         // Returned Lisp values can outlive this runtime. Decode pending native
         // writes while their handles and native-owned descendants are live.
         // This is a teardown pass, never a scan at each native call boundary.
+        // A view of a cell the sweep has taken has nothing left to
+        // reconcile (no Lisp holder remains): it goes first, as after
+        // every sweep.
+        self.forget_swept_conses();
         let addresses = self.cons_values.keys().copied().collect::<Vec<_>>();
         for address in addresses {
             self.synchronize_cons(address)
@@ -4308,7 +4318,10 @@ impl NativeHeap {
 
     /// Clear a symbol's stored handle slot when it names this handle.
     fn forget_symbol_slot(native: &NativeHandle, slot: u64) {
-        if let (NativeIdentity::Symbol(_), Value::Symbol(name)) = (&native.identity, &native.value)
+        // The identity first: a dead handle's value may name an object the
+        // sweep has already freed, whose header must not be read.
+        if let NativeIdentity::Symbol(_) = native.identity
+            && let Kind::Symbol(name) = native.value.kind()
             && name.native_slot() == slot
         {
             name.set_native_slot(0);
@@ -4629,8 +4642,8 @@ impl NativeHeap {
         }
         let native = unsafe { self.live_handle(word)? };
         match &native.identity {
-            NativeIdentity::Symbol(_) => match &native.value {
-                Value::Symbol(name) => Some(*name),
+            NativeIdentity::Symbol(_) => match native.value.kind() {
+                Kind::Symbol(name) => Some(name),
                 _ => None,
             },
             _ => None,
@@ -4712,6 +4725,12 @@ impl NativeHeap {
 
     fn register_cons_value(&mut self, native: *mut NativeCons, value: &SharedCons) {
         let address = native as usize;
+        debug_assert!(
+            crate::lisp::alloc::allocated_serial(address) == Some(value.serial),
+            "a native view of a cons the collector freed (serial {}, allocated {:?})",
+            value.serial,
+            crate::lisp::alloc::allocated_serial(address)
+        );
         let words = unsafe { [(*native).car(), (*native).cdr()] };
         unsafe { value.attach_native_words(native, words) };
         self.cons_values.insert(
@@ -4841,15 +4860,15 @@ impl NativeHeap {
         value: &Value,
         pending: &mut smallvec::SmallVec<[SharedCons; 16]>,
     ) -> Result<NativeWord, String> {
-        match value {
-            Value::Nil => Ok(0),
-            Value::T => Ok(native_boolean(true)),
-            Value::Symbol(name) if name == "nil" => Ok(0),
-            Value::Symbol(name) if name == "t" => Ok(native_boolean(true)),
-            Value::Symbol(name) => match native_type_symbol_index(name) {
+        match value.kind() {
+            Kind::Nil => Ok(0),
+            Kind::T => Ok(native_boolean(true)),
+            Kind::Symbol(name) if name == "nil" => Ok(0),
+            Kind::Symbol(name) if name == "t" => Ok(native_boolean(true)),
+            Kind::Symbol(name) => match native_type_symbol_index(&name) {
                 Some(index) => Ok(native_type_symbol_word(index)),
                 None => {
-                    if let Some(word) = self.symbol_word_from_slot(name) {
+                    if let Some(word) = self.symbol_word_from_slot(&name) {
                         return Ok(word);
                     }
                     let (index, word) = self.encode_handle_index(
@@ -4861,14 +4880,14 @@ impl NativeHeap {
                     Ok(word)
                 }
             },
-            Value::Integer(integer)
-                if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(integer) =>
+            Kind::Integer(integer)
+                if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer) =>
             {
                 Ok(integer
                     .wrapping_shl(FIXNUM_BITS)
                     .wrapping_add(TAG_FIXNUM_LOW as i64) as usize)
             }
-            Value::Cons(cell) => self.encode_cons(cell, pending),
+            Kind::Cons(cell) => self.encode_cons(&cell, pending),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
                 self.encode_handle(identity, value, tag)
@@ -5177,7 +5196,7 @@ impl NativeHeap {
         interpreter: &Interpreter,
         value: &Value,
     ) -> Result<*mut c_void, String> {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             return Err("native symbol-with-position helper received a non-record".to_string());
         };
         let (symbol, position) = symbol_with_pos_parts(interpreter, value).ok_or_else(|| {
@@ -5204,31 +5223,29 @@ impl NativeHeap {
 }
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
-    Ok(match value {
-        Value::Integer(integer) => (NativeIdentity::WideInteger(*integer), TAG_VECTORLIKE),
-        Value::BigInteger(integer) => (
+    Ok(match value.kind() {
+        Kind::Integer(integer) => (NativeIdentity::WideInteger(integer), TAG_VECTORLIKE),
+        Kind::BigInteger(integer) => (
             NativeIdentity::BigInteger(integer.identity_ptr()),
             TAG_VECTORLIKE,
         ),
-        Value::Float(float) => (NativeIdentity::Float(float.identity_ptr()), TAG_FLOAT),
-        Value::String(string) => (NativeIdentity::String(string.identity_ptr()), TAG_STRING),
-        Value::StringObject(string) => {
-            (NativeIdentity::StringObject(string.identity()), TAG_STRING)
-        }
-        Value::Vector(vector) => (NativeIdentity::Vector(vector.identity()), TAG_VECTORLIKE),
-        Value::BuiltinFunc(name) => (NativeIdentity::Builtin(name.identity_ptr()), TAG_VECTORLIKE),
-        Value::Lambda(lambda) => (NativeIdentity::Lambda(lambda.identity()), TAG_VECTORLIKE),
-        Value::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
-        Value::Marker(id) => (NativeIdentity::Marker(*id), TAG_VECTORLIKE),
-        Value::Overlay(id) => (NativeIdentity::Overlay(*id), TAG_VECTORLIKE),
-        Value::CharTable(id) => (NativeIdentity::CharTable(*id), TAG_VECTORLIKE),
-        Value::Frame(id) => (NativeIdentity::Frame(*id), TAG_VECTORLIKE),
-        Value::Terminal(id) => (NativeIdentity::Terminal(*id), TAG_VECTORLIKE),
-        Value::Record(id) => (NativeIdentity::Record(id.id), TAG_VECTORLIKE),
-        Value::Finalizer(id) => (NativeIdentity::Finalizer(*id), TAG_VECTORLIKE),
-        Value::ReaderForm(form) => (NativeIdentity::ReaderForm(form.identity()), TAG_VECTORLIKE),
-        Value::Unbound => (NativeIdentity::Unbound, TAG_SYMBOL),
-        Value::Nil | Value::T | Value::Symbol(_) | Value::Cons(_) => {
+        Kind::Float(float) => (NativeIdentity::Float(float.identity_ptr()), TAG_FLOAT),
+        Kind::String(string) => (NativeIdentity::String(string.identity_ptr()), TAG_STRING),
+        Kind::StringObject(string) => (NativeIdentity::StringObject(string.identity()), TAG_STRING),
+        Kind::Vector(vector) => (NativeIdentity::Vector(vector.identity()), TAG_VECTORLIKE),
+        Kind::BuiltinFunc(name) => (NativeIdentity::Builtin(name.identity_ptr()), TAG_VECTORLIKE),
+        Kind::Lambda(lambda) => (NativeIdentity::Lambda(lambda.identity()), TAG_VECTORLIKE),
+        Kind::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
+        Kind::Marker(id) => (NativeIdentity::Marker(id), TAG_VECTORLIKE),
+        Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
+        Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
+        Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
+        Kind::Terminal(id) => (NativeIdentity::Terminal(id), TAG_VECTORLIKE),
+        Kind::Record(id) => (NativeIdentity::Record(id.id), TAG_VECTORLIKE),
+        Kind::Finalizer(id) => (NativeIdentity::Finalizer(id), TAG_VECTORLIKE),
+        Kind::ReaderForm(form) => (NativeIdentity::ReaderForm(form.identity()), TAG_VECTORLIKE),
+        Kind::Unbound => (NativeIdentity::Unbound, TAG_SYMBOL),
+        Kind::Nil | Kind::T | Kind::Symbol(_) | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
     })
@@ -5515,7 +5532,7 @@ mod tests {
             Vec::new(),
             true,
         );
-        let Value::StringObject(state) = &string else {
+        let Kind::StringObject(state) = string.kind() else {
             panic!("mutable string")
         };
         let _payload = state.borrow_mut();
@@ -5528,7 +5545,7 @@ mod tests {
         );
 
         let vector = Value::vector(std::iter::repeat_n(Value::T, 4096));
-        let Value::Vector(state) = &vector else {
+        let Kind::Vector(state) = vector.kind() else {
             panic!("ordinary vector")
         };
         let _payload = state.slots_mut();
@@ -5720,7 +5737,7 @@ mod tests {
             closure,
             Value::T,
         );
-        let Value::Record(id) = closure else {
+        let Kind::Record(id) = closure.kind() else {
             panic!("closure is a pseudovector")
         };
         assert!(interpreter.is_genuine_bytecode_function(id.id));
@@ -6098,7 +6115,7 @@ mod tests {
             .expect("copy closure");
 
         assert_ne!(closure, prototype);
-        let Value::Record(closure_id) = closure else {
+        let Kind::Record(closure_id) = closure.kind() else {
             panic!("make-closure returns a closure record")
         };
         let closure = interpreter
@@ -6108,12 +6125,12 @@ mod tests {
         let constants = crate::lisp::primitives::vector_items(&closure.slots[2])
             .expect("fresh constants vector");
         assert_eq!(constants, vec![captured, retained]);
-        let (Value::Vector(closure_constants), Value::Vector(prototype_constants_identity)) =
-            (&closure.slots[2], &prototype_constants)
+        let (Kind::Vector(closure_constants), Kind::Vector(prototype_constants_identity)) =
+            (closure.slots[2].kind(), prototype_constants.kind())
         else {
             panic!("make-closure constants remain ordinary vectors")
         };
-        assert!(!closure_constants.ptr_eq(prototype_constants_identity));
+        assert!(!closure_constants.ptr_eq(&prototype_constants_identity));
         assert_eq!(
             crate::lisp::primitives::vector_items(&prototype_constants)
                 .expect("prototype constants remain unchanged"),
@@ -6642,7 +6659,7 @@ mod tests {
             Value::T
         );
 
-        assert!(matches!(keymap, Value::Cons(_)));
+        assert!(matches!(keymap.kind(), Kind::Cons(_)));
         let keymap_id = crate::lisp::primitives::keymap_record_id(&interpreter, &keymap)
             .expect("private keymap lookup state");
         let record = interpreter
@@ -6716,7 +6733,7 @@ mod tests {
 
         for (symbol, expected, position) in [(first, 7, 1), (second, 8, 0)] {
             let entry = public.to_vec().expect("lexical alist")[position];
-            let Value::Symbol(key) = entry.car().expect("binding symbol") else {
+            let Kind::Symbol(key) = entry.car().expect("binding symbol").kind() else {
                 panic!("lexical binding lost its symbol");
             };
             assert_eq!(key.identity_ptr(), symbol.identity_ptr());
@@ -6730,10 +6747,12 @@ mod tests {
                         &[Value::Symbol(symbol), *alist],
                     )
                     .expect("native assq on captured binding");
-                let (Value::Cons(result), Value::Cons(expected_entry)) = (result, &entry) else {
+                let (Kind::Cons(result), Kind::Cons(expected_entry)) =
+                    (result.kind(), entry.kind())
+                else {
                     panic!("native assq lost the captured binding");
                 };
-                assert!(SharedCons::ptr_eq(&result, expected_entry));
+                assert!(SharedCons::ptr_eq(&result, &expected_entry));
                 assert_eq!(*result.cdr.borrow(), Value::Integer(expected));
             }
             // A name that reaches the Rust boundary resolves to the live
@@ -6786,7 +6805,7 @@ mod tests {
                 &[Value::symbol("match"), alist],
             )
             .expect("native assq");
-        let (Value::Cons(result), Value::Cons(expected)) = (result, match_entry) else {
+        let (Kind::Cons(result), Kind::Cons(expected)) = (result.kind(), match_entry.kind()) else {
             panic!("assq did not return the matching alist cell");
         };
         assert!(SharedCons::ptr_eq(&result, &expected));
@@ -6982,7 +7001,8 @@ mod tests {
                 &[Value::symbol("match"), list],
             )
             .expect("native memq");
-        let (Value::Cons(result), Value::Cons(expected)) = (result, matching_tail) else {
+        let (Kind::Cons(result), Kind::Cons(expected)) = (result.kind(), matching_tail.kind())
+        else {
             panic!("memq did not return the matching list tail");
         };
         assert!(SharedCons::ptr_eq(&result, &expected));
@@ -7091,14 +7111,14 @@ mod tests {
                     .expect("condition is a proper list");
                 assert_eq!(condition.len(), 2);
                 assert_eq!(condition[0], Value::symbol("void-variable"));
-                match (&condition[1], &original) {
-                    (Value::Symbol(actual), Value::Symbol(expected)) => assert_eq!(
+                match (condition[1].kind(), original.kind()) {
+                    (Kind::Symbol(actual), Kind::Symbol(expected)) => assert_eq!(
                         actual.identity_ptr(),
                         expected.identity_ptr(),
                         "target={target:?}: report the exact original symbol, not its alias target"
                     ),
-                    (Value::Record(actual), Value::Record(expected)) => assert!(
-                        actual.ptr_eq(expected),
+                    (Kind::Record(actual), Kind::Record(expected)) => assert!(
+                        actual.ptr_eq(&expected),
                         "target={target:?}: retain the original positioned-symbol object"
                     ),
                     _ => panic!("condition lost the original symbol: {condition:?}"),
@@ -8355,7 +8375,7 @@ mod tests {
             (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
         }
         assert!(snapshot.is_current());
-        let Value::Cons(cell) = &unrelated else {
+        let Kind::Cons(cell) = unrelated.kind() else {
             unreachable!()
         };
         assert_ne!(
@@ -8647,7 +8667,7 @@ mod tests {
                 }
 
                 let cycle = Value::cons(Value::Integer(37), Value::Nil);
-                let Value::Cons(cell) = &cycle else {
+                let Kind::Cons(cell) = cycle.kind() else {
                     unreachable!();
                 };
                 *cell.cdr.borrow_mut() = cycle;
@@ -8672,10 +8692,10 @@ mod tests {
         let head_word = heap.encode(&Value::Integer(1)).expect("encode head fixnum");
         let list_word = heap.cons(head_word, tail_word);
         let list = heap.decode(list_word).expect("decode native cons");
-        let Value::Cons(cell) = &list else {
+        let Kind::Cons(cell) = list.kind() else {
             panic!("native cons decoded as a non-cons value");
         };
-        assert_ne!(ConsCell::identity(cell), 0);
+        assert_ne!(ConsCell::identity(&cell), 0);
         assert_eq!(
             heap.encode(&list).expect("re-encode materialized cons"),
             list_word
@@ -8827,12 +8847,12 @@ mod tests {
                     .expect("primitive cons")
             };
             let value = heap.decode(root).expect("existing cons view");
-            let Value::Cons(cell) = &value else {
+            let Kind::Cons(cell) = value.kind() else {
                 panic!("cons view");
             };
             let unrelated = heap.cons(0, 0);
             let unrelated_value = heap.decode(unrelated).expect("unreached cons view");
-            let Value::Cons(unrelated_cell) = &unrelated_value else {
+            let Kind::Cons(unrelated_cell) = unrelated_value.kind() else {
                 panic!("unreached cons");
             };
             unsafe {
@@ -8870,7 +8890,7 @@ mod tests {
         let environment = Env::new();
         let mut heap = NativeHeapOwner::new();
         let symbol = Value::symbol("r02c-slot-probe");
-        let Value::Symbol(name) = &symbol else {
+        let Kind::Symbol(name) = symbol.kind() else {
             unreachable!()
         };
         assert_eq!(name.native_slot(), 0);
@@ -8879,7 +8899,7 @@ mod tests {
         let slot = name.native_slot();
         assert_ne!(slot, 0);
         assert_eq!((slot >> 32) as u32, heap.id);
-        assert_eq!(heap.symbol_word_from_slot(name), Some(first));
+        assert_eq!(heap.symbol_word_from_slot(&name), Some(first));
         assert_eq!(heap.encode(&symbol).expect("encode again"), first);
         assert_eq!(
             heap.handle_by_value.len(),
@@ -8898,11 +8918,11 @@ mod tests {
             0,
             "a swept handle leaves no slot behind"
         );
-        assert_eq!(heap.symbol_word_from_slot(name), None);
+        assert_eq!(heap.symbol_word_from_slot(&name), None);
         let second = heap.encode(&symbol).expect("encode after the sweep");
         assert_eq!(second & TAG_MASK, TAG_SYMBOL);
         assert_ne!(name.native_slot(), 0);
-        assert_eq!(heap.symbol_word_from_slot(name), Some(second));
+        assert_eq!(heap.symbol_word_from_slot(&name), Some(second));
     }
 
     #[test]
@@ -8911,20 +8931,20 @@ mod tests {
         // that belongs to the other heap is not this heap's answer, and a
         // slot whose handle now holds something else is ignored.
         let symbol = Value::symbol("r02c-two-heaps");
-        let Value::Symbol(name) = &symbol else {
+        let Kind::Symbol(name) = symbol.kind() else {
             unreachable!()
         };
         let mut first_heap = NativeHeapOwner::new();
         let mut second_heap = NativeHeapOwner::new();
         let first = first_heap.encode(&symbol).expect("first heap");
-        assert_eq!(first_heap.symbol_word_from_slot(name), Some(first));
-        assert_eq!(second_heap.symbol_word_from_slot(name), None);
+        assert_eq!(first_heap.symbol_word_from_slot(&name), Some(first));
+        assert_eq!(second_heap.symbol_word_from_slot(&name), None);
         let second = second_heap.encode(&symbol).expect("second heap");
         assert_ne!(first, second);
-        assert_eq!(second_heap.symbol_word_from_slot(name), Some(second));
+        assert_eq!(second_heap.symbol_word_from_slot(&name), Some(second));
         // The slot now names the second heap; the first heap falls back to
         // its own table and still answers its own word.
-        assert_eq!(first_heap.symbol_word_from_slot(name), None);
+        assert_eq!(first_heap.symbol_word_from_slot(&name), None);
         assert_eq!(first_heap.encode(&symbol).expect("first heap again"), first);
         assert_eq!(first_heap.handle_by_value.len(), 1);
 
@@ -8972,7 +8992,7 @@ mod tests {
             "the control cons must actually be swept"
         );
         let vector = heap.decode(root).expect("root vector survives collection");
-        let Value::Vector(vector) = vector else {
+        let Kind::Vector(vector) = vector.kind() else {
             panic!("native root must remain a vector");
         };
         assert_eq!(
@@ -9026,7 +9046,7 @@ mod tests {
                 .heap
                 .native_cons_is_live(child.wrapping_sub(TAG_CONS) as *const NativeCons)
         );
-        let Value::Vector(vector) = result else {
+        let Kind::Vector(vector) = result.kind() else {
             panic!("returned vector");
         };
         assert_eq!(
@@ -9102,8 +9122,8 @@ mod tests {
             let old_child = heap.cons(TAG_FIXNUM_LOW, 0);
             let new_child = heap.cons((9 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let parent = heap.cons(old_child, 0);
-            let old_owner = match heap.decode(old_child).expect("old child") {
-                Value::Cons(cell) => (cell.as_ptr() as usize ^ HIDE, cell.serial),
+            let old_owner = match heap.decode(old_child).expect("old child").kind() {
+                Kind::Cons(cell) => (cell.as_ptr() as usize ^ HIDE, cell.serial),
                 _ => panic!("old cons"),
             };
             interpreter.set_global_binding("native-gc-root", heap.decode(parent).expect("parent"));
@@ -9164,7 +9184,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Value::Record(id) = table else {
+        let Kind::Record(id) = table.kind() else {
             panic!("hash table record");
         };
         interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
@@ -9224,7 +9244,7 @@ mod tests {
             let key = heap.decode(key_word).expect("weak table key");
             let value = heap.decode(value_word).expect("weak table value");
             let table = crate::lisp::json::make_hash_table(interpreter, "equal", Vec::new());
-            let Value::Record(id) = table else {
+            let Kind::Record(id) = table.kind() else {
                 panic!("hash table record");
             };
             interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
@@ -9263,7 +9283,7 @@ mod tests {
             1
         );
 
-        let Value::Vector(vector) = vector else {
+        let Kind::Vector(vector) = vector.kind() else {
             panic!("key's vector owner");
         };
         vector.slots_mut()[0] = Value::Nil;
@@ -9306,7 +9326,7 @@ mod tests {
             let mut tables = Vec::new();
             for (name, key, value) in [("weak-first", x, y), ("weak-second", z, x)] {
                 let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
-                let Value::Record(id) = table else {
+                let Kind::Record(id) = table.kind() else {
                     panic!("hash table record");
                 };
                 interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
@@ -9351,7 +9371,7 @@ mod tests {
                 1
             );
         }
-        let Value::Vector(vector) = root_value else {
+        let Kind::Vector(vector) = root_value.kind() else {
             panic!("strong root vector");
         };
         vector.slots_mut()[0] = Value::Nil;
@@ -9710,7 +9730,7 @@ mod tests {
             let word = heap
                 .encode(&record)
                 .expect("encode record reachable only through native storage");
-            let (Value::Record(record), Value::Record(other)) = (record, other) else {
+            let (Kind::Record(record), Kind::Record(other)) = (record.kind(), other.kind()) else {
                 unreachable!("records")
             };
             (word, record.identity() ^ HIDE, other.id)
@@ -9736,9 +9756,10 @@ mod tests {
         // The decoded value stays out of this frame too.
         #[inline(never)]
         fn decoded_identity(heap: &mut NativeHeapOwner, word: usize) -> usize {
-            let Value::Record(decoded) = heap
+            let Kind::Record(decoded) = heap
                 .decode(word)
                 .expect("published native root remains live")
+                .kind()
             else {
                 panic!("the native root decodes to the record");
             };

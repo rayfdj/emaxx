@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::lisp::eval::coding::*;
+use crate::lisp::types::Kind;
 
 const ISO_CODE_SO: u8 = 0x0E;
 const ISO_CODE_SI: u8 = 0x0F;
@@ -113,7 +114,8 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
             ))
         })
         .collect();
-    let full_support = matches!(&state.charset_list, Value::Symbol(name) if name == "iso-2022");
+    let full_support =
+        matches!(state.charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
     let flags = args
         .get(3)
         .and_then(|flags| flags.as_integer().ok())

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use crate::lisp::types::StringPropertySpan;
 
 struct CircularReadMaterializer<'a> {
@@ -16,7 +17,7 @@ impl CircularReadMaterializer<'_> {
     }
 
     fn circular_label(value: &Value) -> Option<(u32, Value)> {
-        let Value::ReaderForm(form) = value else {
+        let Kind::ReaderForm(form) = value.kind() else {
             return None;
         };
         match form.as_ref() {
@@ -26,7 +27,7 @@ impl CircularReadMaterializer<'_> {
     }
 
     fn circular_reference(value: &Value) -> Option<u32> {
-        let Value::ReaderForm(form) = value else {
+        let Kind::ReaderForm(form) = value.kind() else {
             return None;
         };
         match form.as_ref() {
@@ -47,8 +48,8 @@ impl CircularReadMaterializer<'_> {
         };
         end.is_nil()
             && matches!(
-                &literal,
-                Value::ReaderForm(form)
+                literal.kind(),
+                Kind::ReaderForm(form)
                     if matches!(form.as_ref(), ReaderForm::HashTable { .. })
             )
             && crate::lisp::reader::contains_circular_read_syntax(&literal)
@@ -128,7 +129,7 @@ impl CircularReadMaterializer<'_> {
             resolved.push(slot);
         }
 
-        let Value::Record(record_id) = placeholder else {
+        let Kind::Record(record_id) = placeholder.kind() else {
             unreachable!("record placeholder allocation returns a record")
         };
         if ordinary_record {
@@ -165,8 +166,8 @@ impl CircularReadMaterializer<'_> {
             if Self::circular_reference(&template) == Some(id) {
                 return Err(LispError::ReadError("nonsensical self-reference".into()));
             }
-            if let Value::ReaderForm(form) = &template
-                && let Some(record) = self.record_placeholder(form, Some(id))?
+            if let Kind::ReaderForm(form) = template.kind()
+                && let Some(record) = self.record_placeholder(&form, Some(id))?
             {
                 return Ok(record);
             }
@@ -177,11 +178,11 @@ impl CircularReadMaterializer<'_> {
             // cloning every list in a form that happens to contain a label.
             // Besides matching GNU's identity model, this avoids quadratic
             // list rescans in comp.el's large serialized compiler context.
-            let placeholder = matches!(template, Value::Cons(_)).then(|| template);
+            let placeholder = matches!(template.kind(), Kind::Cons(_)).then(|| template);
             if let Some(placeholder) = placeholder {
                 self.labels.insert(id, placeholder);
-                if let Value::Cons(cell) = &placeholder {
-                    self.resolved_cons.insert(ConsCell::identity(cell));
+                if let Kind::Cons(cell) = placeholder.kind() {
+                    self.resolved_cons.insert(ConsCell::identity(&cell));
                 }
                 self.fill_cons(&template, &placeholder)?;
                 return Ok(placeholder);
@@ -192,9 +193,9 @@ impl CircularReadMaterializer<'_> {
             return Ok(resolved);
         }
 
-        match value {
-            Value::Cons(cell) => {
-                if !self.resolved_cons.insert(ConsCell::identity(cell)) {
+        match value.kind() {
+            Kind::Cons(cell) => {
+                if !self.resolved_cons.insert(ConsCell::identity(&cell)) {
                     return Ok(*value);
                 }
                 let Some((car_cell, cdr_cell)) = value.cons_cells() else {
@@ -206,7 +207,7 @@ impl CircularReadMaterializer<'_> {
                 *cdr_cell.borrow_mut() = self.resolve(&cdr)?;
                 Ok(*value)
             }
-            Value::Vector(vector) => {
+            Kind::Vector(vector) => {
                 if !self.resolved_vectors.insert(vector.identity()) {
                     return Ok(*value);
                 }
@@ -216,7 +217,7 @@ impl CircularReadMaterializer<'_> {
                 }
                 Ok(*value)
             }
-            Value::StringObject(state) => {
+            Kind::StringObject(state) => {
                 let spans = state.borrow().props.clone();
                 let mut resolved_spans = Vec::with_capacity(spans.len());
                 for span in spans {
@@ -229,8 +230,8 @@ impl CircularReadMaterializer<'_> {
                 state.borrow_mut().props = resolved_spans;
                 Ok(*value)
             }
-            Value::ReaderForm(form) => {
-                if let Some(record) = self.record_placeholder(form, None)? {
+            Kind::ReaderForm(form) => {
+                if let Some(record) = self.record_placeholder(&form, None)? {
                     return Ok(record);
                 }
                 let resolve_fields = |this: &mut Self, fields: &[Value]| {
@@ -351,7 +352,7 @@ impl Interpreter {
         active_reader_forms: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
-        if let Value::ReaderForm(form) = value
+        if let Kind::ReaderForm(form) = value.kind()
             && let ReaderForm::BoolVector { bits } = form.as_ref()
         {
             // GNU's reader allocates the bool vector itself; Emaxx does it
@@ -366,7 +367,7 @@ impl Interpreter {
                     .collect(),
             ));
         }
-        if let Value::ReaderForm(form) = value
+        if let Kind::ReaderForm(form) = value.kind()
             && matches!(
                 form.as_ref(),
                 ReaderForm::Record { .. } | ReaderForm::Closure { .. }
@@ -426,7 +427,7 @@ impl Interpreter {
             records.insert(identity, record);
             return Ok(record);
         }
-        if let Value::Vector(vector) = value {
+        if let Kind::Vector(vector) = value.kind() {
             if !seen_vectors.insert(vector.identity()) {
                 return Ok(*value);
             }
@@ -497,11 +498,11 @@ impl Interpreter {
         let environment = slots[2];
         let mut cursor = environment;
         let mut seen = std::collections::HashSet::new();
-        while let Value::Cons(list_cell) = cursor {
+        while let Kind::Cons(list_cell) = cursor.kind() {
             if !seen.insert(ConsCell::identity(&list_cell)) {
                 break;
             }
-            if let Value::Symbol(name) = &*list_cell.car.borrow() {
+            if let Kind::Symbol(name) = (*list_cell.car.borrow()).kind() {
                 self.note_captured_local_special(name.as_str());
             }
             cursor = *list_cell.cdr.borrow();
@@ -669,9 +670,9 @@ impl Interpreter {
             .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
             .unwrap_or(Value::Nil);
         let mut cursor = crate::lisp::types::current_environment_value(env);
-        while let Value::Cons(list_cell) = cursor {
+        while let Kind::Cons(list_cell) = cursor.kind() {
             let entry = *list_cell.car.borrow();
-            if let Value::Symbol(_) | Value::T | Value::Nil = entry {
+            if let Kind::Symbol(_) | Kind::T | Kind::Nil = entry.kind() {
                 dynvars = Value::cons(entry, dynvars);
             }
             cursor = *list_cell.cdr.borrow();
@@ -764,12 +765,12 @@ impl Interpreter {
         let Ok(items) = form.to_vec() else {
             return Ok(*form);
         };
-        let Some(Value::Symbol(name)) = items.first() else {
+        let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind()) else {
             return Ok(*form);
         };
         Ok(self
             .try_macroexpand_with_environment(
-                name,
+                &name,
                 &items[1..],
                 macro_environment,
                 MacroCaller::Macroexpand,
@@ -790,9 +791,9 @@ pub(super) enum MacroCaller {
 
 fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
     let mut entries = *macro_environment?;
-    while let Value::Cons(_) = &entries {
+    while let Kind::Cons(_) = entries.kind() {
         let entry = entries.car().ok()?;
-        if let Value::Cons(_) = entry {
+        if let Kind::Cons(_) = entry.kind() {
             let symbol = entry.car().ok()?;
             if symbol.as_symbol().ok()? == name {
                 return entry.cdr().ok();

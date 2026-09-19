@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::eval::RecordKind;
+use crate::lisp::types::Kind;
 
 fn string_argument(value: &Value) -> Result<String, LispError> {
     string_like(value)
@@ -135,7 +136,7 @@ pub(crate) fn comp_el_to_eln_rel_filename(
             "string-match",
             &[regexp, Value::string(&filename), Value::Nil, Value::Nil],
         )?;
-        if matches!(index, Value::Integer(0)) {
+        if matches!(index.kind(), Kind::Integer(0)) {
             let replaced = c_primitive(
                 interp,
                 env,
@@ -384,7 +385,7 @@ pub(crate) fn native_elisp_load(
     } else {
         crate::lisp::native_comp::open_unit(filename, &name)?
     };
-    let Value::Record(candidate_id) = candidate_unit else {
+    let Kind::Record(candidate_id) = candidate_unit.kind() else {
         unreachable!("native compilation unit is a pseudovector")
     };
     interp
@@ -478,10 +479,10 @@ define_dispatch!(
             }
             "comp--install-trampoline" => {
                 need_args(name, args, 2)?;
-                let Value::Symbol(symbol) = &args[0] else {
+                let Kind::Symbol(symbol) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                let Value::Record(trampoline_id) = args[1] else {
+                let Kind::Record(trampoline_id) = args[1].kind() else {
                     return Err(wrong_type_argument("subrp", args[1]));
                 };
                 if !interp.find_record(trampoline_id).is_some_and(|record| {
@@ -489,8 +490,8 @@ define_dispatch!(
                 }) {
                     return Err(wrong_type_argument("subrp", args[1]));
                 }
-                let original = interp.lookup_function(symbol, env)?;
-                let Value::BuiltinFunc(original_name) = original else {
+                let original = interp.lookup_function(&symbol, env)?;
+                let Kind::BuiltinFunc(original_name) = original.kind() else {
                     return Err(wrong_type_argument("subrp", original));
                 };
                 let subroutine_index = crate::lisp::native_comp::subroutine_index(&original_name)

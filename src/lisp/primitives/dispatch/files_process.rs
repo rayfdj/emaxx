@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 #[cfg(unix)]
 static ACCOUNT_DATABASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -148,10 +149,10 @@ enum AddressFamily {
 
 impl AddressFamily {
     fn parse(value: Option<&Value>) -> Result<Self, LispError> {
-        match value {
-            None | Some(Value::Nil) => Ok(Self::Both),
-            Some(Value::Symbol(family)) if family == "ipv4" => Ok(Self::Ipv4),
-            Some(Value::Symbol(family)) if family == "ipv6" => Ok(Self::Ipv6),
+        match value.map(|v| v.kind()) {
+            None | Some(Kind::Nil) => Ok(Self::Both),
+            Some(Kind::Symbol(family)) if family == "ipv4" => Ok(Self::Ipv4),
+            Some(Kind::Symbol(family)) if family == "ipv6" => Ok(Self::Ipv6),
             _ => Err(LispError::Signal("Unsupported family".into())),
         }
     }
@@ -554,7 +555,7 @@ define_dispatch!(
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
                 let requested = args.first().filter(|value| !value.is_nil());
-                if let Some(Value::Buffer(buffer)) = requested
+                if let Some(Kind::Buffer(buffer)) = requested.map(|v| v.kind())
                     && !interp.has_buffer_id(buffer.id)
                     && let Some(file) = interp.killed_buffer_file_name(buffer.id)
                 {
@@ -591,9 +592,9 @@ define_dispatch!(
                 .unwrap_or(Value::Integer(0))),
             "verify-visited-file-modtime" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = match args.first() {
-                    None | Some(Value::Nil) => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                let buffer_id = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.current_buffer_id(),
+                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
                 };
                 let remote_visit = interp.buffer_remote_prefix(buffer_id).is_some();
                 let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
@@ -622,16 +623,16 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let modtime = match args.first() {
-                    None | Some(Value::Nil) => {
+                let modtime = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => {
                         if let Some(path) = interp.buffer.file.clone() {
                             file_modtime(&path)?
                         } else {
                             None
                         }
                     }
-                    Some(Value::Integer(0)) => None,
-                    Some(value) => Some(file_modtime_from_value(interp, value)?),
+                    Some(Kind::Integer(0)) => None,
+                    Some(value) => Some(file_modtime_from_value(interp, &value.value())?),
                 };
                 interp.buffer.set_visited_file_modtime(modtime);
                 Ok(Value::Nil)
@@ -1316,8 +1317,8 @@ define_dispatch!(
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
                 if fs::symlink_metadata(&target).is_ok() {
-                    let accept_existing = match args.get(2) {
-                        Some(Value::Integer(_)) => call_named_function(
+                    let accept_existing = match args.get(2).map(|v| v.kind()) {
+                        Some(Kind::Integer(_)) => call_named_function(
                             interp,
                             "yes-or-no-p",
                             &[Value::String(
@@ -1326,7 +1327,7 @@ define_dispatch!(
                             env,
                         )?
                         .is_truthy(),
-                        Some(value) => value.is_truthy(),
+                        Some(value) => value.value().is_truthy(),
                         None => false,
                     };
                     if accept_existing {
@@ -1426,8 +1427,8 @@ define_dispatch!(
             "inotify-rm-watch" => {
                 need_args(name, args, 1)?;
                 let valid = args[0].cons_values().is_some_and(|(watch, id)| {
-                    matches!(watch, Value::Integer(value) if value >= 0 && value <= i64::from(i32::MAX))
-                        && matches!(id, Value::Integer(value) if value >= 0)
+                    matches!(watch.kind(), Kind::Integer(value) if value >= 0 && value <= i64::from(i32::MAX))
+                        && matches!(id.kind(), Kind::Integer(value) if value >= 0)
                 });
                 if !valid {
                     // report_file_notify_error renders whatever errno the
@@ -1765,9 +1766,9 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                let modified = match args.get(1) {
-                    None | Some(Value::Nil) => SystemTime::now(),
-                    Some(value) => file_modtime_from_value(interp, value)?.modified,
+                let modified = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => SystemTime::now(),
+                    Some(value) => file_modtime_from_value(interp, &value.value())?.modified,
                 };
                 set_file_times_path(&path, modified, args.get(2).is_some_and(Value::is_truthy))?;
                 dispatch_file_notification(interp, env, &path, "attribute-changed")?;
@@ -1834,8 +1835,8 @@ define_dispatch!(
                 validate_file_name(&target)?;
                 validate_file_name(&link)?;
                 if fs::symlink_metadata(&link).is_ok() {
-                    let replace = match args.get(2) {
-                        Some(Value::Integer(_)) => call_named_function(
+                    let replace = match args.get(2).map(|v| v.kind()) {
+                        Some(Kind::Integer(_)) => call_named_function(
                             interp,
                             "yes-or-no-p",
                             &[Value::String(
@@ -1844,7 +1845,7 @@ define_dispatch!(
                             env,
                         )?
                         .is_truthy(),
-                        Some(value) => value.is_truthy(),
+                        Some(value) => value.value().is_truthy(),
                         None => false,
                     };
                     if !replace {
@@ -1876,8 +1877,8 @@ define_dispatch!(
                 }
                 let program = string_text(&args[0])?;
                 let input = match args.get(1) {
-                    Some(value) if !value.is_nil() => match value {
-                        Value::Integer(0) => None,
+                    Some(value) if !value.is_nil() => match value.kind() {
+                        Kind::Integer(0) => None,
                         _ => {
                             let requested_infile = string_text(value)?;
                             let infile = unquote_local_file_name(&requested_infile)
@@ -1925,11 +1926,13 @@ define_dispatch!(
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
             "get-buffer-process" => {
                 need_arg_range(name, args, 1, 1)?;
-                let buffer_id = match args.first() {
-                    None | Some(Value::Nil) => Some(interp.current_buffer_id()),
-                    Some(buffer) if string_like(buffer).is_some() => string_like(buffer)
-                        .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id)),
-                    Some(buffer) => Some(interp.resolve_buffer_id(buffer)?),
+                let buffer_id = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Some(interp.current_buffer_id()),
+                    Some(buffer) if string_like(&buffer.value()).is_some() => {
+                        string_like(&buffer.value())
+                            .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id))
+                    }
+                    Some(buffer) => Some(interp.resolve_buffer_id(&buffer.value())?),
                 };
                 Ok(buffer_id
                     .and_then(|id| interp.process_value_for_buffer(id))
@@ -2194,7 +2197,7 @@ define_dispatch!(
             }
             "get-process" => {
                 need_args(name, args, 1)?;
-                if matches!(&args[0], Value::Record(_)) {
+                if matches!(args[0].kind(), Kind::Record(_)) {
                     return Ok(args[0]);
                 }
                 let requested = string_text(&args[0])?;
@@ -2210,7 +2213,7 @@ define_dispatch!(
                 // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
                 need_arg_range(name, args, 1, 3)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                if matches!(args.get(1), Some(Value::Symbol(key)) if key == ":remote")
+                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key == ":remote")
                     && let Some(address) = interp.process_datagram_address(process_id)?
                 {
                     return Ok(sockaddr_vector(address));
@@ -2218,22 +2221,23 @@ define_dispatch!(
                 let contact = interp
                     .process_contact_plist(process_id)
                     .unwrap_or(Value::Nil);
-                if !matches!(contact, Value::Cons(_)) {
+                if !matches!(contact.kind(), Kind::Cons(_)) {
                     return Ok(contact);
                 }
-                match args.get(1) {
-                    Some(Value::T) => Ok(contact),
-                    None | Some(Value::Nil) if interp.is_serial_process(process_id) => {
+                match args.get(1).map(|v| v.kind()) {
+                    Some(Kind::T) => Ok(contact),
+                    None | Some(Kind::Nil) if interp.is_serial_process(process_id) => {
                         Ok(Value::list([
                             contact_plist_get(&contact, ":port"),
                             contact_plist_get(&contact, ":speed"),
                         ]))
                     }
-                    None | Some(Value::Nil) => Ok(Value::list([
+                    None | Some(Kind::Nil) => Ok(Value::list([
                         contact_plist_get(&contact, ":host"),
                         contact_plist_get(&contact, ":service"),
                     ])),
                     Some(key) => Ok(key
+                        .value()
                         .as_symbol()
                         .map(|key| contact_plist_get(&contact, key))
                         .unwrap_or(Value::Nil)),
@@ -2289,9 +2293,9 @@ define_dispatch!(
                     )));
                 }
                 let family = AddressFamily::parse(args.get(1))?;
-                let numeric = match args.get(2) {
-                    None | Some(Value::Nil) => false,
-                    Some(Value::Symbol(hint)) if hint == "numeric" => true,
+                let numeric = match args.get(2).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => false,
+                    Some(Kind::Symbol(hint)) if hint == "numeric" => true,
                     _ => return Err(LispError::Signal("Unsupported hints value".into())),
                 };
                 let addresses = match network_lookup_addresses(&host, family, numeric) {
@@ -2585,13 +2589,13 @@ define_dispatch!(
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;
-                let start = match args.first() {
-                    None | Some(Value::Nil) => interp.buffer.point_min(),
-                    Some(start) => position_from_value(interp, start)?,
+                let start = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.buffer.point_min(),
+                    Some(start) => position_from_value(interp, &start.value())?,
                 };
-                let end = match args.get(1) {
-                    None | Some(Value::Nil) => interp.buffer.point_max(),
-                    Some(end) => position_from_value(interp, end)?,
+                let end = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.buffer.point_max(),
+                    Some(end) => position_from_value(interp, &end.value())?,
                 };
                 // GNU's `validate_region' canonicalizes reversed bounds before
                 // handing the bytes to libxml2.
@@ -2672,7 +2676,9 @@ define_dispatch!(
                 let id = if let Some(buffer) = args.first().filter(|buffer| !buffer.is_nil()) {
                     match interp.resolve_buffer_id(buffer) {
                         Ok(id) => id,
-                        Err(_) if matches!(buffer, Value::Buffer(_)) => return Ok(Value::Nil),
+                        Err(_) if matches!(buffer.kind(), Kind::Buffer(_)) => {
+                            return Ok(Value::Nil);
+                        }
                         Err(error) => return Err(error),
                     }
                 } else {
@@ -2902,23 +2908,23 @@ fn process_designator_value(
     designator: Option<&Value>,
 ) -> Result<Value, LispError> {
     let requested = designator.cloned().unwrap_or(Value::Nil);
-    let process = match designator {
-        None | Some(Value::Nil) => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Value::Record(_)) => Some(*process),
-        Some(value) if string_like(value).is_some() => {
-            let name = string_text(value)?;
+    let process = match designator.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => interp.process_value_for_buffer(interp.current_buffer_id()),
+        Some(process @ Kind::Record(_)) => Some(process.value()),
+        Some(value) if string_like(&value.value()).is_some() => {
+            let name = string_text(&value.value())?;
             interp
                 .find_process_id_by_name(&name)
                 .map(|id| interp.record_value(id))
                 .or_else(|| {
                     interp
-                        .resolve_buffer_id(value)
+                        .resolve_buffer_id(&value.value())
                         .ok()
                         .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
                 })
         }
         Some(value) => interp
-            .resolve_buffer_id(value)
+            .resolve_buffer_id(&value.value())
             .ok()
             .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
     };
@@ -2941,7 +2947,7 @@ fn make_process_value(
         .as_chunks::<2>()
         .0
         .iter()
-        .find(|pair| matches!(&pair[0], Value::Symbol(key) if key == ":file-handler"))
+        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key == ":file-handler"))
         .is_some_and(|pair| pair[1].is_truthy());
     if file_handler {
         let default_directory = interp
@@ -3320,8 +3326,8 @@ fn set_socket_option(
     // process.c:2921 rejects a non-string, non-nil device name BEFORE the
     // syscall, with a distinct message from the unknown-option one.
     let device = if let Kind::IfName = kind {
-        match value {
-            Value::Nil => None,
+        match value.kind() {
+            crate::lisp::types::Kind::Nil => None,
             // process.c:2920 gates on STRINGP.  Emaxx has two string
             // representations (`String' and the shared `StringObject'), so
             // test through `string_text' rather than one variant.
@@ -3340,8 +3346,8 @@ fn set_socket_option(
     // kernel; anything else is "Bad option value" BEFORE the syscall.
     #[cfg(target_os = "linux")]
     let int_value = if let Kind::Int = kind {
-        match value {
-            Value::Integer(count) => match libc::c_int::try_from(*count) {
+        match value.kind() {
+            crate::lisp::types::Kind::Integer(count) => match libc::c_int::try_from(count) {
                 Ok(count) => Some(count),
                 Err(_) => {
                     return Err(LispError::Signal(format!("Bad option value for {option}")));
@@ -3386,8 +3392,8 @@ fn set_socket_option(
                 // anything else (float, string, bignum, t) leaves it 0 and
                 // just toggles l_onoff.  Truncating an out-of-range integer
                 // would put a value in the kernel that GNU never would.
-                let seconds = match value {
-                    Value::Integer(count) => i32::try_from(*count).ok(),
+                let seconds = match value.kind() {
+                    crate::lisp::types::Kind::Integer(count) => i32::try_from(count).ok(),
                     _ => None,
                 };
                 let linger = libc::linger {

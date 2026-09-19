@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 /// (host, service, remote-peer, is-server) for `process-contact'.
 pub(crate) type ProcessContactInfo = (Option<String>, Option<i64>, Option<String>, bool);
@@ -366,54 +367,54 @@ impl Interpreter {
     }
 
     pub fn resolve_thread_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value {
-            Value::Record(id)
+        match value.kind() {
+            Kind::Record(id)
                 if self
-                    .find_record(*id)
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Thread) =>
             {
                 Ok(id.id)
             }
-            other => Err(wrong_type_argument("threadp", *other)),
+            other => Err(wrong_type_argument("threadp", other.value())),
         }
     }
 
     pub fn resolve_mutex_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value {
-            Value::Record(id)
+        match value.kind() {
+            Kind::Record(id)
                 if self
-                    .find_record(*id)
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Mutex) =>
             {
                 Ok(id.id)
             }
-            other => Err(wrong_type_argument("mutexp", *other)),
+            other => Err(wrong_type_argument("mutexp", other.value())),
         }
     }
 
     pub fn resolve_condition_variable_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value {
-            Value::Record(id)
+        match value.kind() {
+            Kind::Record(id)
                 if self
-                    .find_record(*id)
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::ConditionVariable) =>
             {
                 Ok(id.id)
             }
-            other => Err(wrong_type_argument("condition-variable-p", *other)),
+            other => Err(wrong_type_argument("condition-variable-p", other.value())),
         }
     }
 
     pub fn resolve_process_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value {
-            Value::Record(id)
+        match value.kind() {
+            Kind::Record(id)
                 if self
-                    .find_record(*id)
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Process) =>
             {
                 Ok(id.id)
             }
-            other => Err(wrong_type_argument("processp", *other)),
+            other => Err(wrong_type_argument("processp", other.value())),
         }
     }
 
@@ -486,11 +487,11 @@ impl Interpreter {
         // <N> on collision), not the program.
         let name = self.unique_process_name(&name.or_else(|| program.clone()).unwrap_or_default());
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process else {
+        let Kind::Record(record_id) = process.kind() else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
-        let Value::Marker(mark_marker_id) = marker else {
+        let Kind::Marker(mark_marker_id) = marker.kind() else {
             unreachable!("make_marker returns a marker")
         };
         let initial_position =
@@ -576,11 +577,11 @@ impl Interpreter {
             | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
         };
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process else {
+        let Kind::Record(record_id) = process.kind() else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
-        let Value::Marker(mark_marker_id) = marker else {
+        let Kind::Marker(mark_marker_id) = marker.kind() else {
             unreachable!("make_marker returns a marker")
         };
         let initial_position =
@@ -646,11 +647,11 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let name = self.unique_process_name(name);
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
-        let Value::Record(record_id) = process else {
+        let Kind::Record(record_id) = process.kind() else {
             unreachable!("create_record returns a record")
         };
         let marker = self.make_marker();
-        let Value::Marker(mark_marker_id) = marker else {
+        let Kind::Marker(mark_marker_id) = marker.kind() else {
             unreachable!("make_marker returns a marker")
         };
         let initial_position = self
@@ -1659,7 +1660,8 @@ impl Interpreter {
                     group = foreground_group;
                 }
             }
-            if matches!(current_group, Value::Symbol(symbol) if symbol == "lambda") && group == pid
+            if matches!(current_group.kind(), Kind::Symbol(symbol) if symbol == "lambda")
+                && group == pid
             {
                 return Ok(());
             }
@@ -3231,7 +3233,7 @@ impl Interpreter {
         let continuation = continuations::ThreadContinuation::new(function)
             .map_err(|_| LispError::Signal("Could not start a new thread".into()))?;
         let value = self.create_pseudovector(RecordKind::Thread, "thread", Vec::new());
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             unreachable!("thread records are always record values");
         };
         let buffer_id = self.current_buffer_id;
@@ -3320,7 +3322,7 @@ impl Interpreter {
 
     pub fn make_mutex(&mut self, name: Option<String>) -> Value {
         let value = self.create_pseudovector(RecordKind::Mutex, "mutex", Vec::new());
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             unreachable!("mutex records are always record values");
         };
         self.mutex_states.push(MutexState {
@@ -3338,7 +3340,7 @@ impl Interpreter {
             "condition-variable",
             Vec::new(),
         );
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             unreachable!("condition variables are always record values");
         };
         self.condition_variables.push(ConditionVariableState {
@@ -3456,12 +3458,15 @@ impl Interpreter {
         if record_id == self.main_thread_id {
             return Err(wrong_type_argument("threadp", self.record_value(record_id)));
         }
-        let disposition = match value {
-            Value::Nil => BufferDisposition::Default,
-            Value::T => BufferDisposition::Preserve,
-            Value::Symbol(symbol) if symbol == "silently" => BufferDisposition::Silently,
+        let disposition = match value.kind() {
+            Kind::Nil => BufferDisposition::Default,
+            Kind::T => BufferDisposition::Preserve,
+            Kind::Symbol(symbol) if symbol == "silently" => BufferDisposition::Silently,
             other => {
-                return Err(wrong_type_argument("thread-buffer-disposition", *other));
+                return Err(wrong_type_argument(
+                    "thread-buffer-disposition",
+                    other.value(),
+                ));
             }
         };
         let record_id_value = self.record_value(record_id);

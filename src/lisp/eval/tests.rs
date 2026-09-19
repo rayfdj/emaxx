@@ -28,7 +28,7 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
                 let _ = root;
             }
             let cycle = Value::cons(Value::vector([leaf]), Value::Nil);
-            let Value::Cons(cell) = &cycle else {
+            let Kind::Cons(cell) = cycle.kind() else {
                 unreachable!("constructed cons");
             };
             *cell.cdr.borrow_mut() = cycle;
@@ -252,8 +252,8 @@ fn gnu_hash_storage_layout_and_growth_match_fns_c() {
 #[test]
 fn gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary() {
     let mut interp = Interpreter::new();
-    let Value::Record(id) =
-        crate::lisp::json::make_hash_table_with_capacity(&mut interp, "eql", Vec::new(), 0)
+    let Kind::Record(id) =
+        crate::lisp::json::make_hash_table_with_capacity(&mut interp, "eql", Vec::new(), 0).kind()
     else {
         unreachable!("hash-table constructor must return a record")
     };

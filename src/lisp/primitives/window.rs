@@ -1,6 +1,6 @@
 use super::{beginning_of_line_at, line_distance, prefix_numeric_value, signal_condition};
 use crate::lisp::eval::Interpreter;
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 
 pub(crate) const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
 
@@ -150,15 +150,15 @@ pub(crate) fn set_current_window_start(interp: &mut Interpreter, start: usize) {
 }
 
 pub(crate) fn window_record_id_from_value(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match value {
-        Value::Record(id)
+    match value.kind() {
+        Kind::Record(id)
             if interp
-                .find_record(*id)
+                .find_record(id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Window) =>
         {
             Some(id.id)
         }
-        Value::Symbol(symbol) if symbol == "window" => Some(interp.selected_window_id()),
+        Kind::Symbol(symbol) if symbol == "window" => Some(interp.selected_window_id()),
         _ => None,
     }
 }
@@ -183,16 +183,20 @@ pub(crate) fn window_start(
     interp: &Interpreter,
     value: Option<&Value>,
 ) -> Result<usize, LispError> {
-    match value {
-        None | Some(Value::Nil) => Ok(current_window_start(interp)),
+    match value.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(current_window_start(interp)),
         Some(value) => {
-            let Some(id) = window_record_id_from_value(interp, value) else {
-                return Err(LispError::WrongTypeArgument("windowp".into(), *value));
+            let Some(id) = window_record_id_from_value(interp, &value.value()) else {
+                return Err(LispError::WrongTypeArgument(
+                    "windowp".into(),
+                    value.value(),
+                ));
             };
             if id == interp.selected_window_id() {
                 return Ok(current_window_start(interp));
             }
-            let buffer_id = window_buffer_id(interp, value).unwrap_or(interp.current_buffer_id());
+            let buffer_id =
+                window_buffer_id(interp, &value.value()).unwrap_or(interp.current_buffer_id());
             let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
             Ok(interp
                 .find_record(id)
@@ -246,9 +250,9 @@ pub(crate) fn resolve_window_line(
     default_line: usize,
     text_height: usize,
 ) -> Result<isize, LispError> {
-    let line = match value {
-        None | Some(Value::Nil) => default_line as i64,
-        Some(value) => prefix_numeric_value(value)?.as_integer()?,
+    let line = match value.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => default_line as i64,
+        Some(value) => prefix_numeric_value(&value.value())?.as_integer()?,
     };
     Ok(if line >= 0 {
         line as isize

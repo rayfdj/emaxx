@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 #[derive(Clone, Debug)]
 pub(crate) struct StringLike {
@@ -142,16 +143,16 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
 /// shared text (`Value::String'): what a primitive reads and never keeps.
 /// A `StringObject' is copied out of its cell as `string_like' copies it.
 pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
-    match value {
-        Value::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
-        Value::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text.clone())),
+    match value.kind() {
+        Kind::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
+        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text.clone())),
         _ => None,
     }
 }
 
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
-    match value {
-        Value::String(text) => Some(StringLike {
+    match value.kind() {
+        Kind::String(text) => Some(StringLike {
             text: text.to_string(),
             props: Vec::new(),
             extended_chars: Vec::new(),
@@ -162,7 +163,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                     .chars()
                     .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
         }),
-        Value::StringObject(state) => {
+        Kind::StringObject(state) => {
             let state = state.borrow();
             Some(StringLike {
                 text: state.text.clone(),
@@ -206,15 +207,15 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
             .nth(index)
             .map(|ch| string_character_code(multibyte, ch))
     }
-    match value {
-        Value::String(text) => {
+    match value.kind() {
+        Kind::String(text) => {
             let text = text.as_str();
             let multibyte = text
                 .chars()
                 .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
             code_in(text, multibyte, &[], index)
         }
-        Value::StringObject(state) => {
+        Kind::StringObject(state) => {
             let state = state.borrow();
             code_in(&state.text, state.multibyte, &state.extended_chars, index)
         }
@@ -232,9 +233,9 @@ pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option
         value: &Value,
         f: impl FnOnce(&str, &[(usize, u32)], Option<bool>) -> R,
     ) -> Option<R> {
-        match value {
-            Value::String(text) => Some(f(text.as_str(), &[], None)),
-            Value::StringObject(state) => {
+        match value.kind() {
+            Kind::String(text) => Some(f(text.as_str(), &[], None)),
+            Kind::StringObject(state) => {
                 let state = state.borrow();
                 Some(f(&state.text, &state.extended_chars, Some(state.multibyte)))
             }
@@ -279,12 +280,12 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
 /// that accept symbols) is multibyte: fns.c compares bytes, and the same
 /// non-ASCII characters have different bytes in the two representations.
 pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
-    match value {
-        Value::StringObject(state) => state.borrow().multibyte,
-        Value::String(text) => text
+    match value.kind() {
+        Kind::StringObject(state) => state.borrow().multibyte,
+        Kind::String(text) => text
             .chars()
             .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
-        Value::Symbol(name) => !name.as_str().is_ascii(),
+        Kind::Symbol(name) => !name.as_str().is_ascii(),
         _ => false,
     }
 }
@@ -315,10 +316,10 @@ pub(crate) fn string_order(left: &Value, right: &Value) -> Result<std::cmp::Orde
 }
 
 pub(crate) fn string_comparison_text(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::Nil => Ok("nil".into()),
-        Value::T => Ok("t".into()),
-        Value::Symbol(name) => Ok(crate::lisp::types::visible_symbol_name(name).to_string()),
+    match value.kind() {
+        Kind::Nil => Ok("nil".into()),
+        Kind::T => Ok("t".into()),
+        Kind::Symbol(name) => Ok(crate::lisp::types::visible_symbol_name(&name).to_string()),
         _ => string_text(value),
     }
 }
@@ -480,20 +481,20 @@ mod collate_ffi {
 #[cfg(target_os = "linux")]
 fn collate_operand_codes(value: &Value) -> Result<Vec<i64>, LispError> {
     let named;
-    let value = match value {
-        Value::Symbol(name) => {
+    let value = match value.kind() {
+        Kind::Symbol(name) => {
             named = Value::String(name.to_string().into());
             &named
         }
-        Value::Nil => {
+        Kind::Nil => {
             named = Value::String("nil".into());
             &named
         }
-        Value::T => {
+        Kind::T => {
             named = Value::String("t".into());
             &named
         }
-        other => other,
+        other => &other.value(),
     };
     string_compare_codes(value, None, None, false, false)
 }
@@ -589,7 +590,7 @@ pub(crate) fn str_collate(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), LispError> {
     if locale.is_some_and(|value| {
-        !(value.is_nil() || matches!(value, Value::T) || string_like(value).is_some())
+        !(value.is_nil() || matches!(value.kind(), Kind::T) || string_like(value).is_some())
     }) {
         return Err(LispError::TypeError(
             "string".into(),
@@ -600,19 +601,19 @@ pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), Li
 }
 
 pub(crate) fn assoc_string_text(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::Nil => Ok("nil".into()),
-        Value::T => Ok("t".into()),
-        Value::Symbol(name) => Ok(name.to_string()),
+    match value.kind() {
+        Kind::Nil => Ok("nil".into()),
+        Kind::T => Ok("t".into()),
+        Kind::Symbol(name) => Ok(name.to_string()),
         _ => string_text(value),
     }
 }
 
 pub(crate) fn assoc_string_candidate_text(value: &Value) -> Option<String> {
-    match value {
-        Value::Nil => Some("nil".into()),
-        Value::T => Some("t".into()),
-        Value::Symbol(name) => Some(name.to_string()),
+    match value.kind() {
+        Kind::Nil => Some("nil".into()),
+        Kind::T => Some("t".into()),
+        Kind::Symbol(name) => Some(name.to_string()),
         _ => string_like(value).map(|string| string.text),
     }
 }
@@ -661,7 +662,7 @@ pub(crate) fn aset_string_value(
     index: usize,
     new_value: &Value,
 ) -> Result<Value, LispError> {
-    if !matches!(target, Value::String(_) | Value::StringObject(_)) {
+    if !matches!(target.kind(), Kind::String(_) | Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *target));
     }
     let code = new_value.as_integer()?;
@@ -669,7 +670,7 @@ pub(crate) fn aset_string_value(
     // place, one byte; the general case below rebuilds the text.
     // hex-util.el's `encode-hex-string' sets every byte of its result.
     if (0..=0x7F).contains(&code)
-        && let Value::StringObject(state) = target
+        && let Kind::StringObject(state) = target.kind()
     {
         let mut state = state.borrow_mut();
         if state.extended_chars.is_empty() && state.text.is_ascii() {
@@ -715,7 +716,7 @@ pub(crate) fn aset_string_value(
     };
     chars[index] = ch;
     string.text = chars.into_iter().collect();
-    if let Value::StringObject(state) = target {
+    if let Kind::StringObject(state) = target.kind() {
         let mut state = state.borrow_mut();
         state.text = string.text;
         state.props = shared_string_props(&string.props);
@@ -841,13 +842,13 @@ pub(crate) fn reverse_sequence_value(
         bits.reverse();
         return Ok(make_bool_vector_value(interp, bits));
     }
-    match value {
-        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
+    match value.kind() {
+        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
             let mut items = value.to_vec()?;
             items[1..].reverse();
             Ok(Value::list(items))
         }
-        Value::Nil | Value::Cons(_) => {
+        Kind::Nil | Kind::Cons(_) => {
             let mut items = value.to_vec()?;
             items.reverse();
             Ok(Value::list(items))
@@ -863,17 +864,17 @@ pub(crate) fn nreverse_sequence_value(
     if string_like(value).is_some() {
         return reverse_string_like_value(value);
     }
-    if let Value::Record(id) = value
+    if let Kind::Record(id) = value.kind()
         && is_bool_vector_value(interp, value)
     {
         let record = interp
-            .find_record_mut(*id)
+            .find_record_mut(id)
             .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
         record.slots.reverse();
         return Ok(*value);
     }
-    match value {
-        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
+    match value.kind() {
+        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
             let mut items = vector_items(value)?;
             items.reverse();
             for (index, item) in items.into_iter().enumerate() {
@@ -881,7 +882,7 @@ pub(crate) fn nreverse_sequence_value(
             }
             Ok(*value)
         }
-        Value::Nil | Value::Cons(_) => nreverse_list_cells(value),
+        Kind::Nil | Kind::Cons(_) => nreverse_list_cells(value),
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
@@ -891,10 +892,10 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     let mut reversed = Value::Nil;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        let cell = match &current {
-            Value::Nil => return Ok(reversed),
-            Value::Cons(cell) => *cell,
-            other => return Err(LispError::WrongTypeArgument("listp".into(), *other)),
+        let cell = match current.kind() {
+            Kind::Nil => return Ok(reversed),
+            Kind::Cons(cell) => cell,
+            other => return Err(LispError::WrongTypeArgument("listp".into(), other.value())),
         };
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(LispError::SignalValue(Value::list([
@@ -1138,7 +1139,7 @@ pub(crate) fn property_from_props_with_category(
         .unwrap_or_default();
     let aliases = aliases.into_iter().find_map(|entry| {
         let key = entry.car().ok()?;
-        matches!(&key, Value::Symbol(name) if name == prop)
+        matches!(key.kind(), Kind::Symbol(name) if name == prop)
             .then(|| entry.cdr().ok()?.to_vec().ok())?
     })?;
     aliases.into_iter().find_map(|alias| {
@@ -1197,7 +1198,7 @@ pub(crate) fn overlay_property_with_category(
     let direct = overlay
         .plist
         .iter()
-        .find(|(name, _)| matches!(name, Value::Symbol(name) if name == prop))
+        .find(|(name, _)| matches!(name.kind(), Kind::Symbol(name) if name == prop))
         .map(|(_, value)| *value);
     if direct.is_some() || prop == "category" {
         return direct;
@@ -1205,7 +1206,7 @@ pub(crate) fn overlay_property_with_category(
     let category = overlay
         .plist
         .iter()
-        .find(|(name, _)| matches!(name, Value::Symbol(name) if name == "category"))
+        .find(|(name, _)| matches!(name.kind(), Kind::Symbol(name) if name == "category"))
         .and_then(|(_, value)| value.as_symbol().ok())?;
     interp.get_symbol_property(category, prop)
 }
@@ -1348,12 +1349,12 @@ pub(crate) fn modify_shared_string_properties<F>(
 where
     F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
 {
-    let Value::StringObject(state) = value else {
+    let Kind::StringObject(state) = value.kind() else {
         // A plain interned string has no shared property state to mutate.
         // GNU mutates any string in place; Emaxx's immutable representation
         // drops the write instead of signaling, mirroring the existing
         // `set-text-properties' policy for this case.
-        if matches!(value, Value::String(_)) {
+        if matches!(value.kind(), Kind::String(_)) {
             return Ok(());
         }
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));

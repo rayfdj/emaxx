@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 // coding.c `enum coding_category', in order.
 pub(crate) const CODING_CATEGORY_ISO_7: usize = 0;
@@ -174,7 +175,7 @@ impl Interpreter {
         let items = plist.to_vec().unwrap_or_default();
         let property = |key: &str| {
             items.windows(2).find_map(|pair| {
-                matches!(&pair[0], Value::Symbol(name) if name == key).then(|| pair[1])
+                matches!(pair[0].kind(), Kind::Symbol(name) if name == key).then(|| pair[1])
             })
         };
         if let Some(final_char) = property(":iso-final-char")
@@ -557,26 +558,25 @@ impl Interpreter {
         type_args: &[Value],
     ) -> usize {
         match coding_type {
-            "utf-8" => match type_args.first() {
-                None | Some(Value::Nil) => CODING_CATEGORY_UTF_8_NOSIG,
-                Some(Value::T) => CODING_CATEGORY_UTF_8_SIG,
+            "utf-8" => match type_args.first().map(|v| v.kind()) {
+                None | Some(Kind::Nil) => CODING_CATEGORY_UTF_8_NOSIG,
+                Some(Kind::T) => CODING_CATEGORY_UTF_8_SIG,
                 Some(_) => CODING_CATEGORY_UTF_8_AUTO,
             },
             "utf-16" => {
                 let bom = type_args.first().cloned().unwrap_or(Value::Nil);
-                let big_endian =
-                    !matches!(type_args.get(1), Some(Value::Symbol(endian)) if endian == "little");
-                match bom {
-                    Value::Cons(_) => CODING_CATEGORY_UTF_16_AUTO,
-                    Value::Nil if big_endian => CODING_CATEGORY_UTF_16_BE_NOSIG,
-                    Value::Nil => CODING_CATEGORY_UTF_16_LE_NOSIG,
+                let big_endian = !matches!(type_args.get(1).map(|v| v.kind()), Some(Kind::Symbol(endian)) if endian == "little");
+                match bom.kind() {
+                    Kind::Cons(_) => CODING_CATEGORY_UTF_16_AUTO,
+                    Kind::Nil if big_endian => CODING_CATEGORY_UTF_16_BE_NOSIG,
+                    Kind::Nil => CODING_CATEGORY_UTF_16_LE_NOSIG,
                     _ if big_endian => CODING_CATEGORY_UTF_16_BE,
                     _ => CODING_CATEGORY_UTF_16_LE,
                 }
             }
             "iso-2022" => {
                 let full_support =
-                    matches!(charset_list, Value::Symbol(name) if name == "iso-2022");
+                    matches!(charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
                 let flags = type_args
                     .get(3)
                     .and_then(|flags| flags.as_integer().ok())
@@ -612,7 +612,7 @@ impl Interpreter {
                         .and_then(|plist| plist.to_vec().ok())
                         .and_then(|items| {
                             items.windows(2).find_map(|pair| {
-                                matches!(&pair[0], Value::Symbol(key) if key == ":dimension")
+                                matches!(pair[0].kind(), Kind::Symbol(key) if key == ":dimension")
                                     .then(|| pair[1].as_integer().ok())
                                     .flatten()
                             })
@@ -813,15 +813,17 @@ impl Interpreter {
             let first_charset_ascii_compatible = items
                 .windows(2)
                 .find_map(|pair| {
-                    matches!(&pair[0], Value::Symbol(key) if key == ":charset-list")
+                    matches!(pair[0].kind(), Kind::Symbol(key) if key == ":charset-list")
                         .then(|| pair[1])
                 })
                 .and_then(|list| list.to_vec().ok())
                 .and_then(|charsets| charsets.first().cloned())
-                .is_some_and(|charset| matches!(&charset, Value::Symbol(name) if name == "ascii"));
+                .is_some_and(
+                    |charset| matches!(charset.kind(), Kind::Symbol(name) if name == "ascii"),
+                );
             if first_charset_ascii_compatible {
                 if let Some(index) = items.iter().position(
-                    |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
+                    |item| matches!(item.kind(), Kind::Symbol(key) if key == ":ascii-compatible-p"),
                 ) {
                     if index + 1 < items.len() {
                         items[index + 1] = Value::T;
@@ -846,7 +848,8 @@ impl Interpreter {
             let g0_ascii_compatible = items
                 .windows(2)
                 .find_map(|pair| {
-                    matches!(&pair[0], Value::Symbol(key) if key == ":designation").then(|| pair[1])
+                    matches!(pair[0].kind(), Kind::Symbol(key) if key == ":designation")
+                        .then(|| pair[1])
                 })
                 .and_then(|designation| designation.to_vec().ok())
                 .and_then(|values| {
@@ -856,15 +859,15 @@ impl Interpreter {
                         .first()
                         .cloned()
                 })
-                .is_some_and(|initial| match initial {
-                    Value::Symbol(charset) => {
+                .is_some_and(|initial| match initial.kind() {
+                    Kind::Symbol(charset) => {
                         charset == "ascii"
                             || self
                                 .charset_plist_value(&charset)
                                 .and_then(|plist| plist.to_vec().ok())
                                 .is_some_and(|items| {
                                     items.windows(2).any(|pair| {
-                                        matches!(&pair[0], Value::Symbol(key)
+                                        matches!(pair[0].kind(), Kind::Symbol(key)
                                             if key == ":ascii-compatible-p")
                                             && pair[1].is_truthy()
                                     })
@@ -873,7 +876,7 @@ impl Interpreter {
                     _ => false,
                 });
             let key_index = items.iter().position(
-                |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
+                |item| matches!(item.kind(), Kind::Symbol(key) if key == ":ascii-compatible-p"),
             );
             let supplied = key_index
                 .and_then(|index| items.get(index + 1))
@@ -1017,10 +1020,13 @@ impl Interpreter {
         if let Some(id) = self.standard_category_table_id {
             return id;
         }
-        let Value::CharTable(id) = self.make_char_table(
-            Some("category-table".into()),
-            Value::String(String::new().into()),
-        ) else {
+        let Kind::CharTable(id) = self
+            .make_char_table(
+                Some("category-table".into()),
+                Value::String(String::new().into()),
+            )
+            .kind()
+        else {
             unreachable!("make_char_table returns a char-table");
         };
         self.standard_category_table_id = Some(id);
@@ -1033,8 +1039,8 @@ impl Interpreter {
 
     pub(crate) fn initialized_current_category_table_id(&self) -> Option<u64> {
         self.buffer_local_value_key(self.current_buffer_id(), cached_symbol!("category-table"))
-            .and_then(|value| match value {
-                Value::CharTable(id) => Some(id),
+            .and_then(|value| match value.kind() {
+                Kind::CharTable(id) => Some(id),
                 _ => None,
             })
             .or(self.standard_category_table_id)
@@ -1045,8 +1051,9 @@ impl Interpreter {
             return id;
         }
         let make = |interp: &mut Self| {
-            let Value::CharTable(id) =
-                interp.make_char_table(Some("case-table".into()), Value::Nil)
+            let Kind::CharTable(id) = interp
+                .make_char_table(Some("case-table".into()), Value::Nil)
+                .kind()
             else {
                 unreachable!("make_char_table returns a char-table");
             };
@@ -1251,15 +1258,15 @@ impl Interpreter {
                 continue;
             };
             let shows_buffer = matches!(
-                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT),
-                Some(Value::Integer(id)) if *id == buffer_id as i64
+                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
+                Some(Kind::Integer(id)) if id == buffer_id as i64
             );
             if !shows_buffer {
                 continue;
             }
             for slot in POINT_SLOTS {
-                if let Some(Value::Integer(position)) = record.slots.get(slot)
-                    && let Ok(position) = usize::try_from(*position)
+                if let Some(Kind::Integer(position)) = record.slots.get(slot).map(|v| v.kind())
+                    && let Ok(position) = usize::try_from(position)
                 {
                     record.slots[slot] = Value::Integer(adjust(position) as i64);
                 }

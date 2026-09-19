@@ -1102,7 +1102,8 @@ fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
     let mut env = crate::lisp::types::Env::new();
     Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
     let captured = crate::lisp::types::current_environment_value(&env);
-    let Value::Lambda(lambda) = Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured)
+    let Kind::Lambda(lambda) =
+        Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured).kind()
     else {
         unreachable!("Value::lambda constructs a lambda");
     };
@@ -7128,8 +7129,10 @@ fn read_key_call_caches_restore_the_real_gnu_subr_definition() {
         .expect("save GNU subr.el read-key function cell");
     assert!(
         !matches!(
-            interp.logical_function_binding("read-key", &env),
-            Some(Value::BuiltinFunc(_))
+            interp
+                .logical_function_binding("read-key", &env)
+                .map(|v| v.kind()),
+            Some(Kind::BuiltinFunc(_))
         ),
         "GNU Elisp-owned read-key must not resolve to a Rust builtin"
     );
@@ -7292,7 +7295,8 @@ fn named_lisp_calls_share_immutable_function_code() {
     let second = interp
         .lookup_function("emaxx-test-shared-function-code", &env)
         .expect("second function lookup");
-    let (Value::Lambda(first_lambda), Value::Lambda(second_lambda)) = (&first, &second) else {
+    let (Kind::Lambda(first_lambda), Kind::Lambda(second_lambda)) = (first.kind(), second.kind())
+    else {
         panic!("named definition should remain a Lisp lambda");
     };
     assert!(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::primitives::string_like;
+use crate::lisp::types::Kind;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,8 +16,8 @@ fn map_keymap_direct_value(
     keymap: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let full_table = keymap_char_table_value(interp, keymap).and_then(|table| match table {
-        Value::CharTable(id) => Some(id),
+    let full_table = keymap_char_table_value(interp, keymap).and_then(|table| match table.kind() {
+        Kind::CharTable(id) => Some(id),
         _ => None,
     });
     // GNU stores a full keymap's character bindings in ONE place (the
@@ -43,7 +44,7 @@ fn map_keymap_direct_value(
     for binding in bindings.iter() {
         let event = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
         if full_table.is_some()
-            && let Value::Integer(code) = event
+            && let Kind::Integer(code) = event.kind()
         {
             character_bindings.push((code, binding.value));
         } else {
@@ -133,10 +134,10 @@ fn describe_vector_value(
 ) -> Result<Value, LispError> {
     need_arg_range("describe-vector", args, 1, 2)?;
     let mut ranges = Vec::<(u32, u32, Value)>::new();
-    match &args[0] {
-        Value::CharTable(table_id) => {
+    match args[0].kind() {
+        Kind::CharTable(table_id) => {
             for entry in interp
-                .char_table_effective_ranges(*table_id)
+                .char_table_effective_ranges(table_id)
                 .unwrap_or_default()
             {
                 if entry.value.is_nil() {
@@ -152,8 +153,8 @@ fn describe_vector_value(
                 }
             }
         }
-        vector if is_vector_value(vector) => {
-            for (index, value) in vector_items(vector)?.into_iter().enumerate() {
+        vector if is_vector_value(&vector.value()) => {
+            for (index, value) in vector_items(&vector.value())?.into_iter().enumerate() {
                 if value.is_nil() {
                     continue;
                 }
@@ -172,7 +173,7 @@ fn describe_vector_value(
         other => {
             return Err(LispError::TypeError(
                 "vector-or-char-table-p".into(),
-                other.type_name(),
+                other.value().type_name(),
             ));
         }
     }
@@ -224,7 +225,8 @@ define_dispatch!(
                 need_arg_range(name, args, 3, 4)?;
                 if let Ok(events) = vector_items(&args[1])
                     && let [event] = events.as_slice()
-                    && let Some((Value::Integer(start), Value::Integer(end))) = event.cons_values()
+                    && let Some((Kind::Integer(start), Kind::Integer(end))) =
+                        event.cons_values().map(|(a0, a1)| (a0.kind(), a1.kind()))
                 {
                     keymap_define_character_range(interp, &args[0], start, end, args[2])?;
                     return Ok(args[2]);
@@ -285,7 +287,7 @@ define_dispatch!(
                     args.get(2).is_some_and(Value::is_truthy),
                     env,
                 )?;
-                if let Value::Integer(prefix_len) = result {
+                if let Kind::Integer(prefix_len) = result.kind() {
                     let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
                     Ok(Value::Integer(
                         key_sequence_prefix_event_count(&normalized_key, prefix_len)? as i64,
@@ -316,7 +318,7 @@ define_dispatch!(
                         accept_default,
                         env,
                     )?;
-                    if binding.is_nil() || matches!(binding, Value::Integer(_)) {
+                    if binding.is_nil() || matches!(binding.kind(), Kind::Integer(_)) {
                         continue;
                     }
                     let entry = Value::cons(Value::Symbol(mode.into()), binding);
@@ -355,7 +357,7 @@ define_dispatch!(
                         .unwrap_or(Value::Nil));
                 }
                 if let Ok(items) = args[0].to_vec()
-                    && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap")
+                    && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap")
                 {
                     return Ok(items
                         .iter()
@@ -537,11 +539,11 @@ define_dispatch!(
                         )
                     }));
                 };
-                let full_name = match requested {
-                    Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) => {
+                let full_name = match requested.kind() {
+                    Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => {
                         user_full_name_from_uid(legacy_unsigned_id(requested)?)
                     }
-                    Value::String(_) | Value::StringObject(_) => {
+                    Kind::String(_) | Kind::StringObject(_) => {
                         let login = string_text(requested)?;
                         user_full_name(Some(&login))
                     }
@@ -565,8 +567,8 @@ define_dispatch!(
             "group-name" => {
                 need_args(name, args, 1)?;
                 if !matches!(
-                    args[0],
-                    Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Cons(_)
+                    args[0].kind(),
+                    Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) | Kind::Cons(_)
                 ) {
                     return Err(LispError::Signal("Invalid GID specification".into()));
                 }
@@ -610,8 +612,8 @@ define_dispatch!(
                 let last_nonmenu_event = interp
                     .lookup_var("last-nonmenu-event", env)
                     .unwrap_or(Value::Nil);
-                let event_allows =
-                    last_nonmenu_event.is_nil() || matches!(last_nonmenu_event, Value::Cons(_));
+                let event_allows = last_nonmenu_event.is_nil()
+                    || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
                 let use_dialog = interp
                     .lookup_var("use-dialog-box", env)
                     .is_some_and(|value| value.is_truthy());
@@ -649,8 +651,8 @@ define_dispatch!(
             }
             "set-binary-mode" => {
                 need_args(name, args, 2)?;
-                match &args[0] {
-                    Value::Symbol(stream)
+                match args[0].kind() {
+                    Kind::Symbol(stream)
                         if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") =>
                     {
                         Ok(Value::Nil)
@@ -711,13 +713,13 @@ define_dispatch!(
                     let key = args[index].as_symbol()?;
                     match key {
                         ":test" => {
-                            test = match &args[index + 1] {
-                                Value::Symbol(name) => name.to_string(),
-                                Value::BuiltinFunc(name) => name.to_string(),
+                            test = match args[index + 1].kind() {
+                                Kind::Symbol(name) => name.to_string(),
+                                Kind::BuiltinFunc(name) => name.to_string(),
                                 other => {
                                     return Err(LispError::WrongTypeArgument(
                                         "symbolp".into(),
-                                        *other,
+                                        other.value(),
                                     ));
                                 }
                             };
@@ -727,9 +729,9 @@ define_dispatch!(
                         // but deliberately ignores their values.
                         ":rehash-size" | ":rehash-threshold" => {}
                         ":weakness" => {
-                            weakness = match &args[index + 1] {
-                                Value::T => Value::Symbol("key-and-value".into()),
-                                other => *other,
+                            weakness = match args[index + 1].kind() {
+                                Kind::T => Value::Symbol("key-and-value".into()),
+                                other => other.value(),
                             };
                         }
                         ":purecopy" => purecopy = args[index + 1],
@@ -753,7 +755,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::WrongTypeArgument("wholenump".into(), size))?;
                 let table =
                     json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
-                let Value::Record(id) = table else {
+                let Kind::Record(id) = table.kind() else {
                     unreachable!("hash tables are represented as records")
                 };
                 let record = interp
@@ -777,7 +779,7 @@ define_dispatch!(
             }
             "copy-hash-table" => {
                 need_args(name, args, 1)?;
-                let Value::Record(id) = args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let Some(record) = interp.find_record(id) else {
@@ -787,7 +789,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 let copy = interp.copy_record(id.id)?;
-                if let Value::Record(copy_id) = copy {
+                if let Kind::Record(copy_id) = copy.kind() {
                     interp.reindex_hash_table_runtime_entries_in_env(copy_id.id, env);
                     Ok(Value::Record(copy_id))
                 } else {
@@ -799,16 +801,16 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let default = args.get(2).cloned().unwrap_or(Value::Nil);
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && let Some(value) = interp.equal_hash_lookup(id.id, &args[0], env)
                 {
                     return Ok(value.unwrap_or(default));
                 }
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
-                        .find_record(*id)
+                        .find_record(id)
                         .and_then(|record| record.slots.first())
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
@@ -837,21 +839,21 @@ define_dispatch!(
             }
             "puthash" => {
                 need_args(name, args, 3)?;
-                if let Value::Record(id) = &args[2]
+                if let Kind::Record(id) = args[2].kind()
                     && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
-                if let Value::Record(id) = &args[2]
+                if let Kind::Record(id) = args[2].kind()
                     && interp.equal_hash_put(id.id, args[0], args[1], env)
                 {
                     return Ok(args[1]);
                 }
-                if let Value::Record(id) = &args[2]
+                if let Kind::Record(id) = args[2].kind()
                     && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
-                        .find_record(*id)
+                        .find_record(id)
                         .and_then(|record| record.slots.first())
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
@@ -879,14 +881,14 @@ define_dispatch!(
                     entries.push((args[0], args[1]));
                 }
                 set_hash_table_entries(interp, &args[2], entries)?;
-                if let Value::Record(id) = args[2] {
+                if let Kind::Record(id) = args[2].kind() {
                     interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
                 }
                 Ok(args[1])
             }
             "maphash" => {
                 need_args(name, args, 2)?;
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && interp.hash_table_entry_at_or_after(id.id, 0).is_some()
                 {
                     let mut slot = 0;
@@ -923,21 +925,21 @@ define_dispatch!(
             }
             "remhash" => {
                 need_args(name, args, 2)?;
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && interp.equal_hash_remove(id.id, &args[0], env).is_some()
                 {
                     return Ok(Value::Nil);
                 }
-                if let Value::Record(id) = &args[1]
+                if let Kind::Record(id) = args[1].kind()
                     && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
-                        .find_record(*id)
+                        .find_record(id)
                         .and_then(|record| record.slots.first())
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
@@ -963,14 +965,14 @@ define_dispatch!(
                     }
                 }
                 set_hash_table_entries(interp, &args[1], retained)?;
-                if let Value::Record(id) = args[1] {
+                if let Kind::Record(id) = args[1].kind() {
                     interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
                 }
                 Ok(Value::Nil)
             }
             "clrhash" => {
                 need_args(name, args, 1)?;
-                if let Value::Record(id) = &args[0]
+                if let Kind::Record(id) = args[0].kind()
                     && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
@@ -978,7 +980,7 @@ define_dispatch!(
                 if json::hash_table_entries(interp, &args[0]).is_none() {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
-                if let Value::Record(id) = &args[0]
+                if let Kind::Record(id) = args[0].kind()
                     && interp.clear_custom_hash_table(id.id)
                 {
                     return Ok(args[0]);
@@ -988,10 +990,10 @@ define_dispatch!(
             }
             "hash-table-count" => {
                 need_args(name, args, 1)?;
-                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                let Some(count) = json::hash_table_count(interp, &args[0]) else {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
-                Ok(Value::Integer(entries.len() as i64))
+                Ok(Value::Integer(count as i64))
             }
             "hash-table-rehash-size" => {
                 need_args(name, args, 1)?;
@@ -1009,7 +1011,7 @@ define_dispatch!(
             }
             "hash-table-size" => {
                 need_args(name, args, 1)?;
-                let Value::Record(id) = args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let capacity = interp
@@ -1036,7 +1038,7 @@ define_dispatch!(
             "internal-complete-buffer" => internal_complete_buffer(interp, args, env),
             "internal--hash-table-index-size" => {
                 need_args(name, args, 1)?;
-                let Value::Record(id) = args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let capacity = interp
@@ -1189,14 +1191,14 @@ define_dispatch!(
                 }
                 let mut active = Vec::with_capacity(args.len() / 2);
                 for pair in args[1..].as_chunks::<2>().0 {
-                    let conditions = match &pair[0] {
-                        Value::Nil => Vec::new(),
-                        Value::Cons(_) => pair[0]
+                    let conditions = match pair[0].kind() {
+                        Kind::Nil => Vec::new(),
+                        Kind::Cons(_) => pair[0]
                             .to_vec()?
                             .iter()
                             .map(|condition| condition.as_symbol().map(str::to_string))
                             .collect::<Result<Vec<_>, _>>()?,
-                        condition => vec![condition.as_symbol()?.to_string()],
+                        condition => vec![condition.value().as_symbol()?.to_string()],
                     };
                     if !conditions.is_empty() {
                         active.push((conditions, pair[1]));
@@ -1256,7 +1258,7 @@ define_dispatch!(
                     ])));
                 }
                 let mut base = args[2];
-                if let Value::Cons(cell) = &base {
+                if let Kind::Cons(cell) = base.kind() {
                     frame_offset += cell.car.borrow().as_integer()?;
                     let function = *cell.cdr.borrow();
                     base = function;
@@ -1343,16 +1345,16 @@ define_dispatch!(
                         string_like(value).map(|string| string.text)
                     }
                 });
-                let disposition = match args.get(2) {
-                    None | Some(Value::Nil) => BufferDisposition::Default,
-                    Some(Value::T) => BufferDisposition::Preserve,
-                    Some(Value::Symbol(symbol)) if symbol == "silently" => {
+                let disposition = match args.get(2).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => BufferDisposition::Default,
+                    Some(Kind::T) => BufferDisposition::Preserve,
+                    Some(Kind::Symbol(symbol)) if symbol == "silently" => {
                         BufferDisposition::Silently
                     }
                     Some(other) => {
                         return Err(LispError::TypeError(
                             "thread-buffer-disposition".into(),
-                            other.type_name(),
+                            other.value().type_name(),
                         ));
                     }
                 };
@@ -1521,96 +1523,10 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)
             }
-            "garbage-collect" => {
-                need_args(name, args, 0)?;
-                // The reclamation emaxx really performs: weak hash entries
-                // whose keys/values are no longer reachable are dropped, as
-                // GNU's sweep does.  Everything else is freed by ownership
-                // the moment it becomes unreachable.
-                // alloc.c:Fgarbage_collect specbinds symbols-with-pos-enabled
-                // to nil only for the mark/sweep, then restores it before
-                // gcstat finalization and post-gc-hook.
-                let Some(census) =
-                    crate::lisp::native_comp::garbage_collect_now_with_symbols_disabled(
-                        interp, env,
-                    )?
-                else {
-                    return Ok(Value::Nil);
-                };
-                // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
-                // row order (alloc.c, oracle-confirmed).  SIZE is the GNU C
-                // layout reported by Fgarbage_collect, not Rust's host
-                // representation; FREE is 0 because Rust ownership retains
-                // no allocator free lists.
-                let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
-                let entry = |name: &str, rest: &[i64]| {
-                    Value::list(
-                        std::iter::once(Value::Symbol(name.into()))
-                            .chain(rest.iter().map(|n| Value::Integer(*n))),
-                    )
-                };
-                Ok(Value::list([
-                    entry("conses", &[cons_size, census.conses as i64, 0]),
-                    entry(
-                        "symbols",
-                        &[
-                            crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
-                            census.symbols as i64,
-                            0,
-                        ],
-                    ),
-                    entry(
-                        "strings",
-                        &[
-                            crate::lisp::eval::GNU_STRING_SIZE as i64,
-                            census.strings as i64,
-                            0,
-                        ],
-                    ),
-                    entry("string-bytes", &[1, census.string_bytes as i64]),
-                    entry(
-                        "vectors",
-                        &[
-                            crate::lisp::eval::GNU_VECTOR_SIZE as i64,
-                            census.vectors as i64,
-                        ],
-                    ),
-                    entry(
-                        "vector-slots",
-                        &[
-                            crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
-                            census.vector_slots as i64,
-                            0,
-                        ],
-                    ),
-                    entry(
-                        "floats",
-                        &[
-                            crate::lisp::eval::GNU_FLOAT_SIZE as i64,
-                            census.floats as i64,
-                            0,
-                        ],
-                    ),
-                    entry(
-                        "intervals",
-                        &[
-                            crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
-                            census.intervals as i64,
-                            0,
-                        ],
-                    ),
-                    entry(
-                        "buffers",
-                        &[
-                            crate::lisp::eval::GNU_BUFFER_SIZE as i64,
-                            census.buffers as i64,
-                        ],
-                    ),
-                ]))
-            }
+            "garbage-collect" => direct_garbage_collect(interp, args, env),
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
-                let Value::Integer(factor) = args[0] else {
+                let Kind::Integer(factor) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("wholenump".into(), args[0]));
                 };
                 if factor < 0 {
@@ -1655,28 +1571,28 @@ define_dispatch!(
                 // data.c:Ftype_of inspects object tags. Old vector-struct
                 // policy belongs to cl-lib.el's advice around this subr,
                 // not to the original primitive reached by that advice.
-                let name = match &args[0] {
-                    Value::Nil => "symbol",
-                    Value::T => "symbol",
-                    Value::Integer(_) => "integer",
-                    Value::BigInteger(_) => "integer",
-                    Value::Float(_) => "float",
-                    Value::String(_) => "string",
-                    Value::StringObject(_) => "string",
-                    Value::Symbol(_) => "symbol",
-                    Value::Vector(_) => "vector",
-                    Value::Cons(_) if is_vector_value(&args[0]) => "vector",
-                    Value::Cons(_) => "cons",
-                    Value::BuiltinFunc(_) => "subr",
-                    Value::Lambda(_) => "cons", // Emacs closures are cons cells
-                    Value::Buffer(_) => "buffer",
-                    Value::Marker(_) => "marker",
-                    Value::Overlay(_) => "overlay",
-                    Value::CharTable(_) => "char-table",
-                    Value::Frame(_) => "frame",
-                    Value::Terminal(_) => "terminal",
-                    Value::Record(id) => {
-                        let record = interp.find_record(*id).ok_or_else(|| {
+                let name = match args[0].kind() {
+                    Kind::Nil => "symbol",
+                    Kind::T => "symbol",
+                    Kind::Integer(_) => "integer",
+                    Kind::BigInteger(_) => "integer",
+                    Kind::Float(_) => "float",
+                    Kind::String(_) => "string",
+                    Kind::StringObject(_) => "string",
+                    Kind::Symbol(_) => "symbol",
+                    Kind::Vector(_) => "vector",
+                    Kind::Cons(_) if is_vector_value(&args[0]) => "vector",
+                    Kind::Cons(_) => "cons",
+                    Kind::BuiltinFunc(_) => "subr",
+                    Kind::Lambda(_) => "cons", // Emacs closures are cons cells
+                    Kind::Buffer(_) => "buffer",
+                    Kind::Marker(_) => "marker",
+                    Kind::Overlay(_) => "overlay",
+                    Kind::CharTable(_) => "char-table",
+                    Kind::Frame(_) => "frame",
+                    Kind::Terminal(_) => "terminal",
+                    Kind::Record(id) => {
+                        let record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
                         // data.c:Ftype_of answers `subr' for every
@@ -1687,13 +1603,13 @@ define_dispatch!(
                         }
                         return cl_type_value(interp, &args[0]);
                     }
-                    Value::Finalizer(_) => "finalizer",
-                    Value::ReaderForm(_) => {
+                    Kind::Finalizer(_) => "finalizer",
+                    Kind::ReaderForm(_) => {
                         return Err(LispError::Signal(
                             "reader form escaped object materialization".into(),
                         ));
                     }
-                    Value::Unbound => "unbound",
+                    Kind::Unbound => "unbound",
                 };
                 Ok(Value::Symbol(name.into()))
             }
@@ -1722,7 +1638,7 @@ pub(crate) fn value_is_oclosure(
     if oclosure_type_of(value).is_some() {
         return true;
     }
-    matches!(value, Value::Record(_) | Value::Lambda(_))
+    matches!(value.kind(), Kind::Record(_) | Kind::Lambda(_))
         && interp.has_lisp_function("oclosure-type")
         && interp
             .call_function_value(
@@ -1736,7 +1652,7 @@ pub(crate) fn value_is_oclosure(
 }
 
 pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
-    let Value::Lambda(lambda) = value else {
+    let Kind::Lambda(lambda) = value.kind() else {
         return None;
     };
     // GNU oclosure-type recognizes a closure whose public slot four is a
@@ -1762,8 +1678,8 @@ fn widget_get_inner(
     property: &Value,
     seen: &mut HashSet<String>,
 ) -> Result<Value, LispError> {
-    match widget {
-        Value::Cons(cons_cell) => {
+    match widget.kind() {
+        Kind::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
             let widget_type = *car.borrow();
@@ -1772,11 +1688,11 @@ fn widget_get_inner(
             }
             widget_get_inner(interp, &widget_type, property, seen)
         }
-        Value::Symbol(symbol) => {
+        Kind::Symbol(symbol) => {
             if !seen.insert(symbol.to_string()) {
                 return Ok(Value::Nil);
             }
-            match interp.get_symbol_property(symbol, "widget-type") {
+            match interp.get_symbol_property(&symbol, "widget-type") {
                 Some(parent) => widget_get_inner(interp, &parent, property, seen),
                 None => Ok(Value::Nil),
             }
@@ -1804,9 +1720,9 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
     let mut current = *plist;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match current {
-            Value::Nil => return Ok(None),
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::Nil => return Ok(None),
+            Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
                 let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -1814,13 +1730,13 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
                     return Ok(None);
                 }
                 if *car.borrow() == *property {
-                    return match *cdr.borrow() {
-                        Value::Cons(cell) => Ok(Some(*cell.car.borrow())),
+                    return match (*cdr.borrow()).kind() {
+                        Kind::Cons(cell) => Ok(Some(*cell.car.borrow())),
                         _ => Ok(Some(Value::Nil)),
                     };
                 }
-                match *cdr.borrow() {
-                    Value::Cons(cell) => current = *cell.cdr.borrow(),
+                match (*cdr.borrow()).kind() {
+                    Kind::Cons(cell) => current = *cell.cdr.borrow(),
                     _ => return Ok(None),
                 }
             }
@@ -1833,9 +1749,9 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
     let mut current = plist;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match current {
-            Value::Nil => return Ok(Value::list([property, value])),
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::Nil => return Ok(Value::list([property, value])),
+            Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
                 let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -1846,8 +1762,8 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                     ])));
                 }
                 if *car.borrow() == property {
-                    return match *cdr.borrow() {
-                        Value::Cons(cons_cell) => {
+                    return match (*cdr.borrow()).kind() {
+                        Kind::Cons(cons_cell) => {
                             let existing = &cons_cell.car;
                             let _ = &cons_cell.cdr;
                             *existing.borrow_mut() = value;
@@ -1856,8 +1772,8 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                         _ => Err(plist_type_error(&plist)),
                     };
                 }
-                match *cdr.borrow() {
-                    Value::Cons(cons_cell) => {
+                match (*cdr.borrow()).kind() {
+                    Kind::Cons(cons_cell) => {
                         let _ = &cons_cell.car;
                         let next = &cons_cell.cdr;
                         let next_value = *next.borrow();
@@ -1914,21 +1830,21 @@ pub(super) fn direct_symbol_name(
     let name = "symbol-name";
     need_args(name, args, 1)?;
     // GNU 30.2 data.c:Fsymbol_name uses CHECK_SYMBOL/XSYMBOL.
-    let symbol_name = match &args[0] {
-        Value::Nil => {
+    let symbol_name = match args[0].kind() {
+        Kind::Nil => {
             return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
         }
-        Value::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
-        Value::Symbol(symbol) => *symbol,
+        Kind::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
+        Kind::Symbol(symbol) => symbol,
         _ if symbols_with_pos_enabled(interp, env) => {
-            match symbol_with_pos_parts(interp, &args[0]) {
-                Some((Value::Nil, _)) => {
+            match symbol_with_pos_parts(interp, &args[0]).map(|(a0, a1)| (a0.kind(), a1)) {
+                Some((Kind::Nil, _)) => {
                     return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
                 }
-                Some((Value::T, _)) => {
+                Some((Kind::T, _)) => {
                     return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
                 }
-                Some((Value::Symbol(symbol), _)) => symbol,
+                Some((Kind::Symbol(symbol), _)) => symbol,
                 _ => return Err(wrong_type_argument("symbolp", args[0])),
             }
         }
@@ -1946,4 +1862,98 @@ pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
             }
         }
     });
+}
+
+/// The `garbage-collect' primitive, callable directly (a subr's function
+/// pointer): alloc.c's Fgarbage_collect is a subr of its own with a small
+/// frame above the collection's stack top, and so is this, rather than
+/// an arm of the group dispatcher above, whose frame holds every arm's
+/// locals and kept a stale word or two above the top.  The report is
+/// built after the collection, in a frame of its own.
+pub(super) fn direct_garbage_collect(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    need_args("garbage-collect", args, 0)?;
+    // The stack top at the subr's entry (alloc.c's Fgarbage_collect calls
+    // garbage_collect first thing): the census and the report below live
+    // in the closure's frame, under the top, not in this frame above it.
+    crate::lisp::alloc::flush_stack_call_func(|| {
+        let Some(census) =
+            crate::lisp::native_comp::garbage_collect_now_with_symbols_disabled(interp, env)?
+        else {
+            return Ok(Value::Nil);
+        };
+        Ok(garbage_collect_report(&census))
+    })
+}
+
+#[inline(never)]
+fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value {
+    let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
+    let entry = |name: &str, rest: &[i64]| {
+        Value::list(
+            std::iter::once(Value::Symbol(name.into()))
+                .chain(rest.iter().map(|n| Value::Integer(*n))),
+        )
+    };
+    Value::list([
+        entry("conses", &[cons_size, census.conses as i64, 0]),
+        entry(
+            "symbols",
+            &[
+                crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
+                census.symbols as i64,
+                0,
+            ],
+        ),
+        entry(
+            "strings",
+            &[
+                crate::lisp::eval::GNU_STRING_SIZE as i64,
+                census.strings as i64,
+                0,
+            ],
+        ),
+        entry("string-bytes", &[1, census.string_bytes as i64]),
+        entry(
+            "vectors",
+            &[
+                crate::lisp::eval::GNU_VECTOR_SIZE as i64,
+                census.vectors as i64,
+            ],
+        ),
+        entry(
+            "vector-slots",
+            &[
+                crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
+                census.vector_slots as i64,
+                0,
+            ],
+        ),
+        entry(
+            "floats",
+            &[
+                crate::lisp::eval::GNU_FLOAT_SIZE as i64,
+                census.floats as i64,
+                0,
+            ],
+        ),
+        entry(
+            "intervals",
+            &[
+                crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
+                census.intervals as i64,
+                0,
+            ],
+        ),
+        entry(
+            "buffers",
+            &[
+                crate::lisp::eval::GNU_BUFFER_SIZE as i64,
+                census.buffers as i64,
+            ],
+        ),
+    ])
 }

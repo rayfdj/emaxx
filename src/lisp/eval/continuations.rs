@@ -238,6 +238,7 @@ pub(crate) fn current_stack_base() -> Option<*const usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lisp::types::Kind;
 
     #[test]
     fn alternate_stack_bounds_restore_after_nested_resume_and_panic() {
@@ -298,13 +299,14 @@ mod tests {
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
         interpreter.set_global_binding("native-suspension-weak-table", table);
         for native in [false, true] {
-            let Value::Record(id) = interpreter
+            let Kind::Record(id) = interpreter
                 .make_thread(
                     Value::symbol("ignore"),
                     None,
                     crate::lisp::eval::BufferDisposition::Default,
                 )
                 .expect("create registered thread")
+                .kind()
             else {
                 panic!("thread record")
             };
@@ -354,7 +356,7 @@ mod tests {
     fn native_continuations_can_return_in_non_lifo_order() {
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Value::Record(table_id) = table else {
+        let Kind::Record(table_id) = table.kind() else {
             panic!("weak table record")
         };
         interpreter.find_record_mut(table_id).expect("table").slots[5] = Value::symbol("key");
@@ -417,7 +419,7 @@ mod tests {
     fn native_machine_frame_and_unwind_roots_survive_an_actual_stack_switch() {
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Value::Record(table_id) = table else {
+        let Kind::Record(table_id) = table.kind() else {
             panic!("weak table record");
         };
         interpreter.find_record_mut(table_id).expect("table").slots[5] = Value::symbol("key");
@@ -549,7 +551,7 @@ mod tests {
         }
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Value::Record(table_id) = table else {
+        let Kind::Record(table_id) = table.kind() else {
             panic!("hash table must be a record")
         };
         interpreter

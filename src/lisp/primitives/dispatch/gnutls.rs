@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::eval::{GnuTlsSessionApi, ProcessGnuTlsSession};
+use crate::lisp::types::Kind;
 use chrono::{DateTime, Utc};
 use libloading::Library;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
@@ -530,10 +531,10 @@ const DIGESTS: &[DigestSpec] = &[
 
 fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     let mut current = *plist;
-    while let Value::Cons(cell) = current {
+    while let Kind::Cons(cell) = current.kind() {
         let rest = *cell.cdr.borrow();
         let (value, tail) = rest.cons_cells()?;
-        if matches!(&*cell.car.borrow(), Value::Symbol(name) if name == property) {
+        if matches!((*cell.car.borrow()).kind(), Kind::Symbol(name) if name == property) {
             return value.borrow().as_integer().ok();
         }
         current = *tail.borrow();
@@ -542,14 +543,14 @@ fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
 }
 
 fn digest_spec(method: &Value) -> Option<&'static DigestSpec> {
-    let id = match method {
-        Value::Integer(id) => Some(*id),
-        Value::String(_) | Value::StringObject(_) => {
+    let id = match method.kind() {
+        Kind::Integer(id) => Some(id),
+        Kind::String(_) | Kind::StringObject(_) => {
             let name = string_text(method).ok()?;
             return DIGESTS.iter().find(|spec| spec.name == name);
         }
-        Value::Symbol(name) => return DIGESTS.iter().find(|spec| spec.name == name),
-        Value::Cons(..) => plist_integer(method, ":digest-algorithm-id"),
+        Kind::Symbol(name) => return DIGESTS.iter().find(|spec| spec.name == name),
+        Kind::Cons(..) => plist_integer(method, ":digest-algorithm-id"),
         _ => None,
     };
     DIGESTS.iter().find(|spec| Some(spec.id) == id)
@@ -679,17 +680,17 @@ fn invalid_mac_method(method: &Value) -> LispError {
 }
 
 fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
-    let normalized = match method {
-        Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
-        method => *method,
+    let normalized = match method.kind() {
+        Kind::String(_) | Kind::StringObject(_) => Value::symbol(&string_text(method)?),
+        method => method.value(),
     };
-    let id = match &normalized {
-        Value::Integer(id) => c_int::try_from(*id).ok(),
-        Value::Symbol(name) => algorithm_ids(library.api.mac_list).into_iter().find(|id| {
+    let id = match normalized.kind() {
+        Kind::Integer(id) => c_int::try_from(id).ok(),
+        Kind::Symbol(name) => algorithm_ids(library.api.mac_list).into_iter().find(|id| {
             // SAFETY: Every candidate came from `gnutls_mac_list`.
-            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(name)
+            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(&name)
         }),
-        Value::Cons(..) => {
+        Kind::Cons(..) => {
             plist_integer(&normalized, ":mac-algorithm-id").and_then(|id| c_int::try_from(id).ok())
         }
         _ => None,
@@ -712,19 +713,19 @@ fn invalid_cipher_method(method: &Value) -> LispError {
 }
 
 fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
-    let normalized = match method {
-        Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
-        method => *method,
+    let normalized = match method.kind() {
+        Kind::String(_) | Kind::StringObject(_) => Value::symbol(&string_text(method)?),
+        method => method.value(),
     };
-    let id = match &normalized {
-        Value::Integer(id) => c_int::try_from(*id).ok(),
-        Value::Symbol(name) => algorithm_ids(library.api.cipher_list)
+    let id = match normalized.kind() {
+        Kind::Integer(id) => c_int::try_from(id).ok(),
+        Kind::Symbol(name) => algorithm_ids(library.api.cipher_list)
             .into_iter()
             .find(|id| {
                 // SAFETY: Every candidate came from `gnutls_cipher_list`.
-                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref() == Some(name)
+                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref() == Some(&name)
             }),
-        Value::Cons(..) => {
+        Kind::Cons(..) => {
             plist_integer(&normalized, ":cipher-id").and_then(|id| c_int::try_from(id).ok())
         }
         _ => None,
@@ -739,7 +740,7 @@ fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, Li
 }
 
 fn require_crypto_input(value: &Value) -> Result<(), LispError> {
-    if value.is_string() || matches!(value, Value::Buffer(_)) || value.is_cons() {
+    if value.is_string() || matches!(value.kind(), Kind::Buffer(_)) || value.is_cons() {
         Ok(())
     } else {
         Err(wrong_type_argument("consp", *value))
@@ -752,7 +753,7 @@ fn clear_crypto_key(value: &Value) {
     } else {
         safe_car(value)
     };
-    if let Value::StringObject(state) = &source {
+    if let Kind::StringObject(state) = source.kind() {
         let mut state = state.borrow_mut();
         state.text = "\0".repeat(state.text.len());
         state.props.clear();
@@ -1017,21 +1018,21 @@ fn gnutls_symmetric(
 }
 
 fn gnutls_error_code(interp: &Interpreter, error: &Value) -> Result<c_int, &'static str> {
-    let resolved = match error {
-        Value::Symbol(symbol) => match interp.get_symbol_property(symbol, "gnutls-code") {
+    let resolved = match error.kind() {
+        Kind::Symbol(symbol) => match interp.get_symbol_property(&symbol, "gnutls-code") {
             Some(code)
                 if matches!(
-                    code,
-                    Value::Integer(_) | Value::BigInteger(_) | Value::Float(_)
+                    code.kind(),
+                    Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
                 ) =>
             {
                 code
             }
             _ => return Err("Symbol has no numeric gnutls-code property"),
         },
-        error => *error,
+        error => error.value(),
     };
-    let Value::Integer(code) = resolved else {
+    let Kind::Integer(code) = resolved.kind() else {
         return Err("Not an error symbol or code");
     };
     c_int::try_from(code).map_err(|_| "Not an error symbol or code")
@@ -1052,7 +1053,7 @@ fn safe_cdr(value: &Value) -> Value {
 }
 
 fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>, LispError> {
-    if input.is_string() || matches!(input, Value::Buffer(_)) {
+    if input.is_string() || matches!(input.kind(), Kind::Buffer(_)) {
         return secure_hash_source_bytes(interp, input, None, None);
     }
     if !input.is_cons() {
@@ -1153,7 +1154,7 @@ fn contains_symbol(value: &Value, wanted: &str) -> bool {
     value.to_vec().is_ok_and(|items| {
         items
             .iter()
-            .any(|item| matches!(item, Value::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
     })
 }
 
@@ -1162,16 +1163,16 @@ fn plist_has_key(value: &Value, wanted: &str) -> bool {
         items
             .iter()
             .step_by(2)
-            .any(|item| matches!(item, Value::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
     })
 }
 
 fn log_level(value: &Value) -> Option<c_int> {
-    match value {
-        Value::Integer(value) => {
-            Some((*value).clamp(i64::from(c_int::MIN), i64::from(c_int::MAX)) as c_int)
+    match value.kind() {
+        Kind::Integer(value) => {
+            Some((value).clamp(i64::from(c_int::MIN), i64::from(c_int::MAX)) as c_int)
         }
-        Value::BigInteger(value) => Some(value.to_i32().unwrap_or_else(|| {
+        Kind::BigInteger(value) => Some(value.to_i32().unwrap_or_else(|| {
             if value.sign() == Sign::Minus {
                 c_int::MIN
             } else {
@@ -1497,7 +1498,7 @@ fn gnutls_boot(
     parameters: &Value,
 ) -> Result<Value, LispError> {
     let process_id = interp.resolve_process_id(process)?;
-    let Value::Symbol(credential_type) = credential_type else {
+    let Kind::Symbol(credential_type) = credential_type.kind() else {
         return Err(wrong_type_argument("symbolp", *credential_type));
     };
     parameters
@@ -1562,8 +1563,8 @@ fn gnutls_boot(
     };
 
     if is_x509 {
-        let verify_flags = match contact_plist_get(parameters, ":verify-flags") {
-            Value::Integer(flags) => c_uint::try_from(flags).unwrap_or(0),
+        let verify_flags = match contact_plist_get(parameters, ":verify-flags").kind() {
+            Kind::Integer(flags) => c_uint::try_from(flags).unwrap_or(0),
             _ => 0,
         };
         // SAFETY: CREDENTIAL is a live X.509 credential handle.  Zero is
@@ -1669,7 +1670,7 @@ fn gnutls_boot(
     if result < 0 {
         return Ok(gnutls_result(result));
     }
-    if let Value::Integer(bits) = contact_plist_get(parameters, ":min-prime-bits") {
+    if let Kind::Integer(bits) = contact_plist_get(parameters, ":min-prime-bits").kind() {
         // GNU accepts only a fixnum and lets C narrow it to unsigned int.
         // SAFETY: STATE is a live initialized session.
         unsafe { (api.dh_set_prime_bits)(state.pointer, bits as c_uint) };
@@ -1758,7 +1759,7 @@ pub(crate) fn progress_async_gnutls(
     let Some((credential_type, parameter_items)) = items.split_first() else {
         return Ok(AsyncGnuTlsProgress::NotRequested);
     };
-    let Value::Symbol(credential_symbol) = credential_type else {
+    let Kind::Symbol(credential_symbol) = credential_type.kind() else {
         return Err(wrong_type_argument("symbolp", *credential_type));
     };
     let is_x509 = match credential_symbol.as_str() {
@@ -1775,17 +1776,17 @@ pub(crate) fn progress_async_gnutls(
             credential_type,
             &parameter_list,
         )?;
-        return match result {
-            Value::T => {
+        return match result.kind() {
+            Kind::T => {
                 interp.clear_process_gnutls_boot_parameters(process_id);
                 Ok(AsyncGnuTlsProgress::Ready)
             }
-            Value::Symbol(symbol)
+            Kind::Symbol(symbol)
                 if matches!(symbol.as_str(), "gnutls-e-again" | "gnutls-e-interrupted") =>
             {
                 Ok(AsyncGnuTlsProgress::Pending)
             }
-            error => Ok(AsyncGnuTlsProgress::Failed(error)),
+            error => Ok(AsyncGnuTlsProgress::Failed(error.value())),
         };
     }
     if stage != 8 {
@@ -1833,7 +1834,7 @@ fn gnutls_boot(
     parameters: &Value,
 ) -> Result<Value, LispError> {
     interp.resolve_process_id(process)?;
-    if !matches!(credential_type, Value::Symbol(_)) {
+    if !matches!(credential_type.kind(), Kind::Symbol(_)) {
         return Err(wrong_type_argument("symbolp", credential_type.clone()));
     }
     parameters
@@ -1949,8 +1950,8 @@ define_dispatch!(
             "gnutls-errorp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(&args[0], Value::T)
-                        || matches!(&args[0], Value::Symbol(symbol) if symbol == "gnutls-e-again")
+                    if matches!(args[0].kind(), Kind::T)
+                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol == "gnutls-e-again")
                     {
                         Value::Nil
                     } else {
@@ -2040,10 +2041,10 @@ define_dispatch!(
             }
             "gnutls-peer-status-warning-describe" => {
                 need_args(name, args, 1)?;
-                let Value::Symbol(status) = &args[0] else {
+                let Kind::Symbol(status) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                Ok(peer_status_warning_description(status)
+                Ok(peer_status_warning_description(&status)
                     .map(Value::string)
                     .unwrap_or(Value::Nil))
             }

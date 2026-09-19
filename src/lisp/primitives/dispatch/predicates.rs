@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 define_dispatch!(
     pub(super) fn call(
@@ -15,7 +16,8 @@ define_dispatch!(
             "number-or-marker-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if args[0].is_integer() || matches!(args[0], Value::Float(_) | Value::Marker(_))
+                    if args[0].is_integer()
+                        || matches!(args[0].kind(), Kind::Float(_) | Kind::Marker(_))
                     {
                         Value::T
                     } else {
@@ -28,7 +30,7 @@ define_dispatch!(
                 Ok(
                     // data.c:Fchar_or_string_p uses character.h:MAX_CHAR,
                     // not Unicode's scalar limit, and STRINGP reads a tag.
-                    if matches!(args[0], Value::Integer(code) if (0..=0x3F_FFFF).contains(&code))
+                    if matches!(args[0].kind(), Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code))
                         || args[0].is_string()
                     {
                         Value::T
@@ -50,7 +52,7 @@ define_dispatch!(
             "sequencep" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Nil | Value::Cons(_))
+                    if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_))
                         || args[0].is_string()
                         || is_vector_like_value(interp, &args[0])
                     {
@@ -72,8 +74,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(
-                        args[0],
-                        Value::Integer(_) | Value::BigInteger(_) | Value::Marker(_)
+                        args[0].kind(),
+                        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Marker(_)
                     ) {
                         Value::T
                     } else {
@@ -84,7 +86,7 @@ define_dispatch!(
             "vector-or-char-table-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if is_vector_value(&args[0]) || matches!(args[0], Value::CharTable(_)) {
+                    if is_vector_value(&args[0]) || matches!(args[0].kind(), Kind::CharTable(_)) {
                         Value::T
                     } else {
                         Value::Nil
@@ -120,7 +122,7 @@ define_dispatch!(
             }
             "floatp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Float(_)) {
+                Ok(if matches!(args[0].kind(), Kind::Float(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -129,10 +131,10 @@ define_dispatch!(
             "stringp" => direct_stringp(interp, args, env),
             "documentation-stringp" => {
                 need_args(name, args, 1)?;
-                let valid = matches!(&args[0], Value::Integer(_))
+                let valid = matches!(args[0].kind(), Kind::Integer(_))
                     || args[0].is_string()
                     || args[0].cons_values().is_some_and(|(file, position)| {
-                        file.is_string() && matches!(position, Value::Integer(_))
+                        file.is_string() && matches!(position.kind(), Kind::Integer(_))
                     });
                 Ok(if valid { Value::T } else { Value::Nil })
             }
@@ -143,10 +145,10 @@ define_dispatch!(
                     .then(|| symbol_with_pos_parts(interp, &args[0]))
                     .flatten()
                     .is_some_and(|(symbol, _)| {
-                        matches!(symbol, Value::Symbol(name) if name.starts_with(':'))
+                        matches!(symbol.kind(), Kind::Symbol(name) if name.starts_with(':'))
                     });
                 Ok(
-                    if matches!(&args[0], Value::Symbol(symbol) if symbol.starts_with(':'))
+                    if matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.starts_with(':'))
                         || positioned_keyword
                     {
                         Value::T
@@ -168,7 +170,7 @@ define_dispatch!(
                 // data.c:Fbyte_code_function_p checks CLOSUREP and the
                 // code slot's STRINGP tag, never names or parameter lists.
                 Ok(
-                    if matches!(args[0], Value::Record(id) if interp.is_genuine_bytecode_function(id.id))
+                    if matches!(args[0].kind(), Kind::Record(id) if interp.is_genuine_bytecode_function(id.id))
                     {
                         Value::T
                     } else {
@@ -179,7 +181,7 @@ define_dispatch!(
             "module-function-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction))
+                    if matches!(args[0].kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction))
                     {
                         Value::T
                     } else {
@@ -226,7 +228,7 @@ define_dispatch!(
             "user-ptrp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::UserPointer))
+                    if matches!(args[0].kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::UserPointer))
                     {
                         Value::T
                     } else {
@@ -237,7 +239,7 @@ define_dispatch!(
             "closurep" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Lambda(_))
+                    if matches!(args[0].kind(), Kind::Lambda(_))
                         || record_type_name(interp, &args[0]) == Some("byte-code-function")
                     {
                         Value::T
@@ -248,7 +250,7 @@ define_dispatch!(
             }
             "interpreted-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Lambda(_)) {
+                Ok(if matches!(args[0].kind(), Kind::Lambda(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -258,10 +260,10 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU data.c: t exactly for subr objects.  A native builtin
                 // is a subr; disguising any as Lisp forged provenance.
-                Ok(match &args[0] {
-                    Value::BuiltinFunc(_) => Value::T,
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                Ok(match args[0].kind() {
+                    Kind::BuiltinFunc(_) => Value::T,
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
@@ -308,7 +310,7 @@ define_dispatch!(
                 else {
                     return Ok(Value::Nil);
                 };
-                if matches!(function, Value::String(_) | Value::StringObject(_))
+                if matches!(function.kind(), Kind::String(_) | Kind::StringObject(_))
                     || is_vector_value(&function)
                 {
                     return Ok(if for_call_interactively {
@@ -317,21 +319,21 @@ define_dispatch!(
                         Value::T
                     });
                 }
-                match &function {
-                    Value::BuiltinFunc(builtin) => {
-                        if generated_builtin_arities::generated_builtin_command_p(builtin) {
+                match function.kind() {
+                    Kind::BuiltinFunc(builtin) => {
+                        if generated_builtin_arities::generated_builtin_command_p(&builtin) {
                             return Ok(Value::T);
                         }
                     }
-                    Value::Cons(_) => {
+                    Kind::Cons(_) => {
                         if autoload_parts(&function).is_some() {
                             if autoload_command_p(&function) {
                                 return Ok(Value::T);
                             }
                         } else {
                             let is_lambda = matches!(
-                                function.car(),
-                                Ok(Value::Symbol(head)) if head == "lambda"
+                                function.car().map(|v| v.kind()),
+                                Ok(Kind::Symbol(head)) if head == "lambda"
                             );
                             let body = function
                                 .cdr()
@@ -339,7 +341,7 @@ define_dispatch!(
                                 .unwrap_or(Value::Nil);
                             let interactive = body.to_vec().unwrap_or_default().into_iter().any(
                                 |form| {
-                                    matches!(form.car(), Ok(Value::Symbol(head)) if head == "interactive")
+                                    matches!(form.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "interactive")
                                 },
                             );
                             return Ok(if is_lambda && interactive {
@@ -349,7 +351,7 @@ define_dispatch!(
                             });
                         }
                     }
-                    Value::Lambda(_) | Value::Record(_) => {
+                    Kind::Lambda(_) | Kind::Record(_) => {
                         if callable_interactive_form_items(interp, &function).is_some() {
                             return Ok(Value::T);
                         }
@@ -357,9 +359,9 @@ define_dispatch!(
                     _ => return Ok(Value::Nil),
                 }
                 let mut link = args[0];
-                while let Value::Symbol(symbol) = &link {
+                while let Kind::Symbol(symbol) = link.kind() {
                     if interp
-                        .get_symbol_property(symbol, "interactive-form")
+                        .get_symbol_property(&symbol, "interactive-form")
                         .is_some_and(|form| !form.is_nil())
                     {
                         return Err(LispError::Signal(
@@ -367,7 +369,7 @@ define_dispatch!(
                         ));
                     }
                     link = interp
-                        .logical_function_binding(symbol, env)
+                        .logical_function_binding(&symbol, env)
                         .unwrap_or(Value::Nil);
                 }
                 // OClosures may get their interactive form from the
@@ -409,7 +411,7 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 5)?;
                 let first_only = args.get(2).is_some_and(Value::is_truthy);
                 let nomenus = first_only
-                    && !matches!(args.get(2), Some(Value::Symbol(mode)) if mode == "non-ascii");
+                    && !matches!(args.get(2).map(|v| v.kind()), Some(Kind::Symbol(mode)) if mode == "non-ascii");
                 let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
                 let matches =
                     where_is_internal(interp, &args[0], &keymaps, first_only, nomenus, env)?;
@@ -522,7 +524,7 @@ define_dispatch!(
             "bare-symbol-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Symbol(_) | Value::Nil | Value::T) {
+                    if matches!(args[0].kind(), Kind::Symbol(_) | Kind::Nil | Kind::T) {
                         Value::T
                     } else {
                         Value::Nil
@@ -598,7 +600,7 @@ define_dispatch!(
             }
             "bufferp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Buffer(_)) {
+                Ok(if matches!(args[0].kind(), Kind::Buffer(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -607,7 +609,7 @@ define_dispatch!(
             "buffer-live-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(&args[0], Value::Buffer(buffer) if interp.has_buffer_id(buffer.id))
+                    if matches!(args[0].kind(), Kind::Buffer(buffer) if interp.has_buffer_id(buffer.id))
                     {
                         Value::T
                     } else {
@@ -651,11 +653,13 @@ define_dispatch!(
                 if args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let buffer_id = match args.first() {
-                    None | Some(Value::Nil) => Some(interp.current_buffer_id()),
-                    Some(value) if string_like(value).is_some() => string_like(value)
-                        .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id)),
-                    Some(value) => Some(interp.resolve_buffer_id(value)?),
+                let buffer_id = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Some(interp.current_buffer_id()),
+                    Some(value) if string_like(&value.value()).is_some() => {
+                        string_like(&value.value())
+                            .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id))
+                    }
+                    Some(value) => Some(interp.resolve_buffer_id(&value.value())?),
                 };
                 let is_minibuffer = buffer_id
                     .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
@@ -679,11 +683,11 @@ define_dispatch!(
             }
             "innermost-minibuffer-p" | "minibuffer-innermost-command-loop-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let target = match args.first() {
-                    None | Some(Value::Nil) => interp
+                let target = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp
                         .buffer_identity_value(interp.current_buffer_id())
                         .unwrap_or(Value::Nil),
-                    Some(value) => *value,
+                    Some(value) => value.value(),
                 };
                 let active = interp
                     .active_minibuffer_buffer_id()
@@ -713,9 +717,9 @@ define_dispatch!(
 
             "natnump" => {
                 need_args(name, args, 1)?;
-                Ok(match &args[0] {
-                    Value::Integer(n) if *n >= 0 => Value::T,
-                    Value::BigInteger(n) if n.sign() != Sign::Minus => Value::T,
+                Ok(match args[0].kind() {
+                    Kind::Integer(n) if n >= 0 => Value::T,
+                    Kind::BigInteger(n) if n.sign() != Sign::Minus => Value::T,
                     _ => Value::Nil,
                 })
             }
@@ -749,10 +753,10 @@ define_dispatch!(
             "characterp" => {
                 need_args(name, args, 1)?;
                 // In Emacs, characters are integers 0..#x3FFFFF
-                Ok(match &args[0] {
-                    Value::Integer(n) if *n >= 0 && *n <= 0x3F_FFFF => Value::T,
-                    Value::BigInteger(n)
-                        if n.sign() != Sign::Minus && **n <= BigInt::from(0x3F_FFFFu32) =>
+                Ok(match args[0].kind() {
+                    Kind::Integer(n) if (0..=0x3F_FFFF).contains(&n) => Value::T,
+                    Kind::BigInteger(n)
+                        if n.sign() != Sign::Minus && *n <= BigInt::from(0x3F_FFFFu32) =>
                     {
                         Value::T
                     }
@@ -761,7 +765,7 @@ define_dispatch!(
             }
             "markerp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Marker(_)) {
+                Ok(if matches!(args[0].kind(), Kind::Marker(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -770,7 +774,7 @@ define_dispatch!(
             "recordp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Record(id)
+                    if matches!(args[0].kind(), Kind::Record(id)
                         if interp.find_record(id).is_some_and(|record|
                             record.kind == crate::lisp::eval::RecordKind::Record))
                         || record_literal_items(&args[0]).is_some()
@@ -824,7 +828,7 @@ pub(super) fn direct_numberp(
     let name = "numberp";
     need_args(name, args, 1)?;
     Ok(
-        if args[0].is_integer() || matches!(args[0], Value::Float(_)) {
+        if args[0].is_integer() || matches!(args[0].kind(), Kind::Float(_)) {
             Value::T
         } else {
             Value::Nil

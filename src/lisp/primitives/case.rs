@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) const RAW_BYTE8_BASE: u32 = 0x3FFF00;
 
@@ -177,8 +178,8 @@ impl CasingContext {
 
 pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u64), LispError> {
     let down = interp.current_case_table_id();
-    let up = match interp.char_table_extra_slot(down, 0) {
-        Some(Value::CharTable(id)) => id,
+    let up = match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
+        Some(Kind::CharTable(id)) => id,
         _ => down,
     };
     Ok((down, up))
@@ -186,7 +187,9 @@ pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u
 
 pub(crate) fn case_table_mapping(interp: &Interpreter, table_id: u64, code: u32) -> Option<u32> {
     for candidate in [Some(code), alternate_case_key(code)].into_iter().flatten() {
-        let Some(Value::Integer(mapped)) = interp.char_table_explicit_get(table_id, candidate)
+        let Some(Kind::Integer(mapped)) = interp
+            .char_table_explicit_get(table_id, candidate)
+            .map(|v| v.kind())
         else {
             continue;
         };
@@ -209,8 +212,8 @@ pub(crate) fn current_case_classes(interp: &Interpreter, code: u32) -> (bool, bo
     let original = normalize_case_key(code);
     let uppercase = case_table_mapping(interp, down, code).unwrap_or(original) != original;
     let lowercase = !uppercase
-        && match interp.char_table_extra_slot(down, 0) {
-            Some(Value::CharTable(up)) => {
+        && match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
+            Some(Kind::CharTable(up)) => {
                 case_table_mapping(interp, up, code).unwrap_or(original) != original
             }
             _ => false,
@@ -499,9 +502,9 @@ pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, 
     let mut cursor = *value;
     let mut bounds = Vec::new();
     for _ in 0..1024 {
-        match cursor {
-            Value::Nil => return Ok(bounds),
-            Value::Cons(cons_cell) => {
+        match cursor.kind() {
+            Kind::Nil => return Ok(bounds),
+            Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
                 bounds.push(parse_region_bound(&car.borrow())?);

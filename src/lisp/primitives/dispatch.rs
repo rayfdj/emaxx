@@ -84,6 +84,7 @@ fn direct_primitive(name: &str) -> Option<DirectPrimitive> {
         "get" => misc::direct_get,
         "symbol-value" => misc::direct_symbol_value,
         "symbol-function" => misc_keymaps::direct_symbol_function,
+        "garbage-collect" => misc_keymaps::direct_garbage_collect,
         "symbol-name" => misc_keymaps::direct_symbol_name,
         "equal" => numeric::direct_equal,
         "string-match" => strings::direct_string_match,

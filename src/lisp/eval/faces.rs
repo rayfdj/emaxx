@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::primitives::{aset_vector_value, vector_slot_value};
+use crate::lisp::types::Kind;
 
 impl Interpreter {
     /// Install the variables owned by GNU's xfaces.c at the same native
@@ -134,7 +135,7 @@ impl Interpreter {
         };
         if let Some((_, value)) = entries
             .iter_mut()
-            .find(|(key, _)| matches!(key, Value::Symbol(symbol) if symbol == name))
+            .find(|(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name))
         {
             *value = vector;
         } else {
@@ -162,7 +163,7 @@ impl Interpreter {
         let spec = Value::cons(Value::Integer(id), vector);
         if let Some((_, value)) = entries
             .iter_mut()
-            .find(|(key, _)| matches!(key, Value::Symbol(symbol) if symbol == name))
+            .find(|(key, _)| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name))
         {
             *value = spec;
         } else {
@@ -277,8 +278,8 @@ impl Interpreter {
 
     pub fn face_inherit_target(&self, face: &str) -> Option<String> {
         self.lisp_face_attribute(face, LFACE_INHERIT_INDEX, false)
-            .and_then(|value| match value {
-                Value::Symbol(symbol) if symbol != "unspecified" => Some(symbol.to_string()),
+            .and_then(|value| match value.kind() {
+                Kind::Symbol(symbol) if symbol != "unspecified" => Some(symbol.to_string()),
                 _ => None,
             })
     }

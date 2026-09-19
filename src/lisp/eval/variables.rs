@@ -2,6 +2,7 @@ use super::symbol_cells::{
     ALWAYS_LOCAL, FORWARDED, FWD_BOOL, FWD_INT, LOCAL_IF_SET, LOCALIZED, PER_BUFFER, SPECIAL,
 };
 use super::*;
+use crate::lisp::types::Kind;
 use crate::lisp::types::SymbolName;
 
 #[derive(Default)]
@@ -178,7 +179,7 @@ impl Interpreter {
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         self.globals.set_flag_by_name(name, LOCALIZED);
-        let value = if matches!(value, Value::Unbound) {
+        let value = if matches!(value.kind(), Kind::Unbound) {
             value
         } else {
             let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
@@ -205,7 +206,7 @@ impl Interpreter {
         value: Value,
     ) {
         self.globals.set_flag(symbol, LOCALIZED);
-        let value = if matches!(value, Value::Unbound) {
+        let value = if matches!(value.kind(), Kind::Unbound) {
             value
         } else if self.has_c_slot_symbol(symbol) {
             let value =
@@ -601,30 +602,30 @@ impl Interpreter {
         // object is copied per pair (a clone of every car and cdr made the
         // walk three refcount round trips a pair) -- with
         // FOR_EACH_TAIL_SAFE's Brent cycle check on the cell identities.
-        let mut cell = match &self.symbol_properties[index].1 {
-            Value::Cons(cell) => *cell,
+        let mut cell = match self.symbol_properties[index].1.kind() {
+            Kind::Cons(cell) => cell,
             _ => return None,
         };
         let mut tortoise = crate::lisp::types::ConsCell::identity(&cell);
         let (mut power, mut steps) = (2usize, 0usize);
         loop {
-            let matches = match &*cell.car.borrow() {
-                Value::Symbol(key) => key == property,
-                Value::Nil => property == "nil",
-                Value::T => property == "t",
+            let matches = match (*cell.car.borrow()).kind() {
+                Kind::Symbol(key) => key == *property,
+                Kind::Nil => property == "nil",
+                Kind::T => property == "t",
                 _ => false,
             };
             let next = {
                 let rest = cell.cdr.borrow();
-                let Value::Cons(value_cell) = &*rest else {
+                let Kind::Cons(value_cell) = (*rest).kind() else {
                     return None;
                 };
                 if matches {
                     return Some(*value_cell.car.borrow());
                 }
                 let after = value_cell.cdr.borrow();
-                match &*after {
-                    Value::Cons(next) => *next,
+                match (*after).kind() {
+                    Kind::Cons(next) => next,
                     _ => return None,
                 }
             };
@@ -648,10 +649,10 @@ impl Interpreter {
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
-        while let Value::Cons(cell) = tail {
+        while let Kind::Cons(cell) = tail.kind() {
             let rest = *cell.cdr.borrow();
             let (value_cell, next_cell) = rest.cons_cells()?;
-            if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
+            if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
                 return Some(*value_cell.borrow());
             }
             tail = *next_cell.borrow();
@@ -672,12 +673,12 @@ impl Interpreter {
             let plist = self.symbol_properties[index].1;
             let mut tail = plist;
             let mut tortoise = Brent::new(&tail);
-            while let Value::Cons(cell) = tail {
+            while let Kind::Cons(cell) = tail.kind() {
                 let rest = *cell.cdr.borrow();
                 let Some((value_cell, next_cell)) = (rest).cons_cells() else {
                     return;
                 };
-                if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
+                if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
                     *value_cell.borrow_mut() = value;
                     return;
                 }
@@ -740,13 +741,13 @@ impl Interpreter {
         let mut seen_vectors = HashSet::new();
 
         while let Some(current) = pending.pop() {
-            match current {
-                Value::Symbol(name) => {
+            match current.kind() {
+                Kind::Symbol(name) => {
                     if crate::lisp::types::visible_symbol_name(&name) == name {
                         self.intern_symbol_name(&name);
                     }
                 }
-                Value::Cons(cons_cell) => {
+                Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
                     if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cons_cell)) {
@@ -754,10 +755,10 @@ impl Interpreter {
                         pending.push(*car.borrow());
                     }
                 }
-                Value::Vector(vector) if seen_vectors.insert(vector.identity()) => {
+                Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
                     pending.extend(vector.slots().iter().cloned());
                 }
-                Value::StringObject(state) if seen_strings.insert(state.identity()) => {
+                Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
                         for (property, property_value) in &span.props {
                             self.intern_symbol_name(property);
@@ -771,7 +772,7 @@ impl Interpreter {
                 // (lread.c read0 interns at each `read_symbol').  Skipping
                 // these left every symbol that only occurs in a compiled
                 // constant vector out of the standard obarray.
-                Value::ReaderForm(form) => match form.as_ref() {
+                Kind::ReaderForm(form) => match form.as_ref() {
                     crate::lisp::types::ReaderForm::CircularLabel { payload, .. } => {
                         pending.push(*payload);
                     }
@@ -803,7 +804,7 @@ impl Interpreter {
         env: &Env,
     ) -> Result<Value, LispError> {
         let obarray = self.lookup_var("obarray", env).unwrap_or(Value::Nil);
-        if !matches!(&obarray, Value::Record(id) if !self.is_standard_obarray_id(id.id)) {
+        if !matches!(obarray.kind(), Kind::Record(id) if !self.is_standard_obarray_id(id.id)) {
             self.intern_symbols_in_value(&value);
             return Ok(value);
         }
@@ -816,11 +817,11 @@ impl Interpreter {
         obarray: &Value,
         seen: &mut ReadSymbolContainers,
     ) -> Result<Value, LispError> {
-        match value {
-            Value::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
+        match value.kind() {
+            Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
                 crate::lisp::primitives::intern_in_obarray(self, obarray, &name)
             }
-            Value::Cons(cell) => {
+            Kind::Cons(cell) => {
                 if seen
                     .cons
                     .insert(crate::lisp::types::ConsCell::identity(&cell))
@@ -834,7 +835,7 @@ impl Interpreter {
                 }
                 Ok(Value::Cons(cell))
             }
-            Value::Vector(vector) => {
+            Kind::Vector(vector) => {
                 if seen.vectors.insert(vector.identity()) {
                     let slots = vector.slots().to_vec();
                     let mapped = self.intern_read_symbol_fields(&slots, obarray, seen)?;
@@ -842,7 +843,7 @@ impl Interpreter {
                 }
                 Ok(Value::Vector(vector))
             }
-            Value::StringObject(state) => {
+            Kind::StringObject(state) => {
                 let mut borrowed = state.borrow_mut();
                 for span in &mut borrowed.props {
                     for (_, property_value) in &mut span.props {
@@ -853,7 +854,7 @@ impl Interpreter {
                 drop(borrowed);
                 Ok(Value::StringObject(state))
             }
-            Value::ReaderForm(form) => {
+            Kind::ReaderForm(form) => {
                 use crate::lisp::types::ReaderForm;
 
                 let mapped = match form.as_ref() {
@@ -896,7 +897,7 @@ impl Interpreter {
                     crate::lisp::alloc::VectorlikeRef::allocate(mapped),
                 ))
             }
-            other => Ok(other),
+            other => Ok(other.value()),
         }
     }
 
@@ -924,7 +925,7 @@ impl Interpreter {
         let mut tail = self.symbol_properties[index].1;
         let mut previous_value_cell: Option<Value> = None;
         let mut seen = HashSet::new();
-        while let Value::Cons(cell) = tail {
+        while let Kind::Cons(cell) = tail.kind() {
             if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                 return;
             }
@@ -933,7 +934,7 @@ impl Interpreter {
                 return;
             };
             let next = *next_cell.borrow();
-            if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
+            if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
                 self.note_definition_changed();
                 if let Some(previous) = previous_value_cell {
                     previous
@@ -1530,9 +1531,9 @@ impl Interpreter {
                 .collect();
         }
         if name == "ascii-case-table"
-            && let Value::CharTable(id) = &value
+            && let Kind::CharTable(id) = value.kind()
         {
-            self.mark_ascii_case_table(*id);
+            self.mark_ascii_case_table(id);
         }
         if self
             .buffer_locals
@@ -1920,20 +1921,20 @@ impl Interpreter {
         }
         match name {
             "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
-            "scroll-up-aggressively" => match value {
-                Value::Nil => Ok(Value::Nil),
-                Value::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
-                Value::Float(number) if (0.0..=1.0).contains(&number.get()) => {
+            "scroll-up-aggressively" => match value.kind() {
+                Kind::Nil => Ok(Value::Nil),
+                Kind::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
+                Kind::Float(number) if (0.0..=1.0).contains(&number.get()) => {
                     Ok(Value::Float(number))
                 }
-                other => Err(wrong_type_argument("numberp", other)),
+                other => Err(wrong_type_argument("numberp", other.value())),
             },
-            "vertical-scroll-bar" => match value {
-                Value::Nil => Ok(Value::Nil),
-                Value::Symbol(ref symbol) if matches!(symbol.as_str(), "left" | "right") => {
+            "vertical-scroll-bar" => match value.kind() {
+                Kind::Nil => Ok(Value::Nil),
+                Kind::Symbol(ref symbol) if matches!(symbol.as_str(), "left" | "right") => {
                     Ok(value)
                 }
-                other => Err(wrong_type_argument("symbolp", other)),
+                other => Err(wrong_type_argument("symbolp", other.value())),
             },
             "overwrite-mode" => Ok(value),
             _ => Ok(value),
@@ -2653,9 +2654,9 @@ impl Interpreter {
         // The word is the caller's form, borrowed for the frame's life
         // as `bt.function' holds it; a non-cons form (evaluated through
         // a path that records it) is owned.
-        let function = match source_form {
-            Value::Cons(cell) => FrameFunction::Form(cell.as_ptr()),
-            other => FrameFunction::Owned(*other),
+        let function = match source_form.kind() {
+            Kind::Cons(cell) => FrameFunction::Form(cell.as_ptr()),
+            other => FrameFunction::Owned(other.value()),
         };
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
@@ -2971,14 +2972,14 @@ impl Interpreter {
         error_type: &str,
         condition_list: &[String],
     ) -> bool {
-        match head {
-            Value::T => true,
-            Value::Symbol(symbol) => {
-                Self::condition_symbol_matches(symbol, error_type, condition_list)
+        match head.kind() {
+            Kind::T => true,
+            Kind::Symbol(symbol) => {
+                Self::condition_symbol_matches(&symbol, error_type, condition_list)
             }
-            Value::Cons(_) => head.to_vec().ok().is_some_and(|items| {
+            Kind::Cons(_) => head.to_vec().ok().is_some_and(|items| {
                 items.iter().any(|item| {
-                    matches!(item, Value::T)
+                    matches!(item.kind(), Kind::T)
                         || symbol_name(item).is_some_and(|symbol| {
                             Self::condition_symbol_matches(&symbol, error_type, condition_list)
                         })
@@ -3229,10 +3230,10 @@ impl Interpreter {
         start: usize,
         end: usize,
     ) -> Result<(u64, u64), LispError> {
-        let Value::Marker(beg_marker_id) = self.make_marker() else {
+        let Kind::Marker(beg_marker_id) = self.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
-        let Value::Marker(end_marker_id) = self.make_marker() else {
+        let Kind::Marker(end_marker_id) = self.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
         self.set_marker(beg_marker_id, Some(start), Some(buffer_id))?;
@@ -3266,8 +3267,8 @@ impl Brent {
     /// Note one step to TAIL; true when TAIL is the tortoise's cell.
     fn cycle(&mut self, tail: &Value) -> bool {
         self.steps += 1;
-        if let (Value::Cons(a), Value::Cons(b)) = (tail, &self.tortoise)
-            && crate::lisp::types::SharedCons::ptr_eq(a, b)
+        if let (Kind::Cons(a), Kind::Cons(b)) = (tail.kind(), self.tortoise.kind())
+            && crate::lisp::types::SharedCons::ptr_eq(&a, &b)
         {
             return true;
         }

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::lisp::types::Kind;
 use crate::lisp::types::Value;
 use ropey::Rope;
 use std::cell::RefCell;
@@ -2433,15 +2434,18 @@ impl Buffer {
             UndoEntry::Opaque(value)
                 if value
                     .cons_values()
-                    .is_some_and(|(head, _)| matches!(head, Value::T)) =>
+                    .is_some_and(|(head, _)| matches!(head.kind(), Kind::T)) =>
             {
                 self.set_unmodified();
                 Ok(())
             }
             // primitive-undo's FIXNUM entry: "Handle an integer by setting
             // point to that value" (simple.el).
-            UndoEntry::Opaque(Value::Integer(position)) => {
-                let target = usize::try_from(*position)
+            UndoEntry::Opaque(value) if matches!(value.kind(), Kind::Integer(_)) => {
+                let Kind::Integer(position) = value.kind() else {
+                    unreachable!("matched above")
+                };
+                let target = usize::try_from(position)
                     .unwrap_or(self.begv)
                     .clamp(self.begv, self.zv);
                 self.goto_char(target);
@@ -2596,12 +2600,12 @@ fn is_stickiness_control(name: &str) -> bool {
 }
 
 fn property_named_by_stickiness(setting: Option<&Value>, name: &str) -> bool {
-    match setting {
-        Some(Value::T) => true,
-        Some(value @ Value::Cons(_)) => value.to_vec().is_ok_and(|items| {
+    match setting.map(|v| v.kind()) {
+        Some(Kind::T) => true,
+        Some(value @ Kind::Cons(_)) => value.value().to_vec().is_ok_and(|items| {
             items
                 .iter()
-                .any(|item| matches!(item, Value::Symbol(property) if property == name))
+                .any(|item| matches!(item.kind(), Kind::Symbol(property) if property == name))
         }),
         _ => false,
     }
@@ -2615,7 +2619,7 @@ fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
         let Some((property, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!(&*property.borrow(), Value::Symbol(candidate) if candidate == name)
+        matches!((*property.borrow()).kind(), Kind::Symbol(candidate) if candidate == name)
             && nonsticky.borrow().is_truthy()
     })
 }
@@ -2631,13 +2635,13 @@ pub(crate) fn text_property_plists_eq(left: &[(String, Value)], right: &[(String
 }
 
 pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(left), Value::Integer(right)) => left == right,
-        (Value::BigInteger(left), Value::BigInteger(right)) => left == right,
-        (Value::Float(left), Value::Float(right)) => left == right,
-        (Value::Symbol(left), Value::Symbol(right))
-        | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(left), Kind::Integer(right)) => left == right,
+        (Kind::BigInteger(left), Kind::BigInteger(right)) => left == right,
+        (Kind::Float(left), Kind::Float(right)) => left == right,
+        (Kind::Symbol(left), Kind::Symbol(right))
+        | (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
         // GNU's interval code compares property values with EQ, so a range
         // propertized with ONE string object is a single run.  Emaxx string
         // clones share their backing store, preserving that identity; the
@@ -2645,12 +2649,12 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         // string-valued span per character (shr-zoom-image's
         // next-single-property-change saw a "change" at every char of the
         // alt text and replaced two characters of a twenty-char image).
-        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
-        (Value::Cons(left), Value::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
+        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
+        (Kind::Cons(left), Kind::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Value::Lambda(left), Value::Lambda(right)) => {
+        (Kind::Lambda(left), Kind::Lambda(right)) => {
             left.params == right.params
                 && left.body == right.body
                 && crate::lisp::eval::Interpreter::same_environment(
@@ -2658,15 +2662,15 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
                     &right.environment_value(),
                 )
         }
-        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-        (Value::Marker(left), Value::Marker(right))
-        | (Value::Overlay(left), Value::Overlay(right))
-        | (Value::CharTable(left), Value::CharTable(right))
-        | (Value::Frame(left), Value::Frame(right))
-        | (Value::Terminal(left), Value::Terminal(right))
-        | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
-        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
-        (Value::Unbound, Value::Unbound) => true,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Marker(left), Kind::Marker(right))
+        | (Kind::Overlay(left), Kind::Overlay(right))
+        | (Kind::CharTable(left), Kind::CharTable(right))
+        | (Kind::Frame(left), Kind::Frame(right))
+        | (Kind::Terminal(left), Kind::Terminal(right))
+        | (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
+        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::Unbound, Kind::Unbound) => true,
         _ => false,
     }
 }
@@ -3054,8 +3058,8 @@ mod tests {
         let second_view = buf.undo_list_value();
         let second_insert = second_view.car().expect("coalesced undo record");
         assert!(matches!(
-            (&first_insert, &second_insert),
-            (Value::Cons(left), Value::Cons(right)) if crate::lisp::types::SharedCons::ptr_eq(left, right)
+            (first_insert.kind(), second_insert.kind()),
+            (Kind::Cons(left), Kind::Cons(right)) if crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         ));
         assert_eq!(
             second_insert,

@@ -1,10 +1,11 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 impl Interpreter {
     pub(super) fn parse_params(&self, spec: &Value) -> Result<Vec<SymbolName>, LispError> {
-        match spec {
-            Value::Nil => Ok(Vec::new()),
-            Value::Cons(_) => {
+        match spec.kind() {
+            Kind::Nil => Ok(Vec::new()),
+            Kind::Cons(_) => {
                 let items = spec.to_vec()?;
                 // eval.c:Fmake_interpreted_closure stores ARGS verbatim and
                 // does not consult `symbols_with_pos_enabled`.  Normalize
@@ -13,8 +14,8 @@ impl Interpreter {
                 // retained on LambdaValue as the public closure slot.
                 let normalized = items
                     .into_iter()
-                    .map(|item| match item {
-                        Value::Symbol(_) => Ok(item),
+                    .map(|item| match item.kind() {
+                        Kind::Symbol(_) => Ok(item),
                         _ => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
                             .map(|(symbol, _)| symbol)
                             .ok_or_else(|| invalid_function(*spec)),
@@ -23,10 +24,10 @@ impl Interpreter {
                 validate_lambda_list(spec, &normalized)?;
                 normalized
                     .into_iter()
-                    .map(|item| match item {
-                        Value::Symbol(name) => Ok(name),
-                        Value::Nil => Ok("nil".into()),
-                        Value::T => Ok("t".into()),
+                    .map(|item| match item.kind() {
+                        Kind::Symbol(name) => Ok(name),
+                        Kind::Nil => Ok("nil".into()),
+                        Kind::T => Ok("t".into()),
                         _ => Err(invalid_function(*spec)),
                     })
                     .collect()
@@ -44,8 +45,8 @@ impl Interpreter {
         let positioned = crate::lisp::primitives::symbols_with_pos_enabled(self, env);
         let normalized = items
             .into_iter()
-            .map(|item| match item {
-                Value::Symbol(_) => Ok(item),
+            .map(|item| match item.kind() {
+                Kind::Symbol(_) => Ok(item),
                 _ if positioned => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
                     .map(|(symbol, _)| symbol)
                     .ok_or_else(|| invalid_function(*spec)),
@@ -55,10 +56,10 @@ impl Interpreter {
         validate_lambda_list(spec, &normalized)?;
         normalized
             .into_iter()
-            .map(|item| match item {
-                Value::Symbol(name) => Ok(name),
-                Value::Nil => Ok("nil".into()),
-                Value::T => Ok("t".into()),
+            .map(|item| match item.kind() {
+                Kind::Symbol(name) => Ok(name),
+                Kind::Nil => Ok("nil".into()),
+                Kind::T => Ok("t".into()),
                 _ => Err(invalid_function(*spec)),
             })
             .collect()

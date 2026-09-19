@@ -326,7 +326,7 @@ impl ConsMutationSnapshot {
         let mut native_cells = Vec::new();
         let mut seen = HashSet::new();
         let mut current = *value;
-        while let Value::Cons(cell) = current {
+        while let Kind::Cons(cell) = current.kind() {
             let cell_id = ConsCell::identity(&cell);
             if !seen.insert(cell_id) {
                 break;
@@ -384,7 +384,7 @@ impl ConsMutationSnapshot {
         let mut pending = vec![*value];
         let mut added = Vec::new();
         while let Some(value) = pending.pop() {
-            let Value::Cons(cell) = value else {
+            let Kind::Cons(cell) = value.kind() else {
                 continue;
             };
             if !seen.insert(ConsCell::identity(&cell)) {
@@ -1012,7 +1012,9 @@ impl SymbolName {
         name
     }
 
-    pub fn as_str(&self) -> &str {
+    /// The name's text; its lifetime is the symbol's, which the collector
+    /// keeps while the symbol is reachable (an interned one, always).
+    pub fn as_str(&self) -> &'static str {
         self.0.internal.as_str()
     }
 
@@ -1360,7 +1362,8 @@ impl LambdaValue {
     /// five.  Multiple command modes use the modern `[SPEC MODES]' layout.
     pub fn interactive_slot_from_form(form: &Value) -> Option<Value> {
         let items = form.to_vec().ok()?;
-        if !matches!(items.first(), Some(Value::Symbol(head)) if head == "interactive") {
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "interactive")
+        {
             return None;
         }
         Some(Self::interactive_slot_from_iform_items(&items))
@@ -1389,7 +1392,7 @@ impl LambdaValue {
             slot.to_vec()
                 .ok()
                 .filter(|items| {
-                    matches!(items.first(), Some(Value::Symbol(head)) if head == "vector-literal")
+                    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "vector-literal")
                 })
                 .and_then(|items| items.get(1).cloned())
                 .unwrap_or(*slot)
@@ -1404,7 +1407,7 @@ impl LambdaValue {
 
     pub fn command_modes_from_slot(slot: &Value) -> Option<Value> {
         let items = slot.to_vec().ok()?;
-        matches!(items.first(), Some(Value::Symbol(head)) if head == "vector-literal")
+        matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "vector-literal")
             .then(|| items.get(2).cloned().unwrap_or(Value::Nil))
     }
 
@@ -1951,10 +1954,67 @@ pub enum ReaderForm {
     },
 }
 
-/// A Lisp value: lisp.h's `Lisp_Object', copied as a word is (no
-/// count, no drop glue); every kind is a cell address or an immediate.
+/// lisp.h's `Lisp_Object': one machine word, the object's address or an
+/// immediate, with `enum Lisp_Type' in the low three bits (USE_LSB_TAG):
+/// a symbol 0, a fixnum 2 or 6 (the value in the upper 62 bits), a cons
+/// 3, a string 4, a vectorlike 5 (the kind in its header), a float 7.
+/// Tag 1 (`Lisp_Type_Unused0') carries this implementation's remaining
+/// immediates in bits 3 to 7: nil, t and the unbound marker, the kinds
+/// still addressed by an id (bits 8 up), and a subr named by its symbol.
+/// Copied as a word, compared by `equal' (`PartialEq'), read through
+/// `kind' as C reads `XTYPE' and the pseudovector header.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Value(usize);
+
+const TAG_MASK: usize = 7;
+const TAG_SYMBOL: usize = 0;
+const TAG_SPECIAL: usize = 1;
+const TAG_INT0: usize = 2;
+const TAG_CONS: usize = 3;
+const TAG_STRING: usize = 4;
+const TAG_VECTORLIKE: usize = 5;
+const TAG_FLOAT: usize = 7;
+/// The kinds under `TAG_SPECIAL', in bits 3 to 7.
+const SUB_NIL: usize = 0;
+const SUB_T: usize = 1;
+const SUB_UNBOUND: usize = 2;
+const SUB_MARKER: usize = 3;
+const SUB_OVERLAY: usize = 4;
+const SUB_CHAR_TABLE: usize = 5;
+const SUB_FRAME: usize = 6;
+const SUB_TERMINAL: usize = 7;
+const SUB_FINALIZER: usize = 8;
+const SUB_BUILTIN: usize = 9;
+const SUB_SHIFT: u32 = 3;
+const PAYLOAD_SHIFT: u32 = 8;
+
+/// A tag no value carries: a panic in a debug build, and in a release
+/// build the optimizer's licence to drop the arm (lisp.h reads a
+/// `Lisp_Object''s tag and a pseudovector's header without a check,
+/// and a checked read here would cost every inlined `kind' the header
+/// load and the branch even where the site tests one immediate tag).
+///
+/// # Safety
+/// The caller must have established that the tag cannot occur.
+#[inline(always)]
+unsafe fn impossible_tag(what: &'static str) -> ! {
+    if cfg!(debug_assertions) {
+        unreachable!("{what}");
+    }
+    // SAFETY: the caller's contract.
+    unsafe { std::hint::unreachable_unchecked() }
+}
+
+const fn special(sub: usize, payload: usize) -> usize {
+    (payload << PAYLOAD_SHIFT) | (sub << SUB_SHIFT) | TAG_SPECIAL
+}
+
+/// What a `Value' names, as `XTYPE' and the pseudovector header tell
+/// it: the object's handle or the immediate.  Read with `Value::kind';
+/// the variants carry the same handles `Value''s constructors take.
 #[derive(Debug, Clone, Copy)]
-pub enum Value {
+pub enum Kind {
     Nil,
     T,
     Integer(i64),
@@ -1969,10 +2029,6 @@ pub enum Value {
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(SymbolName),
     /// A lambda or closure: params, immutable shared body, captured env.
-    ///
-    /// Function-cell lookup clones Lisp values on every call.  Sharing the
-    /// immutable code keeps that clone O(1) while the captured environment
-    /// retains its independent Lisp identity and mutability.
     Lambda(LambdaRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(BufferRef),
@@ -1997,6 +2053,280 @@ pub enum Value {
     Unbound,
 }
 
+#[allow(non_snake_case, non_upper_case_globals)]
+impl Value {
+    /// `Qnil', `Qt' and the unbound marker: immediates under tag 1.
+    pub const Nil: Value = Value(special(SUB_NIL, 0));
+    pub const T: Value = Value(special(SUB_T, 0));
+    pub const Unbound: Value = Value(special(SUB_UNBOUND, 0));
+
+    /// lisp.h's `make_int': a fixnum for a value in `most-positive-fixnum''s
+    /// range, a bignum past it.
+    #[inline]
+    pub fn Integer(n: i64) -> Value {
+        const MOST_POSITIVE: i64 = (1_i64 << 61) - 1;
+        const MOST_NEGATIVE: i64 = -(1_i64 << 61);
+        if (MOST_NEGATIVE..=MOST_POSITIVE).contains(&n) {
+            Value(((n << 2) as usize) | TAG_INT0)
+        } else {
+            Value::BigInteger(BigInt::from(n).into())
+        }
+    }
+    #[inline]
+    pub fn BigInteger(value: SharedBigInt) -> Value {
+        Value(value.identity_ptr() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Float(value: SharedFloat) -> Value {
+        Value(value.identity_ptr() | TAG_FLOAT)
+    }
+    #[inline]
+    pub fn String(text: SharedText) -> Value {
+        Value(text.identity_ptr() | TAG_STRING)
+    }
+    #[inline]
+    pub fn StringObject(state: StringObjectRef) -> Value {
+        Value(state.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Symbol(name: SymbolName) -> Value {
+        Value(name.identity_ptr() | TAG_SYMBOL)
+    }
+    #[inline]
+    pub fn Cons(cell: SharedCons) -> Value {
+        Value(cell.as_ptr() as usize | TAG_CONS)
+    }
+    #[inline]
+    pub fn Vector(vector: VectorRef) -> Value {
+        Value(vector.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn BuiltinFunc(name: SymbolName) -> Value {
+        Value(special(SUB_BUILTIN, name.identity_ptr() >> SUB_SHIFT))
+    }
+    #[inline]
+    pub fn Lambda(lambda: LambdaRef) -> Value {
+        Value(lambda.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Buffer(buffer: BufferRef) -> Value {
+        Value(buffer.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Marker(id: u64) -> Value {
+        Value(special(SUB_MARKER, id as usize))
+    }
+    #[inline]
+    pub fn Overlay(id: u64) -> Value {
+        Value(special(SUB_OVERLAY, id as usize))
+    }
+    #[inline]
+    pub fn CharTable(id: u64) -> Value {
+        Value(special(SUB_CHAR_TABLE, id as usize))
+    }
+    #[inline]
+    pub fn Frame(id: u64) -> Value {
+        Value(special(SUB_FRAME, id as usize))
+    }
+    #[inline]
+    pub fn Terminal(id: u64) -> Value {
+        Value(special(SUB_TERMINAL, id as usize))
+    }
+    #[inline]
+    pub fn Record(record: RecordRef) -> Value {
+        Value(record.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Finalizer(id: u64) -> Value {
+        Value(special(SUB_FINALIZER, id as usize))
+    }
+    #[inline]
+    pub fn ReaderForm(form: ReaderFormRef) -> Value {
+        Value(form.identity() | TAG_VECTORLIKE)
+    }
+
+    /// The word itself (the conservative scan's and the native runtime's
+    /// view of a `Lisp_Object').
+    #[inline(always)]
+    pub(crate) fn word(self) -> usize {
+        self.0
+    }
+
+    /// A value from a word `word' produced (an object's tagged address or
+    /// an immediate).
+    ///
+    /// # Safety
+    /// WORD must have come from `word' of a value whose object is still
+    /// allocated, or be an immediate.
+    #[inline(always)]
+    pub(crate) unsafe fn from_word(word: usize) -> Value {
+        Value(word)
+    }
+
+    /// `XTYPE' and the pseudovector header: the kind, with the handle.
+    /// Always inlined, as lisp.h's type predicates are: at a site that
+    /// tests one tag the optimizer keeps that mask alone and drops the
+    /// rest of the switch (the header read of a vectorlike included).
+    #[inline(always)]
+    pub fn kind(self) -> Kind {
+        let word = self.0;
+        match word & TAG_MASK {
+            TAG_INT0 | 6 => Kind::Integer((word as i64) >> 2),
+            TAG_CONS => {
+                // SAFETY: a value's cons is an allocated cell while the
+                // value is reachable (the collector's contract).
+                Kind::Cons(unsafe { SharedCons::from_raw((word & !TAG_MASK) as *const ConsCell) })
+            }
+            TAG_SYMBOL => {
+                // SAFETY: as above, a symbol cell.
+                Kind::Symbol(SymbolName::from_ref(unsafe {
+                    crate::lisp::alloc::SymbolRef::from_raw(
+                        word as *mut crate::lisp::alloc::SymbolCell,
+                    )
+                }))
+            }
+            TAG_STRING => {
+                // SAFETY: as above, a string cell.
+                Kind::String(unsafe { SharedText::from_raw((word & !TAG_MASK) as *mut _) })
+            }
+            TAG_FLOAT => {
+                // SAFETY: as above, a float cell.
+                Kind::Float(unsafe { SharedFloat::from_raw((word & !TAG_MASK) as *mut _) })
+            }
+            TAG_VECTORLIKE => {
+                let header = (word & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+                // SAFETY: as above, a vector header; each kind's handle is
+                // made from the header the way `alloc::vectors::value_of'
+                // makes it.
+                unsafe {
+                    match crate::lisp::alloc::vectors::header_tag(header) {
+                        crate::lisp::alloc::VectorTag::Normal => {
+                            Kind::Vector(VectorRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::Bignum => {
+                            Kind::BigInteger(SharedBigInt::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::Buffer => {
+                            Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::Closure => {
+                            Kind::Lambda(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::StringObject => {
+                            Kind::StringObject(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::ReaderForm => {
+                            Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::Record => {
+                            Kind::Record(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        // SAFETY: a value names no free vector (the
+                        // collector's contract); C reads the header's
+                        // tag without a check, and so does the release
+                        // build.
+                        crate::lisp::alloc::VectorTag::Free => {
+                            impossible_tag("a value names no free vector")
+                        }
+                    }
+                }
+            }
+            _ => {
+                let payload = (word >> PAYLOAD_SHIFT) as u64;
+                match (word >> SUB_SHIFT) & 31 {
+                    SUB_NIL => Kind::Nil,
+                    SUB_T => Kind::T,
+                    SUB_UNBOUND => Kind::Unbound,
+                    SUB_MARKER => Kind::Marker(payload),
+                    SUB_OVERLAY => Kind::Overlay(payload),
+                    SUB_CHAR_TABLE => Kind::CharTable(payload),
+                    SUB_FRAME => Kind::Frame(payload),
+                    SUB_TERMINAL => Kind::Terminal(payload),
+                    SUB_FINALIZER => Kind::Finalizer(payload),
+                    // SAFETY: as above, a symbol cell.
+                    SUB_BUILTIN => Kind::BuiltinFunc(SymbolName::from_ref(unsafe {
+                        crate::lisp::alloc::SymbolRef::from_raw(
+                            ((word >> PAYLOAD_SHIFT) << SUB_SHIFT)
+                                as *mut crate::lisp::alloc::SymbolCell,
+                        )
+                    })),
+                    // SAFETY: every word this implementation makes has
+                    // one of the sub-tags above.
+                    _ => unsafe { impossible_tag("a value with an unknown tag") },
+                }
+            }
+        }
+    }
+
+    /// The symbol a word names when its tag is the symbol tag, read from
+    /// the word alone: no memory of the object is touched, so the sweep
+    /// may ask it of a dead object's field (whose target, a vectorlike,
+    /// might already be freed, and whose header `kind' would read).
+    #[inline]
+    pub(crate) fn symbol_by_tag(self) -> Option<SymbolName> {
+        if self.0 & TAG_MASK == TAG_SYMBOL {
+            // SAFETY: a symbol-tagged word names a symbol cell; symbol
+            // cells are swept after the vectors and the conses.
+            Some(SymbolName::from_ref(unsafe {
+                crate::lisp::alloc::SymbolRef::from_raw(
+                    self.0 as *mut crate::lisp::alloc::SymbolCell,
+                )
+            }))
+        } else {
+            None
+        }
+    }
+
+    /// `EQ': the same word.
+    #[inline(always)]
+    pub fn eq_value(self, other: Value) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind().fmt(f)
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value().fmt(f)
+    }
+}
+
+impl Kind {
+    /// The value this kind was read from (the word again).
+    #[inline(always)]
+    pub fn value(self) -> Value {
+        match self {
+            Kind::Nil => Value::Nil,
+            Kind::T => Value::T,
+            Kind::Unbound => Value::Unbound,
+            Kind::Integer(n) => Value::Integer(n),
+            Kind::BigInteger(v) => Value::BigInteger(v),
+            Kind::Float(v) => Value::Float(v),
+            Kind::String(v) => Value::String(v),
+            Kind::StringObject(v) => Value::StringObject(v),
+            Kind::Symbol(v) => Value::Symbol(v),
+            Kind::Cons(v) => Value::Cons(v),
+            Kind::Vector(v) => Value::Vector(v),
+            Kind::BuiltinFunc(v) => Value::BuiltinFunc(v),
+            Kind::Lambda(v) => Value::Lambda(v),
+            Kind::Buffer(v) => Value::Buffer(v),
+            Kind::Marker(v) => Value::Marker(v),
+            Kind::Overlay(v) => Value::Overlay(v),
+            Kind::CharTable(v) => Value::CharTable(v),
+            Kind::Frame(v) => Value::Frame(v),
+            Kind::Terminal(v) => Value::Terminal(v),
+            Kind::Record(v) => Value::Record(v),
+            Kind::Finalizer(v) => Value::Finalizer(v),
+            Kind::ReaderForm(v) => Value::ReaderForm(v),
+        }
+    }
+}
+
 impl Value {
     /// A value that owns no heap object: a Lisp immediate (nil, t, a
     /// fixnum) or an id-addressed object.  Copying or discarding one
@@ -2004,17 +2334,17 @@ impl Value {
     #[inline(always)]
     pub(crate) fn is_immediate(&self) -> bool {
         matches!(
-            self,
-            Value::Nil
-                | Value::T
-                | Value::Integer(_)
-                | Value::Marker(_)
-                | Value::Overlay(_)
-                | Value::CharTable(_)
-                | Value::Frame(_)
-                | Value::Terminal(_)
-                | Value::Finalizer(_)
-                | Value::Unbound
+            self.kind(),
+            Kind::Nil
+                | Kind::T
+                | Kind::Integer(_)
+                | Kind::Marker(_)
+                | Kind::Overlay(_)
+                | Kind::CharTable(_)
+                | Kind::Frame(_)
+                | Kind::Terminal(_)
+                | Kind::Finalizer(_)
+                | Kind::Unbound
         )
     }
 
@@ -2147,9 +2477,9 @@ fn assq_environment(
     environment: &Value,
     matches: impl Fn(&SymbolName) -> bool,
 ) -> Result<Option<SharedCons>, LispError> {
-    let mut tail = match environment {
-        Value::Cons(cell) => *cell,
-        Value::Nil => return Ok(None),
+    let mut tail = match environment.kind() {
+        Kind::Cons(cell) => cell,
+        Kind::Nil => return Ok(None),
         _ => return Err(improper_environment(environment, false)),
     };
     // FOR_EACH_TAIL's cycle check (Brent): the tortoise moves to the hare
@@ -2160,15 +2490,15 @@ fn assq_environment(
     loop {
         {
             let entry = tail.car.borrow();
-            if let Value::Cons(binding) = &*entry
-                && matches!(&*binding.car.borrow(), Value::Symbol(bound) if matches(bound))
+            if let Kind::Cons(binding) = (*entry).kind()
+                && matches!((*binding.car.borrow()).kind(), Kind::Symbol(bound) if matches(&bound))
             {
-                return Ok(Some(*binding));
+                return Ok(Some(binding));
             }
         }
-        let next = match &*tail.cdr.borrow() {
-            Value::Cons(cell) => *cell,
-            Value::Nil => return Ok(None),
+        let next = match (*tail.cdr.borrow()).kind() {
+            Kind::Cons(cell) => cell,
+            Kind::Nil => return Ok(None),
             _ => return Err(improper_environment(environment, false)),
         };
         if next.as_ptr() == tortoise {
@@ -2198,16 +2528,16 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// is an entry of the environment itself, a bare symbol declared locally
 /// special.
 pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> bool {
-    let mut tail = match environment {
-        Value::Cons(cell) => *cell,
+    let mut tail = match environment.kind() {
+        Kind::Cons(cell) => cell,
         _ => return false,
     };
     loop {
-        if matches!(&*tail.car.borrow(), Value::Symbol(entry) if entry.as_str() == name) {
+        if matches!((*tail.car.borrow()).kind(), Kind::Symbol(entry) if entry.as_str() == name) {
             return true;
         }
-        let next = match &*tail.cdr.borrow() {
-            Value::Cons(cell) => *cell,
+        let next = match (*tail.cdr.borrow()).kind() {
+            Kind::Cons(cell) => cell,
             _ => return false,
         };
         tail = next;
@@ -2355,24 +2685,24 @@ impl Value {
     /// because their host representation has no reference count; their
     /// wrappers are the stable identities generated code observes.
     pub(crate) fn native_handle_has_external_owner(&self) -> bool {
-        match self {
-            Value::BigInteger(_) => false,
+        match self.kind() {
+            Kind::BigInteger(_) => false,
             // A float has no count: its handle lives while the mark
             // reaches the cell (from Lisp or from generated code).
-            Value::Float(_) => false,
+            Kind::Float(_) => false,
             // A string has no count: its handle lives while the mark
             // reaches the cell.
-            Value::String(_) => false,
+            Kind::String(_) => false,
             // A vectorlike has no count either: its handle lives while
             // the mark reaches the cell.
-            Value::StringObject(_)
-            | Value::Vector(_)
-            | Value::Lambda(_)
-            | Value::Buffer(_)
-            | Value::ReaderForm(_) => false,
+            Kind::StringObject(_)
+            | Kind::Vector(_)
+            | Kind::Lambda(_)
+            | Kind::Buffer(_)
+            | Kind::ReaderForm(_) => false,
             // A cons has no count: the collector decides its life.
-            Value::Cons(_) => true,
-            Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Unbound => true,
+            Kind::Cons(_) => true,
+            Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
             _ => false,
         }
     }
@@ -2483,8 +2813,8 @@ impl Value {
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
         if matches!(
-            items.first(),
-            Some(Value::Symbol(tag)) if tag == "vector-literal"
+            items.first().map(|v| v.kind()),
+            Some(Kind::Symbol(tag)) if tag == "vector-literal"
         ) {
             return Value::vector(items.into_iter().skip(1));
         }
@@ -2498,7 +2828,7 @@ impl Value {
     // Predicates
 
     pub fn is_nil(&self) -> bool {
-        matches!(self, Value::Nil)
+        matches!(self.kind(), Kind::Nil)
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -2506,23 +2836,23 @@ impl Value {
     }
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, Value::Integer(_) | Value::BigInteger(_))
+        matches!(self.kind(), Kind::Integer(_) | Kind::BigInteger(_))
     }
 
     pub fn is_string(&self) -> bool {
-        matches!(self, Value::String(_) | Value::StringObject(_))
+        matches!(self.kind(), Kind::String(_) | Kind::StringObject(_))
     }
 
     pub fn is_symbol(&self) -> bool {
-        matches!(self, Value::Nil | Value::T | Value::Symbol(_))
+        matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
     }
 
     pub fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons(_))
+        matches!(self.kind(), Kind::Cons(_))
     }
 
     pub fn is_list(&self) -> bool {
-        matches!(self, Value::Nil | Value::Cons(_))
+        matches!(self.kind(), Kind::Nil | Kind::Cons(_))
     }
 
     // Accessors
@@ -2535,8 +2865,8 @@ impl Value {
     /// `(get-unused-iso-final-char 'a 94)' signals `fixnump', so a primitive
     /// mirroring CHECK_FIXNUM must use this one.
     pub fn as_fixnum(&self) -> Result<i64, LispError> {
-        match self {
-            Value::Integer(n) => Ok(*n),
+        match self.kind() {
+            Kind::Integer(n) => Ok(n),
             // A bignum is an integer but not a fixnum, which is exactly what
             // CHECK_FIXNUM rejects.
             _ => Err(LispError::WrongTypeArgument("fixnump".into(), *self)),
@@ -2546,9 +2876,9 @@ impl Value {
     pub fn as_integer(&self) -> Result<i64, LispError> {
         // GNU's CHECK_INTEGER names `integerp'; CHECK_FIXNUM names `fixnump'
         // and is spelled `as_fixnum' above.
-        match self {
-            Value::Integer(n) => Ok(*n),
-            Value::BigInteger(n) => n
+        match self.kind() {
+            Kind::Integer(n) => Ok(n),
+            Kind::BigInteger(n) => n
                 .to_i64()
                 .ok_or_else(|| LispError::WrongTypeArgument("fixnump".into(), *self)),
             _ => Err(LispError::WrongTypeArgument("integerp".into(), *self)),
@@ -2558,10 +2888,10 @@ impl Value {
     pub fn as_float(&self) -> Result<f64, LispError> {
         // Arithmetic contexts: GNU's coercion check names
         // `number-or-marker-p' ((+ 'a 1) => (number-or-marker-p a)).
-        match self {
-            Value::Float(f) => Ok(f.get()),
-            Value::Integer(n) => Ok(*n as f64),
-            Value::BigInteger(n) => n
+        match self.kind() {
+            Kind::Float(f) => Ok(f.get()),
+            Kind::Integer(n) => Ok(n as f64),
+            Kind::BigInteger(n) => n
                 .to_f64()
                 .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *self)),
             _ => Err(LispError::WrongTypeArgument(
@@ -2572,40 +2902,40 @@ impl Value {
     }
 
     pub fn as_string(&self) -> Result<&str, LispError> {
-        match self {
-            Value::String(s) => Ok(s),
+        match self.kind() {
+            Kind::String(s) => Ok(s.as_str()),
             _ => Err(LispError::WrongTypeArgument("stringp".into(), *self)),
         }
     }
 
     pub fn as_symbol(&self) -> Result<&str, LispError> {
-        match self {
-            Value::Nil => Ok("nil"),
-            Value::T => Ok("t"),
-            Value::Symbol(s) => Ok(s),
+        match self.kind() {
+            Kind::Nil => Ok("nil"),
+            Kind::T => Ok("t"),
+            Kind::Symbol(s) => Ok(s.as_str()),
             _ => Err(LispError::WrongTypeArgument("symbolp".into(), *self)),
         }
     }
 
     pub fn car(&self) -> Result<Value, LispError> {
-        match self {
-            Value::Cons(cell) => Ok(*cell.car.borrow()),
-            Value::Nil => Ok(Value::Nil),
+        match self.kind() {
+            Kind::Cons(cell) => Ok(*cell.car.borrow()),
+            Kind::Nil => Ok(Value::Nil),
             _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
     pub fn cdr(&self) -> Result<Value, LispError> {
-        match self {
-            Value::Cons(cell) => Ok(*cell.cdr.borrow()),
-            Value::Nil => Ok(Value::Nil),
+        match self.kind() {
+            Kind::Cons(cell) => Ok(*cell.cdr.borrow()),
+            Kind::Nil => Ok(Value::Nil),
             _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
     pub fn set_car(&self, new_car: Value) -> Result<(), LispError> {
-        match self {
-            Value::Cons(cell) => {
+        match self.kind() {
+            Kind::Cons(cell) => {
                 *cell.car.borrow_mut() = new_car;
                 Ok(())
             }
@@ -2614,8 +2944,8 @@ impl Value {
     }
 
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), LispError> {
-        match self {
-            Value::Cons(cell) => {
+        match self.kind() {
+            Kind::Cons(cell) => {
                 *cell.cdr.borrow_mut() = new_cdr;
                 Ok(())
             }
@@ -2624,15 +2954,15 @@ impl Value {
     }
 
     pub fn cons_cells(&self) -> Option<ConsCells> {
-        match self {
-            Value::Cons(cell) => Some((ConsSlot::car(cell), ConsSlot::cdr(cell))),
+        match self.kind() {
+            Kind::Cons(cell) => Some((ConsSlot::car(&cell), ConsSlot::cdr(&cell))),
             _ => None,
         }
     }
 
     pub fn cons_id(&self) -> Option<usize> {
-        match self {
-            Value::Cons(cell) => Some(ConsCell::identity(cell)),
+        match self.kind() {
+            Kind::Cons(cell) => Some(ConsCell::identity(&cell)),
             _ => None,
         }
     }
@@ -2644,7 +2974,7 @@ impl Value {
 
     /// Convert a proper list to a Vec.
     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
-        if let Value::Vector(vector) = self {
+        if let Kind::Vector(vector) = self.kind() {
             let slots = vector.slots();
             let mut result = Vec::with_capacity(slots.len().saturating_add(1));
             result.push(Value::symbol("vector-literal"));
@@ -2664,9 +2994,9 @@ impl Value {
         let mut current = *self;
         let mut seen = CycleGuard::new();
         loop {
-            match current {
-                Value::Nil => return Ok(()),
-                Value::Cons(cell) => {
+            match current.kind() {
+                Kind::Nil => return Ok(()),
+                Kind::Cons(cell) => {
                     if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
                     }
@@ -2681,31 +3011,36 @@ impl Value {
     }
 
     pub fn type_name(&self) -> String {
-        match self {
-            Value::Nil => "nil".into(),
-            Value::T => "t".into(),
-            Value::Integer(_) => "integer".into(),
-            Value::BigInteger(_) => "integer".into(),
-            Value::Float(_) => "float".into(),
-            Value::String(_) => "string".into(),
-            Value::StringObject(_) => "string".into(),
-            Value::Symbol(_) => "symbol".into(),
-            Value::Cons(_) => "cons".into(),
-            Value::Vector(_) => "vector".into(),
-            Value::BuiltinFunc(name) => format!("builtin<{}>", name),
-            Value::Lambda(_) => "lambda".into(),
-            Value::Buffer(buffer) => format!("buffer<{}>", buffer.name),
-            Value::Marker(id) => format!("marker<{}>", id),
-            Value::Overlay(id) => format!("overlay<{}>", id),
-            Value::CharTable(id) => format!("char-table<{}>", id),
-            Value::Frame(id) => format!("frame<{}>", id),
-            Value::Terminal(id) => format!("terminal<{}>", id),
-            Value::Record(record) => format!("record<{}>", record.id),
-            Value::Finalizer(id) => format!("finalizer<{}>", id),
-            Value::ReaderForm(_) => "reader-form".into(),
-            Value::Unbound => "unbound".into(),
+        match self.kind() {
+            Kind::Nil => "nil".into(),
+            Kind::T => "t".into(),
+            Kind::Integer(_) => "integer".into(),
+            Kind::BigInteger(_) => "integer".into(),
+            Kind::Float(_) => "float".into(),
+            Kind::String(_) => "string".into(),
+            Kind::StringObject(_) => "string".into(),
+            Kind::Symbol(_) => "symbol".into(),
+            Kind::Cons(_) => "cons".into(),
+            Kind::Vector(_) => "vector".into(),
+            Kind::BuiltinFunc(name) => format!("builtin<{}>", name),
+            Kind::Lambda(_) => "lambda".into(),
+            Kind::Buffer(buffer) => format!("buffer<{}>", buffer.name),
+            Kind::Marker(id) => format!("marker<{}>", id),
+            Kind::Overlay(id) => format!("overlay<{}>", id),
+            Kind::CharTable(id) => format!("char-table<{}>", id),
+            Kind::Frame(id) => format!("frame<{}>", id),
+            Kind::Terminal(id) => format!("terminal<{}>", id),
+            Kind::Record(record) => format!("record<{}>", record.id),
+            Kind::Finalizer(id) => format!("finalizer<{}>", id),
+            Kind::ReaderForm(_) => "reader-form".into(),
+            Kind::Unbound => "unbound".into(),
         }
     }
+}
+
+/// The `Kind' of each of ITEMS, for slice patterns over list elements.
+pub fn kinds(items: &[Value]) -> Vec<Kind> {
+    items.iter().map(|v| v.kind()).collect()
 }
 
 impl PartialEq for Value {
@@ -2732,45 +3067,45 @@ fn values_equal_recursive(
     right: &Value,
     seen: &mut Option<HashSet<(usize, usize)>>,
 ) -> bool {
-    match (left, right) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            BigInt::from(*a) == **b
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) => true,
+        (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
+        (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
+            BigInt::from(a) == *b
         }
         // fns.c internal_equal via same_float: representation equality
         // (NaN equals NaN; 0.0 differs from -0.0).
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::StringObject(a), Value::StringObject(b)) => {
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+        (Kind::String(a), Kind::String(b)) => a == b,
+        (Kind::StringObject(a), Kind::StringObject(b)) => {
             let a = RefCell::borrow(a.as_ref());
             let b = RefCell::borrow(b.as_ref());
             a.text == b.text && a.extended_chars == b.extended_chars
         }
-        (Value::String(a), Value::StringObject(b)) => {
+        (Kind::String(a), Kind::StringObject(b)) => {
             let b = RefCell::borrow(b.as_ref());
             b.extended_chars.is_empty() && a.as_str() == b.text
         }
-        (Value::StringObject(a), Value::String(b)) => {
+        (Kind::StringObject(a), Kind::String(b)) => {
             let a = RefCell::borrow(a.as_ref());
             a.extended_chars.is_empty() && a.text == b.as_str()
         }
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Cons(a), Value::Cons(b)) => {
-            if SharedCons::ptr_eq(a, b) {
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::Cons(a), Kind::Cons(b)) => {
+            if SharedCons::ptr_eq(&a, &b) {
                 return true;
             }
-            let ids = (ConsCell::identity(a), ConsCell::identity(b));
+            let ids = (ConsCell::identity(&a), ConsCell::identity(&b));
             if !seen.get_or_insert_with(HashSet::new).insert(ids) {
                 return true;
             }
             values_equal_recursive(&a.car.borrow(), &b.car.borrow(), seen)
                 && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
         }
-        (Value::Vector(a), Value::Vector(b)) => {
-            if a.ptr_eq(b) {
+        (Kind::Vector(a), Kind::Vector(b)) => {
+            if a.ptr_eq(&b) {
                 return true;
             }
             let ids = (a.identity(), b.identity());
@@ -2784,8 +3119,8 @@ fn values_equal_recursive(
                     .zip(b.iter())
                     .all(|(a, b)| values_equal_recursive(a, b, seen))
         }
-        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::Lambda(a), Value::Lambda(b)) => {
+        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::Lambda(a), Kind::Lambda(b)) => {
             a.params == b.params
                 && a.public_parameters == b.public_parameters
                 && a.body == b.body
@@ -2793,16 +3128,16 @@ fn values_equal_recursive(
                 && a.interactive == b.interactive
                 && values_equal_recursive(&a.environment_value(), &b.environment_value(), seen)
         }
-        (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
-        (Value::Marker(a), Value::Marker(b)) => a == b,
-        (Value::Overlay(a), Value::Overlay(b)) => a == b,
-        (Value::CharTable(a), Value::CharTable(b)) => a == b,
-        (Value::Frame(a), Value::Frame(b)) => a == b,
-        (Value::Terminal(a), Value::Terminal(b)) => a == b,
-        (Value::Record(a), Value::Record(b)) => a.ptr_eq(b),
-        (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
-        (Value::ReaderForm(a), Value::ReaderForm(b)) => a.ptr_eq(b),
-        (Value::Unbound, Value::Unbound) => true,
+        (Kind::Buffer(a), Kind::Buffer(b)) => a.id == b.id,
+        (Kind::Marker(a), Kind::Marker(b)) => a == b,
+        (Kind::Overlay(a), Kind::Overlay(b)) => a == b,
+        (Kind::CharTable(a), Kind::CharTable(b)) => a == b,
+        (Kind::Frame(a), Kind::Frame(b)) => a == b,
+        (Kind::Terminal(a), Kind::Terminal(b)) => a == b,
+        (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
+        (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
+        (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
+        (Kind::Unbound, Kind::Unbound) => true,
         _ => false,
     }
 }
@@ -2812,18 +3147,18 @@ fn format_value(
     f: &mut fmt::Formatter<'_>,
     seen: &mut HashSet<usize>,
 ) -> fmt::Result {
-    match value {
-        Value::Nil => write!(f, "nil"),
-        Value::T => write!(f, "t"),
-        Value::Integer(n) => write!(f, "{}", n),
-        Value::BigInteger(n) => write!(f, "{}", n),
-        Value::Float(v) => write!(f, "{}", format_float(v.get())),
-        Value::String(s) => write!(f, "\"{}\"", s),
-        Value::StringObject(state) => {
+    match value.kind() {
+        Kind::Nil => write!(f, "nil"),
+        Kind::T => write!(f, "t"),
+        Kind::Integer(n) => write!(f, "{}", n),
+        Kind::BigInteger(n) => write!(f, "{}", n),
+        Kind::Float(v) => write!(f, "{}", format_float(v.get())),
+        Kind::String(s) => write!(f, "\"{}\"", s),
+        Kind::StringObject(state) => {
             write!(f, "\"{}\"", state.as_ref().borrow().text)
         }
-        Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
-        Value::Vector(vector) => {
+        Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(&s)),
+        Kind::Vector(vector) => {
             let id = vector.identity();
             if !seen.insert(id) {
                 return write!(f, "#<circular-vector>");
@@ -2838,13 +3173,13 @@ fn format_value(
             seen.remove(&id);
             write!(f, "]")
         }
-        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
+        Kind::Cons(cell) if matches!((*cell.car.borrow()).kind(), Kind::Symbol(head) if head == "vector-literal") =>
         {
             // Vector literals ride on conses internally but print as vectors.
             write!(f, "[")?;
             let mut current = *cell.cdr.borrow();
             let mut first = true;
-            while let Value::Cons(cell) = current {
+            while let Kind::Cons(cell) = current.kind() {
                 if !first {
                     write!(f, " ")?;
                 }
@@ -2854,13 +3189,13 @@ fn format_value(
             }
             write!(f, "]")
         }
-        Value::Cons(cell) => {
+        Kind::Cons(cell) => {
             // GNU prints reader shorthands: (quote X) as 'X and
             // (function X) as #'X.
-            if let Value::Symbol(head) = &*cell.car.borrow()
+            if let Kind::Symbol(head) = (*cell.car.borrow()).kind()
                 && (head == "quote" || head == "function")
-                && let Value::Cons(inner) = &*cell.cdr.borrow()
-                && matches!(&*inner.cdr.borrow(), Value::Nil)
+                && let Kind::Cons(inner) = (*cell.cdr.borrow()).kind()
+                && matches!((*inner.cdr.borrow()).kind(), Kind::Nil)
             {
                 write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
                 return format_value(&inner.car.borrow(), f, seen);
@@ -2869,8 +3204,8 @@ fn format_value(
             let mut current = *value;
             let mut first = true;
             loop {
-                match current {
-                    Value::Cons(cell) => {
+                match current.kind() {
+                    Kind::Cons(cell) => {
                         let id = ConsCell::identity(&cell);
                         if !seen.insert(id) {
                             if !first {
@@ -2886,29 +3221,29 @@ fn format_value(
                         first = false;
                         current = *cell.cdr.borrow();
                     }
-                    Value::Nil => break,
+                    Kind::Nil => break,
                     other => {
                         write!(f, " . ")?;
-                        format_value(&other, f, seen)?;
+                        format_value(&other.value(), f, seen)?;
                         break;
                     }
                 }
             }
             write!(f, ")")
         }
-        Value::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
-        Value::Lambda(lambda) => write!(f, "#<lambda ({})>", lambda.params.join(" ")),
-        Value::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.name),
-        Value::Marker(id) => write!(f, "#<marker id:{}>", id),
-        Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
-        Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
-        Value::Frame(id) => write!(f, "#<frame id:{}>", id),
-        Value::Terminal(id) => write!(f, "#<terminal id:{}>", id),
-        Value::Record(record) => write!(f, "#<record id:{}>", record.id),
+        Kind::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
+        Kind::Lambda(lambda) => write!(f, "#<lambda ({})>", lambda.params.join(" ")),
+        Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.name),
+        Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
+        Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
+        Kind::CharTable(id) => write!(f, "#<char-table id:{}>", id),
+        Kind::Frame(id) => write!(f, "#<frame id:{}>", id),
+        Kind::Terminal(id) => write!(f, "#<terminal id:{}>", id),
+        Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
-        Value::Finalizer(_) => write!(f, "#<finalizer>"),
-        Value::ReaderForm(_) => write!(f, "#<reader-form>"),
-        Value::Unbound => write!(f, "#<unbound>"),
+        Kind::Finalizer(_) => write!(f, "#<finalizer>"),
+        Kind::ReaderForm(_) => write!(f, "#<reader-form>"),
+        Kind::Unbound => write!(f, "#<unbound>"),
     }
 }
 
@@ -2968,8 +3303,8 @@ impl LispError {
             LispError::VoidFunction(_) => "void-function".into(),
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
             LispError::Signal(_) => "error".into(),
-            LispError::SignalValue(value) => match value.car() {
-                Ok(Value::Symbol(symbol)) => symbol.to_string(),
+            LispError::SignalValue(value) => match value.car().map(|v| v.kind()) {
+                Ok(Kind::Symbol(symbol)) => symbol.to_string(),
                 _ => "error".into(),
             },
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
@@ -3012,7 +3347,7 @@ impl fmt::Display for LispError {
             LispError::SignalValue(value) => match value.to_vec() {
                 Ok(items)
                     if items.len() == 2
-                        && matches!(&items[0], Value::Symbol(kind) if kind == "void-variable") =>
+                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind == "void-variable") =>
                 {
                     // Preserve the host diagnostic when Fsymbol_value
                     // carries its original Lisp object instead of a name.
@@ -3020,11 +3355,11 @@ impl fmt::Display for LispError {
                 }
                 Ok(items)
                     if items.len() >= 2
-                        && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "search-failed") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "search-failed") =>
                 {
-                    match &items[1] {
-                        Value::String(text) => write!(f, "{text:?}"),
-                        Value::StringObject(object) => {
+                    match items[1].kind() {
+                        Kind::String(text) => write!(f, "{text:?}"),
+                        Kind::StringObject(object) => {
                             write!(f, "{:?}", std::cell::RefCell::borrow(object.as_ref()).text)
                         }
                         value => write!(f, "{value}"),
@@ -3032,25 +3367,25 @@ impl fmt::Display for LispError {
                 }
                 Ok(items)
                     if items.len() >= 4
-                        && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
                 {
-                    let message = match &items[1] {
-                        Value::String(text) => text.as_str(),
+                    let message = match items[1].kind() {
+                        Kind::String(text) => text.as_str(),
                         _ => return write!(f, "{}", value),
                     };
-                    let detail = match &items[2] {
-                        Value::String(text) => text.as_str(),
+                    let detail = match items[2].kind() {
+                        Kind::String(text) => text.as_str(),
                         _ => return write!(f, "{}", value),
                     };
-                    let path = match &items[3] {
-                        Value::String(text) => text.as_str(),
+                    let path = match items[3].kind() {
+                        Kind::String(text) => text.as_str(),
                         _ => return write!(f, "{}", value),
                     };
                     write!(f, "{}: {}, {}", message, detail, path)
                 }
-                Ok(items) if items.len() >= 2 => match &items[1] {
-                    Value::String(text) => write!(f, "{text}"),
-                    Value::StringObject(object) => {
+                Ok(items) if items.len() >= 2 => match items[1].kind() {
+                    Kind::String(text) => write!(f, "{text}"),
+                    Kind::StringObject(object) => {
                         write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text)
                     }
                     value => write!(f, "{value}"),
@@ -3115,12 +3450,12 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
             out.push('…');
             return;
         }
-        match value {
-            Value::Cons(cell) => {
+        match value.kind() {
+            Kind::Cons(cell) => {
                 out.push('(');
-                let mut cursor = Value::Cons(*cell);
+                let mut cursor = Value::Cons(cell);
                 let mut emitted = 0;
-                while let Value::Cons(cell) = &cursor {
+                while let Kind::Cons(cell) = cursor.kind() {
                     if emitted >= 8 || out.len() > 2048 {
                         out.push_str(" …");
                         break;
@@ -3131,20 +3466,20 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                     render(&cell.car.borrow().clone(), depth - 1, out);
                     emitted += 1;
                     let next = *cell.cdr.borrow();
-                    match next {
-                        Value::Nil => break,
-                        Value::Cons(_) => cursor = next,
+                    match next.kind() {
+                        Kind::Nil => break,
+                        Kind::Cons(_) => cursor = next,
                         other => {
                             out.push_str(" . ");
-                            render(&other, depth - 1, out);
+                            render(&other.value(), depth - 1, out);
                             break;
                         }
                     }
                 }
                 out.push(')');
             }
-            Value::StringObject(state) => {
-                let text: String = std::cell::RefCell::borrow(state).text.clone();
+            Kind::StringObject(state) => {
+                let text: String = std::cell::RefCell::borrow(&state).text.clone();
                 let mut brief: String = text.chars().take(48).collect();
                 if brief.len() < text.len() {
                     brief.push('…');
@@ -3153,7 +3488,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                 out.push_str(&brief);
                 out.push('"');
             }
-            Value::String(text) => {
+            Kind::String(text) => {
                 let mut brief: String = text.chars().take(48).collect();
                 if brief.chars().count() < text.chars().count() {
                     brief.push('…');
@@ -3203,18 +3538,18 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, LispError, SharedCons, SymbolName, Value, assq_binding, census_live_conses,
+        EnvFrame, Kind, LispError, SharedCons, SymbolName, Value, assq_binding, census_live_conses,
         census_live_floats, census_live_vectors, environment_declares_special,
         make_uninterned_symbol_name,
     };
     use std::rc::Rc;
 
     #[test]
-    fn value_fits_in_two_machine_words() {
+    fn value_is_one_machine_word() {
         assert_eq!(
             std::mem::size_of::<Value>(),
-            2 * std::mem::size_of::<usize>(),
-            "Value clone and stack traffic depends on the compact two-word representation",
+            std::mem::size_of::<usize>(),
+            "lisp.h's Lisp_Object is one tagged word; every slot, stack cell and register copy depends on it",
         );
     }
 
@@ -3246,7 +3581,7 @@ mod tests {
             tail = tail.cdr().expect("cons");
         }
         assert!(
-            matches!(&tail, Value::Cons(cell) if matches!(outer.environment(), Value::Cons(o) if SharedCons::ptr_eq(cell, o)))
+            matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
         );
         assert!(!environment_declares_special(frame.environment(), "cell"));
     }
@@ -3255,11 +3590,11 @@ mod tests {
     fn cloning_string_reuses_the_text_allocation() {
         let value = Value::string("shared text");
         let clone = value;
-        let (Value::String(text), Value::String(cloned_text)) = (&value, &clone) else {
+        let (Kind::String(text), Kind::String(cloned_text)) = (value.kind(), clone.kind()) else {
             unreachable!("constructed string values")
         };
 
-        assert!(text.ptr_eq(cloned_text));
+        assert!(text.ptr_eq(&cloned_text));
     }
 
     #[test]
@@ -3386,12 +3721,13 @@ mod tests {
     fn cloning_big_integer_reuses_the_integer_allocation() {
         let value = Value::big_integer(num_bigint::BigInt::from(1_u8) << 256);
         let clone = value;
-        let (Value::BigInteger(integer), Value::BigInteger(cloned_integer)) = (&value, &clone)
+        let (Kind::BigInteger(integer), Kind::BigInteger(cloned_integer)) =
+            (value.kind(), clone.kind())
         else {
             unreachable!("constructed big integer values")
         };
 
-        assert!(integer.ptr_eq(cloned_integer));
+        assert!(integer.ptr_eq(&cloned_integer));
     }
 
     #[test]
@@ -3431,12 +3767,11 @@ mod tests {
     #[test]
     fn uninterned_symbol_keeps_its_supplied_lisp_name() {
         let name = Value::string("temporary");
-        let Value::String(expected) = &name else {
+        let Kind::String(expected) = name.kind() else {
             unreachable!("constructed string")
         };
-        let expected = *expected;
         let symbol = SymbolName::make_uninterned(name, "temporary", 1);
-        let Value::String(actual) = symbol.lisp_name() else {
+        let Kind::String(actual) = symbol.lisp_name().kind() else {
             unreachable!("immutable supplied name")
         };
 
@@ -3456,10 +3791,11 @@ mod tests {
         let lambda = Value::lambda(vec!["value".into()].into(), Vec::new().into(), Value::Nil);
         let clone = lambda;
 
-        let (Value::Lambda(lambda), Value::Lambda(cloned_lambda)) = (&lambda, &clone) else {
+        let (Kind::Lambda(lambda), Kind::Lambda(cloned_lambda)) = (lambda.kind(), clone.kind())
+        else {
             unreachable!("constructed lambda values")
         };
-        assert!(lambda.ptr_eq(cloned_lambda));
+        assert!(lambda.ptr_eq(&cloned_lambda));
         assert!(Rc::ptr_eq(&lambda.params, &cloned_lambda.params));
     }
 
@@ -3467,11 +3803,12 @@ mod tests {
     fn cloning_buffer_reuses_the_buffer_descriptor() {
         let buffer = Value::buffer(7, "shared buffer");
         let clone = buffer;
-        let (Value::Buffer(buffer), Value::Buffer(cloned_buffer)) = (&buffer, &clone) else {
+        let (Kind::Buffer(buffer), Kind::Buffer(cloned_buffer)) = (buffer.kind(), clone.kind())
+        else {
             unreachable!("constructed buffer values")
         };
 
-        assert!(buffer.ptr_eq(cloned_buffer));
+        assert!(buffer.ptr_eq(&cloned_buffer));
     }
 
     #[test]
@@ -3542,11 +3879,11 @@ mod tests {
             .with(|limit| limit.set(super::CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT));
 
         let source = Value::cons(Value::Integer(1), Value::Nil);
-        let Value::Cons(cell) = &source else {
+        let Kind::Cons(cell) = source.kind() else {
             unreachable!("constructed cons")
         };
-        let snapshot = super::ConsMutationSnapshot::cell(cell);
-        let field_ids = super::ConsCell::mutation_field_ids(cell);
+        let snapshot = super::ConsMutationSnapshot::cell(&cell);
+        let field_ids = super::ConsCell::mutation_field_ids(&cell);
         let dead_owner = Rc::new(super::ConsMutationWatch {
             valid: std::cell::Cell::new(true),
         });
@@ -3557,10 +3894,10 @@ mod tests {
         });
         super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| limit.set(1));
         let other = Value::cons(Value::Integer(3), Value::Nil);
-        let Value::Cons(other_cell) = &other else {
+        let Kind::Cons(other_cell) = other.kind() else {
             unreachable!("constructed cons")
         };
-        let _other_snapshot = super::ConsMutationSnapshot::cell(other_cell);
+        let _other_snapshot = super::ConsMutationSnapshot::cell(&other_cell);
         super::CONS_MUTATION_WATCHERS.with_borrow(|watchers| {
             assert!(!watchers.contains_key(&usize::MAX));
             assert!(field_ids.iter().all(|field| watchers.contains_key(field)));
@@ -3607,10 +3944,10 @@ mod tests {
         super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
 
         let source = Value::cons(Value::Integer(1), Value::Integer(2));
-        let Value::Cons(cell) = &source else {
+        let Kind::Cons(cell) = source.kind() else {
             unreachable!("constructed cons")
         };
-        let field_ids = super::ConsCell::mutation_field_ids(cell);
+        let field_ids = super::ConsCell::mutation_field_ids(&cell);
         let snapshot = super::ConsMutationSnapshot::from_field_ids(field_ids.to_vec());
         assert!(super::CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| bloom.is_some()));
 
@@ -3676,13 +4013,13 @@ mod tests {
         let original = Value::float(f64::NAN);
         let shared = original;
         let distinct = Value::float(f64::NAN);
-        let Value::Float(original) = original else {
+        let Kind::Float(original) = original.kind() else {
             unreachable!();
         };
-        let Value::Float(shared) = shared else {
+        let Kind::Float(shared) = shared.kind() else {
             unreachable!();
         };
-        let Value::Float(distinct) = distinct else {
+        let Kind::Float(distinct) = distinct.kind() else {
             unreachable!();
         };
         assert!(original.ptr_eq(&shared));

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::lisp::types::Kind;
 use crate::lisp::types::Value;
 
 /// An overlay on a buffer region, with properties.
@@ -65,8 +66,11 @@ impl Overlay {
 
     /// Priority for sorting (higher = more important). Defaults to 0.
     pub fn priority(&self) -> i64 {
-        match self.get_prop(&Value::Symbol("priority".into())) {
-            Some(Value::Integer(n)) => *n,
+        match self
+            .get_prop(&Value::Symbol("priority".into()))
+            .map(|v| v.kind())
+        {
+            Some(Kind::Integer(n)) => n,
             _ => 0,
         }
     }

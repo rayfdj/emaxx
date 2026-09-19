@@ -1,11 +1,12 @@
 use super::*;
 use crate::lisp::eval::RecordKind;
+use crate::lisp::types::Kind;
 
 pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
-    if matches!(value, Value::Record(_))
+    if matches!(value.kind(), Kind::Record(_))
         && let Some(public) = runtime_keymap_public_view(interp, value)
     {
         return copy_sequence_value(interp, &public);
@@ -22,12 +23,12 @@ pub(crate) fn copy_sequence_value(
         return Ok(Value::list(value.to_vec()?));
     }
 
-    match value {
-        Value::Nil => Ok(Value::Nil),
-        Value::Cons(_) => Ok(Value::list(value.to_vec()?)),
-        Value::CharTable(id) => interp.clone_char_table(*id),
-        Value::Record(id)
-            if interp.find_record(*id).is_some_and(|record| {
+    match value.kind() {
+        Kind::Nil => Ok(Value::Nil),
+        Kind::Cons(_) => Ok(Value::list(value.to_vec()?)),
+        Kind::CharTable(id) => interp.clone_char_table(id),
+        Kind::Record(id)
+            if interp.find_record(id).is_some_and(|record| {
                 matches!(record.kind, RecordKind::Record | RecordKind::BoolVector)
             }) =>
         {
@@ -42,17 +43,17 @@ pub(crate) fn default_sort_lt(
     left: &Value,
     right: &Value,
 ) -> Result<bool, LispError> {
-    let left_marker = if let Value::Marker(id) = left {
+    let left_marker = if let Kind::Marker(id) = left.kind() {
         interp
-            .marker_position(*id)
-            .or_else(|| interp.marker_last_position(*id))
+            .marker_position(id)
+            .or_else(|| interp.marker_last_position(id))
     } else {
         None
     };
-    let right_marker = if let Value::Marker(id) = right {
+    let right_marker = if let Kind::Marker(id) = right.kind() {
         interp
-            .marker_position(*id)
-            .or_else(|| interp.marker_last_position(*id))
+            .marker_position(id)
+            .or_else(|| interp.marker_last_position(id))
     } else {
         None
     };
@@ -96,7 +97,7 @@ pub(crate) fn sort_sequence_kind_and_items(
             items.into_iter().skip(1).collect(),
         ));
     }
-    if matches!(value, Value::Nil | Value::Cons(_)) {
+    if matches!(value.kind(), Kind::Nil | Kind::Cons(_)) {
         return Ok((SortSequenceKind::List, value.to_vec()?));
     }
     Err(list_or_vector_type_error(value))
@@ -166,13 +167,13 @@ pub(crate) fn resolve_direct_sort_kind(
     value: &Value,
     env: &Env,
 ) -> Option<DirectSortKind> {
-    match value {
-        Value::Symbol(name) | Value::BuiltinFunc(name) => match name.as_str() {
+    match value.kind() {
+        Kind::Symbol(name) | Kind::BuiltinFunc(name) => match name.as_str() {
             "<" => Some(DirectSortKind::Less),
             ">" => Some(DirectSortKind::Greater),
             "value<" => Some(DirectSortKind::ValueLess),
             _ => interp
-                .lookup_var(name, env)
+                .lookup_var(&name, env)
                 .and_then(|resolved| resolve_direct_sort_kind(interp, &resolved, env)),
         },
         _ => None,
@@ -184,11 +185,11 @@ pub(crate) fn resolve_direct_sort_key_fn(
     value: &Value,
     env: &Env,
 ) -> Option<DirectSortKeyFn> {
-    match value {
-        Value::Symbol(name) | Value::BuiltinFunc(name) => match name.as_str() {
+    match value.kind() {
+        Kind::Symbol(name) | Kind::BuiltinFunc(name) => match name.as_str() {
             "abs" => Some(DirectSortKeyFn::Abs),
             _ => interp
-                .lookup_var(name, env)
+                .lookup_var(&name, env)
                 .and_then(|resolved| resolve_direct_sort_key_fn(interp, &resolved, env)),
         },
         _ => None,
@@ -201,33 +202,39 @@ pub(crate) fn parse_direct_sort_operand(
     params: &[crate::lisp::types::SymbolName],
     env: &Env,
 ) -> Option<DirectSortOperand> {
-    match value {
-        Value::Symbol(symbol) if symbol == &params[0] => Some(DirectSortOperand::Left),
-        Value::Symbol(symbol) if symbol == &params[1] => Some(DirectSortOperand::Right),
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Symbol(symbol) if symbol == params[0] => Some(DirectSortOperand::Left),
+        Kind::Symbol(symbol) if symbol == params[1] => Some(DirectSortOperand::Right),
+        Kind::Cons(_) => {
             let items = value.to_vec().ok()?;
-            match items.as_slice() {
-                [Value::Symbol(name), Value::Symbol(symbol)]
+            match items
+                .as_slice()
+                .iter()
+                .map(|v| v.kind())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [Kind::Symbol(name), Kind::Symbol(symbol)]
                     if name == "car" && symbol == &params[0] =>
                 {
                     Some(DirectSortOperand::LeftCar)
                 }
-                [Value::Symbol(name), Value::Symbol(symbol)]
+                [Kind::Symbol(name), Kind::Symbol(symbol)]
                     if name == "car" && symbol == &params[1] =>
                 {
                     Some(DirectSortOperand::RightCar)
                 }
-                [Value::Symbol(name), key, Value::Symbol(symbol)]
+                [Kind::Symbol(name), key, Kind::Symbol(symbol)]
                     if name == "funcall" && symbol == &params[0] =>
                 {
-                    match resolve_direct_sort_key_fn(interp, key, env)? {
+                    match resolve_direct_sort_key_fn(interp, &key.value(), env)? {
                         DirectSortKeyFn::Abs => Some(DirectSortOperand::LeftAbs),
                     }
                 }
-                [Value::Symbol(name), key, Value::Symbol(symbol)]
+                [Kind::Symbol(name), key, Kind::Symbol(symbol)]
                     if name == "funcall" && symbol == &params[1] =>
                 {
-                    match resolve_direct_sort_key_fn(interp, key, env)? {
+                    match resolve_direct_sort_key_fn(interp, &key.value(), env)? {
                         DirectSortKeyFn::Abs => Some(DirectSortOperand::RightAbs),
                     }
                 }
@@ -243,8 +250,8 @@ pub(crate) fn direct_sort_comparator(
     function: &Value,
     env: &Env,
 ) -> Option<DirectSortComparator> {
-    match function {
-        Value::Symbol(name) | Value::BuiltinFunc(name) if name == "car-less-than-car" => {
+    match function.kind() {
+        Kind::Symbol(name) | Kind::BuiltinFunc(name) if name == "car-less-than-car" => {
             Some(DirectSortComparator {
                 prelude: Vec::new(),
                 kind: DirectSortKind::Less,
@@ -252,7 +259,7 @@ pub(crate) fn direct_sort_comparator(
                 right: DirectSortOperand::RightCar,
             })
         }
-        Value::Symbol(_) | Value::BuiltinFunc(_) => {
+        Kind::Symbol(_) | Kind::BuiltinFunc(_) => {
             let kind = resolve_direct_sort_kind(interp, function, env)?;
             Some(DirectSortComparator {
                 prelude: Vec::new(),
@@ -261,28 +268,54 @@ pub(crate) fn direct_sort_comparator(
                 right: DirectSortOperand::Right,
             })
         }
-        Value::Lambda(lambda) if lambda.params.len() == 2 && !lambda.body.is_empty() => {
+        Kind::Lambda(lambda) if lambda.params.len() == 2 && !lambda.body.is_empty() => {
             let closure_env =
                 crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::from_alist(
                     lambda.environment_value(),
                 )]);
             let compare_form = lambda.body.last()?;
             let items = compare_form.to_vec().ok()?;
-            let (kind, left, right) = match items.as_slice() {
-                [Value::Symbol(op), left, right] => {
+            let (kind, left, right) = match items
+                .as_slice()
+                .iter()
+                .map(|v| v.kind())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [Kind::Symbol(op), left, right] => {
                     let kind = resolve_direct_sort_kind(interp, &Value::Symbol(*op), &closure_env)?;
                     (
                         kind,
-                        parse_direct_sort_operand(interp, left, &lambda.params, &closure_env)?,
-                        parse_direct_sort_operand(interp, right, &lambda.params, &closure_env)?,
+                        parse_direct_sort_operand(
+                            interp,
+                            &left.value(),
+                            &lambda.params,
+                            &closure_env,
+                        )?,
+                        parse_direct_sort_operand(
+                            interp,
+                            &right.value(),
+                            &lambda.params,
+                            &closure_env,
+                        )?,
                     )
                 }
-                [Value::Symbol(name), function, left, right] if name == "funcall" => {
-                    let kind = resolve_direct_sort_kind(interp, function, &closure_env)?;
+                [Kind::Symbol(name), function, left, right] if name == "funcall" => {
+                    let kind = resolve_direct_sort_kind(interp, &function.value(), &closure_env)?;
                     (
                         kind,
-                        parse_direct_sort_operand(interp, left, &lambda.params, &closure_env)?,
-                        parse_direct_sort_operand(interp, right, &lambda.params, &closure_env)?,
+                        parse_direct_sort_operand(
+                            interp,
+                            &left.value(),
+                            &lambda.params,
+                            &closure_env,
+                        )?,
+                        parse_direct_sort_operand(
+                            interp,
+                            &right.value(),
+                            &lambda.params,
+                            &closure_env,
+                        )?,
                     )
                 }
                 _ => return None,
@@ -314,13 +347,13 @@ pub(crate) fn resolve_direct_sort_operand(
 }
 
 pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
-    match value {
-        Value::Integer(number) => match number.checked_abs() {
+    match value.kind() {
+        Kind::Integer(number) => match number.checked_abs() {
             Some(abs) => Ok(Value::Integer(abs)),
-            None => Ok(normalize_bigint_value(BigInt::from(*number).abs())),
+            None => Ok(normalize_bigint_value(BigInt::from(number).abs())),
         },
-        Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
-        Value::Float(number) => Ok(Value::float(number.abs())),
+        Kind::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
+        Kind::Float(number) => Ok(Value::float(number.abs())),
         _ => Err(LispError::WrongTypeArgument("numberp".into(), *value)),
     }
 }
@@ -446,14 +479,14 @@ pub(crate) fn write_sorted_sequence(
         SortSequenceKind::List => {
             let mut current = *target;
             for item in items {
-                match current {
-                    Value::Cons(cons_cell) => {
+                match current.kind() {
+                    Kind::Cons(cons_cell) => {
                         let car = &cons_cell.car;
                         let cdr = &cons_cell.cdr;
                         *car.borrow_mut() = *item;
                         current = *cdr.borrow();
                     }
-                    Value::Nil => break,
+                    Kind::Nil => break,
                     _ => return Err(list_or_vector_type_error(target)),
                 }
             }

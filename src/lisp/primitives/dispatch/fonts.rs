@@ -3,6 +3,7 @@ use crate::lisp::eval::{FontPatternState, FontsetMappingState, FontsetState, Fon
 use crate::lisp::primitives::buffers::position_from_value;
 use crate::lisp::primitives::color_lcms::parse_font_name;
 use crate::lisp::primitives::window::{window_buffer_id, window_record_id_from_value};
+use crate::lisp::types::Kind;
 
 const FONT_TYPE_INDEX: usize = 0;
 const FONT_FOUNDRY_INDEX: usize = 1;
@@ -41,21 +42,21 @@ fn font_record<'a>(
     interp: &'a Interpreter,
     value: &Value,
 ) -> Result<&'a crate::lisp::eval::RecordState, LispError> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return Err(wrong_type_argument("fontp", *value));
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::Font)
         .ok_or_else(|| wrong_type_argument("fontp", *value))
 }
 
 fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return Err(wrong_type_argument("font-spec-p", *value));
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .filter(|record| {
             record.kind == crate::lisp::eval::RecordKind::Font
                 && record.has_symbol_type("font-spec")
@@ -84,24 +85,24 @@ fn require_font(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
 }
 
 fn require_character(value: &Value) -> Result<(), LispError> {
-    match value {
-        Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(()),
+    match value.kind() {
+        Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => Ok(()),
         _ => Err(wrong_type_argument("characterp", *value)),
     }
 }
 
 fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(), LispError> {
-    match frame {
-        None | Some(Value::Nil) => Ok(()),
-        Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
+    match frame.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(()),
+        Some(Kind::Frame(id)) if interp.frame_is_live(id) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.value())),
     }
 }
 
 fn require_frame(frame: Option<&Value>) -> Result<(), LispError> {
-    match frame {
-        None | Some(Value::Nil | Value::Frame(_)) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("framep", *frame)),
+    match frame.map(|v| v.kind()) {
+        None | Some(Kind::Nil | Kind::Frame(_)) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("framep", frame.value())),
     }
 }
 
@@ -134,7 +135,7 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     }
     let font = header[0];
     if !font.is_nil()
-        && !matches!(&font, Value::Symbol(name) if interp.has_coding_system(name))
+        && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system(&name))
         && !font_record(interp, &font).is_ok_and(|record| record.has_symbol_type("font-object"))
     {
         return None;
@@ -142,8 +143,8 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     if header
         .iter()
         .skip(1)
-        .any(|value| !matches!(value, Value::Integer(number) if *number >= 0))
-        || (!body[1].is_nil() && !matches!(&body[1], Value::Integer(number) if *number >= 0))
+        .any(|value| !matches!(value.kind(), Kind::Integer(number) if number >= 0))
+        || (!body[1].is_nil() && !matches!(body[1].kind(), Kind::Integer(number) if number >= 0))
     {
         return None;
     }
@@ -168,11 +169,11 @@ fn args_out_of_range(object: Value, position: Value) -> LispError {
 }
 
 fn symbol_property(value: &Value, lowercase: bool) -> Result<Value, LispError> {
-    let name = match value {
-        Value::String(_) | Value::StringObject(_) => string_text(value)?,
-        Value::Nil => return Ok(Value::Nil),
-        Value::T => "t".into(),
-        Value::Symbol(name) => name.to_string(),
+    let name = match value.kind() {
+        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
+        Kind::Nil => return Ok(Value::Nil),
+        Kind::T => "t".into(),
+        Kind::Symbol(name) => name.to_string(),
         _ => return Err(invalid_font_property()),
     };
     let name = if lowercase { name.to_lowercase() } else { name };
@@ -268,18 +269,18 @@ fn style_property(index: usize, value: &Value) -> Result<Value, LispError> {
 }
 
 fn nonnegative_property(value: &Value) -> Result<Value, LispError> {
-    match value {
-        Value::Integer(number) if *number >= 0 => Ok(*value),
-        Value::Float(number) if number.get() >= 0.0 => Ok(*value),
+    match value.kind() {
+        Kind::Integer(number) if number >= 0 => Ok(*value),
+        Kind::Float(number) if number.get() >= 0.0 => Ok(*value),
         _ => Err(invalid_font_property()),
     }
 }
 
 fn spacing_property(value: &Value) -> Result<Value, LispError> {
-    match value {
-        Value::Nil => Ok(Value::Nil),
-        Value::Integer(number) if (0..=110).contains(number) => Ok(*value),
-        Value::Symbol(symbol) if symbol.len() == 1 => match symbol.as_bytes()[0] {
+    match value.kind() {
+        Kind::Nil => Ok(Value::Nil),
+        Kind::Integer(number) if (0..=110).contains(&number) => Ok(*value),
+        Kind::Symbol(symbol) if symbol.len() == 1 => match symbol.as_bytes()[0] {
             b'p' | b'P' => Ok(Value::Integer(0)),
             b'd' | b'D' => Ok(Value::Integer(90)),
             b'm' | b'M' => Ok(Value::Integer(100)),
@@ -335,7 +336,7 @@ fn extra_value(extra: &Value, key: &str) -> Option<Value> {
     extra_entries(extra)
         .into_iter()
         .find_map(|(entry_key, value)| {
-            matches!(entry_key, Value::Symbol(symbol) if symbol == key).then_some(value)
+            matches!(entry_key.kind(), Kind::Symbol(symbol) if symbol == key).then_some(value)
         })
 }
 
@@ -345,7 +346,7 @@ fn put_extra(extra: &mut Value, key: Value, value: Value) {
     if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| {
         key_name
             .as_ref()
-            .is_some_and(|key| matches!(entry_key, Value::Symbol(symbol) if symbol == key))
+            .is_some_and(|key| matches!(entry_key.kind(), Kind::Symbol(symbol) if symbol.as_str() == key.as_str()))
     }) {
         *existing = value;
     } else {
@@ -437,7 +438,7 @@ fn put_font_property(
     {
         font_spec_id(interp, font)?
     } else {
-        let Value::Record(id) = font else {
+        let Kind::Record(id) = font.kind() else {
             return Err(wrong_type_argument("fontp", *font));
         };
         font_record(interp, font)?;
@@ -487,20 +488,20 @@ fn put_font_property(
 }
 
 fn xlfd_field(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::Symbol(symbol)) if !symbol.is_empty() => symbol.to_string(),
-        Some(Value::T) => "t".into(),
+    match value.map(|v| v.kind()) {
+        Some(Kind::Symbol(symbol)) if !symbol.is_empty() => symbol.to_string(),
+        Some(Kind::T) => "t".into(),
         _ => "*".into(),
     }
 }
 
 fn number_field(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::Integer(number)) => number.to_string(),
-        Some(Value::Float(number)) if number.fract() == 0.0 => {
+    match value.map(|v| v.kind()) {
+        Some(Kind::Integer(number)) => number.to_string(),
+        Some(Kind::Float(number)) if number.fract() == 0.0 => {
             format!("{number:.0}")
         }
-        Some(Value::Float(number)) => number.to_string(),
+        Some(Kind::Float(number)) => number.to_string(),
         _ => "*".into(),
     }
 }
@@ -513,9 +514,9 @@ fn font_xlfd_name(
 ) -> Result<Value, LispError> {
     let record = font_record(interp, font)?;
     let slot = |index| record.slots.get(index);
-    let (pixel_size, point_size) = match slot(FONT_SIZE_INDEX) {
-        Some(Value::Integer(size)) => (size.to_string(), "*".into()),
-        Some(Value::Float(size)) => {
+    let (pixel_size, point_size) = match slot(FONT_SIZE_INDEX).map(|v| v.kind()) {
+        Some(Kind::Integer(size)) => (size.to_string(), "*".into()),
+        Some(Kind::Float(size)) => {
             let tenths = size.get() * 10.0;
             let point = if tenths.fract() == 0.0 {
                 format!("{tenths:.0}")
@@ -526,19 +527,19 @@ fn font_xlfd_name(
         }
         _ => ("*".into(), "*".into()),
     };
-    let dpi = match slot(FONT_DPI_INDEX) {
-        Some(Value::Integer(_)) => number_field(slot(FONT_DPI_INDEX)),
+    let dpi = match slot(FONT_DPI_INDEX).map(|v| v.kind()) {
+        Some(Kind::Integer(_)) => number_field(slot(FONT_DPI_INDEX)),
         _ => "*".into(),
     };
-    let spacing = match slot(FONT_SPACING_INDEX) {
-        Some(Value::Integer(0)) => "p",
-        Some(Value::Integer(90)) => "d",
-        Some(Value::Integer(100)) => "m",
-        Some(Value::Integer(110)) => "c",
+    let spacing = match slot(FONT_SPACING_INDEX).map(|v| v.kind()) {
+        Some(Kind::Integer(0)) => "p",
+        Some(Kind::Integer(90)) => "d",
+        Some(Kind::Integer(100)) => "m",
+        Some(Kind::Integer(110)) => "c",
         _ => "*",
     };
-    let average_width = match slot(FONT_AVGWIDTH_INDEX) {
-        Some(Value::Integer(_)) => number_field(slot(FONT_AVGWIDTH_INDEX)),
+    let average_width = match slot(FONT_AVGWIDTH_INDEX).map(|v| v.kind()) {
+        Some(Kind::Integer(_)) => number_field(slot(FONT_AVGWIDTH_INDEX)),
         _ => "*".into(),
     };
     let registry = xlfd_field(slot(FONT_REGISTRY_INDEX));
@@ -594,9 +595,9 @@ fn fontset_index(interp: &Interpreter, name: &str) -> Option<usize> {
 }
 
 fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
-    match value {
-        Value::Nil | Value::T => Ok(0),
-        Value::String(_) | Value::StringObject(_) => {
+    match value.kind() {
+        Kind::Nil | Kind::T => Ok(0),
+        Kind::String(_) | Kind::StringObject(_) => {
             let name = string_text(value)?;
             fontset_index(interp, &name)
                 .ok_or_else(|| LispError::Signal(format!("Fontset {name} does not exist")))
@@ -606,17 +607,17 @@ fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispErr
 }
 
 fn font_pattern_component(value: &Value) -> Result<Option<String>, LispError> {
-    match value {
-        Value::Nil => Ok(None),
-        Value::Symbol(symbol) => Ok(Some(symbol.to_string())),
-        Value::String(_) | Value::StringObject(_) => Ok(Some(string_text(value)?)),
+    match value.kind() {
+        Kind::Nil => Ok(None),
+        Kind::Symbol(symbol) => Ok(Some(symbol.to_string())),
+        Kind::String(_) | Kind::StringObject(_) => Ok(Some(string_text(value)?)),
         _ => Err(invalid_font_property()),
     }
 }
 
 fn font_pattern_from_slots(slots: &[Value]) -> FontPatternState {
-    let component = |index| match slots.get(index) {
-        Some(Value::Symbol(symbol)) => Some(symbol.to_string()),
+    let component = |index: usize| match slots.get(index).map(|v| v.kind()) {
+        Some(Kind::Symbol(symbol)) => Some(symbol.to_string()),
         _ => None,
     };
     FontPatternState {
@@ -629,18 +630,18 @@ fn font_pattern(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<FontPatternState>, LispError> {
-    match value {
-        Value::Nil => Ok(None),
-        Value::Record(_) => {
+    match value.kind() {
+        Kind::Nil => Ok(None),
+        Kind::Record(_) => {
             font_spec_id(interp, value)?;
             let record = font_record(interp, value)?;
             Ok(Some(font_pattern_from_slots(&record.slots)))
         }
-        Value::String(_) | Value::StringObject(_) => {
+        Kind::String(_) | Kind::StringObject(_) => {
             let slots = make_font_spec(&[Value::symbol(":name"), *value])?;
             Ok(Some(font_pattern_from_slots(&slots)))
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let (family, registry) = value
                 .cons_values()
                 .expect("a cons font pattern must have two cells");
@@ -659,17 +660,17 @@ fn font_pattern(
 }
 
 fn parse_fontset_target(value: &Value) -> Result<FontsetTargetState, LispError> {
-    match value {
-        Value::Nil => Ok(FontsetTargetState::Fallback),
-        Value::Integer(character) if (0..=0x3f_ffff).contains(character) => {
-            Ok(FontsetTargetState::Character(*character))
+    match value.kind() {
+        Kind::Nil => Ok(FontsetTargetState::Fallback),
+        Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => {
+            Ok(FontsetTargetState::Character(character))
         }
-        Value::Symbol(script) => Ok(FontsetTargetState::Script(script.to_string())),
-        Value::Cons(_) => {
+        Kind::Symbol(script) => Ok(FontsetTargetState::Script(script.to_string())),
+        Kind::Cons(_) => {
             let (from, to) = value
                 .cons_values()
                 .expect("a range cons must have endpoints");
-            let (Value::Integer(from), Value::Integer(to)) = (from, to) else {
+            let (Kind::Integer(from), Kind::Integer(to)) = (from.kind(), to.kind()) else {
                 return Err(wrong_type_argument("characterp", *value));
             };
             if from < 0 || to < from || to > 0x3f_ffff {
@@ -866,26 +867,26 @@ define_dispatch!(
             )),
             "fontp" => {
                 need_arg_range(name, args, 1, 2)?;
-                let font_type = match &args[0] {
-                    Value::Record(id) => interp.find_record(*id).and_then(|record| {
+                let font_type = match args[0].kind() {
+                    Kind::Record(id) => interp.find_record(id).and_then(|record| {
                         (record.kind == crate::lisp::eval::RecordKind::Font)
                             .then(|| record.symbol_type_name().map(str::to_owned))
                             .flatten()
                     }),
                     _ => None,
                 };
-                let matches = match args.get(1) {
-                    None | Some(Value::Nil) => font_type.is_some(),
-                    Some(Value::Symbol(expected))
+                let matches = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => font_type.is_some(),
+                    Some(Kind::Symbol(expected))
                         if matches!(
                             expected.as_str(),
                             "font-spec" | "font-entity" | "font-object"
                         ) =>
                     {
-                        font_type.as_deref() == Some(expected)
+                        font_type.as_deref() == Some(&expected)
                     }
                     Some(extra_type) => {
-                        return Err(wrong_type_argument("font-extra-type", *extra_type));
+                        return Err(wrong_type_argument("font-extra-type", extra_type.value()));
                     }
                 };
                 Ok(if matches { Value::T } else { Value::Nil })
@@ -926,10 +927,10 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 4)?;
                 font_spec_id(interp, &args[0])?;
                 if let Some(limit) = args.get(2).filter(|value| !value.is_nil()) {
-                    let Value::Integer(limit) = limit else {
+                    let Kind::Integer(limit) = limit.kind() else {
                         return Err(wrong_type_argument("fixnump", *limit));
                     };
-                    if *limit <= 0 {
+                    if limit <= 0 {
                         return Ok(Value::Nil);
                     }
                 }
@@ -955,7 +956,7 @@ define_dispatch!(
                     None => interp.record_value(interp.selected_window_id()),
                 };
                 if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
-                    let Value::Integer(position) = args[0] else {
+                    let Kind::Integer(position) = args[0].kind() else {
                         return Err(wrong_type_argument("fixnump", args[0]));
                     };
                     let string_value = *string;
@@ -1094,8 +1095,12 @@ define_dispatch!(
                     ));
                 }
                 let pattern = font_pattern(interp, &args[2])?;
-                let add = match args.get(4).filter(|value| !value.is_nil()) {
-                    Some(Value::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
+                let add = match args
+                    .get(4)
+                    .filter(|value| !value.is_nil())
+                    .map(|v| v.kind())
+                {
+                    Some(Kind::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
                         Some(add.as_str())
                     }
                     Some(value) => {
@@ -1109,7 +1114,7 @@ define_dispatch!(
             "fontset-font" => {
                 need_arg_range(name, args, 2, 3)?;
                 let fontset_index = resolve_fontset(interp, &args[0])?;
-                let Value::Integer(character) = args[1] else {
+                let Kind::Integer(character) = args[1].kind() else {
                     return Err(wrong_type_argument("characterp", args[1]));
                 };
                 if !(0..=0x3f_ffff).contains(&character) {

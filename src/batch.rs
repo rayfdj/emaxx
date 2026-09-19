@@ -6,7 +6,7 @@ use crate::compat::{self, BatchReport, FileStatus, TestStatus};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
-use crate::lisp::types::{EmacsTermination, Env, LispError, Value};
+use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, Value};
 use crate::perf::{self, PERF_RESULT_FILE_ENV, PerfRunReport};
 
 #[derive(Clone, Debug, Default)]
@@ -1026,7 +1026,7 @@ fn run_safe_hook_value(
     global: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if value.is_nil() || matches!(value, Value::Unbound) {
+    if value.is_nil() || matches!(value.kind(), Kind::Unbound) {
         return Ok(());
     }
     let function = !value.is_cons()
@@ -1041,7 +1041,7 @@ fn run_safe_hook_value(
     while tail.is_cons() {
         interpreter.with_lisp_stack_roots(&tail, |interpreter| {
             let function = tail.car()?;
-            if matches!(function, Value::T) {
+            if matches!(function.kind(), Kind::T) {
                 if !global {
                     let default = interpreter.default_value(hook).unwrap_or(Value::Nil);
                     run_safe_hook_value(interpreter, hook, default, true, env)?;
@@ -1381,8 +1381,8 @@ fn format_backtrace_frames(frames: Vec<(bool, Value, Vec<Value>, bool)>) -> Stri
         .into_iter()
         .take(8)
         .map(|(_, function, args, _)| {
-            let name = match function {
-                Value::Nil => "<anonymous>".into(),
+            let name = match function.kind() {
+                Kind::Nil => "<anonymous>".into(),
                 other => other.to_string(),
             };
             if args.is_empty() {
@@ -1422,10 +1422,10 @@ fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
     if head != "emaxx-perf-run-batch" {
         return None;
     }
-    let scenario_id = match items.get(1)? {
-        Value::String(value) => value.to_string(),
-        Value::StringObject(state) => state.borrow().text.clone(),
-        Value::Symbol(value) => value.to_string(),
+    let scenario_id = match (items.get(1)?).kind() {
+        Kind::String(value) => value.to_string(),
+        Kind::StringObject(state) => state.borrow().text.clone(),
+        Kind::Symbol(value) => value.to_string(),
         _ => return None,
     };
     let n = value_to_usize(items.get(2)).unwrap_or(4096);
@@ -1440,15 +1440,15 @@ fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
 }
 
 fn value_to_usize(value: Option<&Value>) -> Option<usize> {
-    match value? {
-        Value::Integer(number) if *number >= 0 => usize::try_from(*number).ok(),
+    match (value?).kind() {
+        Kind::Integer(number) if number >= 0 => usize::try_from(number).ok(),
         _ => None,
     }
 }
 
 fn value_to_u32(value: Option<&Value>) -> Option<u32> {
-    match value? {
-        Value::Integer(number) if *number >= 0 => u32::try_from(*number).ok(),
+    match (value?).kind() {
+        Kind::Integer(number) if number >= 0 => u32::try_from(number).ok(),
         _ => None,
     }
 }
@@ -1670,7 +1670,7 @@ mod tests {
         let result = super::safe_run_hooks(&mut interpreter, "zz-hook");
         interpreter.pop_catch_tag();
         assert!(matches!(result,
-            Err(LispError::Throw(tag, Value::Integer(7))) if tag.as_symbol().is_ok_and(|name| name == "stop")));
+            Err(LispError::Throw(tag, value)) if value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
         assert_eq!(
             interpreter.lookup_var("inhibit-quit", &env),
             Some(Value::Nil)

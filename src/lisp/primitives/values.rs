@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list_value()
@@ -7,11 +8,11 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
 pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
     // Scalar fast paths: identical outcome to the recursive walk below, but
     // without paying for a fresh seen-set and the aggregate-type probes.
-    match (left, right) {
-        (Value::Integer(a), Value::Integer(b)) => return a == b,
-        (Value::Symbol(a), Value::Symbol(b)) => return a == b,
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => return true,
-        (Value::Nil | Value::T, Value::Integer(_)) | (Value::Integer(_), Value::Nil | Value::T) => {
+    match (left.kind(), right.kind()) {
+        (Kind::Integer(a), Kind::Integer(b)) => return a == b,
+        (Kind::Symbol(a), Kind::Symbol(b)) => return a == b,
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => return true,
+        (Kind::Nil | Kind::T, Kind::Integer(_)) | (Kind::Integer(_), Kind::Nil | Kind::T) => {
             return false;
         }
         _ => {}
@@ -52,8 +53,8 @@ fn values_equal_signaling_depth(
     memo: &mut HashMap<usize, Vec<usize>>,
 ) -> Result<bool, LispError> {
     fn plain_cons(value: &Value) -> bool {
-        matches!(value, Value::Cons(cell)
-            if !matches!(&*cell.car.borrow(), Value::Symbol(tag) if tag == "vector-literal"))
+        matches!(value.kind(), Kind::Cons(cell)
+            if !matches!(cell.car.borrow().kind(), Kind::Symbol(tag) if tag == "vector-literal"))
     }
     if !plain_cons(left) || !plain_cons(right) {
         // Leaves take the same env-aware walk `equal' uses everywhere
@@ -74,7 +75,7 @@ fn values_equal_signaling_depth(
         if depth > 200 {
             return Err(LispError::Signal("Stack overflow in equal".into()));
         }
-        if let (Value::Cons(lc), Value::Cons(rc)) = (left, right) {
+        if let (Kind::Cons(lc), Kind::Cons(rc)) = (left.kind(), right.kind()) {
             let left_key = lc.as_ptr() as usize;
             let right_key = rc.as_ptr() as usize;
             let entry = memo.entry(left_key).or_default();
@@ -89,8 +90,8 @@ fn values_equal_signaling_depth(
     let mut tortoise = *left;
     let mut steps = 0usize;
     let mut limit = 2usize;
-    while let Value::Cons(lc) = l {
-        let Value::Cons(rc) = r else {
+    while let Kind::Cons(lc) = l.kind() {
+        let Kind::Cons(rc) = r.kind() else {
             return Ok(false);
         };
         let left_car = *lc.car.borrow();
@@ -100,15 +101,15 @@ fn values_equal_signaling_depth(
         }
         let left_cdr = *lc.cdr.borrow();
         let right_cdr = *rc.cdr.borrow();
-        if let (Value::Cons(a), Value::Cons(b)) = (&left_cdr, &right_cdr)
-            && crate::lisp::types::SharedCons::ptr_eq(a, b)
+        if let (Kind::Cons(a), Kind::Cons(b)) = (left_cdr.kind(), right_cdr.kind())
+            && crate::lisp::types::SharedCons::ptr_eq(&a, &b)
         {
             return Ok(true);
         }
         l = left_cdr;
         r = right_cdr;
-        if let (Value::Cons(current), Value::Cons(lagging)) = (&l, &tortoise)
-            && crate::lisp::types::SharedCons::ptr_eq(current, lagging)
+        if let (Kind::Cons(current), Kind::Cons(lagging)) = (l.kind(), tortoise.kind())
+            && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
@@ -295,7 +296,7 @@ fn values_equal_recursive_with_env(
     env: Option<&Env>,
 ) -> bool {
     if let Some(env) = env
-        && (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+        && (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
         && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
     {
         return equal;
@@ -331,70 +332,70 @@ fn values_equal_recursive_with_env(
                     values_equal_recursive_with_env(interp, left, right, seen, env)
                 });
     }
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            BigInt::from(*a) == **b
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
+        (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
+            BigInt::from(a) == *b
         }
         // fns.c internal_equal: floats compare by representation
         // (same_float), like eql: NaN equals NaN, 0.0 differs from -0.0.
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::StringObject(a), Value::StringObject(b)) => {
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+        (Kind::String(a), Kind::String(b)) => a == b,
+        (Kind::StringObject(a), Kind::StringObject(b)) => {
             let a = a.borrow();
             let b = b.borrow();
             a.text == b.text && a.extended_chars == b.extended_chars
         }
-        (Value::String(a), Value::StringObject(b)) => {
+        (Kind::String(a), Kind::StringObject(b)) => {
             let b = b.borrow();
             b.extended_chars.is_empty() && a.as_str() == b.text
         }
-        (Value::StringObject(a), Value::String(b)) => {
+        (Kind::StringObject(a), Kind::String(b)) => {
             let a = a.borrow();
             a.extended_chars.is_empty() && a.text == b.as_str()
         }
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
-        (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
-        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b, seen, env),
-        (Value::CharTable(left_id), Value::CharTable(right_id)) => {
-            char_tables_equal(interp, *left_id, *right_id, seen, env)
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::Buffer(a), Kind::Buffer(b)) => a.id == b.id,
+        (Kind::Marker(a), Kind::Marker(b)) => markers_equal(interp, a, b),
+        (Kind::Overlay(a), Kind::Overlay(b)) => overlays_equal(interp, a, b, seen, env),
+        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
+            char_tables_equal(interp, left_id, right_id, seen, env)
         }
-        (Value::Frame(left_id), Value::Frame(right_id)) => left_id == right_id,
-        (Value::Terminal(left_id), Value::Terminal(right_id)) => left_id == right_id,
-        (Value::Record(left_id), Value::Record(right_id))
+        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
+        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        (Kind::Record(left_id), Kind::Record(right_id))
             if interp
-                .find_record(*left_id)
+                .find_record(left_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
                 && interp
-                    .find_record(*right_id)
+                    .find_record(right_id)
                     .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_records_equal(interp, left_id.id, right_id.id, seen, env)
         }
-        (Value::Record(left_id), Value::Cons(_))
+        (Kind::Record(left_id), Kind::Cons(_))
             if interp
-                .find_record(*left_id)
+                .find_record(left_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_record_equals_list(interp, left_id.id, right, seen, env)
         }
-        (Value::Cons(_), Value::Record(right_id))
+        (Kind::Cons(_), Kind::Record(right_id))
             if interp
-                .find_record(*right_id)
+                .find_record(right_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_record_equals_list(interp, right_id.id, left, seen, env)
         }
-        (Value::Record(left_id), Value::Record(right_id)) => {
-            if left_id.ptr_eq(right_id) {
+        (Kind::Record(left_id), Kind::Record(right_id)) => {
+            if left_id.ptr_eq(&right_id) {
                 return true;
             }
             let (Some(left_record), Some(right_record)) =
-                (interp.find_record(*left_id), interp.find_record(*right_id))
+                (interp.find_record(left_id), interp.find_record(right_id))
             else {
                 return false;
             };
@@ -452,13 +453,13 @@ fn values_equal_recursive_with_env(
                         values_equal_recursive_with_env(interp, left, right, seen, env)
                     })
         }
-        (Value::Record(left_id), _) if record_literal_items(right).is_some() => {
+        (Kind::Record(left_id), _) if record_literal_items(right).is_some() => {
             record_equals_record_literal_form(interp, left_id.id, right, seen, env)
         }
-        (_, Value::Record(right_id)) if record_literal_items(left).is_some() => {
+        (_, Kind::Record(right_id)) if record_literal_items(left).is_some() => {
             record_equals_record_literal_form(interp, right_id.id, left, seen, env)
         }
-        (Value::Cons(_), Value::Cons(_)) => {
+        (Kind::Cons(_), Kind::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
             };
@@ -478,14 +479,14 @@ fn values_equal_recursive_with_env(
             values_equal_recursive_with_env(interp, &a_car, &b_car, seen, env)
                 && values_equal_recursive_with_env(interp, &a_cdr, &b_cdr, seen, env)
         }
-        (Value::Lambda(left), Value::Lambda(right)) => {
+        (Kind::Lambda(left), Kind::Lambda(right)) => {
             let left_ptr = left.identity();
             let right_ptr = right.identity();
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
                 return true;
             }
-            let left_slots = interp.interpreted_closure_slots(left);
-            let right_slots = interp.interpreted_closure_slots(right);
+            let left_slots = interp.interpreted_closure_slots(&left);
+            let right_slots = interp.interpreted_closure_slots(&right);
             if left_slots.len() != right_slots.len() {
                 return false;
             }
@@ -501,35 +502,35 @@ fn values_equal_recursive_with_env(
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
         // fns.c Feql via same_float: representation equality.  IEEE ==
         // said NaN != NaN, and every fixpoint loop keyed on eql/memql
         // diverged on forms containing a NaN literal -- eager
         // macroexpansion of cl-lib/data/fns/floatfns-tests never
         // terminated.  Bit equality also gives GNU's (eql 0.0 -0.0) nil.
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
-        (Value::Cons(left), Value::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
+        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
+        (Kind::Cons(left), Kind::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
-        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
-        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-        (Value::Marker(left_id), Value::Marker(right_id))
-        | (Value::Overlay(left_id), Value::Overlay(right_id))
-        | (Value::CharTable(left_id), Value::CharTable(right_id))
-        | (Value::Frame(left_id), Value::Frame(right_id))
-        | (Value::Terminal(left_id), Value::Terminal(right_id))
-        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
-        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
+        (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
+        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Marker(left_id), Kind::Marker(right_id))
+        | (Kind::Overlay(left_id), Kind::Overlay(right_id))
+        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
+        | (Kind::Frame(left_id), Kind::Frame(right_id))
+        | (Kind::Terminal(left_id), Kind::Terminal(right_id))
+        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eql on non-numbers is eq; identity must be reflexive here too.
-        (Value::ReaderForm(left), Value::ReaderForm(right)) => left.ptr_eq(right),
+        (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
@@ -544,8 +545,8 @@ pub(crate) fn values_eql_in_env(
     right: &Value,
     env: &Env,
 ) -> bool {
-    match left {
-        Value::Float(_) | Value::BigInteger(_) => values_eql(left, right),
+    match left.kind() {
+        Kind::Float(_) | Kind::BigInteger(_) => values_eql(left, right),
         _ => values_eq_in_env(interp, left, right, env),
     }
 }
@@ -558,7 +559,7 @@ pub(crate) fn values_eq_in_env(
 ) -> bool {
     // Only records can carry symbol-with-pos payloads; every other pair
     // (the overwhelmingly common case) must not pay the outlined probes.
-    if (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+    if (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
         && let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env)
     {
         return equal;
@@ -570,39 +571,39 @@ pub(crate) fn values_eq_in_env(
 /// word identity, with the object kinds Emaxx addresses by id compared by
 /// id.
 pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
         // lisp.h:EQ compares bignum object identities. Only Feql compares
         // their numeric payloads, just as it does for allocated floats.
-        (Value::BigInteger(a), Value::BigInteger(b)) => a.ptr_eq(b),
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a.ptr_eq(&b),
         // data.c:Feq compares the Lisp_Object words.  Float words point to
         // allocated Lisp_Float objects, so only the same allocation is eq.
-        (Value::Float(a), Value::Float(b)) => a.ptr_eq(b),
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
-        (Value::String(_), Value::StringObject(_)) | (Value::StringObject(_), Value::String(_)) => {
+        (Kind::Float(a), Kind::Float(b)) => a.ptr_eq(&b),
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
+        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
+        (Kind::String(_), Kind::StringObject(_)) | (Kind::StringObject(_), Kind::String(_)) => {
             false
         }
-        (Value::Cons(left), Value::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        (Kind::Cons(left), Kind::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
-        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
-        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-        (Value::Marker(left_id), Value::Marker(right_id))
-        | (Value::Overlay(left_id), Value::Overlay(right_id))
-        | (Value::CharTable(left_id), Value::CharTable(right_id))
-        | (Value::Frame(left_id), Value::Frame(right_id))
-        | (Value::Terminal(left_id), Value::Terminal(right_id))
-        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
-        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
+        (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
+        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Marker(left_id), Kind::Marker(right_id))
+        | (Kind::Overlay(left_id), Kind::Overlay(right_id))
+        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
+        | (Kind::Frame(left_id), Kind::Frame(right_id))
+        | (Kind::Terminal(left_id), Kind::Terminal(right_id))
+        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
-        (Value::ReaderForm(left), Value::ReaderForm(right)) => left.ptr_eq(right),
+        (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
@@ -620,8 +621,8 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut current = *list;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match current {
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::Cons(cons_cell) => {
                 let cdr = &cons_cell.cdr;
                 let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if seen.step(cell_id) {
@@ -630,16 +631,16 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
                 len += 1;
                 current = *cdr.borrow();
             }
-            Value::Nil => return len,
+            Kind::Nil => return len,
             _ => return len,
         }
     }
 }
 
 pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
-    let mut remaining = match count {
-        Value::Integer(n) => BigInt::from(*n),
-        Value::BigInteger(n) => (*n).into(),
+    let mut remaining = match count.kind() {
+        Kind::Integer(n) => BigInt::from(n),
+        Kind::BigInteger(n) => (n).into(),
         _ => {
             return Err(LispError::WrongTypeArgument("integerp".into(), *count));
         }
@@ -658,9 +659,9 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
             return Ok(current);
         }
 
-        match current {
-            Value::Nil => return Ok(Value::Nil),
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::Nil => return Ok(Value::Nil),
+            Kind::Cons(cons_cell) => {
                 let cdr = &cons_cell.cdr;
                 let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if let Some(&cycle_start) = visited.get(&cell_id) {
@@ -679,7 +680,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
                 steps += 1;
                 current = *cdr.borrow();
             }
-            other => return Err(wrong_type_argument("listp", other)),
+            other => return Err(wrong_type_argument("listp", other.value())),
         }
     }
 }
@@ -691,25 +692,25 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     if let Some(items) = record_literal_items(value) {
         return Ok(items.len().saturating_sub(1) as i64);
     }
-    match value {
+    match value.kind() {
         // fns.c:Flength reads SCHARS: the character count in place, no
         // copy of the text.
-        Value::String(text) => Ok(text.as_str().chars().count() as i64),
-        Value::StringObject(state) => Ok(state.borrow().text.chars().count() as i64),
-        Value::Nil => Ok(0),
+        Kind::String(text) => Ok(text.as_str().chars().count() as i64),
+        Kind::StringObject(state) => Ok(state.borrow().text.chars().count() as i64),
+        Kind::Nil => Ok(0),
         // fns.c:Flength reads ASIZE directly; taking the size must not
         // clone or traverse the vector's elements.
-        Value::Vector(vector) => Ok(vector.slots().len() as i64),
+        Kind::Vector(vector) => Ok(vector.slots().len() as i64),
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
-        Value::CharTable(_) => Ok(0x3f_ffff),
-        item if is_bool_vector_value(interp, item) => {
-            Ok(bool_vector_values(interp, item)?.len() as i64)
+        Kind::CharTable(_) => Ok(0x3f_ffff),
+        item if is_bool_vector_value(interp, &item.value()) => {
+            Ok(bool_vector_values(interp, &item.value())?.len() as i64)
         }
-        Value::Lambda(lambda) => Ok(lambda.public_len() as i64),
-        Value::Cons(_) => Ok(value.to_vec()?.len() as i64),
-        Value::Record(id) => {
-            let record = interp.find_record(*id).ok_or_else(|| {
+        Kind::Lambda(lambda) => Ok(lambda.public_len() as i64),
+        Kind::Cons(_) => Ok(value.to_vec()?.len() as i64),
+        Kind::Record(id) => {
+            let record = interp.find_record(id).ok_or_else(|| {
                 LispError::TypeError("record".into(), format!("record<{}>", id.id))
             })?;
             match record.kind {
@@ -772,7 +773,7 @@ pub(crate) fn values_equal_including_properties_recursive(
     // type/equality dispatch.  The switch is the dynamically bound
     // `symbols-with-pos-enabled' flag, so the including-properties variant
     // must consult the same evaluator environment as ordinary `equal'.
-    if (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+    if (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
         && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
     {
         return equal;
@@ -825,8 +826,8 @@ pub(crate) fn values_equal_including_properties_recursive(
         return true;
     }
     if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
-        && matches!(left, Value::Cons(_))
-        && matches!(right, Value::Cons(_))
+        && matches!(left.kind(), Kind::Cons(_))
+        && matches!(right.kind(), Kind::Cons(_))
     {
         return left_items.len() == right_items.len()
             && left_items
@@ -836,21 +837,21 @@ pub(crate) fn values_equal_including_properties_recursive(
                     values_equal_including_properties_recursive(interp, left, right, seen, env)
                 });
     }
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            &BigInt::from(*a) == b
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
+        (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
+            BigInt::from(a) == *b
         }
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Record(left_id), Value::Record(right_id)) => {
-            if left_id.ptr_eq(right_id) {
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::Record(left_id), Kind::Record(right_id)) => {
+            if left_id.ptr_eq(&right_id) {
                 return true;
             }
             let (Some(left_record), Some(right_record)) =
-                (interp.find_record(*left_id), interp.find_record(*right_id))
+                (interp.find_record(left_id), interp.find_record(right_id))
             else {
                 return false;
             };
@@ -909,7 +910,7 @@ pub(crate) fn values_equal_including_properties_recursive(
                         values_equal_including_properties_recursive(interp, left, right, seen, env)
                     })
         }
-        (Value::Cons(_), Value::Cons(_)) => {
+        (Kind::Cons(_), Kind::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
             };
@@ -969,16 +970,16 @@ pub(crate) fn circular_signal(value: &Value) -> LispError {
 
 pub(crate) fn is_number_value(value: &Value) -> bool {
     matches!(
-        value,
-        Value::Integer(_) | Value::BigInteger(_) | Value::Float(_)
+        value.kind(),
+        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_)
     )
 }
 
 pub(crate) fn plain_symbol_name(value: &Value) -> Option<&str> {
-    match value {
-        Value::Nil => Some("nil"),
-        Value::T => Some("t"),
-        Value::Symbol(symbol) => Some(symbol),
+    match value.kind() {
+        Kind::Nil => Some("nil"),
+        Kind::T => Some("t"),
+        Kind::Symbol(symbol) => Some(symbol.as_str()),
         _ => None,
     }
 }
@@ -1087,26 +1088,26 @@ pub(crate) fn compare_record_values(
     env: &Env,
     seen_lists: &mut HashSet<(usize, usize)>,
 ) -> Result<Option<ValueOrder>, LispError> {
-    match (left, right) {
-        (Value::Record(_), _) | (_, Value::Record(_))
+    match (left.kind(), right.kind()) {
+        (Kind::Record(_), _) | (_, Kind::Record(_))
             if record_type_name(interp, left) == Some("symbol-with-pos")
                 || record_type_name(interp, right) == Some("symbol-with-pos") =>
         {
             return compare_symbol_values(interp, left, right, env);
         }
-        (Value::Record(_), _) | (_, Value::Record(_)) => {}
+        (Kind::Record(_), _) | (_, Kind::Record(_)) => {}
         _ => return Ok(None),
     }
 
-    let (Value::Record(left_id), Value::Record(right_id)) = (left, right) else {
+    let (Kind::Record(left_id), Kind::Record(right_id)) = (left.kind(), right.kind()) else {
         return Err(type_mismatch_signal(left, right));
     };
-    let Some(left_record) = interp.find_record(*left_id) else {
+    let Some(left_record) = interp.find_record(left_id) else {
         return Ok(Some(order_from_ordering(
             left_id.identity().cmp(&right_id.identity()),
         )));
     };
-    let Some(right_record) = interp.find_record(*right_id) else {
+    let Some(right_record) = interp.find_record(right_id) else {
         return Ok(Some(order_from_ordering(
             left_id.identity().cmp(&right_id.identity()),
         )));
@@ -1212,40 +1213,43 @@ pub(crate) fn value_ordering(
         return Err(type_mismatch_signal(left, right));
     }
 
-    if matches!(left, Value::CharTable(_)) || matches!(right, Value::CharTable(_)) {
-        return if matches!((left, right), (Value::CharTable(_), Value::CharTable(_))) {
+    if matches!(left.kind(), Kind::CharTable(_)) || matches!(right.kind(), Kind::CharTable(_)) {
+        return if matches!(
+            (left.kind(), right.kind()),
+            (Kind::CharTable(_), Kind::CharTable(_))
+        ) {
             Ok(ValueOrder::Unordered)
         } else {
             Err(type_mismatch_signal(left, right))
         };
     }
 
-    if matches!(left, Value::Buffer(_)) || matches!(right, Value::Buffer(_)) {
-        return match (left, right) {
-            (Value::Buffer(left), Value::Buffer(right)) => {
+    if matches!(left.kind(), Kind::Buffer(_)) || matches!(right.kind(), Kind::Buffer(_)) {
+        return match (left.kind(), right.kind()) {
+            (Kind::Buffer(left), Kind::Buffer(right)) => {
                 Ok(compare_buffer_ids(interp, left.id, right.id))
             }
             _ => Err(type_mismatch_signal(left, right)),
         };
     }
 
-    if matches!(left, Value::Marker(_)) || matches!(right, Value::Marker(_)) {
-        return match (left, right) {
-            (Value::Marker(left_id), Value::Marker(right_id)) => {
-                let Some(left_buffer) = interp.marker_buffer_id(*left_id) else {
+    if matches!(left.kind(), Kind::Marker(_)) || matches!(right.kind(), Kind::Marker(_)) {
+        return match (left.kind(), right.kind()) {
+            (Kind::Marker(left_id), Kind::Marker(right_id)) => {
+                let Some(left_buffer) = interp.marker_buffer_id(left_id) else {
                     return Ok(ValueOrder::Unordered);
                 };
-                let Some(right_buffer) = interp.marker_buffer_id(*right_id) else {
+                let Some(right_buffer) = interp.marker_buffer_id(right_id) else {
                     return Ok(ValueOrder::Unordered);
                 };
                 let buffer_order = compare_buffer_ids(interp, left_buffer, right_buffer);
                 if buffer_order != ValueOrder::Equal {
                     return Ok(buffer_order);
                 }
-                let Some(left_pos) = interp.marker_position(*left_id) else {
+                let Some(left_pos) = interp.marker_position(left_id) else {
                     return Ok(ValueOrder::Unordered);
                 };
-                let Some(right_pos) = interp.marker_position(*right_id) else {
+                let Some(right_pos) = interp.marker_position(right_id) else {
                     return Ok(ValueOrder::Unordered);
                 };
                 Ok(order_from_ordering(left_pos.cmp(&right_pos)))
@@ -1254,15 +1258,15 @@ pub(crate) fn value_ordering(
         };
     }
 
-    if matches!(left, Value::Cons(_)) || matches!(right, Value::Cons(_)) {
-        return match (left, right) {
-            (Value::Nil, Value::Nil) => Ok(ValueOrder::Equal),
-            (Value::Nil, Value::Cons(_)) => Ok(ValueOrder::Less),
-            (Value::Cons(_), Value::Nil) => Ok(ValueOrder::Greater),
-            (Value::Cons(left_cell), Value::Cons(right_cell)) => {
+    if matches!(left.kind(), Kind::Cons(_)) || matches!(right.kind(), Kind::Cons(_)) {
+        return match (left.kind(), right.kind()) {
+            (Kind::Nil, Kind::Nil) => Ok(ValueOrder::Equal),
+            (Kind::Nil, Kind::Cons(_)) => Ok(ValueOrder::Less),
+            (Kind::Cons(_), Kind::Nil) => Ok(ValueOrder::Greater),
+            (Kind::Cons(left_cell), Kind::Cons(right_cell)) => {
                 let key = (
-                    crate::lisp::types::ConsCell::identity(left_cell),
-                    crate::lisp::types::ConsCell::identity(right_cell),
+                    crate::lisp::types::ConsCell::identity(&left_cell),
+                    crate::lisp::types::ConsCell::identity(&right_cell),
                 );
                 if !seen_lists.insert(key) {
                     return Err(circular_signal(left));
@@ -1364,17 +1368,17 @@ fn value_cmp_numeric_ordering(left: &Value, right: &Value) -> Option<std::cmp::O
         };
         Some(cmp)
     }
-    match (left, right) {
-        (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),
-        (Value::Integer(a), Value::Float(b)) => float_cmp(*a as f64, b.get()),
-        (Value::Float(a), Value::Integer(b)) => float_cmp(a.get(), *b as f64),
-        (Value::Float(a), Value::Float(b)) => float_cmp(a.get(), b.get()),
-        (Value::Integer(_), Value::BigInteger(b)) => Some(bignum_sign(b).reverse()),
-        (Value::BigInteger(a), Value::Integer(_)) => Some(bignum_sign(a)),
-        (Value::BigInteger(a), Value::BigInteger(b)) => Some((**a).cmp(&**b)),
-        (Value::BigInteger(a), Value::Float(b)) => bignum_vs_float(a, b.get()),
-        (Value::Float(a), Value::BigInteger(b)) => {
-            bignum_vs_float(b, a.get()).map(Ordering::reverse)
+    match (left.kind(), right.kind()) {
+        (Kind::Integer(a), Kind::Integer(b)) => Some(a.cmp(&b)),
+        (Kind::Integer(a), Kind::Float(b)) => float_cmp(a as f64, b.get()),
+        (Kind::Float(a), Kind::Integer(b)) => float_cmp(a.get(), b as f64),
+        (Kind::Float(a), Kind::Float(b)) => float_cmp(a.get(), b.get()),
+        (Kind::Integer(_), Kind::BigInteger(b)) => Some(bignum_sign(&b).reverse()),
+        (Kind::BigInteger(a), Kind::Integer(_)) => Some(bignum_sign(&a)),
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => Some((*a).cmp(&*b)),
+        (Kind::BigInteger(a), Kind::Float(b)) => bignum_vs_float(&a, b.get()),
+        (Kind::Float(a), Kind::BigInteger(b)) => {
+            bignum_vs_float(&b, a.get()).map(Ordering::reverse)
         }
         _ => None,
     }
@@ -1393,10 +1397,10 @@ pub(crate) fn value_less(
 }
 
 pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
-    if matches!(value, Value::Nil) {
+    if matches!(value.kind(), Kind::Nil) {
         return Some(0);
     }
-    if !matches!(value, Value::Cons(_)) || is_vector_value(value) {
+    if !matches!(value.kind(), Kind::Cons(_)) || is_vector_value(value) {
         return None;
     }
     match value.to_vec() {
@@ -1445,8 +1449,8 @@ pub(crate) fn remove_equal(
         return Ok(Value::list(result));
     }
 
-    match sequence {
-        Value::Nil | Value::Cons(_) => Ok(Value::list(
+    match sequence.kind() {
+        Kind::Nil | Kind::Cons(_) => Ok(Value::list(
             sequence
                 .to_vec()?
                 .into_iter()
@@ -1572,8 +1576,8 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
                 Value::string("Circular list"),
             ])));
         }
-        match *cdr.borrow() {
-            Value::Cons(_) => current = *cdr.borrow(),
+        match (*cdr.borrow()).kind() {
+            Kind::Cons(_) => current = *cdr.borrow(),
             _ => return Ok(current),
         }
     }
@@ -1622,15 +1626,15 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
         if depth > SXHASH_MAX_DEPTH {
             return true;
         }
-        match value {
-            Value::Record(_)
-            | Value::Buffer(_)
-            | Value::Marker(_)
-            | Value::Overlay(_)
-            | Value::CharTable(_)
-            | Value::Lambda(_)
-            | Value::ReaderForm(_) => false,
-            Value::Cons(_) => {
+        match value.kind() {
+            Kind::Record(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::CharTable(_)
+            | Kind::Lambda(_)
+            | Kind::ReaderForm(_) => false,
+            Kind::Cons(_) => {
                 let mut tail = *value;
                 let limit = if depth < SXHASH_MAX_DEPTH {
                     SXHASH_MAX_LEN
@@ -1642,8 +1646,8 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
                         break;
                     };
                     if matches!(
-                            &car,
-                        Value::Symbol(symbol) if symbol == "keymap"
+                            car.kind(),
+                        Kind::Symbol(symbol) if symbol == "keymap"
                     ) {
                         return false;
                     }
@@ -1683,21 +1687,21 @@ pub(crate) fn runtime_hash_bucket_key(
         return equal_hash_table_key_hash(interp, value);
     }
     let mut state = 0xcbf2_9ce4_8422_2325u64;
-    if matches!(value, Value::Record(_))
+    if matches!(value.kind(), Kind::Record(_))
         && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
     {
         hash_value_eq(&mut state, &symbol);
         return Some(state as i64);
     }
-    match value {
-        Value::Cons(cons_cell) => {
+    match value.kind() {
+        Kind::Cons(cons_cell) => {
             hash_mix(&mut state, 16);
             hash_mix(
                 &mut state,
-                crate::lisp::types::ConsCell::identity(cons_cell) as u64,
+                crate::lisp::types::ConsCell::identity(&cons_cell) as u64,
             );
         }
-        Value::Float(number) => {
+        Kind::Float(number) => {
             hash_mix(&mut state, 15);
             let normalized = if number.get() == 0.0 {
                 0.0f64
@@ -1706,13 +1710,13 @@ pub(crate) fn runtime_hash_bucket_key(
             };
             hash_mix(&mut state, normalized.to_bits());
         }
-        Value::BigInteger(number) => {
+        Kind::BigInteger(number) => {
             hash_mix(&mut state, 14);
             hash_str(&mut state, &number.to_string());
         }
         other => match test {
-            RuntimeHashTest::Eql => hash_value_eql(&mut state, other),
-            _ => hash_value_eq(&mut state, other),
+            RuntimeHashTest::Eql => hash_value_eql(&mut state, &other.value()),
+            _ => hash_value_eq(&mut state, &other.value()),
         },
     }
     Some(state as i64)
@@ -1795,88 +1799,88 @@ fn hash_value_recursive_with_symbol_positions(
 }
 
 pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
-    match value {
-        Value::Nil => hash_mix(state, 0),
-        Value::T => hash_mix(state, 1),
-        Value::Integer(number) => {
+    match value.kind() {
+        Kind::Nil => hash_mix(state, 0),
+        Kind::T => hash_mix(state, 1),
+        Kind::Integer(number) => {
             hash_mix(state, 2);
-            hash_mix(state, *number as u64);
+            hash_mix(state, number as u64);
         }
-        Value::Symbol(symbol) => {
+        Kind::Symbol(symbol) => {
             hash_mix(state, 3);
-            hash_str(state, symbol);
+            hash_str(state, &symbol);
         }
-        Value::StringObject(shared) => {
+        Kind::StringObject(shared) => {
             hash_mix(state, 4);
             hash_mix(state, shared.identity() as u64);
         }
-        Value::String(text) => {
+        Kind::String(text) => {
             hash_mix(state, 5);
             hash_mix(state, text.as_ptr() as usize as u64);
             hash_mix(state, text.len() as u64);
         }
-        Value::Vector(vector) => {
+        Kind::Vector(vector) => {
             hash_mix(state, 16);
             hash_mix(state, vector.identity() as u64);
         }
-        Value::BuiltinFunc(name) => {
+        Kind::BuiltinFunc(name) => {
             hash_mix(state, 6);
-            hash_str(state, name);
+            hash_str(state, &name);
         }
-        Value::Lambda(lambda_value) => {
+        Kind::Lambda(lambda_value) => {
             hash_mix(state, 7);
             hash_mix(state, lambda_value.identity() as u64);
         }
-        Value::Buffer(buffer_value) => {
+        Kind::Buffer(buffer_value) => {
             let id = buffer_value.id;
             let _ = &buffer_value.name;
             hash_mix(state, 8);
             hash_mix(state, id);
         }
-        Value::Marker(id) => {
+        Kind::Marker(id) => {
             hash_mix(state, 9);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Overlay(id) => {
+        Kind::Overlay(id) => {
             hash_mix(state, 10);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::CharTable(id) => {
+        Kind::CharTable(id) => {
             hash_mix(state, 11);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Frame(id) => {
+        Kind::Frame(id) => {
             hash_mix(state, 18);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Terminal(id) => {
+        Kind::Terminal(id) => {
             hash_mix(state, 19);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Record(id) => {
+        Kind::Record(id) => {
             hash_mix(state, 12);
             hash_mix(state, id.id);
         }
-        Value::Finalizer(id) => {
+        Kind::Finalizer(id) => {
             hash_mix(state, 13);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::ReaderForm(form) => {
+        Kind::ReaderForm(form) => {
             hash_mix(state, 20);
             hash_mix(state, form.identity() as u64);
         }
-        Value::Unbound => {
+        Kind::Unbound => {
             hash_mix(state, 17);
         }
-        Value::BigInteger(number) => {
+        Kind::BigInteger(number) => {
             hash_mix(state, 14);
             hash_str(state, &number.to_string());
         }
-        Value::Float(number) => {
+        Kind::Float(number) => {
             hash_mix(state, 15);
             hash_mix(state, number.to_bits());
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return;
             };
@@ -1888,16 +1892,16 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
 }
 
 pub(crate) fn hash_value_eql(state: &mut u64, value: &Value) {
-    match value {
-        Value::Float(number) => {
+    match value.kind() {
+        Kind::Float(number) => {
             hash_mix(state, 21);
             hash_mix(state, number.to_bits());
         }
-        Value::BigInteger(number) => {
+        Kind::BigInteger(number) => {
             hash_mix(state, 22);
             hash_str(state, &number.to_string());
         }
-        other => hash_value_eq(state, other),
+        other => hash_value_eq(state, &other.value()),
     }
 }
 
@@ -1925,18 +1929,18 @@ pub(crate) fn hash_value_equal_at(
             remove_symbol_positions,
         );
     }
-    match value {
-        Value::Nil => hash_mix(state, 30),
-        Value::T => hash_mix(state, 31),
-        Value::Integer(number) => {
+    match value.kind() {
+        Kind::Nil => hash_mix(state, 30),
+        Kind::T => hash_mix(state, 31),
+        Kind::Integer(number) => {
             hash_mix(state, 32);
             hash_str(state, &number.to_string());
         }
-        Value::BigInteger(number) => {
+        Kind::BigInteger(number) => {
             hash_mix(state, 32);
             hash_str(state, &number.to_string());
         }
-        Value::Float(number) => {
+        Kind::Float(number) => {
             hash_mix(state, 34);
             let bits = if number.get() == 0.0 {
                 0.0f64.to_bits()
@@ -1947,11 +1951,11 @@ pub(crate) fn hash_value_equal_at(
             };
             hash_mix(state, bits);
         }
-        Value::String(text) => {
+        Kind::String(text) => {
             hash_mix(state, 35);
-            hash_str(state, text);
+            hash_str(state, &text);
         }
-        Value::StringObject(shared) => {
+        Kind::StringObject(shared) => {
             hash_mix(state, 35);
             let shared = shared.borrow();
             hash_str(state, &shared.text);
@@ -1963,11 +1967,11 @@ pub(crate) fn hash_value_equal_at(
                 hash_props(interp, state, &shared.props, depth, remove_symbol_positions);
             }
         }
-        Value::Symbol(symbol) => {
+        Kind::Symbol(symbol) => {
             hash_mix(state, 37);
-            hash_str(state, symbol);
+            hash_str(state, &symbol);
         }
-        Value::Vector(vector) => {
+        Kind::Vector(vector) => {
             hash_mix(state, 40);
             for slot in vector.slots().iter().take(SXHASH_MAX_LEN) {
                 hash_value_equal_at(
@@ -1980,7 +1984,7 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             hash_mix(state, 38);
             // `sxhash_list' (fns.c:5420): walk at most `SXHASH_MAX_LEN'
             // elements, and only while the structure is shallower than
@@ -2014,15 +2018,15 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
-        Value::BuiltinFunc(name) => {
+        Kind::BuiltinFunc(name) => {
             hash_mix(state, 39);
-            hash_str(state, name);
+            hash_str(state, &name);
         }
-        Value::Lambda(lambda_value) => {
+        Kind::Lambda(lambda_value) => {
             hash_mix(state, 40);
             // `sxhash_vector' (fns.c:5447) bounds a closure the same way.
             for slot in interp
-                .interpreted_closure_slots(lambda_value)
+                .interpreted_closure_slots(&lambda_value)
                 .into_iter()
                 .take(SXHASH_MAX_LEN)
             {
@@ -2036,39 +2040,39 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
-        Value::Buffer(buffer_value) => {
+        Kind::Buffer(buffer_value) => {
             let id = buffer_value.id;
             let name = &buffer_value.name;
             hash_mix(state, 41);
             hash_mix(state, id);
             hash_str(state, name);
         }
-        Value::Marker(id) => {
-            hash_marker_equal(interp, state, *id);
+        Kind::Marker(id) => {
+            hash_marker_equal(interp, state, id);
         }
-        Value::Overlay(id) => {
+        Kind::Overlay(id) => {
             hash_mix(state, 43);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::CharTable(id) => {
+        Kind::CharTable(id) => {
             hash_char_table_equal(
                 interp,
                 state,
-                *id,
+                id,
                 include_properties,
                 depth,
                 remove_symbol_positions,
             );
         }
-        Value::Frame(id) => {
+        Kind::Frame(id) => {
             hash_mix(state, 48);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Terminal(id) => {
+        Kind::Terminal(id) => {
             hash_mix(state, 49);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::Record(id) => {
+        Kind::Record(id) => {
             hash_record_equal(
                 interp,
                 state,
@@ -2078,15 +2082,15 @@ pub(crate) fn hash_value_equal_at(
                 remove_symbol_positions,
             );
         }
-        Value::Finalizer(id) => {
+        Kind::Finalizer(id) => {
             hash_mix(state, 46);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
-        Value::ReaderForm(form) => {
+        Kind::ReaderForm(form) => {
             hash_mix(state, 50);
             hash_mix(state, form.identity() as u64);
         }
-        Value::Unbound => {
+        Kind::Unbound => {
             hash_mix(state, 47);
         }
     }
@@ -2316,8 +2320,8 @@ pub(crate) fn resolve_callable(
     } else {
         *value
     };
-    match &callable {
-        Value::Symbol(name) => interp.lookup_function(name, env),
+    match callable.kind() {
+        Kind::Symbol(name) => interp.lookup_function(&name, env),
         _ => Ok(callable),
     }
 }
@@ -2325,23 +2329,23 @@ pub(crate) fn resolve_callable(
 pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head, Value::Symbol(name) if name == "lambda")
+            matches!(head.kind(), Kind::Symbol(name) if name == "lambda")
                 || (symbols_with_pos_enabled(interp, env)
                     && matches!(
-                        symbol_with_pos_parts(interp, head),
-                        Some((Value::Symbol(name), _)) if name == "lambda"
+                        symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
+                        Some((Kind::Symbol(name), _)) if name == "lambda"
                     ))
         }) && items.get(1).is_some()
     })
 }
 
 pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
+    matches!(value.kind(), Kind::BuiltinFunc(_) | Kind::Lambda(_))
         || is_lambda_expression(interp, value, env)
         || matches!(
-            value,
-            Value::Record(id)
-                if interp.find_record(*id).is_some_and(|record| matches!(
+            value.kind(),
+            Kind::Record(id)
+                if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
                     crate::lisp::eval::RecordKind::Closure
                         | crate::lisp::eval::RecordKind::NativeCompiledFunction
@@ -2380,9 +2384,9 @@ pub(crate) fn value_matches_with_test(
     testfn: Option<&Value>,
     env: &mut Env,
 ) -> Result<bool, LispError> {
-    match testfn.filter(|value| !value.is_nil()) {
+    match testfn.filter(|value| !value.is_nil()).map(|v| v.kind()) {
         None => Ok(values_eq_in_env(interp, left, right, env)),
-        Some(Value::Symbol(name)) | Some(Value::BuiltinFunc(name)) => match name.as_str() {
+        Some(Kind::Symbol(name)) | Some(Kind::BuiltinFunc(name)) => match name.as_str() {
             "eq" => Ok(values_eq_in_env(interp, left, right, env)),
             "eql" => Ok(values_eql(left, right)),
             "equal" => Ok(values_equal_in_env(interp, left, right, env)),
@@ -2392,7 +2396,7 @@ pub(crate) fn value_matches_with_test(
             }
         },
         Some(other) => {
-            let func = resolve_callable(interp, other, env)?;
+            let func = resolve_callable(interp, &other.value(), env)?;
             Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
         }
     }
@@ -2408,10 +2412,10 @@ pub(crate) fn invoke_function_value(
 }
 
 pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
-    match original {
-        Value::Symbol(name) => Some(name.to_string()),
-        _ => match resolved {
-            Value::BuiltinFunc(name) => Some(name.to_string()),
+    match original.kind() {
+        Kind::Symbol(name) => Some(name.to_string()),
+        _ => match resolved.kind() {
+            Kind::BuiltinFunc(name) => Some(name.to_string()),
             _ => None,
         },
     }
@@ -2433,7 +2437,7 @@ pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) 
             Value::Nil,
         ],
     );
-    if let Value::Record(id) = keymap {
+    if let Kind::Record(id) = keymap.kind() {
         refresh_runtime_keymap_public_view(interp, id.id)
             .expect("new runtime keymap has a valid public view");
         return interp
@@ -2509,7 +2513,7 @@ pub(crate) fn refresh_runtime_keymap_public_view(
     // for it.  The runtime binding list still drives lookup either way.
     let in_char_table = |entry_key: &Value| {
         has_char_table
-            && matches!(entry_key, Value::Integer(code) if (0..=0x3f_ffff).contains(code))
+            && matches!(entry_key.kind(), Kind::Integer(code) if (0..=0x3f_ffff).contains(&code))
     };
     let mut listed_pre_prompt = 0usize;
     for binding in bindings.iter().filter(|binding| !binding.after_prompt) {
@@ -2554,10 +2558,10 @@ pub(crate) fn refresh_runtime_keymap_public_view(
         tail = Value::cons(item, tail);
     }
 
-    let view = if let Some(existing @ Value::Cons(_)) = existing {
-        existing.set_car(Value::Symbol("keymap".into()))?;
-        existing.set_cdr(tail)?;
-        existing
+    let view = if let Some(existing @ Kind::Cons(_)) = existing.map(|v| v.kind()) {
+        existing.value().set_car(Value::Symbol("keymap".into()))?;
+        existing.value().set_cdr(tail)?;
+        existing.value()
     } else {
         Value::cons(Value::Symbol("keymap".into()), tail)
     };
@@ -2572,17 +2576,17 @@ pub(crate) fn refresh_runtime_keymap_public_view(
 
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap"),
+        |items| matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap"),
     )
 }
 
 pub(crate) fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match value {
-        Value::Record(id) => interp
-            .find_record(*id)
+    match value.kind() {
+        Kind::Record(id) => interp
+            .find_record(id)
             .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
             .map(|_| id.id),
-        Value::Cons(_) => interp.keymap_public_root_owner_id(value),
+        Kind::Cons(_) => interp.keymap_public_root_owner_id(value),
         _ => None,
     }
 }
@@ -2617,7 +2621,7 @@ pub(crate) fn keymap_char_table_value(interp: &Interpreter, keymap: &Value) -> O
         .ok()?
         .into_iter()
         .skip(1)
-        .find(|item| matches!(item, Value::CharTable(_)))
+        .find(|item| matches!(item.kind(), Kind::CharTable(_)))
 }
 
 pub(crate) fn keymap_bindings(
@@ -2750,7 +2754,8 @@ pub(crate) fn keymap_direct_bindings(
     let Ok(items) = keymap.to_vec() else {
         return Ok(std::rc::Rc::new(Vec::new()));
     };
-    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap")
+    {
         return Ok(std::rc::Rc::new(Vec::new()));
     }
 
@@ -2826,17 +2831,17 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
     let mut seen = HashSet::new();
     let mut tail = view.cdr()?;
     loop {
-        let Value::Cons(cell) = &tail else {
+        let Kind::Cons(cell) = tail.kind() else {
             if !tail.is_nil() {
                 return Err(wrong_type_argument("listp", tail));
             }
             return Ok((items, Value::Nil));
         };
-        if !seen.insert(crate::lisp::types::ConsCell::identity(cell)) {
+        if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
             return Ok((items, Value::Nil));
         }
         let item = *cell.car.borrow();
-        if matches!(&item, Value::Symbol(name) if name == "keymap") {
+        if matches!(item.kind(), Kind::Symbol(name) if name == "keymap") {
             return Ok((items, tail));
         }
         items.push(item);
@@ -2861,7 +2866,7 @@ fn parse_runtime_keymap_public_view(
     let mut saw_prompt = false;
 
     for item in items {
-        if matches!(item, Value::CharTable(_)) {
+        if matches!(item.kind(), Kind::CharTable(_)) {
             parsed.char_table = item;
             continue;
         }
@@ -2892,7 +2897,7 @@ fn parse_runtime_keymap_public_view(
     // Without them a store into the list dropped every character prefix
     // from `key-binding' (C-x C-f, M-x) though `lookup-key' still found
     // it through the table.
-    if let Value::CharTable(table_id) = parsed.char_table
+    if let Kind::CharTable(table_id) = parsed.char_table.kind()
         && let Some(ranges) = interp.char_table_effective_ranges(table_id)
     {
         let mut from_table = Vec::new();
@@ -2980,9 +2985,9 @@ pub(crate) fn keymap_value_identity(interp: &Interpreter, keymap: &Value) -> Opt
     if let Some(id) = keymap_record_id(interp, keymap) {
         return Some((true, id as usize));
     }
-    match keymap {
-        Value::Cons(cell) if is_keymap_placeholder(keymap) => {
-            Some((false, crate::lisp::types::ConsCell::identity(cell)))
+    match keymap.kind() {
+        Kind::Cons(cell) if is_keymap_placeholder(keymap) => {
+            Some((false, crate::lisp::types::ConsCell::identity(&cell)))
         }
         _ => None,
     }
@@ -3021,7 +3026,9 @@ pub(crate) fn keymap_define_character_range(
         u32::try_from(end)
             .map_err(|_| LispError::Signal("Invalid keymap character range".into()))?,
     );
-    if let Some(Value::CharTable(table_id)) = keymap_char_table_value(interp, keymap) {
+    if let Some(Kind::CharTable(table_id)) =
+        keymap_char_table_value(interp, keymap).map(|v| v.kind())
+    {
         // A nil binding in a full GNU keymap is represented by t inside the
         // char-table so it remains explicitly unbound instead of falling
         // through to another sparse element or parent.
@@ -3038,8 +3045,8 @@ pub(crate) fn keymap_define_character_range(
             let mut bindings = keymap_bindings(record)?;
             bindings.retain(|entry| {
                 !matches!(
-                    keymap_entry_key_value(&binding_key_parts(entry), &entry.key),
-                    Value::Integer(code) if (i64::from(start)..=i64::from(end)).contains(&code)
+                    keymap_entry_key_value(&binding_key_parts(entry), &entry.key).kind(),
+                    Kind::Integer(code) if (i64::from(start)..=i64::from(end)).contains(&code)
                 )
             });
             record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
@@ -3056,7 +3063,7 @@ pub(crate) fn keymap_define_character_range(
         ));
     };
     let table = interp.make_char_table(Some("keymap".into()), Value::Nil);
-    let Value::CharTable(table_id) = table else {
+    let Kind::CharTable(table_id) = table.kind() else {
         unreachable!("make-char-table returns a character table")
     };
     let stored = if binding.is_nil() { Value::T } else { binding };
@@ -3101,8 +3108,8 @@ pub(crate) fn keymap_define_binding_with_placement(
             prefix
         } else if is_keymap_value(interp, &existing) {
             existing
-        } else if let Value::Symbol(symbol) = &existing
-            && let Ok(function) = interp.lookup_function(symbol, &crate::lisp::types::Env::new())
+        } else if let Kind::Symbol(symbol) = existing.kind()
+            && let Ok(function) = interp.lookup_function(&symbol, &crate::lisp::types::Env::new())
             && is_keymap_value(interp, &function)
         {
             function
@@ -3129,10 +3136,11 @@ pub(crate) fn keymap_define_binding_with_placement(
     // second, implicit prefix index.
     if let Some(parts) = key_parts.as_ref()
         && let [part] = parts.as_slice()
-        && let Some(Value::CharTable(table_id)) = keymap_char_table_value(interp, keymap)
+        && let Some(Kind::CharTable(table_id)) =
+            keymap_char_table_value(interp, keymap).map(|v| v.kind())
     {
         let event = keymap_entry_key_value(std::slice::from_ref(part), key);
-        if let Value::Integer(code) = event
+        if let Kind::Integer(code) = event.kind()
             && (0..=0x3f_ffff).contains(&code)
         {
             interp.char_table_set(table_id, code as u32, binding)?;
@@ -3185,10 +3193,11 @@ pub(crate) fn keymap_remove_binding(
 ) -> Result<(), LispError> {
     let parts = approximate_key_parts(key);
     if let [part] = parts.as_slice()
-        && let Some(Value::CharTable(table_id)) = keymap_char_table_value(interp, keymap)
+        && let Some(Kind::CharTable(table_id)) =
+            keymap_char_table_value(interp, keymap).map(|v| v.kind())
     {
         let event = keymap_entry_key_value(std::slice::from_ref(part), key);
-        if let Value::Integer(code) = event
+        if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
         {
             interp.char_table_set(table_id, code, Value::Nil)?;
@@ -3366,10 +3375,11 @@ fn keymap_lookup_direct_binding_exact_parts(
     // The character table appears first in GNU full keymaps and therefore
     // wins over any legacy sparse entry for the same character.
     if let [part] = key_parts
-        && let Some(Value::CharTable(table_id)) = keymap_char_table_value(interp, keymap)
+        && let Some(Kind::CharTable(table_id)) =
+            keymap_char_table_value(interp, keymap).map(|v| v.kind())
     {
         let event = keymap_entry_key_value(std::slice::from_ref(part), part);
-        if let Value::Integer(code) = event
+        if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
             && let Some(value) = interp.char_table_get(table_id, code)
             && !value.is_nil()
@@ -3390,11 +3400,11 @@ fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
     if is_keymap_value(interp, binding) {
         return Some(*binding);
     }
-    let Value::Symbol(name) = binding else {
+    let Kind::Symbol(name) = binding.kind() else {
         return None;
     };
     interp
-        .lookup_function(name, &crate::lisp::types::Env::new())
+        .lookup_function(&name, &crate::lisp::types::Env::new())
         .ok()
         .filter(|function| is_keymap_value(interp, function))
 }
@@ -3410,10 +3420,11 @@ fn keymap_lookup_binding_exact_parts_bounded(
         return Ok(Value::Nil);
     };
     if let [part] = key_parts
-        && let Some(Value::CharTable(table_id)) = keymap_char_table_value(interp, keymap)
+        && let Some(Kind::CharTable(table_id)) =
+            keymap_char_table_value(interp, keymap).map(|v| v.kind())
     {
         let event = keymap_entry_key_value(std::slice::from_ref(part), part);
-        if let Value::Integer(code) = event
+        if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
             && let Some(value) = interp.char_table_get(table_id, code)
             && !value.is_nil()
@@ -3635,12 +3646,12 @@ pub(crate) fn keymap_get_keyelt(
 ) -> Result<Value, LispError> {
     let mut current = *object;
     loop {
-        let Value::Cons(_) = current else {
+        let Kind::Cons(_) = current.kind() else {
             return Ok(current);
         };
 
         let car = current.car()?;
-        if matches!(&car, Value::Symbol(symbol) if symbol == "menu-item") {
+        if matches!(car.kind(), Kind::Symbol(symbol) if symbol == "menu-item") {
             let Ok(items) = current.to_vec() else {
                 return Ok(current);
             };
@@ -3650,7 +3661,7 @@ pub(crate) fn keymap_get_keyelt(
             if autoload {
                 let mut index = 3usize;
                 while index + 1 < items.len() {
-                    if matches!(&items[index], Value::Symbol(symbol) if symbol == ":filter") {
+                    if matches!(items[index].kind(), Kind::Symbol(symbol) if symbol == ":filter") {
                         let filter = unwrap_function_quote(&items[index + 1]);
                         definition = call_function_value(
                             interp,
@@ -3689,11 +3700,11 @@ pub(crate) fn keymap_reference_map(
     if is_keymap_value(interp, value) {
         return Some(*value);
     }
-    let Value::Symbol(symbol) = value else {
+    let Kind::Symbol(symbol) = value.kind() else {
         return None;
     };
     interp
-        .lookup_function(symbol, env)
+        .lookup_function(&symbol, env)
         .ok()
         .filter(|function| is_keymap_value(interp, function))
 }
@@ -3703,25 +3714,35 @@ pub(crate) fn unwrap_function_quote(value: &Value) -> Value {
         .to_vec()
         .ok()
         .and_then(|items| match items.as_slice() {
-            [Value::Symbol(symbol), inner] if symbol == "function" => Some(*inner),
+            [head, inner] if matches!(head.kind(), Kind::Symbol(symbol) if symbol == "function") => {
+                Some(*inner)
+            }
             _ => None,
         })
         .unwrap_or(*value)
 }
 
 pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
-    match value {
-        Value::Nil => "undefined".into(),
-        Value::Symbol(name) | Value::BuiltinFunc(name) => name.to_string(),
-        Value::Record(_) => "Prefix Command".into(),
-        Value::Cons(_) => value
+    match value.kind() {
+        Kind::Nil => "undefined".into(),
+        Kind::Symbol(name) | Kind::BuiltinFunc(name) => name.to_string(),
+        Kind::Record(_) => "Prefix Command".into(),
+        Kind::Cons(_) => value
             .to_vec()
             .ok()
-            .and_then(|items| match items.as_slice() {
-                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
-                    Some(keymap_binding_display_name(inner))
+            .and_then(|items| {
+                match items
+                    .as_slice()
+                    .iter()
+                    .map(|v| v.kind())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+                {
+                    [Kind::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
+                        Some(keymap_binding_display_name(&inner.value()))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
             .unwrap_or_else(|| value.to_string()),
         _ => value.to_string(),
@@ -3828,7 +3849,7 @@ pub(crate) fn reader_control_char(base: i64) -> Option<i64> {
 }
 
 pub(crate) fn reader_key_event_value(event: Value) -> Value {
-    let Value::Integer(code) = event else {
+    let Kind::Integer(code) = event.kind() else {
         return event;
     };
     let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
@@ -3883,7 +3904,7 @@ fn where_is_binding_rank(parts: &[String]) -> (usize, bool) {
     let has_symbolic_event = events
         .iter()
         .skip(1)
-        .any(|event| !matches!(event, Value::Integer(_)));
+        .any(|event| !matches!(event.kind(), Kind::Integer(_)));
     (event_count, has_symbolic_event)
 }
 
@@ -3897,7 +3918,7 @@ fn preferred_sequence_rank(parts: &[String], preferred_modifier_bits: i64) -> i6
         .unwrap_or_default();
     let mut result = 1;
     for event in events.iter().skip(1) {
-        let Value::Integer(code) = event else {
+        let Kind::Integer(code) = event.kind() else {
             return 0;
         };
         let modifiers = code & (KEY_DESCRIPTION_MODIFIER_MASK & !KEY_DESCRIPTION_META_BIT);
@@ -3965,7 +3986,7 @@ pub(crate) fn help_describe_vector(
 ) -> Result<Value, LispError> {
     need_args("help--describe-vector", args, 7)?;
     let saved_buffer_id = interp.current_buffer_id();
-    let Value::CharTable(table_id) = args[0] else {
+    let Kind::CharTable(table_id) = args[0].kind() else {
         return Ok(Value::Nil);
     };
     let prefix = if args[1].is_nil() {
@@ -3987,8 +4008,8 @@ pub(crate) fn help_describe_vector(
             let definition = keymap_get_keyelt(interp, &entry.value, true, env)?;
             if definition.is_nil()
                 || partial
-                    && matches!(&definition, Value::Symbol(symbol)
-                        if interp.get_symbol_property(symbol, "suppress-keymap")
+                    && matches!(definition.kind(), Kind::Symbol(symbol)
+                        if interp.get_symbol_property(&symbol, "suppress-keymap")
                             .is_some_and(|value| value.is_truthy()))
             {
                 continue;
@@ -4056,7 +4077,7 @@ pub(crate) fn help_describe_vector(
                 if interp.buffer.char_before() == Some('\n') {
                     let _ = interp.delete_region_current_buffer(point - 1, point);
                 }
-                if let Value::Symbol(command) = shadowed_by {
+                if let Kind::Symbol(command) = shadowed_by.kind() {
                     interp
                         .insert_current_buffer(&format!("  (currently shadowed by `{command}')\n"));
                 } else {
@@ -4094,8 +4115,8 @@ pub(crate) fn active_minor_mode_bindings(
         .into_iter()
         .filter_map(|entry| {
             let (mode, _) = entry.cons_values()?;
-            match mode {
-                Value::Symbol(name) => Some(name.as_str().to_owned()),
+            match mode.kind() {
+                Kind::Symbol(name) => Some(name.as_str().to_owned()),
                 _ => None,
             }
         })
@@ -4104,9 +4125,9 @@ pub(crate) fn active_minor_mode_bindings(
     let mut alists = Vec::new();
     if let Some(emulation_alists) = interp.lookup_var("emulation-mode-map-alists", env) {
         for element in emulation_alists.to_vec().unwrap_or_default() {
-            alists.push(match element {
-                Value::Symbol(variable) => interp.lookup_var(&variable, env).unwrap_or(Value::Nil),
-                other => other,
+            alists.push(match element.kind() {
+                Kind::Symbol(variable) => interp.lookup_var(&variable, env).unwrap_or(Value::Nil),
+                other => other.value(),
             });
         }
     }
@@ -4124,7 +4145,7 @@ pub(crate) fn active_minor_mode_bindings(
             let Some((mode, map)) = entry.cons_values() else {
                 continue;
             };
-            let Value::Symbol(mode_name) = mode else {
+            let Kind::Symbol(mode_name) = mode.kind() else {
                 continue;
             };
             if index == ordinary_index && overridden_modes.contains(mode_name.as_str()) {
@@ -4202,8 +4223,8 @@ fn text_property_keymap_at_active_position(
             if !area.is_nil() {
                 return None;
             }
-            match items.get(5) {
-                Some(Value::Integer(pos)) if *pos > 0 => buffer_keymap(*pos as usize),
+            match items.get(5).map(|v| v.kind()) {
+                Some(Kind::Integer(pos)) if pos > 0 => buffer_keymap(pos as usize),
                 _ => buffer_keymap(interp.buffer.point()),
             }
         }
@@ -4368,9 +4389,9 @@ pub(crate) fn where_is_internal(
     // identity: a command symbol by name, a keymap object by its record
     // (tmm hands each menu's keymap straight in).  Other objects (an
     // anonymous lambda) have no name to search by and answer nil.
-    let (command_owned, definition_keymap_id) = match definition {
-        Value::Symbol(name) => (name.to_string(), None),
-        other => match keymap_record_id(interp, other) {
+    let (command_owned, definition_keymap_id) = match definition.kind() {
+        Kind::Symbol(name) => (name.to_string(), None),
+        other => match keymap_record_id(interp, &other.value()) {
             Some(id) => (String::new(), Some(id)),
             None => return Ok(Vec::new()),
         },
@@ -4569,10 +4590,10 @@ pub(crate) fn maybe_prefer_modifier_notation(
 }
 
 fn preferred_modifier_name(interp: &Interpreter, env: &Env) -> Option<String> {
-    match interp.lookup_var("where-is-preferred-modifier", env)? {
-        Value::Symbol(symbol) => Some(symbol.to_string()),
-        Value::String(text) => Some(text.to_string()),
-        Value::StringObject(state) => Some(state.borrow().text.clone()),
+    match (interp.lookup_var("where-is-preferred-modifier", env)?).kind() {
+        Kind::Symbol(symbol) => Some(symbol.to_string()),
+        Kind::String(text) => Some(text.to_string()),
+        Kind::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }
 }
@@ -4645,17 +4666,22 @@ pub(crate) fn remap_key_binding_text(command: &str) -> String {
 }
 
 pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
-    match value {
-        Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
-        Value::Cons(_) => value
-            .to_vec()
-            .ok()
-            .and_then(|items| match items.as_slice() {
-                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
-                    command_name_for_remapping(inner)
+    match value.kind() {
+        Kind::Symbol(name) | Kind::BuiltinFunc(name) => Some(name.to_string()),
+        Kind::Cons(_) => value.to_vec().ok().and_then(|items| {
+            match items
+                .as_slice()
+                .iter()
+                .map(|v| v.kind())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [Kind::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
+                    command_name_for_remapping(&inner.value())
                 }
                 _ => None,
-            }),
+            }
+        }),
         _ => None,
     }
 }
@@ -4757,9 +4783,9 @@ fn remap_probe(
     let parent = interp
         .find_record(id)
         .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned());
-    match parent {
-        None | Some(Value::Nil) => Ok(RemapProbe::Absent),
-        Some(parent) => remap_probe(interp, &parent, command_name, depth - 1),
+    match parent.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(RemapProbe::Absent),
+        Some(parent) => remap_probe(interp, &parent.value(), command_name, depth - 1),
     }
 }
 
@@ -4880,9 +4906,9 @@ fn keymap_has_prefix(
             return Ok(true);
         }
     }
-    match record.slots.get(KEYMAP_PARENT_SLOT) {
-        Some(Value::Nil) | None => Ok(false),
-        Some(parent) => keymap_has_prefix(interp, parent, requested_parts),
+    match record.slots.get(KEYMAP_PARENT_SLOT).map(|v| v.kind()) {
+        Some(Kind::Nil) | None => Ok(false),
+        Some(parent) => keymap_has_prefix(interp, &parent.value(), requested_parts),
     }
 }
 
@@ -4905,11 +4931,11 @@ pub(crate) fn key_sequence_is_prefix(
     // is `(autoload ... keymap)'.  GNU treats that as a keymap before loading
     // the owner; once loaded, the same symbol resolves directly to the map.
     let binding = key_binding(interp, key, false, true, env)?;
-    if let Value::Symbol(name) = &binding
-        && let Ok(function) = interp.lookup_function(name, env)
+    if let Kind::Symbol(name) = binding.kind()
+        && let Ok(function) = interp.lookup_function(&name, env)
         && (is_keymap_value(interp, &function)
             || autoload_parts(&function).is_some_and(
-                |(_, _, kind)| matches!(kind, Value::Symbol(kind) if kind == "keymap"),
+                |(_, _, kind)| matches!(kind.kind(), Kind::Symbol(kind) if kind == "keymap"),
             ))
     {
         return Ok(true);
@@ -4995,15 +5021,18 @@ pub(crate) fn locale_uses_utf8() -> bool {
 pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
     // doc.c reads the C variable Vtext_quoting_style itself, which a
     // `makunbound' of the symbol leaves untouched.
-    match interp.forwarded_c_value("text-quoting-style", env) {
-        Some(Value::Symbol(style)) if style == "grave" => "grave",
-        Some(Value::Symbol(style)) if style == "straight" => "straight",
-        Some(Value::Symbol(style)) if style == "curve" => "curve",
+    match interp
+        .forwarded_c_value("text-quoting-style", env)
+        .map(|v| v.kind())
+    {
+        Some(Kind::Symbol(style)) if style == "grave" => "grave",
+        Some(Kind::Symbol(style)) if style == "straight" => "straight",
+        Some(Kind::Symbol(style)) if style == "curve" => "curve",
         // doc.c:679 consults the locale flag for NIL alone; every other
         // non-nil value falls through to `curve' ("Any other value is
         // treated as `curve'").  Routing unmatched values through the flag
         // made a bogus style answer grave in a non-UTF-8 locale.
-        Some(Value::Nil) | None => {
+        Some(Kind::Nil) | None => {
             let utf8 = interp
                 .lookup_var("internal--text-quoting-flag", env)
                 .map_or_else(locale_uses_utf8, |flag| flag.is_truthy());
@@ -5014,7 +5043,9 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
             // `standard-display-table' that displays U+2018 as the
             // one-element vector [?`] means grave even in a UTF-8 locale.
             // It is a plain variable read, observable in batch.
-            if let Some(Value::CharTable(id)) = interp.lookup_var("standard-display-table", env)
+            if let Some(Kind::CharTable(id)) = interp
+                .lookup_var("standard-display-table", env)
+                .map(|v| v.kind())
                 && let Some(table) = interp.find_char_table(id)
                 && table.subtype.as_deref() == Some("display-table")
                 && let Some(entry) = interp.char_table_get(id, 0x2018)

@@ -75,7 +75,7 @@ fn eval_buffer_checks_a_non_nil_history_filename_even_for_an_empty_buffer() {
     assert!(
         matches!(
             result,
-            Err(LispError::WrongTypeArgument(predicate, Value::Integer(42))) if predicate == "stringp"
+            Err(LispError::WrongTypeArgument(predicate, value)) if predicate == "stringp" && value == Value::Integer(42)
         ),
         "readevalloop checks a non-nil source name before reading any forms"
     );
@@ -274,7 +274,7 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
     );
     interp.pop_active_catch_tag();
     assert!(
-        matches!(result, Err(LispError::Throw(actual, Value::Integer(23))) if values_eql(&actual, &tag))
+        matches!(result, Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(23))
     );
     assert_eq!(interp.lookup_var("lexical-binding", &env), Some(Value::T));
     assert!(interp.loads_in_progress.is_nil());

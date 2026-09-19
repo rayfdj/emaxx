@@ -9,7 +9,7 @@ use super::eval::Interpreter;
 use super::primitives::{
     make_shared_string_value_with_multibyte, string_like, string_text, vector_items,
 };
-use super::types::{Env, LispError, Value};
+use super::types::{Env, Kind, LispError, Value};
 
 /// Image-template clone semantics: a template interpreter holds no open
 /// databases; cloning a live handle is a caller bug.
@@ -151,8 +151,8 @@ fn sqlite_select(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lisp
         (columns, rows)
     };
 
-    match return_type {
-        Value::Symbol(symbol) if symbol == "full" => Ok(Value::cons(
+    match return_type.kind() {
+        Kind::Symbol(symbol) if symbol == "full" => Ok(Value::cons(
             Value::list(
                 columns
                     .iter()
@@ -161,7 +161,7 @@ fn sqlite_select(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lisp
             ),
             Value::list(rows),
         )),
-        Value::Symbol(symbol) if symbol == "set" => create_sqlite_handle(
+        Kind::Symbol(symbol) if symbol == "set" => create_sqlite_handle(
             interp,
             SqliteHandleState::Set(SqliteSetState {
                 columns,
@@ -364,8 +364,8 @@ fn sqlite_version(args: &[Value]) -> Result<Value, LispError> {
 
 fn sqlitep(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
     need_args("sqlitep", args, 1, 1)?;
-    Ok(match args[0] {
-        Value::Record(id) if interp.find_sqlite_handle(id.id).is_some() => Value::T,
+    Ok(match args[0].kind() {
+        Kind::Record(id) if interp.find_sqlite_handle(id.id).is_some() => Value::T,
         _ => Value::Nil,
     })
 }
@@ -429,8 +429,8 @@ fn sqlite_errstr(code: i32) -> Option<String> {
 }
 
 fn sqlite_id(value: &Value) -> Result<u64, LispError> {
-    match value {
-        Value::Record(id) => Ok(id.id),
+    match value.kind() {
+        Kind::Record(id) => Ok(id.id),
         _ => Err(LispError::WrongTypeArgument("sqlitep".into(), *value)),
     }
 }
@@ -441,7 +441,7 @@ fn create_sqlite_handle(
 ) -> Result<Value, LispError> {
     let value =
         interp.create_pseudovector(crate::lisp::eval::RecordKind::Sqlite, "sqlite", Vec::new());
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return Err(LispError::Signal("sqlite record allocation failed".into()));
     };
     interp.register_sqlite_handle(id.id, state);
@@ -467,10 +467,10 @@ fn bind_parameters(values: &Value) -> Result<Vec<SqlValue>, LispError> {
     // vector and signal `sqlite-error' for anything else; bind_values then
     // walks AREF or XCAR/XCDR.  `vector_items' is vector-only, so a list is
     // walked here.
-    let items = match values {
-        Value::Nil => return Ok(Vec::new()),
-        Value::Vector(_) => vector_items(values)?,
-        Value::Cons(_) => values.to_vec()?,
+    let items = match values.kind() {
+        Kind::Nil => return Ok(Vec::new()),
+        Kind::Vector(_) => vector_items(values)?,
+        Kind::Cons(_) => values.to_vec()?,
         _ => {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("sqlite-error"),
@@ -484,7 +484,7 @@ fn bind_parameters(values: &Value) -> Result<Vec<SqlValue>, LispError> {
 fn bind_parameter(value: Value) -> Result<SqlValue, LispError> {
     if let Some(string) = string_like(&value) {
         let is_binary = property_at_start(&string.props, "coding-system").is_some_and(
-            |property| matches!(property, Value::Symbol(symbol) if symbol == "binary"),
+            |property| matches!(property.kind(), Kind::Symbol(symbol) if symbol == "binary"),
         );
         if is_binary {
             if string.multibyte || string.text.len() != string.text.chars().count() {
@@ -495,16 +495,16 @@ fn bind_parameter(value: Value) -> Result<SqlValue, LispError> {
         return Ok(SqlValue::Text(string.text));
     }
 
-    match value {
-        Value::Integer(number) => Ok(SqlValue::Integer(number)),
-        Value::BigInteger(number) => number
+    match value.kind() {
+        Kind::Integer(number) => Ok(SqlValue::Integer(number)),
+        Kind::BigInteger(number) => number
             .to_i64()
             .map(SqlValue::Integer)
             .ok_or_else(|| LispError::Signal("integer out of range".into())),
-        Value::Float(number) => Ok(SqlValue::Real(number.get())),
-        Value::Nil => Ok(SqlValue::Null),
-        Value::T => Ok(SqlValue::Integer(1)),
-        Value::Symbol(symbol) if symbol == "false" => Ok(SqlValue::Integer(0)),
+        Kind::Float(number) => Ok(SqlValue::Real(number.get())),
+        Kind::Nil => Ok(SqlValue::Null),
+        Kind::T => Ok(SqlValue::Integer(1)),
+        Kind::Symbol(symbol) if symbol == "false" => Ok(SqlValue::Integer(0)),
         other => Err(LispError::Signal(format!("invalid argument: {other}"))),
     }
 }

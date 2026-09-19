@@ -2,7 +2,7 @@ use super::eval::Interpreter;
 use super::primitives::{
     make_shared_string_value_with_multibyte, string_like, values_eql, vector_items,
 };
-use super::types::{LispError, ReaderForm, Value, visible_symbol_name};
+use super::types::{Kind, LispError, ReaderForm, Value, visible_symbol_name};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -599,9 +599,9 @@ pub(crate) fn serialize(
 }
 
 pub(crate) fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
-    match value {
-        Value::Record(id) => interp
-            .find_record(*id)
+    match value.kind() {
+        Kind::Record(id) => interp
+            .find_record(id)
             .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::HashTable),
         _ => false,
     }
@@ -642,7 +642,7 @@ pub(crate) fn make_hash_table_with_capacity(
             Value::Nil,
         ],
     );
-    if let Value::Record(id) = table {
+    if let Kind::Record(id) = table.kind() {
         interp.replace_hash_table_runtime_entries(id.id, test, entries);
         Value::Record(id)
     } else {
@@ -653,7 +653,7 @@ pub(crate) fn make_hash_table_with_capacity(
 pub(crate) fn hash_table_entry_list_len(value: &Value) -> usize {
     let mut cursor = *value;
     let mut len = 0;
-    while let Value::Cons(cell) = cursor {
+    while let Kind::Cons(cell) = cursor.kind() {
         len += 1;
         let Ok(next) = Value::Cons(cell).cdr() else {
             return 0;
@@ -667,10 +667,10 @@ pub(crate) fn hash_table_entries(
     interp: &Interpreter,
     value: &Value,
 ) -> Option<(String, Vec<(Value, Value)>)> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return None;
     };
-    let record = interp.find_record(*id)?;
+    let record = interp.find_record(id)?;
     if record.kind != crate::lisp::eval::RecordKind::HashTable {
         return None;
     }
@@ -691,6 +691,30 @@ pub(crate) fn hash_table_entries(
         .ok()?
         .unwrap_or_default();
     Some((test, entries))
+}
+
+/// fns.c:Fhash_table_count: `h->count', read from the table's state, no
+/// entry copied (the entry list `hash_table_entries' builds put every key
+/// and value through this thread's frames, and a word left there kept a
+/// dead key alive under the conservative scan).
+pub(crate) fn hash_table_count(interp: &Interpreter, value: &Value) -> Option<usize> {
+    let Kind::Record(id) = value.kind() else {
+        return None;
+    };
+    let record = interp.find_record(id)?;
+    if record.kind != crate::lisp::eval::RecordKind::HashTable {
+        return None;
+    }
+    if let Some(entries) = interp.hash_table_runtime_entries(id.id) {
+        return Some(entries.len());
+    }
+    let mut count = 0usize;
+    let mut tail = record.slots.get(1).copied().unwrap_or(Value::Nil);
+    while let Kind::Cons(cell) = tail.kind() {
+        count += 1;
+        tail = *cell.cdr.borrow();
+    }
+    Some(count)
 }
 
 fn convert_source(text: &str, multibyte: bool) -> Result<ConvertedSource, LispError> {
@@ -823,13 +847,13 @@ fn serialize_value(
     if values_eql(value, options.false_object) {
         return Ok("false".into());
     }
-    match value {
-        Value::Nil => Ok("{}".into()),
-        Value::T => Ok("true".into()),
-        Value::Integer(number) => Ok(number.to_string()),
-        Value::BigInteger(number) => Ok(number.to_string()),
-        Value::Float(number) => Ok(number.to_string()),
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::Nil => Ok("{}".into()),
+        Kind::T => Ok("true".into()),
+        Kind::Integer(number) => Ok(number.to_string()),
+        Kind::BigInteger(number) => Ok(number.to_string()),
+        Kind::Float(number) => Ok(number.to_string()),
+        Kind::ReaderForm(form) => match form.as_ref() {
             ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => Err(json_error(
                 "circular-list",
                 "Circular list is not serializable as JSON",
@@ -841,19 +865,19 @@ fn serialize_value(
             }
             _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
         },
-        Value::Record(_) if is_hash_table(interp, value) => {
+        Kind::Record(_) if is_hash_table(interp, value) => {
             serialize_hash_table(interp, value, options, depth)
         }
         // json.c lisp_to_json: a vector is a JSON array.  (The merged vector
         // representation is `Value::Vector'; the `vector-literal' list below
         // is the older spelling that reader forms can still produce.)
-        Value::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
-        Value::Cons(_) => {
+        Kind::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
+        Kind::Cons(_) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
                 return Ok(rendered);
             }
             if let Ok(items) = vector_items(value)
-                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
+                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
             {
                 return serialize_array(interp, &items, options, depth);
             }
@@ -938,7 +962,7 @@ fn serialize_hash_table_literal(
     options: &SerializeOptions<'_>,
     depth: usize,
 ) -> Result<Option<String>, LispError> {
-    let Value::ReaderForm(form) = value else {
+    let Kind::ReaderForm(form) = value.kind() else {
         return Ok(None);
     };
     let ReaderForm::HashTable { fields } = form.as_ref() else {
@@ -991,7 +1015,7 @@ fn serialize_list_object(
     // written as its pair is reached, so a bad value inside a cycle is
     // reported before the cycle is (json-tests pins the type order).
     let depth = json_nested_depth(depth)?;
-    let is_alist = matches!(value.car(), Ok(Value::Cons(_)));
+    let is_alist = matches!(value.car().map(|v| v.kind()), Ok(Kind::Cons(_)));
     let mut seen: Vec<String> = Vec::new();
     let mut rendered: Vec<String> = Vec::new();
     let mut tail = *value;
@@ -1031,8 +1055,8 @@ fn serialize_list_object(
         if steps.is_multiple_of(2) {
             tortoise = tortoise.cdr().unwrap_or(Value::Nil);
         }
-        if let (Value::Cons(current), Value::Cons(lagging)) = (&tail, &tortoise)
-            && crate::lisp::types::SharedCons::ptr_eq(current, lagging)
+        if let (Kind::Cons(current), Kind::Cons(lagging)) = (tail.kind(), tortoise.kind())
+            && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),

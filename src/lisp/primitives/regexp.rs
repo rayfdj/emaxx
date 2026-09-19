@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 // Table-less fallbacks, used only where no interpreter (and therefore no
 // syntax table) is reachable; every live path resolves these classes through
@@ -523,9 +524,9 @@ pub(super) fn pattern_depends_on_category_table(pattern: &str) -> bool {
 }
 
 fn category_set_contains(interp: &Interpreter, value: &Value, category: char) -> bool {
-    match value {
-        Value::String(text) => text.chars().any(|member| member == category),
-        Value::Record(id) => interp.find_record(*id).is_some_and(|record| {
+    match value.kind() {
+        Kind::String(text) => text.chars().any(|member| member == category),
+        Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
             record.kind == crate::lisp::eval::RecordKind::BoolVector
                 && record
                     .slots
@@ -1323,11 +1324,11 @@ fn rendered_table_syntax_classes(
         // Emaxx's character-table mutation door, so never retain a rendering
         // derived from either representation.  Ordinary modify-syntax-entry
         // strings are immutable SharedText and take the cached path.
-        cacheable &= !matches!(table.default, Value::Cons(_) | Value::StringObject(_))
+        cacheable &= !matches!(table.default.kind(), Kind::Cons(_) | Kind::StringObject(_))
             && table
                 .entries
                 .iter()
-                .all(|entry| !matches!(entry.value, Value::Cons(_) | Value::StringObject(_)));
+                .all(|entry| !matches!(entry.value.kind(), Kind::Cons(_) | Kind::StringObject(_)));
         for entry in &table.entries {
             if entry.start < SCALAR_END {
                 boundaries.push(entry.start);
@@ -1577,10 +1578,12 @@ struct CaseTableSignature {
 
 fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
     let down = interp.initialized_current_case_table_id();
-    let up = down.and_then(|down| match interp.char_table_extra_slot(down, 0) {
-        Some(Value::CharTable(up)) => Some(up),
-        _ => None,
-    });
+    let up = down.and_then(
+        |down| match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
+            Some(Kind::CharTable(up)) => Some(up),
+            _ => None,
+        },
+    );
     CaseTableSignature {
         down: down.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
         up: up.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
@@ -1614,8 +1617,8 @@ fn rendered_case_classes(interp: &Interpreter) -> Rc<[String; 3]> {
             boundaries.push(entry.end.saturating_add(1).min(END));
         }
         for value in std::iter::once(&table.default).chain(table.entries.iter().map(|e| &e.value)) {
-            if let Value::Integer(value) = value
-                && let Ok(value) = u32::try_from(*value)
+            if let Kind::Integer(value) = value.kind()
+                && let Ok(value) = u32::try_from(value)
                 && value < END
             {
                 boundaries.push(value);
@@ -5229,12 +5232,12 @@ pub(super) fn buffer_regex_search(
     let original_point = interp.buffer.point();
     if forward {
         let start = interp.buffer.point();
-        let limit = match args.get(1) {
+        let limit = match args.get(1).map(|v| v.kind()) {
             // GNU clamps a BOUND outside the accessible region.
-            Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+            Some(Kind::Integer(pos)) if pos < interp.buffer.point_min() as i64 => {
                 interp.buffer.point_min()
             }
-            Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+            Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
             _ => interp.buffer.point_max(),
         };
         let limit = limit.min(interp.buffer.point_max());
@@ -5441,11 +5444,11 @@ pub(super) fn buffer_regex_search(
             forward_args[3] = Value::Integer(-count);
             return buffer_regex_search(interp, &forward_args, env, true, posix);
         }
-        let limit = match args.get(1) {
-            Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+        let limit = match args.get(1).map(|v| v.kind()) {
+            Some(Kind::Integer(pos)) if pos < interp.buffer.point_min() as i64 => {
                 interp.buffer.point_min()
             }
-            Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+            Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
             _ => interp.buffer.point_min(),
         };
         let limit = limit.max(interp.buffer.point_min());
@@ -5888,7 +5891,7 @@ fn previous_single_syntax_class_match(
 }
 
 fn search_noerror_moves(noerror: Option<&Value>) -> bool {
-    noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
+    noerror.is_some_and(|value| value.is_truthy() && !matches!(value.kind(), Kind::T))
 }
 
 fn last_empty_line_match_position(

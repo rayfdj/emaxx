@@ -274,7 +274,15 @@ fn allocate_vector_from_block(nbytes: usize) -> *mut VectorHeader {
     let head = FREE_LISTS[index].load(Ordering::Relaxed);
     if !head.is_null() {
         // SAFETY: a free vector's link.
-        FREE_LISTS[index].store(unsafe { next_free(head) }, Ordering::Relaxed);
+        unsafe {
+            debug_assert!(
+                (*head).tag() == VectorTag::Free && (*head).nbytes() == nbytes,
+                "free list {index} held {:#x} with size word {:#x}",
+                head as usize,
+                (*head).size
+            );
+            FREE_LISTS[index].store(next_free(head), Ordering::Relaxed);
+        }
         return head;
     }
     // Next, a larger free vector, split so that the rest is at least a
@@ -620,11 +628,14 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 let record = body.cast::<crate::lisp::eval::RecordState>();
                 // The interpreter that owns the id purges its side tables
                 // for the record after its sweep (`drain_freed_records').
+                // The type tag by its word alone: a dead record's type may
+                // be a class record this sweep has already freed, whose
+                // header must not be read.
                 note_freed_record(
                     (*record).owner,
                     (*record).id,
                     header as usize,
-                    (*record).symbol_type_name().map(Box::from),
+                    (*record).symbol_type_name_by_tag().map(Box::from),
                 );
                 std::ptr::drop_in_place(record);
             }
@@ -716,6 +727,20 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                 let mut total = 0usize;
                 let mut next = vector;
                 loop {
+                    if cfg!(debug_assertions) {
+                        let first = payload(next).cast::<usize>().read();
+                        assert!(
+                            (*next).tag() == VectorTag::Free || first != 0xA5A5_A5A5_A5A5_A5A5,
+                            "sweeping a cell already cleaned: header {:#x} at offset {} of block {:#x}, size word {:#x}, tag {:?}, mark {}, run start {:#x}",
+                            next as usize,
+                            next as usize - block,
+                            block,
+                            (*next).size,
+                            (*next).tag(),
+                            (*next).mark.raw(),
+                            vector as usize,
+                        );
+                    }
                     cleanup_vector(next);
                     let nbytes = (*next).nbytes();
                     total += nbytes;
@@ -846,6 +871,16 @@ pub(super) fn live_small_vector_holding(block: usize, address: usize) -> Option<
 pub(super) fn live_large_vector_holding(start: usize, address: usize) -> Option<*mut VectorHeader> {
     // SAFETY: a registered large vector.
     unsafe { live_vector_pointer(start as *mut VectorHeader, address) }
+}
+
+/// The kind of an allocated vector, from its header (`PSEUDOVECTOR_TYPE').
+///
+/// # Safety
+/// HEADER is an allocated vector.
+#[inline(always)]
+pub(crate) unsafe fn header_tag(header: *mut VectorHeader) -> VectorTag {
+    // SAFETY: the caller's contract.
+    unsafe { (*header).tag() }
 }
 
 /// The value naming an allocated vector (for the conservative scan).

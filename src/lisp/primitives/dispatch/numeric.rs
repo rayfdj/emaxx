@@ -1,12 +1,14 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn has_float(args: &[Value]) -> bool {
-    args.iter().any(|value| matches!(value, Value::Float(_)))
+    args.iter()
+        .any(|value| matches!(value.kind(), Kind::Float(_)))
 }
 
 fn has_big_integer(args: &[Value]) -> bool {
     args.iter()
-        .any(|value| matches!(value, Value::BigInteger(_)))
+        .any(|value| matches!(value.kind(), Kind::BigInteger(_)))
 }
 
 /// Fold ordinary integers and markers without allocating a `BigInt`.
@@ -22,7 +24,7 @@ fn checked_integer_fold(
     mut operation: impl FnMut(i64, i64) -> Option<i64>,
 ) -> Result<Option<i64>, LispError> {
     for arg in args {
-        if matches!(arg, Value::BigInteger(_)) {
+        if matches!(arg.kind(), Kind::BigInteger(_)) {
             return Ok(None);
         }
         let operand = integer_like_i64(interp, arg)?;
@@ -156,9 +158,9 @@ define_dispatch!(
             }
             "abs" => {
                 need_args(name, args, 1)?;
-                if let Value::Float(value) = &args[0] {
+                if let Kind::Float(value) = args[0].kind() {
                     Ok(Value::float(value.abs()))
-                } else if matches!(args[0], Value::BigInteger(_)) {
+                } else if matches!(args[0].kind(), Kind::BigInteger(_)) {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])?.abs(),
                     ))
@@ -211,9 +213,9 @@ define_dispatch!(
             }
             "isnan" => {
                 need_args(name, args, 1)?;
-                let value = match &args[0] {
-                    Value::Float(value) => value.get(),
-                    Value::Integer(_) | Value::BigInteger(_) => {
+                let value = match args[0].kind() {
+                    Kind::Float(value) => value.get(),
+                    Kind::Integer(_) | Kind::BigInteger(_) => {
                         return Ok(Value::Nil);
                     }
                     _ => {
@@ -334,7 +336,7 @@ define_dispatch!(
                 // positive one overflows.  (A fixnum count follows below;
                 // `most-positive-fixnum' is 2**61-1, so `(* 2
                 // most-positive-fixnum)' is a bignum GNU never converts.)
-                if let Value::BigInteger(count) = &args[1] {
+                if let Kind::BigInteger(count) = args[1].kind() {
                     if value.sign() == Sign::NoSign {
                         return Ok(Value::Integer(0));
                     }
@@ -711,7 +713,7 @@ pub(super) fn direct_minus(
         Ok(Value::float(result))
     } else {
         if args.len() == 1 {
-            if !matches!(args[0], Value::BigInteger(_)) {
+            if !matches!(args[0].kind(), Kind::BigInteger(_)) {
                 let value = integer_like_i64(interp, &args[0])?;
                 if let Some(result) = value.checked_neg() {
                     return Ok(normalize_integer_value(result));
@@ -721,7 +723,7 @@ pub(super) fn direct_minus(
                 interp, &args[0],
             )?));
         }
-        if !matches!(args[0], Value::BigInteger(_)) {
+        if !matches!(args[0].kind(), Kind::BigInteger(_)) {
             let first = integer_like_i64(interp, &args[0])?;
             if let Some(result) = checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
             {
@@ -864,9 +866,9 @@ pub(super) fn direct_add1(
 ) -> Result<Value, LispError> {
     let name = "1+";
     need_args(name, args, 1)?;
-    if matches!(args[0], Value::Float(_)) {
+    if matches!(args[0].kind(), Kind::Float(_)) {
         Ok(Value::float(numeric_to_f64(interp, &args[0])? + 1.0))
-    } else if !matches!(args[0], Value::BigInteger(_))
+    } else if !matches!(args[0].kind(), Kind::BigInteger(_))
         && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
     {
         Ok(normalize_integer_value(value))
@@ -886,9 +888,9 @@ pub(super) fn direct_sub1(
 ) -> Result<Value, LispError> {
     let name = "1-";
     need_args(name, args, 1)?;
-    if matches!(args[0], Value::Float(_)) {
+    if matches!(args[0].kind(), Kind::Float(_)) {
         Ok(Value::float(numeric_to_f64(interp, &args[0])? - 1.0))
-    } else if !matches!(args[0], Value::BigInteger(_))
+    } else if !matches!(args[0].kind(), Kind::BigInteger(_))
         && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
     {
         Ok(normalize_integer_value(value))

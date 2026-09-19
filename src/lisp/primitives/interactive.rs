@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 #[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
@@ -80,9 +81,10 @@ pub(crate) fn run_pending_user_signal_events(
             None => break,
         };
         handled = true;
-        let name = match &event {
-            Value::Symbol(name) => name.to_string(),
+        let name = match event.kind() {
+            Kind::Symbol(name) => name.to_string(),
             other => other
+                .value()
                 .car()
                 .ok()
                 .and_then(|head| head.as_symbol().ok().map(str::to_string))
@@ -129,15 +131,15 @@ pub(crate) fn set_command_key_state(
 }
 
 fn dribble_event_bytes(event: &Value) -> Vec<u8> {
-    match event {
-        Value::Integer(code) => u32::try_from(*code)
+    match event.kind() {
+        Kind::Integer(code) => u32::try_from(code)
             .ok()
             .and_then(char::from_u32)
             .map(|character| character.to_string().into_bytes())
             .unwrap_or_else(|| format!("<{code}>").into_bytes()),
-        Value::String(text) => text.as_bytes().to_vec(),
-        Value::StringObject(state) => state.borrow().text.as_bytes().to_vec(),
-        Value::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
+        Kind::String(text) => text.as_bytes().to_vec(),
+        Kind::StringObject(state) => state.borrow().text.as_bytes().to_vec(),
+        Kind::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
         other => format!("<{other}>").into_bytes(),
     }
 }
@@ -178,18 +180,19 @@ pub(crate) fn function_documentation(
     value: &Value,
     env: &Env,
 ) -> Option<Value> {
-    if let Value::Symbol(symbol) = value
-        && let Some(documentation) = interp.get_symbol_property(symbol, "function-documentation")
+    if let Kind::Symbol(symbol) = value.kind()
+        && let Some(documentation) = interp.get_symbol_property(&symbol, "function-documentation")
     {
         return Some(documentation);
     }
-    let value = match value {
-        Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
-        other => *other,
+    let value = match value.kind() {
+        Kind::Symbol(symbol) => interp.lookup_function(&symbol, env).ok()?,
+        other => other.value(),
     };
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons.
-    let value = if matches!(value.car(), Ok(Value::Symbol(ref name)) if name == "macro") {
+    let value = if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
+    {
         value.cdr().ok()?
     } else {
         value
@@ -197,29 +200,29 @@ pub(crate) fn function_documentation(
     // doc.c Fdocumentation: an autoload's documentation is the third
     // element of its (autoload FILE DOC INTERACTIVE TYPE) form, read
     // without resolving the autoload (GNU does not load the file here).
-    if matches!(value.car(), Ok(Value::Symbol(ref name)) if name == "autoload") {
+    if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "autoload") {
         let items = value.to_vec().ok()?;
         return items.get(2).filter(|doc| !doc.is_nil()).cloned();
     }
-    if let Value::Record(id) = value
+    if let Kind::Record(id) = value.kind()
         && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::Closure
     {
         return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
     }
-    if let Value::Record(id) = value
+    if let Kind::Record(id) = value.kind()
         && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
     {
         return record.slots.first().cloned();
     }
-    let Value::Lambda(lambda) = value else {
+    let Kind::Lambda(lambda) = value.kind() else {
         return None;
     };
     lambda.documentation.filter(|documentation| {
         matches!(
-            documentation,
-            Value::String(_) | Value::StringObject(_) | Value::Integer(_) | Value::Cons(_)
+            documentation.kind(),
+            Kind::String(_) | Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
         )
     })
 }
@@ -227,16 +230,16 @@ pub(crate) fn function_documentation(
 pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool {
     is_vector_value(value)
         || is_bool_vector_value(interp, value)
-        || matches!(value, Value::CharTable(_))
+        || matches!(value.kind(), Kind::CharTable(_))
 }
 
 pub(crate) fn is_vector_value(value: &Value) -> bool {
-    matches!(value, Value::Vector(_))
+    matches!(value.kind(), Kind::Vector(_))
 }
 
 pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
-    match value {
-        Value::Vector(vector) => Some(vector.identity()),
+    match value.kind() {
+        Kind::Vector(vector) => Some(vector.identity()),
         _ => None,
     }
 }
@@ -245,14 +248,14 @@ pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
 /// projection.  Ordinary vectors have their own object class and never enter
 /// this predicate.
 pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value, Value::Cons(_)) || keymap_record_id(interp, value).is_some()
+    matches!(value.kind(), Kind::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
 pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return None;
     };
-    let record = interp.find_record(*id)?;
+    let record = interp.find_record(id)?;
     if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos || record.slots.len() < 2 {
         return None;
     }
@@ -302,19 +305,19 @@ pub(crate) fn checked_symbol_identity(
     value: &Value,
     env: &Env,
 ) -> Result<crate::lisp::types::SymbolName, LispError> {
-    match value {
-        Value::Symbol(symbol) => return Ok(*symbol),
-        Value::Nil => return Ok("nil".into()),
-        Value::T => return Ok("t".into()),
+    match value.kind() {
+        Kind::Symbol(symbol) => return Ok(symbol),
+        Kind::Nil => return Ok("nil".into()),
+        Kind::T => return Ok("t".into()),
         _ => {}
     }
     if symbols_with_pos_enabled(interp, env)
         && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
     {
-        match symbol {
-            Value::Symbol(symbol) => return Ok(symbol),
-            Value::Nil => return Ok("nil".into()),
-            Value::T => return Ok("t".into()),
+        match symbol.kind() {
+            Kind::Symbol(symbol) => return Ok(symbol),
+            Kind::Nil => return Ok("nil".into()),
+            Kind::T => return Ok("t".into()),
             _ => {}
         }
     }
@@ -407,7 +410,7 @@ pub(crate) fn eval_callable_metadata_form(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Value::Lambda(lambda) = func {
+    if let Kind::Lambda(lambda) = func.kind() {
         // The form under the closure's own environment, as a call of the
         // closure would install it.
         let depth = env.len();
@@ -563,7 +566,7 @@ pub(crate) fn parse_interactive_string(
                 )
                 .unwrap_or_else(|_| Value::String(raw_prompt.clone().into()));
                 let event = call1(interp, env, "read-char", &[message])?;
-                if !matches!(event, Value::Integer(_)) {
+                if !matches!(event.kind(), Kind::Integer(_)) {
                     return Err(LispError::Signal("Non-character input-event".into()));
                 }
                 seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
@@ -611,7 +614,7 @@ pub(crate) fn parse_interactive_string(
                         events
                             .into_iter()
                             .skip(1)
-                            .find(|event| matches!(event, Value::Cons(_)))
+                            .find(|event| matches!(event.kind(), Kind::Cons(_)))
                     });
                 match event {
                     Some(event) => values.push(event),
@@ -742,7 +745,7 @@ pub(crate) fn parse_interactive_string(
             _ => return Err(invalid_interactive_control_letter(code)),
         }
         if seen.is_nil()
-            && let Some(Value::String(_) | Value::StringObject(_)) = values.last()
+            && let Some(Kind::String(_) | Kind::StringObject(_)) = values.last().map(|v| v.kind())
         {
             seen = values.last().cloned().unwrap_or(Value::Nil);
         }
@@ -862,17 +865,17 @@ pub(crate) fn pending_keystroke_echo(
         if !text.is_empty() {
             text.push(' ');
         }
-        let head = match event {
-            Value::Cons(_) => event.car().unwrap_or(Value::Nil),
-            other => *other,
+        let head = match event.kind() {
+            Kind::Cons(_) => event.car().unwrap_or(Value::Nil),
+            other => other.value(),
         };
-        match head {
-            Value::Symbol(name) => text.push_str(&name),
+        match head.kind() {
+            Kind::Symbol(name) => text.push_str(&name),
             other => {
                 let description = super::call(
                     interp,
                     "single-key-description",
-                    std::slice::from_ref(&other),
+                    std::slice::from_ref(&other.value()),
                     env,
                 )
                 .ok()
@@ -917,8 +920,11 @@ pub(crate) fn pending_keystroke_echo(
 /// ("C-down-mouse-3" POSN) answers the symbol; anything else nil.
 fn mouse_event_head(event: &Value) -> Option<String> {
     let items = event.to_vec().ok()?;
-    match (items.first(), items.get(1)) {
-        (Some(Value::Symbol(head)), Some(Value::Cons(_))) if head.contains("mouse-") => {
+    match (
+        items.first().map(|v| v.kind()),
+        items.get(1).map(|v| v.kind()),
+    ) {
+        (Some(Kind::Symbol(head)), Some(Kind::Cons(_))) if head.contains("mouse-") => {
             Some(head.to_string())
         }
         _ => None,
@@ -931,7 +937,7 @@ fn mouse_event_on_menu_bar(event: &Value) -> bool {
         .to_vec()
         .ok()
         .and_then(|items| items.get(1)?.to_vec().ok())
-        .is_some_and(|posn| matches!(posn.get(1), Some(Value::Symbol(area)) if area == "menu-bar"))
+        .is_some_and(|posn| matches!(posn.get(1).map(|v| v.kind()), Some(Kind::Symbol(area)) if area == "menu-bar"))
 }
 
 /// Resolve a pending key sequence through the runtime's own keymaps
@@ -955,7 +961,7 @@ pub(crate) fn resolve_decoded_key_sequence(
             if is_keymap_value(interp, &binding) {
                 return Ok(KeyResolution::Prefix);
             }
-            if binding.is_nil() || matches!(binding, Value::Integer(_)) {
+            if binding.is_nil() || matches!(binding.kind(), Kind::Integer(_)) {
                 continue;
             }
             let translated = if vector_items(&binding).is_ok() || binding.is_string() {
@@ -1009,8 +1015,8 @@ pub(crate) fn resolve_key_sequence(
     // A prefix can answer as the keymap itself or as a prefix command
     // symbol (`Control-X-prefix') whose function cell holds the keymap;
     // GNU resolves through the indirection before dispatching.
-    let resolved = if let Value::Symbol(name) = &binding {
-        interp.lookup_function(name, env).unwrap_or(binding)
+    let resolved = if let Kind::Symbol(name) = binding.kind() {
+        interp.lookup_function(&name, env).unwrap_or(binding)
     } else {
         binding
     };
@@ -1060,7 +1066,7 @@ pub(crate) fn resolve_key_sequence(
 
 fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: &[Value]) -> bool {
     // ESC alone is always a live prefix (meta encoding).
-    if pending.len() == 1 && matches!(pending.first(), Some(Value::Integer(27))) {
+    if pending.len() == 1 && matches!(pending.first().map(|v| v.kind()), Some(Kind::Integer(27))) {
         return true;
     }
     let key_vector = Value::list(
@@ -1391,7 +1397,8 @@ pub(crate) fn run_due_timers(
         // keyboard.c decode_timer: exactly ten slots, an untriggered
         // timer (vec[0] nil -- on BOTH timer lists), and a fixnum USECS
         // slot; anything else "is not a proper timer" and is skipped.
-        if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2], Value::Integer(_)) {
+        if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2].kind(), Kind::Integer(_))
+        {
             return None;
         }
         exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
@@ -1446,7 +1453,7 @@ pub(crate) fn command_error_echo_text(
 ) -> String {
     let text = match error {
         LispError::SignalValue(data) => {
-            let data = if matches!(data, Value::Symbol(_)) {
+            let data = if matches!(data.kind(), Kind::Symbol(_)) {
                 Value::list([*data])
             } else {
                 *data
@@ -1458,8 +1465,8 @@ pub(crate) fn command_error_echo_text(
                 std::slice::from_ref(&data),
             )
             .ok()
-            .and_then(|value| match value {
-                Value::String(text) => Some(text.to_string()),
+            .and_then(|value| match value.kind() {
+                Kind::String(text) => Some(text.to_string()),
                 _ => None,
             })
             .unwrap_or_else(|| format!("{data}"))
@@ -1636,14 +1643,16 @@ pub(crate) fn unread_command_events(
 }
 
 pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
-    match value {
-        Value::Integer(code) if *code >= 0 => modified_event_code_char(*code),
-        Value::Cons(cell) if matches!(*cell.car.borrow(), Value::T) => match *cell.cdr.borrow() {
-            Value::Integer(code) if code >= 0 => modified_event_code_char(code),
-            _ => None,
-        },
-        Value::String(text) => text.chars().next(),
-        Value::StringObject(state) => state.borrow().text.chars().next(),
+    match value.kind() {
+        Kind::Integer(code) if code >= 0 => modified_event_code_char(code),
+        Kind::Cons(cell) if matches!((*cell.car.borrow()).kind(), Kind::T) => {
+            match (*cell.cdr.borrow()).kind() {
+                Kind::Integer(code) if code >= 0 => modified_event_code_char(code),
+                _ => None,
+            }
+        }
+        Kind::String(text) => text.chars().next(),
+        Kind::StringObject(state) => state.borrow().text.chars().next(),
         _ => None,
     }
 }
@@ -1663,9 +1672,9 @@ pub(crate) fn function_key_default_translation(name: &str) -> Option<i64> {
 }
 
 pub(crate) fn translated_unread_event_char(value: &Value) -> Option<char> {
-    match value {
-        Value::Symbol(name) => {
-            function_key_default_translation(name).and_then(|code| char::from_u32(code as u32))
+    match value.kind() {
+        Kind::Symbol(name) => {
+            function_key_default_translation(&name).and_then(|code| char::from_u32(code as u32))
         }
         _ => unread_event_char(value),
     }
@@ -1721,7 +1730,7 @@ pub(crate) fn prepend_unread_command_events(
 }
 
 pub(crate) fn translated_input_events(value: &Value) -> Result<Vec<Value>, LispError> {
-    if matches!(value, Value::Nil) {
+    if matches!(value.kind(), Kind::Nil) {
         return Ok(Vec::new());
     }
     if let Ok(items) = vector_items(value) {
@@ -1808,7 +1817,7 @@ pub(crate) fn read_decoded_input_event(
 
     // keyboard.c:read_key_sequence accepts a vector/string translation as
     // well as a function. Termcap installs vectors in input-decode-map.
-    let translated = if matches!(binding, Value::Vector(_)) || binding.is_string() {
+    let translated = if matches!(binding.kind(), Kind::Vector(_)) || binding.is_string() {
         binding
     } else {
         let function = resolve_callable(interp, &binding, env)?;
@@ -1825,9 +1834,9 @@ pub(crate) fn read_decoded_input_event(
 }
 
 pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
-    match value {
-        Value::Symbol(symbol) => Some(symbol.to_string()),
-        Value::Cons(_) => value
+    match value.kind() {
+        Kind::Symbol(symbol) => Some(symbol.to_string()),
+        Kind::Cons(_) => value
             .to_vec()
             .ok()
             .and_then(|items| items.first().cloned())
@@ -1837,9 +1846,9 @@ pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn update_input_event_symbol(value: &Value, symbol: &str) -> Value {
-    match value {
-        Value::Symbol(_) => Value::Symbol(symbol.into()),
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Symbol(_) => Value::Symbol(symbol.into()),
+        Kind::Cons(_) => {
             let mut items = value.to_vec().unwrap_or_default();
             if let Some(first) = items.first_mut() {
                 *first = Value::Symbol(symbol.into());
@@ -1950,7 +1959,8 @@ pub(crate) fn record_command_history(
     let mut entry = vec![Value::Symbol(function_name.to_string().into())];
     entry.extend(args);
     history.insert(0, Value::list(entry));
-    if let Some(Value::Integer(length)) = interp.lookup_var("history-length", env) {
+    if let Some(Kind::Integer(length)) = interp.lookup_var("history-length", env).map(|v| v.kind())
+    {
         let length = length.max(0) as usize;
         history.truncate(length);
     }
@@ -1959,7 +1969,7 @@ pub(crate) fn record_command_history(
 
 pub(crate) fn is_declare_form(form: &Value) -> bool {
     form.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "declare"),
+        |items| matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "declare"),
     )
 }
 
@@ -2022,9 +2032,9 @@ pub(crate) fn menu_bar_row_items(
         Value::Symbol("vector-literal".into()),
         Value::Symbol("menu-bar".into()),
     ]);
-    let same_key = |a: &Value, b: &Value| match (a, b) {
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
+    let same_key = |a: &Value, b: &Value| match (a.kind(), b.kind()) {
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
         _ => false,
     };
     let mut items: Vec<(Value, String)> = Vec::new();
@@ -2070,22 +2080,22 @@ pub(crate) fn menu_bar_row_items(
                 }
                 super::public_keymap_value(interp, &menu)
             };
-            if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
+            if !matches!(menu.car().map(|v| v.kind()), Ok(Kind::Symbol(tag)) if tag == "keymap") {
                 continue;
             }
             let mut tail = menu.cdr().unwrap_or(Value::Nil);
-            while let Value::Cons(_) = tail {
+            while let Kind::Cons(_) = tail.kind() {
                 let Ok(entry) = tail.car() else { break };
                 let next = tail.cdr().unwrap_or(Value::Nil);
-                match &entry {
+                match entry.kind() {
                     // A parent keymap's entries follow through the tail.
-                    Value::Symbol(tag) if tag == "keymap" => {}
-                    Value::Cons(_) => {
+                    Kind::Symbol(tag) if tag == "keymap" => {}
+                    Kind::Cons(_) => {
                         let key = entry.car().unwrap_or(Value::Nil);
                         let item = entry.cdr().unwrap_or(Value::Nil);
                         if !seen.iter().any(|earlier| same_key(earlier, &key)) {
                             seen.push(key);
-                            if matches!(&item, Value::Symbol(def) if def == "undefined") {
+                            if matches!(item.kind(), Kind::Symbol(def) if def == "undefined") {
                                 // An explicit `undefined' discards any
                                 // previously made item for this key.
                                 items.retain(|(existing, _)| !same_key(existing, &key));
@@ -2156,15 +2166,15 @@ pub(crate) fn menu_item_details_with_button(
     env: &mut Env,
     item: &Value,
 ) -> Option<MenuItemDetails> {
-    if !matches!(item, Value::Cons(_)) {
+    if !matches!(item.kind(), Kind::Cons(_)) {
         return None;
     }
-    let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form {
-        Value::Symbol(name) if name != "t" && name != "nil" => {
-            interp.lookup_var(name, env).unwrap_or(Value::Nil)
+    let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form.kind() {
+        Kind::Symbol(name) if name != "t" && name != "nil" => {
+            interp.lookup_var(&name, env).unwrap_or(Value::Nil)
         }
-        Value::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
-        other => *other,
+        Kind::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
+        other => other.value(),
     };
     let car = item.car().ok()?;
     if let Ok(name) = crate::lisp::primitives::string_text(&car) {
@@ -2174,8 +2184,8 @@ pub(crate) fn menu_item_details_with_button(
             def = def.cdr().ok()?;
         }
         if def.car().is_ok_and(|cache| {
-            matches!(cache.car(), Ok(Value::Nil))
-                || matches!(cache.car(), Ok(Value::Symbol(tag)) if tag == "vector-literal")
+            matches!(cache.car().map(|v| v.kind()), Ok(Kind::Nil))
+                || matches!(cache.car().map(|v| v.kind()), Ok(Kind::Symbol(tag)) if tag == "vector-literal")
         }) {
             def = def.cdr().ok()?;
         }
@@ -2183,7 +2193,7 @@ pub(crate) fn menu_item_details_with_button(
         // face; only the menu bar drops definition-less items.
         return Some((name, def, true, None));
     }
-    if !matches!(&car, Value::Symbol(tag) if tag == "menu-item") {
+    if !matches!(car.kind(), Kind::Symbol(tag) if tag == "menu-item") {
         return None;
     }
     // New format (menu-item NAME DEF [CACHE] . PROPS).
@@ -2191,14 +2201,14 @@ pub(crate) fn menu_item_details_with_button(
     let name_form = *rest.first()?;
     let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
     let mut index = 2;
-    if matches!(rest.get(2), Some(Value::Cons(_))) {
+    if matches!(rest.get(2).map(|v| v.kind()), Some(Kind::Cons(_))) {
         index = 3;
     }
     let mut filter = None;
     let mut enabled = true;
     let mut button = None;
     while index + 1 < rest.len() {
-        let Value::Symbol(keyword) = &rest[index] else {
+        let Kind::Symbol(keyword) = rest[index].kind() else {
             break;
         };
         let value = &rest[index + 1];
@@ -2215,7 +2225,9 @@ pub(crate) fn menu_item_details_with_button(
             }
             ":filter" => filter = Some(*value),
             ":button" => {
-                if let (Ok(Value::Symbol(kind)), Ok(selected)) = (value.car(), value.cdr()) {
+                if let (Ok(Kind::Symbol(kind)), Ok(selected)) =
+                    (value.car().map(|v| v.kind()), value.cdr())
+                {
                     let selected = eval_property(interp, env, &selected).is_truthy();
                     button = Some((kind.to_string(), selected));
                 }
@@ -2248,8 +2260,8 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
                 .iter()
                 .filter(|entry| {
                     entry.car().is_ok_and(|mode| {
-                        matches!(&mode, Value::Symbol(name)
-                            if interp.lookup_var(name, env).is_some_and(|on| on.is_truthy()))
+                        matches!(mode.kind(), Kind::Symbol(name)
+                            if interp.lookup_var(&name, env).is_some_and(|on| on.is_truthy()))
                     })
                 })
                 .count()
@@ -2272,8 +2284,8 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     }
     let event = events.remove(0);
     interp.set_variable("unread-command-events", Value::list(events), env);
-    match &event {
-        Value::Cons(_) if matches!(event.car(), Ok(Value::T)) => event.cdr().ok(),
+    match event.kind() {
+        Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => event.cdr().ok(),
         _ => Some(event),
     }
 }
@@ -2434,15 +2446,15 @@ pub(crate) fn tty_menu_pane_from_keymap(
     let mut raw: Vec<(Value, String, Value, bool, Option<(String, bool)>)> = Vec::new();
     let mut tail = menu.cdr().unwrap_or(Value::Nil);
     let mut seen: Vec<Value> = Vec::new();
-    let same_key = |a: &Value, b: &Value| match (a, b) {
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
+    let same_key = |a: &Value, b: &Value| match (a.kind(), b.kind()) {
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
         _ => false,
     };
-    while let Value::Cons(_) = tail {
+    while let Kind::Cons(_) = tail.kind() {
         let Ok(entry) = tail.car() else { break };
         let next = tail.cdr().unwrap_or(Value::Nil);
-        if let Value::Cons(_) = &entry {
+        if let Kind::Cons(_) = entry.kind() {
             let key = entry.car().unwrap_or(Value::Nil);
             let item = entry.cdr().unwrap_or(Value::Nil);
             if !seen.iter().any(|earlier| same_key(earlier, &key)) {
@@ -2453,8 +2465,8 @@ pub(crate) fn tty_menu_pane_from_keymap(
                     // A tty submenu item carries GNU's " >" marker,
                     // counted by the pane's width scan.
                     let caption = if super::is_keymap_value(interp, &def)
-                        || matches!(&def, Value::Symbol(name)
-                            if interp.lookup_function(name, env)
+                        || matches!(def.kind(), Kind::Symbol(name)
+                            if interp.lookup_function(&name, env)
                                 .is_ok_and(|f| super::is_keymap_value(interp, &f)))
                     {
                         format!("{caption} >")
@@ -2505,7 +2517,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
         // parse_menu_item's equivalent-key hint: the first non-menu
         // binding of the command, through the real where-is machinery
         // (a [menu-bar ...] or [open]-style menu path is not a key).
-        let hint = if matches!(&def, Value::Symbol(_)) {
+        let hint = if matches!(def.kind(), Kind::Symbol(_)) {
             super::call(interp, "where-is-internal", std::slice::from_ref(&def), env)
                 .ok()
                 .and_then(|keys| keys.to_vec().ok())
@@ -2521,8 +2533,8 @@ pub(crate) fn tty_menu_pane_from_keymap(
                     };
                     let is_menu_path = |key: &Value| {
                         matches!(
-                            event_kinds(key).first(),
-                            Some(Value::Symbol(head))
+                            event_kinds(key).first().map(|v| v.kind()),
+                            Some(Kind::Symbol(head))
                                 if head == "menu-bar"
                                     || head == "tool-bar"
                                     || head == "tab-bar"
@@ -2532,7 +2544,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
                     let typed = keys.iter().find(|key| {
                         event_kinds(key)
                             .first()
-                            .is_some_and(|event| matches!(event, Value::Integer(_)))
+                            .is_some_and(|event| matches!(event.kind(), Kind::Integer(_)))
                     });
                     typed
                         .or_else(|| keys.iter().find(|key| !is_menu_path(key)))

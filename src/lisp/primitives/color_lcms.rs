@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 /// xfaces.c parse_color_spec: the numeric X color forms only -- "#RGB" with
 /// hex components of equal length (1-4 digits), "rgb:R/G/B" with 1-4 hex
@@ -147,9 +148,9 @@ define_dispatch!(
 );
 
 pub(crate) fn optional_lcms_number_arg(value: Option<&Value>) -> Result<f64, LispError> {
-    match value {
-        None | Some(Value::Nil) => Ok(1.0),
-        Some(value) => value.as_float(),
+    match value.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(1.0),
+        Some(value) => value.value().as_float(),
     }
 }
 
@@ -240,14 +241,14 @@ pub(crate) fn lcms_cam02_model(
     white_point: Option<&Value>,
     view: Option<&Value>,
 ) -> Result<(CIECAM02, ViewingConditions), LispError> {
-    let white_point = match white_point {
-        None | Some(Value::Nil) => lcms_default_white_point(),
-        Some(value) => parse_lcms_xyz_list(value)
+    let white_point = match white_point.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => lcms_default_white_point(),
+        Some(value) => parse_lcms_xyz_list(&value.value())
             .ok_or_else(|| LispError::Signal("Invalid white point".into()))?,
     };
-    let viewing_conditions = match view {
-        None | Some(Value::Nil) => lcms_default_viewing_conditions(white_point),
-        Some(value) => parse_lcms_viewing_conditions(value, white_point)
+    let viewing_conditions = match view.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => lcms_default_viewing_conditions(white_point),
+        Some(value) => parse_lcms_viewing_conditions(&value.value(), white_point)
             .ok_or_else(|| LispError::Signal("Invalid view conditions".into()))?,
     };
     let model = CIECAM02::new(viewing_conditions)

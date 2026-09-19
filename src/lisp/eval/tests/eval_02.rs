@@ -3915,8 +3915,8 @@ fn process_identity_supports_desktop_lock_checks() {
     assert_eq!(items[0], Value::T);
     assert_eq!(items[1], Value::T);
     assert!(
-        matches!(&items[2], Value::String(name) if !name.is_empty())
-            || matches!(&items[2], Value::StringObject(state) if !state.borrow().text.is_empty())
+        matches!(items[2].kind(), Kind::String(name) if !name.is_empty())
+            || matches!(items[2].kind(), Kind::StringObject(state) if !state.borrow().text.is_empty())
     );
     assert_eq!(items[3], Value::Nil);
     assert!(items[4].is_truthy());
@@ -3926,8 +3926,8 @@ fn process_identity_supports_desktop_lock_checks() {
 fn emacs_major_and_minor_version_variables_default_to_integers() {
     let major = eval_str_with_upstream_batch("emacs-major-version");
     let minor = eval_str_with_upstream_batch("emacs-minor-version");
-    match (major, minor) {
-        (Value::Integer(major), Value::Integer(minor)) => {
+    match (major.kind(), minor.kind()) {
+        (Kind::Integer(major), Kind::Integer(minor)) => {
             assert!(major >= 0);
             assert!(minor >= 0);
         }
@@ -7549,11 +7549,11 @@ fn load_file_strict_preserves_original_load_errors() {
 fn generic_record_reader_forms_evaluate_to_literal_records() {
     let mut interp = Interpreter::new();
     let value = eval_str_with(&mut interp, "#s(#s(a b) c)");
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         panic!("expected a record literal");
     };
     let record = interp.find_record(id).expect("record state");
-    let Value::Record(type_id) = record.type_tag else {
+    let Kind::Record(type_id) = record.type_tag.kind() else {
         panic!("GNU preserves the nested record as the exact type descriptor");
     };
     assert_eq!(record.slots, vec![Value::Symbol("c".into())]);
@@ -7620,7 +7620,10 @@ fn quoted_bytecode_reader_forms_are_materialized_as_records() {
     let items = value.to_vec().expect("quoted macro list");
 
     assert_eq!(items.first(), Some(&Value::Symbol("macro".into())));
-    assert!(matches!(items.get(1), Some(Value::Record(_))));
+    assert!(matches!(
+        items.get(1).map(|v| v.kind()),
+        Some(Kind::Record(_))
+    ));
 }
 
 #[test]

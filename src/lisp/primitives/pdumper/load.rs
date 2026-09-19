@@ -14,7 +14,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{LambdaValue, SharedText, SymbolName};
+use crate::lisp::types::{Kind, LambdaValue, SharedText, SymbolName};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -585,7 +585,7 @@ impl Loader<'_> {
                 DumpType::Cons => {
                     let car = self.value_at(offset)?;
                     let cdr = self.value_at(offset + 8)?;
-                    let Value::Cons(cell) = &self.objects[&offset] else {
+                    let Kind::Cons(cell) = self.objects[&offset].kind() else {
                         unreachable!("a cons placeholder was installed in phase 2")
                     };
                     // The placeholder's relocated words, stored as
@@ -595,7 +595,7 @@ impl Loader<'_> {
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
-                    let Value::Vector(vector) = self.objects[&offset] else {
+                    let Kind::Vector(vector) = self.objects[&offset].kind() else {
                         unreachable!()
                     };
                     let slots = vector.slots_mut();
@@ -698,8 +698,8 @@ impl Loader<'_> {
         }
         for (string_offset, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
-            match &self.objects[&string_offset] {
-                Value::StringObject(state) => {
+            match self.objects[&string_offset].kind() {
+                Kind::StringObject(state) => {
                     state.borrow_mut().props = spans;
                 }
                 other => {
@@ -727,9 +727,9 @@ impl Loader<'_> {
         let mut finalizer_records = Vec::new();
         for (offset, id) in finalizers {
             let function = self.value_at(offset + 8)?;
-            let next = match self.value_at(offset + 24)? {
-                Value::Finalizer(next) => Some(next),
-                Value::Nil => None,
+            let next = match (self.value_at(offset + 24)?).kind() {
+                Kind::Finalizer(next) => Some(next),
+                Kind::Nil => None,
                 other => {
                     return Err(LoadError::Error(format!(
                         "finalizer {id}'s next is not a finalizer: {other:?}"
@@ -753,7 +753,7 @@ impl Loader<'_> {
             let (value, alias) = if flags & SYMBOL_REDIRECT_MASK == SYMBOL_VARALIAS {
                 (None, Some(symbol_of(val, "alias target")?))
             } else {
-                ((!matches!(val, Value::Unbound)).then_some(val), None)
+                ((!matches!(val.kind(), Kind::Unbound)).then_some(val), None)
             };
             symbols.push(LoadedSymbol {
                 symbol,
@@ -801,10 +801,12 @@ impl Loader<'_> {
             roots.push((slot, value));
         }
         let mut chain = Vec::new();
-        let mut cursor = roots.iter().find_map(|(slot, value)| match (slot, value) {
-            (RootSlot::FinalizersNext, Value::Finalizer(id)) => Some(*id),
-            _ => None,
-        });
+        let mut cursor = roots
+            .iter()
+            .find_map(|(slot, value)| match (slot, value.kind()) {
+                (RootSlot::FinalizersNext, Kind::Finalizer(id)) => Some(id),
+                _ => None,
+            });
         while let Some(id) = cursor {
             if chain.contains(&id) {
                 return Err(LoadError::Error(format!("finalizer chain loops at {id}")));
@@ -862,8 +864,8 @@ impl Loader<'_> {
         let size = self.reader.word(offset)? as usize;
         let mut ids = Vec::with_capacity(size);
         for index in 0..size {
-            match self.value_at(offset + 8 * (index as u32 + 1))? {
-                Value::Record(id) => ids.push(id.id),
+            match (self.value_at(offset + 8 * (index as u32 + 1))?).kind() {
+                Kind::Record(id) => ids.push(id.id),
                 other => {
                     return Err(LoadError::Error(format!(
                         "hash list entry is not a hash table: {other:?}"
@@ -965,10 +967,10 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text: std::borrow::Cow<'_, str> = match &name {
-            Value::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
+        let name_text: std::borrow::Cow<'_, str> = match name.kind() {
+            Kind::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
             other => std::borrow::Cow::Owned(
-                string_like(other)
+                string_like(&other.value())
                     .map(|string| string.text)
                     .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?,
             ),
@@ -1032,7 +1034,7 @@ impl Loader<'_> {
         // The environment after the closure is on record: a closure can
         // reach itself through its environment's conses.
         let environment = self.value_at(offset + 24)?;
-        if let Value::Lambda(lambda) = &closure {
+        if let Kind::Lambda(lambda) = closure.kind() {
             let _ = lambda.env.set(environment);
         }
         Ok(closure)
@@ -1288,9 +1290,9 @@ impl Loader<'_> {
             };
             crate::buffer::FileModTime { modified }
         });
-        let base = match self.value_at(offset + 8 * BUFFER_BASE)? {
-            Value::Buffer(base) => Some(base.id),
-            Value::Nil => None,
+        let base = match (self.value_at(offset + 8 * BUFFER_BASE)?).kind() {
+            Kind::Buffer(base) => Some(base.id),
+            Kind::Nil => None,
             other => {
                 return Err(LoadError::Error(format!(
                     "buffer {id}'s base is not a buffer: {other:?}"
@@ -1311,8 +1313,8 @@ impl Loader<'_> {
                 .collect()
         };
         // The mark marker installs its own relation; the field is checked.
-        match self.value_at(offset + 8 * BUFFER_MARK_MARKER)? {
-            Value::Marker(_) | Value::Nil => {}
+        match (self.value_at(offset + 8 * BUFFER_MARK_MARKER)?).kind() {
+            Kind::Marker(_) | Kind::Nil => {}
             other => {
                 return Err(LoadError::Error(format!(
                     "buffer {id}'s mark is not a marker: {other:?}"
@@ -1348,7 +1350,7 @@ impl Loader<'_> {
         let nmarkers = self.reader.word(at)? as usize;
         at += 8;
         for _ in 0..nmarkers {
-            if !matches!(self.value_at(at)?, Value::Marker(_)) {
+            if !matches!((self.value_at(at)?).kind(), Kind::Marker(_)) {
                 return Err(LoadError::Error(format!(
                     "buffer {id}'s marker chain holds a non-marker"
                 )));
@@ -1570,9 +1572,9 @@ impl Loader<'_> {
 
     /// A field that is a string or nil.
     fn optional_string_at(&mut self, field: u32) -> Result<Option<String>, LoadError> {
-        match self.value_at(field)? {
-            Value::Nil => Ok(None),
-            value => string_like(&value)
+        match (self.value_at(field)?).kind() {
+            Kind::Nil => Ok(None),
+            value => string_like(&value.value())
                 .map(|string| Some(string.text))
                 .ok_or_else(|| LoadError::Error(format!("field at {field} is not a string"))),
         }
@@ -1580,9 +1582,9 @@ impl Loader<'_> {
 
     /// A field that is a buffer or nil.
     fn optional_buffer_id_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
-        match self.value_at(field)? {
-            Value::Nil => Ok(None),
-            Value::Buffer(buffer) => Ok(Some(buffer.id)),
+        match (self.value_at(field)?).kind() {
+            Kind::Nil => Ok(None),
+            Kind::Buffer(buffer) => Ok(Some(buffer.id)),
             other => Err(LoadError::Error(format!(
                 "field at {field} is not a buffer: {other:?}"
             ))),
@@ -1591,9 +1593,9 @@ impl Loader<'_> {
 
     /// A field that is a char-table or nil.
     fn optional_char_table_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
-        match self.value_at(field)? {
-            Value::Nil => Ok(None),
-            Value::CharTable(id) => Ok(Some(id)),
+        match (self.value_at(field)?).kind() {
+            Kind::Nil => Ok(None),
+            Kind::CharTable(id) => Ok(Some(id)),
             other => Err(LoadError::Error(format!(
                 "field at {field} is not a char-table: {other:?}"
             ))),
@@ -1624,10 +1626,10 @@ impl Loader<'_> {
 
 /// A symbol-valued field: `nil' and `t' arrive as their immediate words.
 fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {
-    match value {
-        Value::Symbol(symbol) => Ok(symbol),
-        Value::Nil => Ok(SymbolName::intern_str("nil")),
-        Value::T => Ok(SymbolName::intern_str("t")),
+    match value.kind() {
+        Kind::Symbol(symbol) => Ok(symbol),
+        Kind::Nil => Ok(SymbolName::intern_str("nil")),
+        Kind::T => Ok(SymbolName::intern_str("t")),
         other => Err(LoadError::Error(format!(
             "{what} is not a symbol: {other:?}"
         ))),

@@ -1,5 +1,6 @@
 //! frame.c/terminal.c ownership and term.c's external TTY device boundary.
 use super::{Interpreter, Value};
+use crate::lisp::types::Kind;
 use crate::lisp::types::LispError;
 use std::sync::Arc;
 
@@ -362,14 +363,10 @@ impl Interpreter {
             .map_or(0, |frame| frame.terminal_id)
     }
     pub(crate) fn decode_terminal_id(&self, value: &Value) -> Option<u64> {
-        let id = match value {
-            Value::Nil => self.selected_terminal_id(),
-            Value::Terminal(id) => *id,
-            Value::Frame(id) => {
-                self.frame_state(*id)
-                    .filter(|frame| frame.live)?
-                    .terminal_id
-            }
+        let id = match value.kind() {
+            Kind::Nil => self.selected_terminal_id(),
+            Kind::Terminal(id) => id,
+            Kind::Frame(id) => self.frame_state(id).filter(|frame| frame.live)?.terminal_id,
             _ => return None,
         };
         self.terminal_state(id)
@@ -433,8 +430,8 @@ impl Interpreter {
             .slots
             .get(crate::lisp::primitives::WINDOW_FRAME_SLOT)
             .and_then(|value| {
-                if let Value::Frame(id) = value {
-                    Some(*id)
+                if let Kind::Frame(id) = value.kind() {
+                    Some(id)
                 } else {
                     None
                 }
@@ -566,11 +563,14 @@ impl Interpreter {
             .unwrap_or_else(|| self.create_buffer(" *Minibuf-0*"))
             .0;
         let mut make_window = |buffer, point, kind, geometry| {
-            let Value::Record(window_id) = self.create_pseudovector(
-                super::RecordKind::Window,
-                "window",
-                p::window_record_slots(Some(buffer), point, kind, geometry),
-            ) else {
+            let Kind::Record(window_id) = self
+                .create_pseudovector(
+                    super::RecordKind::Window,
+                    "window",
+                    p::window_record_slots(Some(buffer), point, kind, geometry),
+                )
+                .kind()
+            else {
                 unreachable!()
             };
             self.find_record_mut(window_id)

@@ -33,7 +33,7 @@ pub(crate) use runtime::{invoke_suspension_companion, invoke_suspension_probe};
 pub(crate) use state::NativeCompilerState;
 
 use crate::lisp::eval::Interpreter;
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 
 pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
     let subrs = abi::native_subrs();
@@ -85,11 +85,11 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
     ] {
         let table = crate::lisp::json::make_hash_table(interpreter, test, Vec::new());
         if name == "comp-loaded-comp-units-h" {
-            let Value::Record(id) = &table else {
+            let Kind::Record(id) = table.kind() else {
                 unreachable!("native compiler hash tables use hash-table records")
             };
             let record = interpreter
-                .find_record_mut(*id)
+                .find_record_mut(id)
                 .expect("new native compiler hash table record");
             if record.slots.len() < 7 {
                 record.slots.resize(7, Value::Nil);
@@ -178,8 +178,8 @@ pub(crate) fn function_documentation(
                 usize::try_from(index)
                     .map_err(|_| lisp::native_ice("negative native documentation index"))
             })?;
-        let unit_id = match function.slots.get(8) {
-            Some(Value::Record(unit_id)) => *unit_id,
+        let unit_id = match function.slots.get(8).map(|v| v.kind()) {
+            Some(Kind::Record(unit_id)) => unit_id,
             _ => return Err(lisp::native_ice("native function has no compilation unit")),
         };
         (index, unit_id)
@@ -348,6 +348,23 @@ fn garbage_collect_now_impl(
     if interpreter.garbage_collection_is_inhibited() {
         return Ok(None);
     }
+    // alloc.c:garbage_collect: the stack top is taken at the collection's
+    // entry (`flush_stack_call_func'), so the collector's own frames --
+    // this one holds several hundred bytes of locals, and a slot it has
+    // not written yet may still carry a word an earlier, deeper call left
+    // -- lie below the scanned region.  The inner marker inside the
+    // runtime's entry keeps this top.
+    crate::lisp::alloc::flush_stack_call_func(|| {
+        garbage_collect_now_below_top(interpreter, environment, symbols_with_pos_disabled)
+    })
+}
+
+#[inline(never)]
+fn garbage_collect_now_below_top(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    symbols_with_pos_disabled: bool,
+) -> Result<Option<crate::lisp::eval::LiveObjectCensus>, LispError> {
     let symbols_with_pos_restore = if symbols_with_pos_disabled {
         Some(interpreter.bind_special_dynamic(
             "symbols-with-pos-enabled",

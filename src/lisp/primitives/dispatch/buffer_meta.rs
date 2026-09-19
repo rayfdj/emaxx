@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
@@ -69,13 +70,13 @@ define_dispatch!(
                 // STRING that CODING-SYSTEM cannot encode.
                 need_arg_range(name, args, 3, 5)?;
                 let coding = checked_coding_symbol(interp, &args[2])?;
-                let count = match args.get(3) {
-                    None | Some(Value::Nil) => None,
-                    Some(Value::Integer(count)) if *count >= 0 => Some(*count as usize),
+                let count = match args.get(3).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(Kind::Integer(count)) if count >= 0 => Some(count as usize),
                     Some(other) => {
                         return Err(crate::lisp::primitives::wrong_type_argument(
                             "wholenump",
-                            *other,
+                            other.value(),
                         ));
                     }
                 };
@@ -135,10 +136,15 @@ define_dispatch!(
                     .is_some_and(|value| value.is_truthy())
                 {
                     let downcase_table = interp.current_case_table_id();
-                    Some(match interp.char_table_extra_slot(downcase_table, 1) {
-                        Some(Value::CharTable(canonical_table)) => canonical_table,
-                        _ => downcase_table,
-                    })
+                    Some(
+                        match interp
+                            .char_table_extra_slot(downcase_table, 1)
+                            .map(|v| v.kind())
+                        {
+                            Some(Kind::CharTable(canonical_table)) => canonical_table,
+                            _ => downcase_table,
+                        },
+                    )
                 } else {
                     None
                 };
@@ -150,8 +156,8 @@ define_dispatch!(
                         let Some(table) = canonical_table else {
                             return code;
                         };
-                        match interp.char_table_get(table, code) {
-                            Some(Value::Integer(mapped)) => u32::try_from(mapped).unwrap_or(code),
+                        match interp.char_table_get(table, code).map(|v| v.kind()) {
+                            Some(Kind::Integer(mapped)) => u32::try_from(mapped).unwrap_or(code),
                             _ => code,
                         }
                     },
@@ -235,7 +241,7 @@ define_dispatch!(
                     }
                     let mut beginning = pos;
                     if escape_from_edge
-                        && matches!(&before_field, Value::Symbol(value) if value == "boundary")
+                        && matches!(before_field.kind(), Kind::Symbol(value) if value == "boundary")
                     {
                         beginning = change(
                             interp,
@@ -259,7 +265,7 @@ define_dispatch!(
                     }
                     let mut end = pos;
                     if escape_from_edge
-                        && matches!(&after_field, Value::Symbol(value) if value == "boundary")
+                        && matches!(after_field.kind(), Kind::Symbol(value) if value == "boundary")
                     {
                         end = change(interp, "next-single-char-property-change", end, limit, env)?;
                     }
@@ -410,8 +416,8 @@ define_dispatch!(
             )),
             "get-buffer" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Buffer(_) => Ok(args[0]),
+                match args[0].kind() {
+                    Kind::Buffer(_) => Ok(args[0]),
                     _ => match string_like(&args[0]) {
                         Some(name) => match interp.find_buffer(&name.text) {
                             Some((id, buffer_name)) => Ok(Value::buffer(id, buffer_name)),
@@ -429,7 +435,7 @@ define_dispatch!(
                 let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
                 // buffer.c:Fget_buffer_create returns buffer objects as given,
                 // even when renamed or dead; only strings select by name.
-                if matches!(&args[0], Value::Buffer(_)) {
+                if matches!(args[0].kind(), Kind::Buffer(_)) {
                     return Ok(args[0]);
                 }
                 let buf_name = string_text(&args[0]).map_err(|_| {
@@ -582,8 +588,8 @@ define_dispatch!(
             }
             "other-buffer" => {
                 let exclude = if !args.is_empty() {
-                    match &args[0] {
-                        Value::Buffer(buffer) => buffer.name.to_string(),
+                    match args[0].kind() {
+                        Kind::Buffer(buffer) => buffer.name.to_string(),
                         _ => interp.buffer.name.clone(),
                     }
                 } else {
@@ -599,9 +605,9 @@ define_dispatch!(
             "buffer-base-buffer" => {
                 // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
                 // current buffer, exactly like an omitted argument.
-                let buffer_id = match args.first() {
-                    Some(Value::Nil) | None => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                let buffer_id = match args.first().map(|v| v.kind()) {
+                    Some(Kind::Nil) | None => interp.current_buffer_id(),
+                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
                 };
                 Ok(interp
                     .buffer_base_id(buffer_id)
@@ -649,7 +655,7 @@ define_dispatch!(
                     .buffer_local_variables(buffer_id)
                     .into_iter()
                     .map(|(name, value)| {
-                        if matches!(value, Value::Unbound) {
+                        if matches!(value.kind(), Kind::Unbound) {
                             Value::Symbol(name.into())
                         } else {
                             Value::cons(Value::Symbol(name.into()), value)
@@ -741,20 +747,20 @@ define_dispatch!(
             "command-modes" => {
                 need_args(name, args, 1)?;
                 let mut function = args[0];
-                while let Value::Symbol(symbol) = &function {
-                    if let Some(modes) = interp.get_symbol_property(symbol, "command-modes")
+                while let Kind::Symbol(symbol) = function.kind() {
+                    if let Some(modes) = interp.get_symbol_property(&symbol, "command-modes")
                         && !modes.is_nil()
                     {
                         return Ok(modes);
                     }
-                    function = match interp.lookup_function(symbol, env) {
+                    function = match interp.lookup_function(&symbol, env) {
                         Ok(function) => function,
                         Err(_) => return Ok(Value::Nil),
                     };
                 }
-                Ok(match function {
-                    Value::Lambda(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
-                    Value::Record(id) => interp
+                Ok(match function.kind() {
+                    Kind::Lambda(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
+                    Kind::Record(id) => interp
                         .find_record(id)
                         .filter(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
                         .and_then(|record| record.slots.get(5))
@@ -768,11 +774,12 @@ define_dispatch!(
                 let mut seen = Vec::new();
                 let mut current = args[0];
                 loop {
-                    let symbol = match &current {
-                        Value::Symbol(symbol) => *symbol,
+                    let symbol = match current.kind() {
+                        Kind::Symbol(symbol) => symbol,
                         _ if symbols_with_pos_enabled(interp, env) => {
-                            let Some((Value::Symbol(symbol), _)) =
+                            let Some((Kind::Symbol(symbol), _)) =
                                 symbol_with_pos_parts(interp, &current)
+                                    .map(|(a0, a1)| (a0.kind(), a1))
                             else {
                                 return Ok(current);
                             };
@@ -788,7 +795,7 @@ define_dispatch!(
                     }
                     seen.push(symbol);
                     match interp.lookup_function(&symbol, env) {
-                        Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
+                        Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_)) => {
                             current = resolved;
                         }
                         Ok(resolved) => return Ok(resolved),
@@ -811,26 +818,27 @@ define_dispatch!(
             }
             "subr-arity" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::BuiltinFunc(symbol) => builtin_arity_value(symbol)
-                        .or_else(|| special_form_arity_value(symbol))
+                match args[0].kind() {
+                    Kind::BuiltinFunc(symbol) => builtin_arity_value(&symbol)
+                        .or_else(|| special_form_arity_value(&symbol))
                         .ok_or_else(|| {
                             LispError::Signal(format!(
                                 "emaxx: no GNU-derived arity for subr {symbol}"
                             ))
                         }),
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        let record = interp.find_record(*id).expect("record checked above");
+                        let record = interp.find_record(id).expect("record checked above");
                         Ok(Value::cons(record.slots[1], record.slots[2]))
                     }
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp", *other,
+                        "subrp",
+                        other.value(),
                     )),
                 }
             }
@@ -852,10 +860,10 @@ define_dispatch!(
             }
             "subr-name" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(Value::string(symbol.as_str())),
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                match args[0].kind() {
+                    Kind::BuiltinFunc(symbol) => Ok(Value::string(symbol.as_str())),
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
@@ -866,20 +874,21 @@ define_dispatch!(
                         Ok(Value::string(&name))
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp", *other,
+                        "subrp",
+                        other.value(),
                     )),
                 }
             }
             "subr-native-lambda-list" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::BuiltinFunc(_) => Ok(Value::T),
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                match args[0].kind() {
+                    Kind::BuiltinFunc(_) => Ok(Value::T),
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        let record = interp.find_record(*id).expect("record checked above");
+                        let record = interp.find_record(id).expect("record checked above");
                         Ok(if record.slots[10].is_truthy() {
                             record.slots[9]
                         } else {
@@ -887,7 +896,8 @@ define_dispatch!(
                         })
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp", *other,
+                        "subrp",
+                        other.value(),
                     )),
                 }
             }
@@ -903,13 +913,13 @@ define_dispatch!(
             }
             "comp--subr-signature" => {
                 need_args(name, args, 1)?;
-                let Value::BuiltinFunc(symbol) = &args[0] else {
+                let Kind::BuiltinFunc(symbol) = args[0].kind() else {
                     return Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp", args[0],
                     ));
                 };
-                let arity = builtin_arity_value(symbol)
-                    .or_else(|| special_form_arity_value(symbol))
+                let arity = builtin_arity_value(&symbol)
+                    .or_else(|| special_form_arity_value(&symbol))
                     .ok_or_else(|| {
                         LispError::Signal(format!("emaxx: no GNU-derived arity for subr {symbol}"))
                     })?;
@@ -995,7 +1005,7 @@ define_dispatch!(
             "native-comp-function-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+                    if matches!(args[0].kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
                     {
                         Value::T
                     } else {
@@ -1005,29 +1015,30 @@ define_dispatch!(
             }
             "subr-native-comp-unit" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::BuiltinFunc(_) => Ok(Value::Nil),
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                match args[0].kind() {
+                    Kind::BuiltinFunc(_) => Ok(Value::Nil),
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        Ok(interp.find_record(*id).expect("record checked above").slots[8])
+                        Ok(interp.find_record(id).expect("record checked above").slots[8])
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
-                        "subrp", *other,
+                        "subrp",
+                        other.value(),
                     )),
                 }
             }
             "native-comp-unit-file" => {
                 need_args(name, args, 1)?;
-                let Value::Record(id) = &args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     return Err(LispError::TypeError(
                         "native-comp-unit".into(),
                         args[0].type_name(),
                     ));
                 };
-                let record = interp.find_record(*id).ok_or_else(|| {
+                let record = interp.find_record(id).ok_or_else(|| {
                     LispError::TypeError("native-comp-unit".into(), args[0].type_name())
                 })?;
                 if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
@@ -1040,13 +1051,13 @@ define_dispatch!(
             }
             "native-comp-unit-set-file" => {
                 need_args(name, args, 2)?;
-                let Value::Record(id) = &args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     return Err(LispError::TypeError(
                         "native-comp-unit".into(),
                         args[0].type_name(),
                     ));
                 };
-                let Some(record) = interp.find_record_mut(*id) else {
+                let Some(record) = interp.find_record_mut(id) else {
                     return Err(LispError::TypeError(
                         "native-comp-unit".into(),
                         args[0].type_name(),
@@ -1166,13 +1177,12 @@ define_dispatch!(
                 // and emacs-mule's `emacs-mule' as Vemacs_mule_charset_list.
                 let mut charsets = coding_system_charset_names(interp, &coding);
                 if charsets.is_empty() {
-                    let symbolic =
-                        interp
-                            .coding_system(&coding)
-                            .and_then(|state| match &state.charset_list {
-                                Value::Symbol(name) => Some(name.to_string()),
-                                _ => None,
-                            });
+                    let symbolic = interp.coding_system(&coding).and_then(|state| {
+                        match state.charset_list.kind() {
+                            Kind::Symbol(name) => Some(name.to_string()),
+                            _ => None,
+                        }
+                    });
                     charsets = match symbolic.as_deref() {
                         Some("iso-2022") => interp.iso_2022_charset_list(),
                         Some("emacs-mule") => {
@@ -1190,10 +1200,10 @@ define_dispatch!(
             }
             "charsetp" => {
                 need_args(name, args, 1)?;
-                let Value::Symbol(symbol) = &args[0] else {
+                let Kind::Symbol(symbol) = args[0].kind() else {
                     return Ok(Value::Nil);
                 };
-                Ok(if interp.has_charset(symbol) {
+                Ok(if interp.has_charset(&symbol) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1353,7 +1363,7 @@ define_dispatch!(
                     .and_then(|plist| plist.to_vec().ok())
                     .and_then(|items| {
                         items.windows(2).find_map(|pair| {
-                            matches!(&pair[0], Value::Symbol(key) if key == ":code-offset")
+                            matches!(pair[0].kind(), Kind::Symbol(key) if key == ":code-offset")
                                 .then(|| pair[1].as_integer().ok())
                                 .flatten()
                         })
@@ -1377,9 +1387,9 @@ define_dispatch!(
                     if let Some(plist) = interp.charset_plist_value(charset)
                         && let Ok(mut items) = plist.to_vec()
                     {
-                        let key = items
-                            .iter()
-                            .position(|item| matches!(item, Value::Symbol(k) if k == ":unify-map"));
+                        let key = items.iter().position(
+                            |item| matches!(item.kind(), Kind::Symbol(k) if k == ":unify-map"),
+                        );
                         match key {
                             Some(index) if index + 1 < items.len() => {
                                 items[index + 1] = *map;
@@ -1495,8 +1505,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(if args[0].is_nil() {
                     Value::T
-                } else if let Value::Symbol(symbol) = &args[0] {
-                    if interp.has_coding_system(symbol) {
+                } else if let Kind::Symbol(symbol) = args[0].kind() {
+                    if interp.has_coding_system(&symbol) {
                         Value::T
                     } else {
                         Value::Nil
@@ -1526,9 +1536,9 @@ define_dispatch!(
                         .map(|coding| Value::list([Value::String(coding.into())])),
                 );
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
-                let default = match default {
-                    Value::Symbol(symbol) => Value::String(symbol.into()),
-                    value => value,
+                let default = match default.kind() {
+                    Kind::Symbol(symbol) => Value::String(symbol.into()),
+                    value => value.value(),
                 };
                 let completion_args = [
                     args[0],
@@ -1914,8 +1924,8 @@ define_dispatch!(
                     "mac" => Some(2),
                     _ => None,
                 };
-                let default_char = match &args[9] {
-                    Value::Integer(character) => u32::try_from(*character).ok(),
+                let default_char = match args[9].kind() {
+                    Kind::Integer(character) => u32::try_from(character).ok(),
                     _ => None,
                 };
                 interp.define_coding_system(

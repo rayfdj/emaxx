@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 /// Child-side setup shared by every Lisp-visible subprocess, mirroring GNU's
 /// `emacs_spawn' (callproc.c:1441) -- the single choke point both
@@ -591,10 +592,10 @@ fn process_connection_endpoint_uses_pty(
     value: &Value,
     default_pty: bool,
 ) -> Result<bool, LispError> {
-    match value {
-        Value::Nil => Ok(default_pty),
-        Value::Symbol(name) if name == "pty" => Ok(true),
-        Value::Symbol(name) if name == "pipe" => Ok(false),
+    match value.kind() {
+        Kind::Nil => Ok(default_pty),
+        Kind::Symbol(name) if name == "pty" => Ok(true),
+        Kind::Symbol(name) if name == "pipe" => Ok(false),
         _ => Err(LispError::Signal(format!(
             "Unknown connection type: {value}"
         ))),
@@ -714,7 +715,7 @@ pub(crate) fn process_buffer_target(
                 .unwrap_or_else(|| interp.create_buffer(&buffer.text).0),
         ));
     }
-    if matches!(value, Value::Buffer(_)) {
+    if matches!(value.kind(), Kind::Buffer(_)) {
         return Ok(Some(interp.resolve_buffer_id(value)?));
     }
     Err(LispError::TypeError(
@@ -741,7 +742,7 @@ pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String
 pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispError> {
     // process.c: :coding accepts either one coding system used for both
     // directions, or a (DECODING . ENCODING) cons.
-    if let Value::Symbol(_) = value {
+    if let Kind::Symbol(_) = value.kind() {
         return Ok((*value, *value));
     }
     if let Some((decoding, encoding)) = value.cons_values() {
@@ -966,8 +967,8 @@ pub(crate) fn internal_default_process_sentinel(
     message: &str,
 ) -> Result<(), LispError> {
     if matches!(
-        interp.process_status_value(process_id),
-        Some(Value::Symbol(status)) if matches!(status.as_str(), "run" | "open")
+        interp.process_status_value(process_id).map(|v| v.kind()),
+        Some(Kind::Symbol(status)) if matches!(status.as_str(), "run" | "open")
     ) {
         return Ok(());
     }
@@ -1027,8 +1028,8 @@ pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command
 }
 
 pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
-    let environment = match value.cons_values() {
-        Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
+    let environment = match value.cons_values().map(|(a0, a1)| (a0.kind(), a1)) {
+        Some((Kind::Symbol(symbol), entries)) if symbol == "environment" => entries,
         _ => *value,
     };
     environment
@@ -1046,8 +1047,8 @@ pub(crate) fn getenv_in_environment(
     // callproc.c:getenv_internal_1 walks the list comparing each entry in
     // place; copying every entry into a vector first cost more than the
     // lookup (a `getenv' of the last of 140 entries).
-    let environment = match environment.cons_values() {
-        Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
+    let environment = match environment.cons_values().map(|(a0, a1)| (a0.kind(), a1)) {
+        Some((Kind::Symbol(symbol), entries)) if symbol == "environment" => entries,
         _ => *environment,
     };
     let mut cursor = environment;
@@ -1093,11 +1094,11 @@ pub(crate) fn append_process_bytes_to_buffer(
     if bytes.is_empty() {
         return Ok(());
     }
-    let target_id = match destination {
-        Value::T => interp.current_buffer_id(),
-        Value::Buffer(_) => interp.resolve_buffer_id(destination)?,
+    let target_id = match destination.kind() {
+        Kind::T => interp.current_buffer_id(),
+        Kind::Buffer(_) => interp.resolve_buffer_id(destination)?,
         value => {
-            let Some(name) = string_like(value) else {
+            let Some(name) = string_like(&value.value()) else {
                 return Err(LispError::TypeError(
                     "buffer-or-name".into(),
                     destination.type_name(),
@@ -1416,7 +1417,8 @@ pub(crate) fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
 
 pub(crate) fn socket_addr_from_value(value: &Value) -> Option<std::net::SocketAddr> {
     let mut items = value.to_vec().ok()?;
-    if matches!(items.first(), Some(Value::Symbol(tag)) if tag == "vector-literal") {
+    if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(tag)) if tag == "vector-literal")
+    {
         items.remove(0);
     }
     let integers = items
@@ -1721,9 +1723,9 @@ pub(crate) fn make_network_process(
             ":log" => log = (!value.is_nil()).then_some(*value),
             ":plist" => plist = *value,
             ":server" => is_server = value.is_truthy(),
-            ":type" => match value {
-                Value::Nil => datagram = false,
-                Value::Symbol(kind) if kind == "datagram" => datagram = true,
+            ":type" => match value.kind() {
+                Kind::Nil => datagram = false,
+                Kind::Symbol(kind) if kind == "datagram" => datagram = true,
                 _ => return Err(LispError::Signal("Unsupported connection type".into())),
             },
             ":nowait" => nowait = value.is_truthy(),
@@ -1735,14 +1737,14 @@ pub(crate) fn make_network_process(
                 tls_parameters = *value;
             }
             ":family" => {
-                family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
-                family_ipv4 = matches!(value, Value::Symbol(symbol) if symbol == "ipv4");
-                family_ipv6 = matches!(value, Value::Symbol(symbol) if symbol == "ipv6");
+                family_local = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "local");
+                family_ipv4 = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ipv4");
+                family_ipv6 = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ipv6");
             }
             ":host" => {
-                host = match value {
-                    Value::Nil => None,
-                    Value::Symbol(symbol) if symbol == "local" => {
+                host = match value.kind() {
+                    Kind::Nil => None,
+                    Kind::Symbol(symbol) if symbol == "local" => {
                         host_local = true;
                         None
                     }
@@ -1750,11 +1752,11 @@ pub(crate) fn make_network_process(
                 }
             }
             ":service" => {
-                service = match value {
+                service = match value.kind() {
                     // `:service t' asks the OS to pick a free port.
-                    Value::T => Some(0),
-                    Value::Integer(port) => Some(*port),
-                    Value::String(_) | Value::StringObject(_) => {
+                    Kind::T => Some(0),
+                    Kind::Integer(port) => Some(port),
+                    Kind::String(_) | Kind::StringObject(_) => {
                         let text = string_text(value)?;
                         // `:family local' names a socket file, not a port.
                         service_path = Some(text.clone());
@@ -2090,9 +2092,9 @@ fn plist_member_value(items: &[Value], key: &str) -> Option<Value> {
 }
 
 fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
-    match value {
-        Value::Nil | Value::Integer(8) => Ok(serialport::DataBits::Eight),
-        Value::Integer(7) => Ok(serialport::DataBits::Seven),
+    match value.kind() {
+        Kind::Nil | Kind::Integer(8) => Ok(serialport::DataBits::Eight),
+        Kind::Integer(7) => Ok(serialport::DataBits::Seven),
         _ => Err(LispError::Signal(
             ":bytesize must be nil (8), 7, or 8".into(),
         )),
@@ -2100,10 +2102,10 @@ fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
 }
 
 fn serial_parity(value: &Value) -> Result<serialport::Parity, LispError> {
-    match value {
-        Value::Nil => Ok(serialport::Parity::None),
-        Value::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
-        Value::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
+    match value.kind() {
+        Kind::Nil => Ok(serialport::Parity::None),
+        Kind::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
+        Kind::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
         _ => Err(LispError::Signal(
             ":parity must be nil (no parity), `even', or `odd'".into(),
         )),
@@ -2111,9 +2113,9 @@ fn serial_parity(value: &Value) -> Result<serialport::Parity, LispError> {
 }
 
 fn serial_stop_bits(value: &Value) -> Result<serialport::StopBits, LispError> {
-    match value {
-        Value::Nil | Value::Integer(1) => Ok(serialport::StopBits::One),
-        Value::Integer(2) => Ok(serialport::StopBits::Two),
+    match value.kind() {
+        Kind::Nil | Kind::Integer(1) => Ok(serialport::StopBits::One),
+        Kind::Integer(2) => Ok(serialport::StopBits::Two),
         _ => Err(LispError::Signal(
             ":stopbits must be nil (1 stopbit), 1, or 2".into(),
         )),
@@ -2121,10 +2123,10 @@ fn serial_stop_bits(value: &Value) -> Result<serialport::StopBits, LispError> {
 }
 
 fn serial_flow_control(value: &Value) -> Result<serialport::FlowControl, LispError> {
-    match value {
-        Value::Nil => Ok(serialport::FlowControl::None),
-        Value::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
-        Value::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
+    match value.kind() {
+        Kind::Nil => Ok(serialport::FlowControl::None),
+        Kind::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
+        Kind::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
         _ => Err(LispError::Signal(
             ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'".into(),
         )),
@@ -2171,9 +2173,9 @@ fn serial_configuration(
     plist_items_put(&mut contact_items, ":parity", parity);
     plist_items_put(&mut contact_items, ":stopbits", stopbits);
     plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol);
-    let parity_summary = match parity {
-        Value::Symbol(symbol) if symbol == "even" => 'E',
-        Value::Symbol(symbol) if symbol == "odd" => 'O',
+    let parity_summary = match parity.kind() {
+        Kind::Symbol(symbol) if symbol == "even" => 'E',
+        Kind::Symbol(symbol) if symbol == "odd" => 'O',
         _ => 'N',
     };
     plist_items_put(
@@ -2318,23 +2320,23 @@ fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result
     let requested = [":process", ":name", ":buffer", ":port"]
         .into_iter()
         .find_map(|key| plist_member_value(args, key).filter(Value::is_truthy));
-    let process = match requested.as_ref() {
+    let process = match requested.as_ref().map(|v| v.kind()) {
         None => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Value::Record(_)) => Some(*process),
-        Some(value) if string_like(value).is_some() => {
-            let text = string_text(value)?;
+        Some(process @ Kind::Record(_)) => Some(process.value()),
+        Some(value) if string_like(&value.value()).is_some() => {
+            let text = string_text(&value.value())?;
             interp
                 .find_process_id_by_name(&text)
                 .map(|id| interp.record_value(id))
                 .or_else(|| {
                     interp
-                        .resolve_buffer_id(value)
+                        .resolve_buffer_id(&value.value())
                         .ok()
                         .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
                 })
         }
         Some(value) => interp
-            .resolve_buffer_id(value)
+            .resolve_buffer_id(&value.value())
             .ok()
             .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
     }
@@ -2564,8 +2566,8 @@ pub(crate) fn wait_pumping_processes(
         if target_process_id.is_some_and(|process_id| {
             !interp.live_external_process_ids().contains(&process_id)
                 && !matches!(
-                    interp.process_status_value(process_id),
-                    Some(Value::Symbol(status))
+                    interp.process_status_value(process_id).map(|v| v.kind()),
+                    Some(Kind::Symbol(status))
                         if matches!(status.as_str(), "run" | "open" | "connect" | "listen")
                 )
         }) {

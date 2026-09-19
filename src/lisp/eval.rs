@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    ConsCell, EmacsTermination, Env, EnvFrame, LambdaValue, LispError, ReaderClosureKind,
+    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, ReaderClosureKind,
     ReaderForm, SymbolName, Value, WeakConsSlot,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
@@ -1605,6 +1605,13 @@ impl RecordState {
         self.type_tag.as_symbol().ok()
     }
 
+    /// `symbol_type_name' for the sweep, which must not read the type
+    /// tag's object: a dead record's type may be a class record the same
+    /// sweep has already freed.  The word's tag alone decides.
+    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&'static str> {
+        self.type_tag.symbol_by_tag().map(|symbol| symbol.as_str())
+    }
+
     pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
         self.symbol_type_name() == Some(name)
     }
@@ -1883,7 +1890,9 @@ impl BacktraceFrame {
         if !self.evald {
             match &self.function {
                 FrameFunction::Form(_) => return Some(self.function.value()),
-                FrameFunction::Owned(value @ Value::Cons(_)) => return Some(*value),
+                FrameFunction::Owned(value) if matches!(value.kind(), Kind::Cons(_)) => {
+                    return Some(*value);
+                }
                 FrameFunction::Owned(_) => {}
             }
         }
@@ -3062,9 +3071,9 @@ impl ImageGraphCopier {
     }
 
     fn copy(&mut self, value: &Value) -> Value {
-        match value {
-            Value::Cons(_) => self.copy_cons_chain(value),
-            Value::Vector(vector) => {
+        match value.kind() {
+            Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::Vector(vector) => {
                 if vector.slots().is_empty() {
                     return *value;
                 }
@@ -3075,7 +3084,7 @@ impl ImageGraphCopier {
                 let source_slots = vector.slots().to_vec();
                 let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
                 self.vectors.insert(key, copied);
-                let Value::Vector(copied_vector) = &copied else {
+                let Kind::Vector(copied_vector) = copied.kind() else {
                     unreachable!("nonempty vector copy has vector storage")
                 };
                 for (index, slot) in source_slots.iter().enumerate() {
@@ -3083,7 +3092,7 @@ impl ImageGraphCopier {
                 }
                 copied
             }
-            Value::StringObject(state) => {
+            Kind::StringObject(state) => {
                 let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
                     return *copied;
@@ -3111,12 +3120,12 @@ impl ImageGraphCopier {
                             .collect(),
                     })
                     .collect();
-                if let Value::StringObject(new_state) = &copied {
+                if let Kind::StringObject(new_state) = copied.kind() {
                     new_state.borrow_mut().props = copied_props;
                 }
                 copied
             }
-            Value::Record(record) => {
+            Kind::Record(record) => {
                 // The clone's own record cell under the same id, in its
                 // id space; the slots copied after the cell is on record
                 // (a record can reach itself).
@@ -3142,7 +3151,7 @@ impl ImageGraphCopier {
                 state.slots = slots;
                 copied
             }
-            Value::Lambda(lambda) => {
+            Kind::Lambda(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
                     return *copied;
@@ -3170,12 +3179,12 @@ impl ImageGraphCopier {
                 });
                 self.lambdas.insert(key, copied);
                 let environment = self.copy(&lambda.environment_value());
-                if let Value::Lambda(copied) = &copied {
+                if let Kind::Lambda(copied) = copied.kind() {
                     let _ = copied.env.set(environment);
                 }
                 copied
             }
-            Value::ReaderForm(form) => {
+            Kind::ReaderForm(form) => {
                 let key = form.identity();
                 if let Some(copied) = self.reader_forms.get(&key) {
                     return *copied;
@@ -3231,7 +3240,7 @@ impl ImageGraphCopier {
                 self.reader_forms.insert(key, copied);
                 copied
             }
-            other => *other,
+            other => other.value(),
         }
     }
 
@@ -3241,14 +3250,14 @@ impl ImageGraphCopier {
     fn copy_cons_chain(&mut self, head: &Value) -> Value {
         let mut spine = Vec::new();
         let mut cursor = *head;
-        while let Value::Cons(cell) = &cursor {
-            let key = crate::lisp::types::ConsCell::identity(cell);
+        while let Kind::Cons(cell) = cursor.kind() {
+            let key = crate::lisp::types::ConsCell::identity(&cell);
             if self.cons.contains_key(&key) {
                 break;
             }
             let placeholder = Value::cons(Value::Nil, Value::Nil);
             self.cons.insert(key, placeholder);
-            spine.push((*cell, placeholder));
+            spine.push((cell, placeholder));
             let next = *cell.cdr.borrow();
             cursor = next;
         }
@@ -3257,7 +3266,7 @@ impl ImageGraphCopier {
             let cdr = *source.cdr.borrow();
             let copied_car = self.copy(&car);
             let copied_cdr = self.copy(&cdr);
-            let Value::Cons(cell) = &copied else {
+            let Kind::Cons(cell) = copied.kind() else {
                 unreachable!("cons placeholder is a cons")
             };
             *cell.car.borrow_mut() = copied_car;
@@ -3267,8 +3276,8 @@ impl ImageGraphCopier {
     }
 
     fn copy_known(&mut self, value: &Value) -> Value {
-        if let Value::Cons(cell) = value {
-            let key = crate::lisp::types::ConsCell::identity(cell);
+        if let Kind::Cons(cell) = value.kind() {
+            let key = crate::lisp::types::ConsCell::identity(&cell);
             if let Some(copied) = self.cons.get(&key) {
                 return *copied;
             }
@@ -3419,30 +3428,28 @@ pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>
 
 impl LispReachability<'_, '_> {
     fn contains(&self, value: &Value) -> bool {
-        match value {
-            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
-                true
-            }
-            Value::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
-            Value::Float(value) => value.mark_bit().is_marked(self.epoch),
-            Value::String(value) => value.mark_bit().is_marked(self.epoch),
-            Value::StringObject(value) => value.mark_bit().is_marked(self.epoch),
-            Value::Symbol(symbol) => {
-                crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
+        match value.kind() {
+            Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
+            Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::String(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Symbol(symbol) => {
+                crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
                     || symbol.mark_bit().is_marked(self.epoch)
             }
-            Value::Cons(value) => value.mark.is_marked(self.epoch),
-            Value::Vector(value) => value.mark_bit().is_marked(self.epoch),
-            Value::Lambda(value) => value.mark_bit().is_marked(self.epoch),
-            Value::Buffer(value) => value.mark_bit().is_marked(self.epoch),
-            Value::Marker(id) => self.markers.contains(id),
-            Value::Overlay(id) => self.overlays.contains(id),
-            Value::CharTable(id) => self.char_tables.contains(id),
-            Value::Frame(id) => self.frames.contains(id),
-            Value::Terminal(id) => self.terminals.contains(id),
-            Value::Record(record) => record.mark_bit().is_marked(self.epoch),
-            Value::Finalizer(id) => self.finalizers.contains(id),
-            Value::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Cons(value) => value.mark.is_marked(self.epoch),
+            Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Marker(id) => self.markers.contains(&id),
+            Kind::Overlay(id) => self.overlays.contains(&id),
+            Kind::CharTable(id) => self.char_tables.contains(&id),
+            Kind::Frame(id) => self.frames.contains(&id),
+            Kind::Terminal(id) => self.terminals.contains(&id),
+            Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
+            Kind::Finalizer(id) => self.finalizers.contains(&id),
+            Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
     }
 
@@ -3481,8 +3488,8 @@ impl LispReachability<'_, '_> {
     /// Queue VALUE's object for marking (nothing for an immediate).
     fn enqueue(&mut self, value: &Value) {
         if matches!(
-            value,
-            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound
+            value.kind(),
+            Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound
         ) {
             return;
         }
@@ -3492,27 +3499,25 @@ impl LispReachability<'_, '_> {
     /// alloc.c's mark on the object: true when VALUE's object was not yet
     /// marked in this collection.
     fn mark_object(&mut self, value: &Value) -> bool {
-        match value {
-            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
-                false
-            }
-            Value::BigInteger(value) => value.mark_bit().mark(self.epoch),
-            Value::Float(value) => value.mark_bit().mark(self.epoch),
-            Value::String(value) => value.mark_bit().mark(self.epoch),
-            Value::StringObject(value) => value.mark_bit().mark(self.epoch),
-            Value::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
-            Value::Cons(value) => value.mark.mark(self.epoch),
-            Value::Vector(value) => value.mark_bit().mark(self.epoch),
-            Value::Lambda(value) => value.mark_bit().mark(self.epoch),
-            Value::Buffer(value) => value.mark_bit().mark(self.epoch),
-            Value::Marker(id) => self.markers.insert(*id),
-            Value::Overlay(id) => self.overlays.insert(*id),
-            Value::CharTable(id) => self.char_tables.insert(*id),
-            Value::Frame(id) => self.frames.insert(*id),
-            Value::Terminal(id) => self.terminals.insert(*id),
-            Value::Record(record) => record.mark_bit().mark(self.epoch),
-            Value::Finalizer(id) => self.finalizers.insert(*id),
-            Value::ReaderForm(value) => value.mark_bit().mark(self.epoch),
+        match value.kind() {
+            Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
+            Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
+            Kind::Float(value) => value.mark_bit().mark(self.epoch),
+            Kind::String(value) => value.mark_bit().mark(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
+            Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
+            Kind::Cons(value) => value.mark.mark(self.epoch),
+            Kind::Vector(value) => value.mark_bit().mark(self.epoch),
+            Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
+            Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
+            Kind::Marker(id) => self.markers.insert(id),
+            Kind::Overlay(id) => self.overlays.insert(id),
+            Kind::CharTable(id) => self.char_tables.insert(id),
+            Kind::Frame(id) => self.frames.insert(id),
+            Kind::Terminal(id) => self.terminals.insert(id),
+            Kind::Record(record) => record.mark_bit().mark(self.epoch),
+            Kind::Finalizer(id) => self.finalizers.insert(id),
+            Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
 
@@ -3533,23 +3538,23 @@ impl LispReachability<'_, '_> {
             }
         }
 
-        match value {
-            Value::Symbol(symbol) => {
+        match value.kind() {
+            Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
                 symbol.internal_text().mark_bit().mark(self.epoch);
                 self.enqueue(symbol.lisp_name_ref());
             }
-            Value::Finalizer(id) => {
+            Kind::Finalizer(id) => {
                 // A reached Lisp_Finalizer is a pseudovector whose one Lisp
                 // slot is `function'; an unreached one is doomed after this
                 // pass and its function marked separately
                 // (alloc.c:mark_finalizer_list).
-                if let Some(function) = interp.finalizer_function(*id) {
+                if let Some(function) = interp.finalizer_function(id) {
                     self.enqueue(&function);
                 }
             }
-            Value::StringObject(value) => {
+            Kind::StringObject(value) => {
                 let state = value.borrow();
                 for span in &state.props {
                     for (_, child) in &span.props {
@@ -3557,19 +3562,19 @@ impl LispReachability<'_, '_> {
                     }
                 }
             }
-            Value::Cons(cell) => {
+            Kind::Cons(cell) => {
                 // The two words, read in place.
                 self.enqueue(&cell.car.borrow());
                 self.enqueue(&cell.cdr.borrow());
             }
-            Value::Vector(vector) => {
+            Kind::Vector(vector) => {
                 // Slot by slot, in place.
                 let slots = vector.slots();
                 for child in slots.iter() {
                     self.enqueue(child);
                 }
             }
-            Value::Lambda(lambda) => {
+            Kind::Lambda(lambda) => {
                 for symbol in lambda.params.iter() {
                     self.enqueue(&Value::Symbol(*symbol));
                 }
@@ -3589,22 +3594,22 @@ impl LispReachability<'_, '_> {
                     self.enqueue(value);
                 }
             }
-            Value::Buffer(buffer) => {
+            Kind::Buffer(buffer) => {
                 buffer.name.mark_bit().mark(self.epoch);
             }
-            Value::Overlay(id) => {
+            Kind::Overlay(id) => {
                 // alloc.c:mark_overlay follows the plist whether the overlay
                 // was reached through a buffer or through another Lisp object.
-                if let Some(overlay) = interp.find_overlay(*id) {
+                if let Some(overlay) = interp.find_overlay(id) {
                     for (key, value) in &overlay.plist {
                         self.enqueue(key);
                         self.enqueue(value);
                     }
                 }
             }
-            Value::CharTable(id) => {
+            Kind::CharTable(id) => {
                 // The slots in place (alloc.c's mark_char_table).
-                if let Some(table) = interp.find_char_table(*id) {
+                if let Some(table) = interp.find_char_table(id) {
                     self.enqueue(&table.default);
                     for child in &table.extra_slots {
                         self.enqueue(child);
@@ -3614,17 +3619,17 @@ impl LispReachability<'_, '_> {
                     }
                 }
             }
-            Value::Frame(id) => {
-                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == *id) {
+            Kind::Frame(id) => {
+                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == id) {
                     self.enqueue(&frame.name);
                     for (_, value) in &frame.parameter_overrides {
                         self.enqueue(value);
                     }
                 }
             }
-            Value::Record(record) => {
+            Kind::Record(record) => {
                 // alloc.c's mark_vectorlike: the slots in place.
-                let record: &RecordState = record;
+                let record: &RecordState = &record;
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
                 // alloc.c's mark_vectorlike reads the slots in place.  A
@@ -3676,7 +3681,7 @@ impl LispReachability<'_, '_> {
                     }
                 }
             }
-            Value::ReaderForm(form) => {
+            Kind::ReaderForm(form) => {
                 let children: &[Value] = match form.as_ref() {
                     ReaderForm::CircularLabel { payload, .. } => std::slice::from_ref(payload),
                     ReaderForm::HashTable { fields }
@@ -3692,16 +3697,16 @@ impl LispReachability<'_, '_> {
                     self.enqueue(child);
                 }
             }
-            Value::Nil
-            | Value::T
-            | Value::Integer(_)
-            | Value::BigInteger(_)
-            | Value::Float(_)
-            | Value::String(_)
-            | Value::BuiltinFunc(_)
-            | Value::Marker(_)
-            | Value::Terminal(_)
-            | Value::Unbound => {}
+            Kind::Nil
+            | Kind::T
+            | Kind::Integer(_)
+            | Kind::BigInteger(_)
+            | Kind::Float(_)
+            | Kind::String(_)
+            | Kind::BuiltinFunc(_)
+            | Kind::Marker(_)
+            | Kind::Terminal(_)
+            | Kind::Unbound => {}
         }
     }
 }
@@ -4707,8 +4712,11 @@ impl Interpreter {
         self.gc_elapsed_total += elapsed.as_secs_f64();
         self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
         // `gcs_done++' on the C int the variable forwards to.
-        let done = match self.forwarded_c_value("gcs-done", &Env::new()) {
-            Some(Value::Integer(done)) => done.saturating_add(1),
+        let done = match self
+            .forwarded_c_value("gcs-done", &Env::new())
+            .map(|v| v.kind())
+        {
+            Some(Kind::Integer(done)) => done.saturating_add(1),
             _ => 1,
         };
         self.set_symbol_value_cell("gcs-done", Value::Integer(done));
@@ -4924,7 +4932,7 @@ impl Interpreter {
             }
             for slot in clone.records.iter_mut() {
                 if let Some(record) = *slot {
-                    let Value::Record(copied) = c.copy(&Value::Record(record)) else {
+                    let Kind::Record(copied) = c.copy(&Value::Record(record)).kind() else {
                         unreachable!("a record copies to a record")
                     };
                     *slot = Some(copied);
@@ -5125,8 +5133,8 @@ impl Interpreter {
         // identity; remap each identity to its copy.  A registered cons the
         // copy never reached is unreachable from the clone -- drop it.
         let remap_cons_identity = |copier: &ImageGraphCopier, identity: usize| -> Option<usize> {
-            match copier.cons.get(&identity) {
-                Some(Value::Cons(cell)) => Some(crate::lisp::types::ConsCell::identity(cell)),
+            match copier.cons.get(&identity).map(|v| v.kind()) {
+                Some(Kind::Cons(cell)) => Some(crate::lisp::types::ConsCell::identity(&cell)),
                 _ => None,
             }
         };
@@ -6969,8 +6977,8 @@ impl Interpreter {
                 &[Value::string(printed)],
                 &mut crate::lisp::types::Env::new(),
             );
-            let value = match read {
-                Ok(Value::Cons(cell)) => *cell.car.borrow(),
+            let value = match read.map(|v| v.kind()) {
+                Ok(Kind::Cons(cell)) => *cell.car.borrow(),
                 _ => panic!("the oracle's printed default for `{name}' does not read back"),
             };
             interp.define_special_variable(name, value);
@@ -7131,7 +7139,7 @@ impl Interpreter {
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
         interp.define_special_variable("char-script-table", char_script_table);
         let auto_fill_chars = interp.make_char_table(Some("auto-fill-chars".into()), Value::Nil);
-        if let Value::CharTable(table_id) = auto_fill_chars {
+        if let Kind::CharTable(table_id) = auto_fill_chars.kind() {
             interp
                 .char_table_set(table_id, ' ' as u32, Value::T)
                 .expect("initialize auto-fill-chars space entry");
@@ -7141,7 +7149,7 @@ impl Interpreter {
             interp.define_special_variable("auto-fill-chars", Value::CharTable(table_id));
         }
         let char_width_table = interp.make_char_table(None, Value::Integer(1));
-        if let Value::CharTable(table_id) = char_width_table {
+        if let Kind::CharTable(table_id) = char_width_table.kind() {
             interp
                 .char_table_set_range(table_id, 0x80, 0x9f, Value::Integer(4))
                 .expect("initialize C1 character widths");
@@ -7150,7 +7158,7 @@ impl Interpreter {
         let ambiguous_width_chars = interp.make_char_table(None, Value::Nil);
         interp.define_special_variable("ambiguous-width-chars", ambiguous_width_chars);
         let printable_chars = interp.make_char_table(None, Value::Nil);
-        if let Value::CharTable(table_id) = printable_chars {
+        if let Kind::CharTable(table_id) = printable_chars.kind() {
             interp
                 .char_table_set_range(table_id, 32, 126, Value::T)
                 .expect("initialize ASCII printable characters");
@@ -7761,7 +7769,7 @@ impl Interpreter {
                 ),
             ),
         );
-        let Value::Record(selected_window_id) = selected_window else {
+        let Kind::Record(selected_window_id) = selected_window.kind() else {
             unreachable!("window records use Value::Record");
         };
         interp.set_selected_window_id(selected_window_id.id);
@@ -7787,7 +7795,7 @@ impl Interpreter {
                 ),
             ),
         );
-        let Value::Record(minibuffer_window_id) = minibuffer_window else {
+        let Kind::Record(minibuffer_window_id) = minibuffer_window.kind() else {
             unreachable!("window records use Value::Record");
         };
         interp.set_minibuffer_window_id(minibuffer_window_id.id);
@@ -7997,43 +8005,46 @@ impl Interpreter {
 }
 
 fn symbol_name(value: &Value) -> Option<String> {
-    match value {
-        Value::Symbol(name) => Some(name.to_string()),
+    match value.kind() {
+        Kind::Symbol(name) => Some(name.to_string()),
         _ => None,
     }
 }
 
 fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Cons(_) => {
             let items = value.to_vec()?;
             if items.len() == 2
-                && matches!(items.first(), Some(Value::Symbol(name)) if name == "setf")
+                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "setf")
             {
                 let target = function_name_from_binding_form(&items[1])?;
                 return Ok(format!("(setf {target})"));
             }
             if items.len() == 2
-                && matches!(items.first(), Some(Value::Symbol(name)) if name == "function" || name == "function-quote" || name == "quote")
+                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "function" || name == "function-quote" || name == "quote")
             {
                 return function_name_from_binding_form(&items[1]);
             }
             let other = unquote(value);
             Err(LispError::WrongTypeArgument("symbolp".into(), other))
         }
-        _ => match unquote(value) {
-            Value::Symbol(name) => Ok(name.to_string()),
-            other => Err(LispError::WrongTypeArgument("symbolp".into(), other)),
+        _ => match unquote(value).kind() {
+            Kind::Symbol(name) => Ok(name.to_string()),
+            other => Err(LispError::WrongTypeArgument(
+                "symbolp".into(),
+                other.value(),
+            )),
         },
     }
 }
 
 fn unquote(value: &Value) -> Value {
-    match value {
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Cons(_) => {
             if let Ok(items) = value.to_vec()
                 && items.len() == 2
-                && matches!(items.first(), Some(Value::Symbol(name)) if name == "quote")
+                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "quote")
             {
                 return items[1];
             }
@@ -8105,17 +8116,17 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 }
 
 fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
-    match value {
-        Value::Nil => crate::buffer::UndoEntry::Boundary,
-        Value::Cons(_) => match value.cons_values() {
+    match value.kind() {
+        Kind::Nil => crate::buffer::UndoEntry::Boundary,
+        Kind::Cons(_) => match value.cons_values().map(|(a0, a1)| (a0.kind(), a1.kind())) {
             // GNU records an insertion as (BEG . END).
-            Some((Value::Integer(beg), Value::Integer(end))) if beg >= 0 && end >= beg => {
+            Some((Kind::Integer(beg), Kind::Integer(end))) if beg >= 0 && end >= beg => {
                 crate::buffer::UndoEntry::Insert {
                     pos: beg as usize,
                     len: (end - beg) as usize,
                 }
             }
-            Some((Value::String(text), Value::Integer(pos))) => crate::buffer::UndoEntry::Delete {
+            Some((Kind::String(text), Kind::Integer(pos))) => crate::buffer::UndoEntry::Delete {
                 pos: pos.unsigned_abs() as usize,
                 point_after: pos < 0,
                 text: text.to_string(),
@@ -8133,8 +8144,8 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
     let mut start = 0usize;
     if body.len() > 1
         && matches!(
-            body.first(),
-            Some(Value::String(_) | Value::StringObject(_))
+            body.first().map(|v| v.kind()),
+            Some(Kind::String(_) | Kind::StringObject(_))
         )
     {
         start = 1;
@@ -8155,7 +8166,7 @@ fn proper_list_headed_by(value: &Value, name: &str) -> bool {
     let Some((car, _)) = value.cons_cells() else {
         return false;
     };
-    let head_matches = matches!(&*car.borrow(), Value::Symbol(head) if head == name);
+    let head_matches = matches!((*car.borrow()).kind(), Kind::Symbol(head) if head == name);
     head_matches && value.to_vec().is_ok()
 }
 
@@ -8174,11 +8185,11 @@ fn is_vector_literal(value: &Value) -> bool {
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head, Value::Symbol(name) if name == "lambda")
+            matches!(head.kind(), Kind::Symbol(name) if name == "lambda")
                 || (crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
                     && matches!(
-                        crate::lisp::primitives::symbol_with_pos_parts(interp, head),
-                        Some((Value::Symbol(name), _)) if name == "lambda"
+                        crate::lisp::primitives::symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
+                        Some((Kind::Symbol(name), _)) if name == "lambda"
                     ))
         })
     })
@@ -8206,7 +8217,7 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     let mut rest_arg_seen = false;
 
     for item in items {
-        let Value::Symbol(symbol) = item else {
+        let Kind::Symbol(symbol) = item.kind() else {
             return Err(invalid_function(*spec));
         };
         match symbol.as_str() {

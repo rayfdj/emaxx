@@ -1,6 +1,7 @@
 use super::core::{list_cdr, list_forms, list_next};
 use super::*;
 use crate::lisp::reader;
+use crate::lisp::types::Kind;
 impl Interpreter {
     pub(super) fn sf_quote(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         let Some((template, _)) = list_next(args) else {
@@ -11,8 +12,8 @@ impl Interpreter {
         // ...)' literals) that must be resolved first, but marker-free
         // templates — the common case — are returned directly.  The verdict
         // is cached per template so hot code doesn't rescan large constants.
-        if let Value::Cons(cell) = &template {
-            let key = crate::lisp::types::ConsCell::identity(cell);
+        if let Kind::Cons(cell) = template.kind() {
+            let key = crate::lisp::types::ConsCell::identity(&cell);
             if self
                 .plain_quote_templates
                 .get(&key)
@@ -208,14 +209,14 @@ impl Interpreter {
     /// elements); a dotted element signals listp on its tail, as Fcar of
     /// Fcdr does.
     fn let_binding_parts(binding: &Value) -> Result<(Value, Option<Value>), LispError> {
-        let Value::Cons(cell) = binding else {
+        let Kind::Cons(cell) = binding.kind() else {
             return Err(wrong_type_argument("listp", *binding));
         };
         let name = *cell.car.borrow();
         let rest = *cell.cdr.borrow();
-        match &rest {
-            Value::Nil => Ok((name, None)),
-            Value::Cons(second) => {
+        match rest.kind() {
+            Kind::Nil => Ok((name, None)),
+            Kind::Cons(second) => {
                 if !second.cdr.borrow().is_nil() {
                     return Err(LispError::SignalValue(Value::cons(
                         Value::symbol("error"),
@@ -229,7 +230,7 @@ impl Interpreter {
                 }
                 Ok((name, Some(*second.car.borrow())))
             }
-            other => Err(wrong_type_argument("listp", *other)),
+            other => Err(wrong_type_argument("listp", other.value())),
         }
     }
 
@@ -240,9 +241,9 @@ impl Interpreter {
         tail: &Value,
         varlist: &Value,
     ) -> Result<Option<(Value, Value)>, LispError> {
-        match tail {
-            Value::Nil => Ok(None),
-            Value::Cons(cell) => Ok(Some((*cell.car.borrow(), *cell.cdr.borrow()))),
+        match tail.kind() {
+            Kind::Nil => Ok(None),
+            Kind::Cons(cell) => Ok(Some((*cell.car.borrow(), *cell.cdr.borrow()))),
             _ => Err(wrong_type_argument("listp", *varlist)),
         }
     }
@@ -268,7 +269,7 @@ impl Interpreter {
         let Some((varlist, body)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("let".into(), 0));
         };
-        if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
+        if is_vector_literal(&varlist) || !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
             return Err(wrong_type_argument("listp", varlist));
         }
         // Flet: the values first (`temps'), then each variable bound --
@@ -301,17 +302,17 @@ impl Interpreter {
         let mut tail = varlist;
         while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
             tail = next;
-            match &binding {
-                Value::Symbol(name) => {
-                    Self::check_let_binding_name(name)?;
-                    if self.binding_is_dynamic_symbol(name, env) {
-                        push_special(*name, Value::Nil);
+            match binding.kind() {
+                Kind::Symbol(name) => {
+                    Self::check_let_binding_name(&name)?;
+                    if self.binding_is_dynamic_symbol(&name, env) {
+                        push_special(name, Value::Nil);
                     } else {
-                        lexenv = Self::cons_binding(*name, Value::Nil, lexenv);
+                        lexenv = Self::cons_binding(name, Value::Nil, lexenv);
                         lexical_bindings = true;
                     }
                 }
-                Value::Record(_)
+                Kind::Record(_)
                     if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                         && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                             .is_some() =>
@@ -326,7 +327,7 @@ impl Interpreter {
                         lexical_bindings = true;
                     }
                 }
-                Value::Cons(_) => {
+                Kind::Cons(_) => {
                     let (name_value, init) = Self::let_binding_parts(&binding)?;
                     let name =
                         crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
@@ -395,7 +396,7 @@ impl Interpreter {
         let Some((varlist, body)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("let*".into(), 0));
         };
-        if is_vector_literal(&varlist) || !matches!(varlist, Value::Nil | Value::Cons(_)) {
+        if is_vector_literal(&varlist) || !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
             return Err(wrong_type_argument("listp", varlist));
         }
         // FletX: `lexenv' is the environment at entry; the first lexical
@@ -411,12 +412,12 @@ impl Interpreter {
             let mut tail = varlist;
             while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
                 tail = next;
-                let (name, value) = match &binding {
-                    Value::Symbol(name) => {
-                        Self::check_let_binding_name(name)?;
-                        (*name, Value::Nil)
+                let (name, value) = match binding.kind() {
+                    Kind::Symbol(name) => {
+                        Self::check_let_binding_name(&name)?;
+                        (name, Value::Nil)
                     }
-                    Value::Record(_)
+                    Kind::Record(_)
                         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                             && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                                 .is_some() =>
@@ -426,7 +427,7 @@ impl Interpreter {
                         Self::check_let_binding_name(&name)?;
                         (name, Value::Nil)
                     }
-                    Value::Cons(_) => {
+                    Kind::Cons(_) => {
                         let (name_value, init) = Self::let_binding_parts(&binding)?;
                         let name = crate::lisp::primitives::checked_symbol_identity(
                             self,
@@ -497,9 +498,9 @@ impl Interpreter {
 
     /// `EQ' of two environment heads: the same cons, or both nil.
     pub(crate) fn same_environment(a: &Value, b: &Value) -> bool {
-        match (a, b) {
-            (Value::Cons(a), Value::Cons(b)) => crate::lisp::types::SharedCons::ptr_eq(a, b),
-            (Value::Nil, Value::Nil) => true,
+        match (a.kind(), b.kind()) {
+            (Kind::Cons(a), Kind::Cons(b)) => crate::lisp::types::SharedCons::ptr_eq(&a, &b),
+            (Kind::Nil, Kind::Nil) => true,
             _ => false,
         }
     }

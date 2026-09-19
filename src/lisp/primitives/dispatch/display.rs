@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
+use crate::lisp::types::Kind;
 
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
@@ -308,7 +309,7 @@ pub(crate) fn with_preserved_echo_redisplay<T>(f: impl FnOnce() -> T) -> T {
 
 /// The face runs of a propertized string value, in char offsets.
 pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
-    let Value::StringObject(state) = value else {
+    let Kind::StringObject(state) = value.kind() else {
         return Vec::new();
     };
     let state = state.borrow();
@@ -331,7 +332,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     let Ok(items) = spec.to_vec() else {
         return false;
     };
-    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "image")
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "image")
         || items.len() < 5
         || (items.len() - 1) % 2 != 0
     {
@@ -339,14 +340,14 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     }
     let mut properties = std::collections::HashMap::new();
     for pair in items[1..].as_chunks::<2>().0 {
-        let Value::Symbol(key) = &pair[0] else {
+        let Kind::Symbol(key) = pair[0].kind() else {
             return false;
         };
         if !key.starts_with(':') || properties.insert(key.as_str(), &pair[1]).is_some() {
             return false;
         }
     }
-    let Some(Value::Symbol(image_type)) = properties.get(":type").copied() else {
+    let Some(Kind::Symbol(image_type)) = properties.get(":type").copied().map(|v| v.kind()) else {
         return false;
     };
     let type_supported = interp
@@ -355,15 +356,15 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
         .is_some_and(|types| {
             types
                 .iter()
-                .any(|value| matches!(value, Value::Symbol(name) if name == image_type))
+                .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == image_type))
         });
     let file = properties.get(":file").copied();
     let data = properties.get(":data").copied();
     type_supported
         && matches!(
-            (file, data),
-            (Some(Value::String(_) | Value::StringObject(_)), None)
-                | (None, Some(Value::String(_) | Value::StringObject(_)))
+            (file.map(|v| v.kind()), data.map(|v| v.kind())),
+            (Some(Kind::String(_) | Kind::StringObject(_)), None)
+                | (None, Some(Kind::String(_) | Kind::StringObject(_)))
         )
 }
 
@@ -560,11 +561,11 @@ fn decode_live_frame(
     frame: Option<&Value>,
     nil_defaults_to_selected: bool,
 ) -> Result<Value, LispError> {
-    match frame {
+    match frame.map(|v| v.kind()) {
         None => Ok(interp.selected_frame_value()),
-        Some(Value::Nil) if nil_defaults_to_selected => Ok(interp.selected_frame_value()),
-        Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(Value::Frame(*id)),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
+        Some(Kind::Nil) if nil_defaults_to_selected => Ok(interp.selected_frame_value()),
+        Some(Kind::Frame(id)) if interp.frame_is_live(id) => Ok(Value::Frame(id)),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.value())),
     }
 }
 
@@ -582,8 +583,8 @@ fn frame_or_window_id(interp: &Interpreter, value: Option<&Value>) -> Result<u64
     if let Some(value) = value
         && let Some(window) = window_record_id_from_value(interp, value)
         && !matches!(
-            window_slot_value(interp, window, WINDOW_KIND_SLOT),
-            Value::Symbol(kind) if kind == DELETED_WINDOW_KIND
+            window_slot_value(interp, window, WINDOW_KIND_SLOT).kind(),
+            Kind::Symbol(kind) if kind == DELETED_WINDOW_KIND
         )
     {
         return Ok(interp
@@ -631,9 +632,9 @@ fn frame_or_buffer_changed(
     variable: Option<&Value>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let variable_name = match variable {
-        None | Some(Value::Nil) => None,
-        Some(value) => Some(value.as_symbol()?.to_string()),
+    let variable_name = match variable.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => None,
+        Some(value) => Some(value.value().as_symbol()?.to_string()),
     };
     let old_state = if let Some(name) = variable_name.as_deref() {
         interp.lookup(name, env)?
@@ -651,8 +652,8 @@ fn frame_or_buffer_changed(
                 .zip(items)
                 .all(|(new, old)| values_eq_in_env(interp, new, old, env))
             && matches!(
-                items.get(current.len()),
-                Some(Value::Symbol(symbol)) if symbol == "lambda"
+                items.get(current.len()).map(|v| v.kind()),
+                Some(Kind::Symbol(symbol)) if symbol == "lambda"
             )
     });
     if unchanged {
@@ -772,8 +773,8 @@ fn set_window_slot_value(
 }
 
 fn window_link(interp: &Interpreter, window_id: u64, slot: usize) -> Option<u64> {
-    match window_slot_value(interp, window_id, slot) {
-        Value::Record(id) => Some(id.id),
+    match window_slot_value(interp, window_id, slot).kind() {
+        Kind::Record(id) => Some(id.id),
         _ => None,
     }
 }
@@ -822,7 +823,7 @@ fn apply_staged_window_sizes(
     };
     set_window_geometry(interp, window_id, (new_width, new_height, x, y))?;
     let staged_normal = window_slot_value(interp, window_id, WINDOW_NEW_NORMAL_SLOT);
-    if matches!(staged_normal, Value::Float(_) | Value::Integer(_)) {
+    if matches!(staged_normal.kind(), Kind::Float(_) | Kind::Integer(_)) {
         let slot = if horizontal {
             WINDOW_NORMAL_WIDTH_SLOT
         } else {
@@ -832,8 +833,8 @@ fn apply_staged_window_sizes(
     }
     let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
     let vertical_combination = matches!(
-        kind,
-        Value::Symbol(ref kind) if kind == INTERNAL_VERTICAL_WINDOW_KIND
+        kind.kind(),
+        Kind::Symbol(ref kind) if kind == INTERNAL_VERTICAL_WINDOW_KIND
     );
     let mut child = window_link(interp, window_id, WINDOW_FIRST_CHILD_SLOT);
     let (mut child_x, mut child_y) = (x, y);
@@ -873,8 +874,8 @@ fn frame_root_window_value(interp: &Interpreter) -> Value {
 fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
     let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
     !matches!(
-        kind,
-        Value::Symbol(ref kind)
+        kind.kind(),
+        Kind::Symbol(ref kind)
             if matches!(
                 kind.as_str(),
                 MINIBUFFER_WINDOW_KIND
@@ -1055,12 +1056,13 @@ fn tty_supports_face_attributes(
         let Ok(items) = reference.to_vec() else {
             continue;
         };
-        if !matches!(items.first(), Some(Value::Symbol(name)) if name.starts_with(':')) {
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+        {
             pending.extend(items.into_iter().rev());
             continue;
         }
         for pair in items.as_chunks::<2>().0 {
-            if let Value::Symbol(key) = &pair[0] {
+            if let Kind::Symbol(key) = pair[0].kind() {
                 pairs.push((key.to_string(), pair[1]));
             }
         }
@@ -1123,10 +1125,10 @@ fn tty_supports_face_attributes(
                 .ok();
             // face_attr_equal_p compares color strings case-insensitively.
             let text_of = |value: &Value| -> Option<String> {
-                match value {
-                    Value::String(text) => Some(text.to_string()),
-                    Value::StringObject(state) => {
-                        Some(std::cell::RefCell::borrow(state).text.clone())
+                match value.kind() {
+                    Kind::String(text) => Some(text.to_string()),
+                    Kind::StringObject(state) => {
+                        Some(std::cell::RefCell::borrow(&state).text.clone())
                     }
                     _ => None,
                 }
@@ -1167,14 +1169,14 @@ pub(crate) fn resolve_tty_face_attrs(
     // `(header-line magit-header-line header-line)'.  Redisplay realizes
     // the cdr as the effective precedence-ordered face list; the trailing
     // base face is deliberately resolved without recursively remapping it.
-    if let Value::Symbol(requested) = face
+    if let Kind::Symbol(requested) = face.kind()
         && let Some(remapped) = interp
             .lookup_var("face-remapping-alist", env)
             .and_then(|alist| alist.to_vec().ok())
             .and_then(|entries| {
                 entries.into_iter().find_map(|entry| {
                     let key = entry.car().ok()?;
-                    matches!(&key, Value::Symbol(name) if name == requested)
+                    matches!(key.kind(), Kind::Symbol(name) if name == requested)
                         .then(|| entry.cdr().ok())?
                 })
             })
@@ -1195,7 +1197,7 @@ pub(crate) fn resolve_tty_face_attrs(
     // `(comint-highlight-prompt comint-highlight-prompt)').  Realize
     // each member and fold, letting an earlier member's set attributes
     // override a later one's.
-    if matches!(face, Value::Cons(_)) {
+    if matches!(face.kind(), Kind::Cons(_)) {
         let options = resolve_tty_face_reference_options(interp, env, face, 0);
         return TtyFaceAttrs {
             foreground: options.foreground,
@@ -1217,7 +1219,7 @@ pub(crate) fn resolve_tty_face_attrs(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
+            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s == "unspecified"))
             .filter(|value| !value.is_nil())
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
@@ -1229,7 +1231,7 @@ pub(crate) fn resolve_tty_face_attrs(
         foreground: color_index(interp, env, foreground),
         background: color_index(interp, env, background),
         bold: attribute(interp, env, ":weight")
-            .is_some_and(|weight| matches!(weight, Value::Symbol(s) if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")),
+            .is_some_and(|weight| matches!(weight.kind(), Kind::Symbol(s) if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")),
         underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
         reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
         extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
@@ -1300,13 +1302,14 @@ fn resolve_tty_face_reference_options(
     if depth >= 32 {
         return TtyFaceAttrOptions::default();
     }
-    let Value::Cons(_) = face else {
+    let Kind::Cons(_) = face.kind() else {
         return resolve_tty_face_attr_options(interp, env, face);
     };
     let Ok(items) = face.to_vec() else {
         return TtyFaceAttrOptions::default();
     };
-    if !matches!(items.first(), Some(Value::Symbol(name)) if name.starts_with(':')) {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+    {
         let mut merged = TtyFaceAttrOptions::default();
         for item in items.iter().rev() {
             let options = resolve_tty_face_reference_options(interp, env, item, depth + 1);
@@ -1318,7 +1321,7 @@ fn resolve_tty_face_reference_options(
     let pairs = items.as_chunks::<2>().0;
     let inherited = pairs
         .iter()
-        .find(|pair| matches!(&pair[0], Value::Symbol(name) if name == ":inherit"))
+        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == ":inherit"))
         .map(|pair| &pair[1])
         .filter(|value| value.is_truthy());
     let mut merged = inherited
@@ -1326,18 +1329,18 @@ fn resolve_tty_face_reference_options(
         .unwrap_or_default();
     let color_index = tty_face_color_index;
     for pair in pairs {
-        let Value::Symbol(name) = &pair[0] else {
+        let Kind::Symbol(name) = pair[0].kind() else {
             continue;
         };
         let value = &pair[1];
-        if matches!(value, Value::Symbol(name) if name == "unspecified") {
+        if matches!(value.kind(), Kind::Symbol(name) if name == "unspecified") {
             continue;
         }
         match name.as_ref() {
             ":foreground" => merged.foreground = color_index(interp, env, value),
             ":background" => merged.background = color_index(interp, env, value),
             ":weight" => {
-                merged.bold = Some(matches!(value, Value::Symbol(weight)
+                merged.bold = Some(matches!(value.kind(), Kind::Symbol(weight)
                     if weight == "bold"
                         || weight == "semi-bold"
                         || weight == "extra-bold"
@@ -1366,7 +1369,7 @@ fn resolve_tty_face_attr_options(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
+            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s == "unspecified"))
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
         tty_face_color_index(interp, env, value.as_ref()?)
@@ -1377,7 +1380,7 @@ fn resolve_tty_face_attr_options(
         foreground: color_index(interp, env, foreground),
         background: color_index(interp, env, background),
         bold: attribute(interp, env, ":weight").map(|weight| {
-            matches!(weight, Value::Symbol(ref s)
+            matches!(weight.kind(), Kind::Symbol(ref s)
                 if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")
         }),
         underline: attribute(interp, env, ":underline").map(|value| value.is_truthy()),
@@ -1424,7 +1427,7 @@ pub(crate) fn window_face_spans(
             .into_iter()
             .filter_map(|entry| {
                 let key = entry.car().ok()?;
-                matches!(&key, Value::Symbol(name) if name == "face")
+                matches!(key.kind(), Kind::Symbol(name) if name == "face")
                     .then(|| entry.cdr().ok()?.to_vec().ok())?
             })
             .flatten()
@@ -1631,8 +1634,8 @@ fn live_window_id_or_selected(
         .ok_or_else(|| LispError::TypeError("window-live-p".into(), window.type_name()))?;
     let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
     if matches!(
-        kind,
-        Value::Symbol(ref kind)
+        kind.kind(),
+        Kind::Symbol(ref kind)
             if matches!(
                 kind.as_str(),
                 INTERNAL_HORIZONTAL_WINDOW_KIND
@@ -1722,16 +1725,17 @@ fn split_window_tree(
 ) -> Result<Value, LispError> {
     let old_id = window_id_or_selected(interp, old)?;
     let kind = window_slot_value(interp, old_id, WINDOW_KIND_SLOT);
-    if matches!(kind, Value::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND)
+    if matches!(kind.kind(), Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND)
         || window_buffer_id(interp, &interp.record_value(old_id)).is_none()
     {
         return Err(LispError::Signal(
             "Attempt to split a non-live window".into(),
         ));
     }
-    let horizontal = matches!(side, Value::T)
-        || matches!(side, Value::Symbol(side) if matches!(side.as_str(), "left" | "right"));
-    let before = matches!(side, Value::Symbol(side) if matches!(side.as_str(), "above" | "left"));
+    let horizontal = matches!(side.kind(), Kind::T)
+        || matches!(side.kind(), Kind::Symbol(side) if matches!(side.as_str(), "left" | "right"));
+    let before =
+        matches!(side.kind(), Kind::Symbol(side) if matches!(side.as_str(), "above" | "left"));
     let requested = pixel_size.as_integer()?;
     let (width, height, left, top) = window_geometry(interp, old_id);
     let available = if horizontal { width } else { height };
@@ -1793,7 +1797,7 @@ fn split_window_tree(
             (width, height, left, top),
         ),
     );
-    let Value::Record(parent_id) = parent else {
+    let Kind::Record(parent_id) = parent.kind() else {
         unreachable!("window records use Value::Record");
     };
     let parent_id = parent_id.id;
@@ -1802,7 +1806,7 @@ fn split_window_tree(
         "window",
         window_record_slots(Some(buffer_id), start, Value::Nil, new_geometry),
     );
-    let Value::Record(new_id) = new else {
+    let Kind::Record(new_id) = new.kind() else {
         unreachable!("window records use Value::Record");
     };
     let new_id = new_id.id;
@@ -2058,7 +2062,7 @@ fn delete_other_windows_from_tree(
             continue;
         }
         let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
-        if !matches!(kind, Value::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND) {
+        if !matches!(kind.kind(), Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND) {
             set_window_slot_value(
                 interp,
                 id,
@@ -2083,12 +2087,12 @@ fn window_buffer_id_or_selected(
     interp: &Interpreter,
     window: Option<&Value>,
 ) -> Result<u64, LispError> {
-    match window {
-        None | Some(Value::Nil) => Ok(interp.selected_window_buffer_id()),
+    match window.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(interp.selected_window_buffer_id()),
         Some(window) => {
-            window_id_or_selected(interp, window)?;
-            window_buffer_id(interp, window)
-                .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))
+            window_id_or_selected(interp, &window.value())?;
+            window_buffer_id(interp, &window.value())
+                .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.value()))
         }
     }
 }
@@ -2137,8 +2141,8 @@ fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
 
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
-    let root_id = match interp.root_window_value() {
-        Value::Record(id) => id.id,
+    let root_id = match interp.root_window_value().kind() {
+        Kind::Record(id) => id.id,
         _ => window_id,
     };
     let (root_width, _, root_left, _) = window_geometry(interp, root_id);
@@ -2261,10 +2265,10 @@ pub(crate) fn window_line_number_layout(
             .or_else(|| interp.default_value(name))
             .unwrap_or(Value::Nil)
     };
-    let mode = match buffer_local("display-line-numbers") {
-        Value::Nil => return None,
-        Value::Symbol(ref name) if name == "relative" => LineNumberMode::Relative,
-        Value::Symbol(ref name) if name == "visual" => LineNumberMode::Visual,
+    let mode = match buffer_local("display-line-numbers").kind() {
+        Kind::Nil => return None,
+        Kind::Symbol(ref name) if name == "relative" => LineNumberMode::Relative,
+        Kind::Symbol(ref name) if name == "visual" => LineNumberMode::Visual,
         _ => LineNumberMode::Absolute,
     };
     let current_absolute = buffer_local("display-line-numbers-current-absolute").is_truthy();
@@ -2338,10 +2342,10 @@ fn set_window_hscroll_value(
 }
 
 fn valid_window_cursor_type(value: &Value) -> bool {
-    match value {
-        Value::Nil | Value::T => true,
-        Value::Symbol(symbol) => matches!(symbol.as_str(), "box" | "hollow" | "bar" | "hbar"),
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Nil | Kind::T => true,
+        Kind::Symbol(symbol) => matches!(symbol.as_str(), "box" | "hollow" | "bar" | "hbar"),
+        Kind::Cons(_) => {
             let Ok(kind) = value
                 .car()
                 .and_then(|kind| kind.as_symbol().map(str::to_owned))
@@ -2373,9 +2377,9 @@ fn window_list_value(
         // value excludes it.  Add it before rotating so an active, selected
         // minibuffer is first in the cyclic order; window.el's
         // `get-buffer-window-list' relies on precisely this default contract.
-        let include_minibuffer = match minibuf {
-            Some(Value::T) => true,
-            None | Some(Value::Nil) => interp.active_minibuffer_buffer_id().is_some(),
+        let include_minibuffer = match minibuf.map(|v| v.kind()) {
+            Some(Kind::T) => true,
+            None | Some(Kind::Nil) => interp.active_minibuffer_buffer_id().is_some(),
             Some(_) => false,
         };
         if include_minibuffer {
@@ -2469,7 +2473,7 @@ define_dispatch!(
                                 interp.call_function_value(function, None, &[], env).ok()
                             })
                             .is_some_and(|result| {
-                                matches!(&result, Value::Symbol(answer)
+                                matches!(result.kind(), Kind::Symbol(answer)
                                     if answer == "dont-clear-message")
                             });
                         if !kept {
@@ -2568,7 +2572,7 @@ define_dispatch!(
                 let Ok(items) = args[0].to_vec() else {
                     return Ok(Value::String(args[0].to_string().into()));
                 };
-                let Some(Value::Symbol(condition)) = items.first() else {
+                let Some(Kind::Symbol(condition)) = items.first().map(|v| v.kind()) else {
                     return Ok(Value::String(args[0].to_string().into()));
                 };
                 // print.c:Ferror_message_string returns the original object
@@ -2579,11 +2583,11 @@ define_dispatch!(
                 // A file-error condition promotes its first datum to the
                 // message ("Opening input file: ...").
                 let file_error = interp
-                    .get_symbol_property(condition, "error-conditions")
+                    .get_symbol_property(&condition, "error-conditions")
                     .and_then(|conditions| conditions.to_vec().ok())
                     .is_some_and(|conditions| {
                         conditions.iter().any(
-                            |entry| matches!(entry, Value::Symbol(name) if name == "file-error"),
+                            |entry| matches!(entry.kind(), Kind::Symbol(name) if name == "file-error"),
                         )
                     });
                 let mut data = &items[1..];
@@ -2597,7 +2601,7 @@ define_dispatch!(
                     message
                 } else {
                     let message = interp
-                        .get_symbol_property(condition, "error-message")
+                        .get_symbol_property(&condition, "error-message")
                         .as_ref()
                         .and_then(string_like)
                         .map(|message| message.text)
@@ -2747,7 +2751,7 @@ define_dispatch!(
                 };
                 let only_process_id = just_this_one.and(target_process_id);
                 let run_timers =
-                    just_this_one.is_none_or(|value| !matches!(value, Value::Integer(_)));
+                    just_this_one.is_none_or(|value| !matches!(value.kind(), Kind::Integer(_)));
                 // A READ_KBD 0 wait: it never selects the keyboard-class
                 // notification descriptor, even when a callback nests it
                 // inside a keyboard read.
@@ -2812,7 +2816,7 @@ define_dispatch!(
             }
             "prin1" => {
                 need_arg_range(name, args, 1, 3)?;
-                let rendered = if matches!(args.get(2), None | Some(Value::Nil)) {
+                let rendered = if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
                     render_prin1(interp, &args[0], env)?
                 } else {
                     let mut print_env = printer_env_with_overrides(env, args.get(2))?;
@@ -2875,7 +2879,7 @@ define_dispatch!(
                         .is_some_and(|value| value.is_truthy())
                         && stream
                             .as_ref()
-                            .is_some_and(|value| matches!(value, Value::T));
+                            .is_some_and(|value| matches!(value.kind(), Kind::T));
                     let at_line_start = if noninteractive_stdout {
                         interp.batch_standard_output_last_char == Some('\n')
                     } else {
@@ -2898,7 +2902,7 @@ define_dispatch!(
                             .into(),
                     ));
                 }
-                if matches!(args.get(2), None | Some(Value::Nil)) {
+                if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
                     return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));
                 }
                 let mut print_env = printer_env_with_overrides(env, args.get(2))?;
@@ -2918,12 +2922,12 @@ define_dispatch!(
             }
             "redirect-debugging-output" => {
                 need_arg_range(name, args, 1, 2)?;
-                let target = match args.first() {
-                    None | Some(Value::Nil) => Value::Nil,
-                    Some(value) => Value::String(string_text(value)?.into()),
+                let target = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Value::Nil,
+                    Some(value) => Value::String(string_text(&value.value())?.into()),
                 };
-                interp.external_debugging_output_target = match &target {
-                    Value::String(path) => Some(path.to_string()),
+                interp.external_debugging_output_target = match target.kind() {
+                    Kind::String(path) => Some(path.to_string()),
                     _ => None,
                 };
                 Ok(target)
@@ -3146,7 +3150,7 @@ define_dispatch!(
             }
             "tty--set-output-buffer-size" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(args[0], Value::Integer(size) if size >= 0) {
+                if !matches!(args[0].kind(), Kind::Integer(size) if size >= 0) {
                     return Err(LispError::Signal("Invalid output buffer size".into()));
                 }
                 require_live_terminal(interp, args.get(1))?;
@@ -3173,8 +3177,8 @@ define_dispatch!(
                     // font.c:Finternal_char_font uses CHECK_CHARACTER, not
                     // Rust's Unicode scalar range (GNU also accepts surrogates
                     // and characters up to character.h:MAX_CHAR).
-                    let valid = matches!(character, Value::Integer(codepoint)
-                        if (0..=0x3f_ffff).contains(codepoint));
+                    let valid = matches!(character.kind(), Kind::Integer(codepoint)
+                        if (0..=0x3f_ffff).contains(&codepoint));
                     if !valid {
                         return Err(LispError::WrongTypeArgument(
                             "characterp".into(),
@@ -3197,8 +3201,8 @@ define_dispatch!(
                     {
                         // With POSITION, GNU uses CHECK_FIXNAT instead.
                         // Values outside CHAR_VALID_P subsequently return nil.
-                        let valid = matches!(character, Value::Integer(codepoint)
-                            if *codepoint >= 0);
+                        let valid = matches!(character.kind(), Kind::Integer(codepoint)
+                            if codepoint >= 0);
                         if !valid {
                             return Err(LispError::WrongTypeArgument(
                                 "wholenump".into(),
@@ -3271,7 +3275,8 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let filter = args.first().cloned().unwrap_or(Value::Nil);
-                if filter.is_nil() || matches!(filter, Value::Frame(id) if interp.frame_is_live(id))
+                if filter.is_nil()
+                    || matches!(filter.kind(), Kind::Frame(id) if interp.frame_is_live(id))
                 {
                     return Err(LispError::Signal(
                         "Window system frame should be used".into(),
@@ -3289,7 +3294,7 @@ define_dispatch!(
                 if !valid_image_spec(interp, &args[0], env) {
                     return Err(LispError::Signal("Invalid image specification".into()));
                 }
-                if matches!(args.get(1), Some(Value::T)) {
+                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
                     return Ok(Value::Nil);
                 }
                 Err(LispError::Signal(
@@ -3377,7 +3382,7 @@ define_dispatch!(
             "set-window-hscroll" => {
                 need_args(name, args, 2)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                let Value::Integer(requested) = args[1] else {
+                let Kind::Integer(requested) = args[1].kind() else {
                     return Err(wrong_type_argument("fixnump", args[1]));
                 };
                 set_window_hscroll_value(interp, window_id, requested)
@@ -3385,9 +3390,9 @@ define_dispatch!(
             "scroll-left" | "scroll-right" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window_id = live_window_id_or_selected(interp, None)?;
-                let requested = match args.first() {
-                    None | Some(Value::Nil) => window_text_width_columns(interp, window_id) - 2,
-                    Some(value) => prefix_numeric_value(value)?.as_integer()?,
+                let requested = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => window_text_width_columns(interp, window_id) - 2,
+                    Some(value) => prefix_numeric_value(&value.value())?.as_integer()?,
                 };
                 let current = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
                     .as_integer()
@@ -3408,8 +3413,8 @@ define_dispatch!(
                 let selected_id = live_window_id_or_selected(interp, None)?;
                 let selected_kind = window_slot_value(interp, selected_id, WINDOW_KIND_SLOT);
                 let mut candidate = if matches!(
-                    selected_kind,
-                    Value::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
+                    selected_kind.kind(),
+                    Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
                 ) {
                     interp
                         .lookup_var("minibuffer-scroll-window", env)
@@ -3419,9 +3424,10 @@ define_dispatch!(
                 };
 
                 if candidate.is_none()
-                    && let Some(buffer @ Value::Buffer(_)) =
-                        interp.lookup_var("other-window-scroll-buffer", env)
-                    && let Value::Buffer(buffer_value) = &buffer
+                    && let Some(buffer @ Kind::Buffer(_)) = interp
+                        .lookup_var("other-window-scroll-buffer", env)
+                        .map(|v| v.kind())
+                    && let Kind::Buffer(buffer_value) = buffer
                     && interp.has_buffer_id(buffer_value.id)
                 {
                     candidate = live_ordinary_window_ids(interp)
@@ -3435,7 +3441,7 @@ define_dispatch!(
                         candidate = Some(call_function_value(
                             interp,
                             &Value::symbol("display-buffer"),
-                            &[buffer, Value::T],
+                            &[buffer.value(), Value::T],
                             env,
                         )?);
                     }
@@ -3479,9 +3485,9 @@ define_dispatch!(
                         .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0]))?
                 };
                 let margin = |value: Option<&Value>| -> Result<Option<i64>, LispError> {
-                    match value {
-                        None | Some(Value::Nil) => Ok(None),
-                        Some(value) => Ok(Some(value.as_integer()?.max(0))),
+                    match value.map(|v| v.kind()) {
+                        None | Some(Kind::Nil) => Ok(None),
+                        Some(value) => Ok(Some(value.value().as_integer()?.max(0))),
                     }
                 };
                 let left = margin(args.get(1))?;
@@ -3558,10 +3564,10 @@ define_dispatch!(
                     interp.selected_window_buffer_id()
                 };
                 let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-                let pos = match args.first() {
-                    None | Some(Value::Nil) => interp.buffer.point(),
-                    Some(Value::T) => point_max,
-                    Some(value) => position_from_value(interp, value)?,
+                let pos = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.buffer.point(),
+                    Some(Kind::T) => point_max,
+                    Some(value) => position_from_value(interp, &value.value())?,
                 };
                 let start = window_start(interp, window)?;
                 let first_visible = start.max(point_min);
@@ -3793,7 +3799,7 @@ define_dispatch!(
             "window-resize-apply" => {
                 need_arg_range(name, args, 0, 2)?;
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                    && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
+                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
                 {
                     return Err(LispError::WrongTypeArgument("framep".into(), *frame));
                 }
@@ -3807,7 +3813,7 @@ define_dispatch!(
             "window-resize-apply-total" => {
                 need_arg_range(name, args, 0, 2)?;
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                    && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
+                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
                 {
                     return Err(LispError::WrongTypeArgument("framep".into(), *frame));
                 }
@@ -3824,7 +3830,7 @@ define_dispatch!(
                     .find_record(window_id)
                     .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
                     .is_some_and(
-                        |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                        |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
                     );
                 if is_minibuffer {
                     return Ok(Value::Integer(0));
@@ -3873,7 +3879,7 @@ define_dispatch!(
                 // A raw C-u (cons) centers, GNU's Frecenter convention.
                 let arg = args
                     .first()
-                    .filter(|value| !matches!(value, Value::Cons(_)));
+                    .filter(|value| !matches!(value.kind(), Kind::Cons(_)));
                 let height = selected_command_text_height(interp, env);
                 let line = resolve_window_line(arg, height / 2, height)?;
                 // Walk back whole screen lines: wrapped lines occupy one
@@ -3886,19 +3892,19 @@ define_dispatch!(
             "scroll-up" | "scroll-down" => {
                 need_arg_range(name, args, 0, 1)?;
                 let sign: isize = if name == "scroll-up" { 1 } else { -1 };
-                match args.first() {
+                match args.first().map(|v| v.kind()) {
                     // nil scrolls a near-full screen.
-                    None | Some(Value::Nil) => {
+                    None | Some(Kind::Nil) => {
                         let height = selected_command_text_height(interp, env);
                         scroll_selected_window(interp, env, None, sign, height)?
                     }
                     // `-' scrolls a near-full screen the other way.
-                    Some(Value::Symbol(minus)) if minus == "-" => {
+                    Some(Kind::Symbol(minus)) if minus == "-" => {
                         let height = selected_command_text_height(interp, env);
                         scroll_selected_window(interp, env, None, -sign, height)?
                     }
                     Some(value) => {
-                        let lines = prefix_numeric_value(value)?.as_integer()? as isize;
+                        let lines = prefix_numeric_value(&value.value())?.as_integer()? as isize;
                         let height = selected_command_text_height(interp, env);
                         scroll_selected_window(interp, env, Some(sign * lines), sign, height)?
                     }
@@ -3976,8 +3982,8 @@ define_dispatch!(
                         let in_margin = display_value.to_vec().is_ok_and(|items| {
                             items.first().is_some_and(|head| {
                                 head.to_vec().is_ok_and(|spec| {
-                                    matches!(spec.first(),
-                                    Some(Value::Symbol(kind)) if kind == "margin")
+                                    matches!(spec.first().map(|v| v.kind()),
+                                    Some(Kind::Symbol(kind)) if kind == "margin")
                                 })
                             })
                         });
@@ -4026,7 +4032,7 @@ define_dispatch!(
                 let Some(buffer) = args.first().filter(|value| !value.is_nil()) else {
                     return Ok(current_bidi_paragraph_direction_value(interp, env));
                 };
-                let Value::Buffer(buffer_value) = buffer else {
+                let Kind::Buffer(buffer_value) = buffer.kind() else {
                     return Err(wrong_type_argument("bufferp", *buffer));
                 };
                 let buffer_id = buffer_value.id;
@@ -4089,8 +4095,8 @@ define_dispatch!(
                 with_selected_window_buffer(interp, |interp| {
                     let right = direction > 0;
                     let right_to_left = matches!(
-                        current_bidi_paragraph_direction_value(interp, env),
-                        Value::Symbol(ref direction) if direction == "right-to-left"
+                        current_bidi_paragraph_direction_value(interp, env).kind(),
+                        Kind::Symbol(ref direction) if direction == "right-to-left"
                     );
                     let logical_forward = right != right_to_left;
                     let point = interp.buffer.point();
@@ -4161,7 +4167,7 @@ define_dispatch!(
             "display--update-for-mouse-movement" => {
                 need_args(name, args, 2)?;
                 for coordinate in args {
-                    if !matches!(coordinate, Value::Integer(_)) {
+                    if !matches!(coordinate.kind(), Kind::Integer(_)) {
                         return Err(wrong_type_argument("fixnump", *coordinate));
                     }
                 }
@@ -4194,10 +4200,12 @@ define_dispatch!(
             }
             "internal-show-cursor-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window_id = match args.first() {
-                    None | Some(Value::Nil) => interp.selected_window_id(),
-                    Some(window) => window_record_id_from_value(interp, window)
-                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))?,
+                let window_id = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.selected_window_id(),
+                    Some(window) => window_record_id_from_value(interp, &window.value())
+                        .ok_or_else(|| {
+                            LispError::WrongTypeArgument("windowp".into(), window.value())
+                        })?,
                 };
                 Ok(if interp.window_cursor_visible(window_id) {
                     Value::T
@@ -4222,8 +4230,14 @@ define_dispatch!(
                 // is Riemersma's metric in 64-bit arithmetic.
                 let mut color = |value: &Value| -> Result<[u16; 3], LispError> {
                     let rgb = match value.to_vec() {
-                        Ok(items) if value.cons_values().is_some() => match items.as_slice() {
-                            [Value::Integer(r), Value::Integer(g), Value::Integer(b), ..] => {
+                        Ok(items) if value.cons_values().is_some() => match items
+                            .as_slice()
+                            .iter()
+                            .map(|v| v.kind())
+                            .collect::<Vec<_>>()
+                            .as_slice()
+                        {
+                            [Kind::Integer(r), Kind::Integer(g), Kind::Integer(b), ..] => {
                                 Some([*r as u16, *g as u16, *b as u16])
                             }
                             _ => None,
@@ -4368,7 +4382,7 @@ define_dispatch!(
                 if !interp.is_window_configuration_value(&args[0]) {
                     return Err(wrong_type_argument("window-configuration-p", args[0]));
                 }
-                let Value::Record(id) = args[0] else {
+                let Kind::Record(id) = args[0].kind() else {
                     unreachable!()
                 };
                 Ok(interp
@@ -4384,8 +4398,8 @@ define_dispatch!(
                 if live_window_id_or_selected(interp, Some(object)).is_ok() {
                     return Ok(Value::T);
                 }
-                let buffer_id = match object {
-                    Value::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Some(buffer.id),
+                let buffer_id = match object.kind() {
+                    Kind::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Some(buffer.id),
                     _ => string_like(object)
                         .and_then(|string| interp.find_buffer(&string.text).map(|(id, _)| id)),
                 };
@@ -4408,7 +4422,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 if let Some(frame) = args.first()
                     && !frame.is_nil()
-                    && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
+                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
                 {
                     return Err(wrong_type_argument("frame-live-p", *frame));
                 }
@@ -4440,7 +4454,7 @@ define_dispatch!(
                     }
                     for hook in local_hooks
                         .into_iter()
-                        .filter(|hook| !matches!(hook, Value::T))
+                        .filter(|hook| !matches!(hook.kind(), Kind::T))
                     {
                         if let Err(error) = call_function_value(interp, &hook, &[], env) {
                             result = Err(error);
@@ -4466,7 +4480,7 @@ define_dispatch!(
                         .unwrap_or_default();
                     for hook in default_hooks
                         .into_iter()
-                        .filter(|hook| !matches!(hook, Value::T))
+                        .filter(|hook| !matches!(hook.kind(), Kind::T))
                     {
                         if let Err(error) = call_function_value(interp, &hook, &[], env) {
                             result = Err(error);
@@ -4580,8 +4594,8 @@ define_dispatch!(
                     window_buffer_id(interp, &window).is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {
                     if matches!(
-                        window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT),
-                        Value::T
+                        window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT).kind(),
+                        Kind::T
                     ) {
                         return Err(LispError::Signal(
                             "Window is strongly dedicated to its buffer".into(),
@@ -4677,9 +4691,9 @@ define_dispatch!(
                     .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| {
-                        if let Value::Frame(id) = &frame {
+                        if let Kind::Frame(id) = frame.kind() {
                             interp
-                                .frame_state(*id)
+                                .frame_state(id)
                                 .map(|f| interp.record_value(f.selected_window_id))
                                 .unwrap_or_else(|| interp.selected_window_value())
                         } else {
@@ -4690,7 +4704,7 @@ define_dispatch!(
                 if Some(frame) != interp.window_frame_id(window).map(Value::Frame) {
                     return Err(LispError::Signal("Window is on a different frame".into()));
                 }
-                let Value::Frame(frame) = frame else {
+                let Kind::Frame(frame) = frame.kind() else {
                     unreachable!()
                 };
                 Ok(window_list_value(
@@ -4716,11 +4730,11 @@ define_dispatch!(
                     .frame_states
                     .iter()
                     .filter(|frame| interp.frame_is_live(frame.id))
-                    .filter(|frame| match frame_filter {
-                        Value::T => true,
-                        Value::Frame(id) => frame.id == *id,
-                        Value::Integer(0) => frame.terminal_id == interp.selected_terminal_id(),
-                        Value::Symbol(name) if name == "visible" => {
+                    .filter(|frame| match frame_filter.kind() {
+                        Kind::T => true,
+                        Kind::Frame(id) => frame.id == id,
+                        Kind::Integer(0) => frame.terminal_id == interp.selected_terminal_id(),
+                        Kind::Symbol(name) if name == "visible" => {
                             frame.terminal_id == interp.selected_terminal_id()
                         }
                         _ => frame.id == own_frame,
@@ -4759,7 +4773,7 @@ define_dispatch!(
                         .expect("decoded frame has state")
                         .root_window_id,
                 );
-                while let Value::Record(id) = window {
+                while let Kind::Record(id) = window.kind() {
                     let Some(child) = window_link(interp, id.id, WINDOW_FIRST_CHILD_SLOT) else {
                         return Ok(Value::Record(id));
                     };
@@ -4844,8 +4858,8 @@ define_dispatch!(
                 };
                 let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
                 let valid = !matches!(
-                    kind,
-                    Value::Symbol(ref kind) if kind == DELETED_WINDOW_KIND
+                    kind.kind(),
+                    Kind::Symbol(ref kind) if kind == DELETED_WINDOW_KIND
                 );
                 let live = valid && window_buffer_id(interp, &args[0]).is_some();
                 Ok(
@@ -4887,12 +4901,12 @@ define_dispatch!(
                 let window_id = window_id_or_selected(interp, &window)?;
                 let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
                 let matching_orientation = matches!(
-                    (name, kind),
-                    ("window-top-child", Value::Symbol(kind))
+                    (name, kind.kind()),
+                    ("window-top-child", Kind::Symbol(kind))
                         if kind == INTERNAL_VERTICAL_WINDOW_KIND
                 ) || matches!(
-                    (name, window_slot_value(interp, window_id, WINDOW_KIND_SLOT)),
-                    ("window-left-child", Value::Symbol(kind))
+                    (name, window_slot_value(interp, window_id, WINDOW_KIND_SLOT).kind()),
+                    ("window-left-child", Kind::Symbol(kind))
                         if kind == INTERNAL_HORIZONTAL_WINDOW_KIND
                 );
                 Ok(if matching_orientation {
@@ -4916,8 +4930,8 @@ define_dispatch!(
                 let window_id = window_id_or_selected(interp, &args[0])?;
                 let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
                 if !matches!(
-                    kind,
-                    Value::Symbol(ref kind)
+                    kind.kind(),
+                    Kind::Symbol(ref kind)
                         if matches!(
                             kind.as_str(),
                             INTERNAL_HORIZONTAL_WINDOW_KIND | INTERNAL_VERTICAL_WINDOW_KIND
@@ -4951,7 +4965,7 @@ define_dispatch!(
                 .find_record(window_id)
                 .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
                 .is_some_and(
-                    |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
                 );
                 Ok(if is_minibuffer { Value::T } else { Value::Nil })
             }
@@ -5035,9 +5049,9 @@ define_dispatch!(
                 let Some(metrics) = interactive_window_metrics() else {
                     return Ok(Value::Nil);
                 };
-                let pos = match args.first() {
-                    None | Some(Value::Nil) => interp.buffer.point(),
-                    Some(value) => position_from_value(interp, value)?,
+                let pos = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.buffer.point(),
+                    Some(value) => position_from_value(interp, &value.value())?,
                 };
                 let point_min = interp.buffer.point_min();
                 let point_max = interp.buffer.point_max();
@@ -5176,13 +5190,17 @@ define_dispatch!(
             }
             "get-buffer-window" => {
                 need_arg_range(name, args, 0, 2)?;
-                let buffer_id = match args.first().filter(|buffer| !buffer.is_nil()) {
+                let buffer_id = match args
+                    .first()
+                    .filter(|buffer| !buffer.is_nil())
+                    .map(|v| v.kind())
+                {
                     None => Some(interp.current_buffer_id()),
-                    Some(Value::Buffer(buffer)) => {
+                    Some(Kind::Buffer(buffer)) => {
                         interp.has_buffer_id(buffer.id).then_some(buffer.id)
                     }
                     Some(value) => {
-                        let name = string_text(value)?;
+                        let name = string_text(&value.value())?;
                         interp.find_buffer(&name).map(|(id, _)| id)
                     }
                 };
@@ -5203,7 +5221,7 @@ define_dispatch!(
                 Ok(windows
                     .into_iter()
                     .find(|window| {
-                        let Value::Record(id) = window else {
+                        let Kind::Record(id) = window.kind() else {
                             return false;
                         };
                         (is_live_ordinary_window(interp, id.id)
@@ -5232,7 +5250,7 @@ define_dispatch!(
                 .find_record(window_id)
                 .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
                 .is_some_and(
-                    |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
                 );
                 if !is_minibuffer {
                     return Err(LispError::Signal(
@@ -5319,10 +5337,10 @@ fn render_mode_line_element(
     if depth > 32 {
         return Ok(String::new());
     }
-    match element {
-        value if value.is_string() => {
-            let string =
-                string_like(value).ok_or_else(|| wrong_type_argument("stringp", *value))?;
+    match element.kind() {
+        value if value.value().is_string() => {
+            let string = string_like(&value.value())
+                .ok_or_else(|| wrong_type_argument("stringp", value.value()))?;
             let (text, display_offsets) = if glass && !string.props.is_empty() {
                 render_mode_line_string_display_properties(
                     interp,
@@ -5345,7 +5363,7 @@ fn render_mode_line_element(
             // the shipped formats propertize whole templates (%12b's
             // buffer-id face), so a face covering the template covers
             // the expansion.
-            if let Value::StringObject(state) = value {
+            if let Kind::StringObject(state) = value.value().kind() {
                 let state = state.borrow();
                 let source_length = state.text.chars().count();
                 for property_span in &state.props {
@@ -5382,14 +5400,14 @@ fn render_mode_line_element(
             }
             Ok(rendered)
         }
-        Value::Symbol(name) => {
+        Kind::Symbol(name) => {
             if name == "t" || name == "nil" {
                 return Ok(String::new());
             }
             // Only a direct string value is shown verbatim; list values
             // are full constructs whose strings carry %-specs (xdisp's
             // display_mode_element symbol case).
-            let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+            let value = interp.lookup_var(&name, env).unwrap_or(Value::Nil);
             render_mode_line_element(
                 interp,
                 env,
@@ -5401,13 +5419,13 @@ fn render_mode_line_element(
                 spans,
             )
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let items = element.to_vec().unwrap_or_default();
             let Some(head) = items.first() else {
                 return Ok(String::new());
             };
-            match head {
-                Value::Symbol(keyword) if keyword == ":eval" => {
+            match head.kind() {
+                Kind::Symbol(keyword) if keyword == ":eval" => {
                     let Some(form) = items.get(1) else {
                         return Ok(String::new());
                     };
@@ -5427,19 +5445,21 @@ fn render_mode_line_element(
                         spans,
                     )
                 }
-                Value::Symbol(keyword) if keyword == ":propertize" => {
+                Kind::Symbol(keyword) if keyword == ":propertize" => {
                     let Some(inner) = items.get(1) else {
                         return Ok(String::new());
                     };
                     // The outer span goes in before the recursion so any
                     // nested :propertize face lands after it and wins on
                     // overlap when the spans apply in order.
-                    let face = items[2..].chunks(2).find_map(|pair| match pair {
-                        [Value::Symbol(key), value] if key == "face" => Some(*value),
-                        _ => None,
+                    let face = items[2..].chunks(2).find_map(|pair| {
+                        match pair.iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice() {
+                            [Kind::Symbol(key), value] if key == "face" => Some(*value),
+                            _ => None,
+                        }
                     });
                     let span_index = face.map(|face| {
-                        spans.push((offset, offset, face));
+                        spans.push((offset, offset, face.value()));
                         spans.len() - 1
                     });
                     let mut text = render_mode_line_element(
@@ -5459,11 +5479,13 @@ fn render_mode_line_element(
                     // minimum (produce_stretch_glyph floors width at 1).
                     if glass {
                         let mut properties = items[2..].chunks(2);
-                        if let Some(min_width) = properties.find_map(|pair| match pair {
-                            [Value::Symbol(key), value] if key == "display" => {
-                                mode_line_min_width(value)
+                        if let Some(min_width) = properties.find_map(|pair| {
+                            match pair.iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice() {
+                                [Kind::Symbol(key), value] if key == "display" => {
+                                    mode_line_min_width(&value.value())
+                                }
+                                _ => None,
                             }
-                            _ => None,
                         }) {
                             let actual = text.chars().count();
                             let pad = if actual < min_width {
@@ -5481,9 +5503,9 @@ fn render_mode_line_element(
                     }
                     Ok(text)
                 }
-                Value::Symbol(condition) => {
+                Kind::Symbol(condition) => {
                     // (SYMBOL THEN [ELSE]): a variable-conditioned construct.
-                    let value = interp.lookup_var(condition, env).unwrap_or(Value::Nil);
+                    let value = interp.lookup_var(&condition, env).unwrap_or(Value::Nil);
                     let branch = if value.is_truthy() {
                         items.get(1)
                     } else {
@@ -5503,9 +5525,8 @@ fn render_mode_line_element(
                         None => Ok(String::new()),
                     }
                 }
-                Value::Integer(width) => {
+                Kind::Integer(width) => {
                     // (WIDTH REST...): pad to WIDTH, or truncate to -WIDTH.
-                    let width = *width;
                     let mut text = String::new();
                     for item in &items[1..] {
                         text.push_str(&render_mode_line_element(
@@ -5577,18 +5598,18 @@ fn render_mode_line_string_display_properties(
             });
         let align_to = display.and_then(|value| {
             let items = value.to_vec().ok()?;
-            if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+            if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
                 return None;
             }
-            let index = items
-                .iter()
-                .position(|item| matches!(item, Value::Symbol(name) if name == ":align-to"))?;
+            let index = items.iter().position(
+                |item| matches!(item.kind(), Kind::Symbol(name) if name == ":align-to"),
+            )?;
             let target = items.get(index + 1)?;
-            match target {
-                Value::Integer(target) => usize::try_from(*target).ok(),
+            match target.kind() {
+                Kind::Integer(target) => usize::try_from(target).ok(),
                 expression => crate::lisp::primitives::eval_impl(
                     interp,
-                    std::slice::from_ref(expression),
+                    std::slice::from_ref(&expression.value()),
                     env,
                 )
                 .ok()
@@ -5642,12 +5663,18 @@ pub(crate) fn render_mode_line_glass(
 /// The `(min-width (N.0))' display specification's width, if VALUE is one.
 fn mode_line_min_width(value: &Value) -> Option<usize> {
     let items = value.to_vec().ok()?;
-    match items.as_slice() {
-        [Value::Symbol(key), width] if key == "min-width" => {
-            let widths = width.to_vec().ok()?;
-            match widths.first()? {
-                Value::Float(width) => Some(width.get() as usize),
-                Value::Integer(width) => Some(*width as usize),
+    match items
+        .as_slice()
+        .iter()
+        .map(|v| v.kind())
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [Kind::Symbol(key), width] if key == "min-width" => {
+            let widths = width.value().to_vec().ok()?;
+            match (widths.first()?).kind() {
+                Kind::Float(width) => Some(width.get() as usize),
+                Kind::Integer(width) => Some(width as usize),
                 _ => None,
             }
         }
@@ -5803,10 +5830,10 @@ fn decode_mode_line_spec(
                 // third catch; the old dispatch was a gate escape).
                 let eol_type = super::call(interp, "coding-system-eol-type", &[buffer_coding], env)
                     .unwrap_or(Value::Nil);
-                let mnemonic_variable = match &eol_type {
-                    Value::Integer(0) => "eol-mnemonic-unix",
-                    Value::Integer(1) => "eol-mnemonic-dos",
-                    Value::Integer(2) => "eol-mnemonic-mac",
+                let mnemonic_variable = match eol_type.kind() {
+                    Kind::Integer(0) => "eol-mnemonic-unix",
+                    Kind::Integer(1) => "eol-mnemonic-dos",
+                    Kind::Integer(2) => "eol-mnemonic-mac",
                     _ => "eol-mnemonic-undecided",
                 };
                 let mnemonic = var(interp, mnemonic_variable);
@@ -5830,8 +5857,8 @@ fn decode_mode_line_spec(
             // none, else the `process-status' symbol's name.
             match super::call(interp, "get-buffer-process", &[Value::Nil], env) {
                 Ok(process) if process.is_truthy() => {
-                    match super::call(interp, "process-status", &[process], env) {
-                        Ok(Value::Symbol(status)) => status.to_string(),
+                    match super::call(interp, "process-status", &[process], env).map(|v| v.kind()) {
+                        Ok(Kind::Symbol(status)) => status.to_string(),
                         _ => String::new(),
                     }
                 }
@@ -5882,8 +5909,10 @@ fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value)
         "plist-get",
         &[plist, Value::symbol(":mnemonic")],
         env,
-    ) {
-        Ok(Value::Integer(code)) => char::from_u32(code as u32).unwrap_or('-'),
+    )
+    .map(|v| v.kind())
+    {
+        Ok(Kind::Integer(code)) => char::from_u32(code as u32).unwrap_or('-'),
         _ => '-',
     }
 }
@@ -6155,7 +6184,7 @@ mod tests {
         interp.pop_active_catch_tag();
         assert!(matches!(
             result,
-            Err(LispError::Throw(actual, Value::Integer(7))) if values_eql(&actual, &tag)
+            Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(7)
         ));
         assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
         assert_eq!(
@@ -6236,7 +6265,7 @@ mod tests {
         interp.pop_active_catch_tag();
         assert!(matches!(
             result,
-            Err(LispError::Throw(actual, Value::Integer(7))) if values_eql(&actual, &tag)
+            Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(7)
         ));
         assert_eq!(interp.current_buffer_id(), saved_buffer);
         assert_eq!(interp.selected_window_id(), saved_window);

@@ -10,6 +10,7 @@
 
 use super::super::types::{SymbolName, Value};
 use crate::lisp::primitives::FnvBuildHasher;
+use crate::lisp::types::Kind;
 use hashlink::LinkedHashMap;
 
 #[derive(Clone, Default)]
@@ -32,14 +33,14 @@ impl LocalCells {
     pub(crate) fn binding(&self, symbol: &SymbolName) -> Option<Option<&Value>> {
         self.cells
             .get(&symbol.id())
-            .map(|(_, value)| (!matches!(value, Value::Unbound)).then_some(value))
+            .map(|(_, value)| (!matches!(value.kind(), Kind::Unbound)).then_some(value))
     }
 
     pub(crate) fn binding_by_name(&self, name: &str) -> Option<Option<&Value>> {
         let id = SymbolName::id_of(name)?;
         self.cells
             .get(&id)
-            .map(|(_, value)| (!matches!(value, Value::Unbound)).then_some(value))
+            .map(|(_, value)| (!matches!(value.kind(), Kind::Unbound)).then_some(value))
     }
 
     /// Bind SYMBOL; a new binding enumerates after every existing one.

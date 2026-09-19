@@ -23,7 +23,7 @@ use crate::lisp::primitives::{
     InvisibilitySpec, invisible_class_at, invisible_run_at, resolve_buffer_invisibility,
     visual_line_first_line,
 };
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -670,9 +670,12 @@ fn wrapped_echo_cursor(
 /// The mini window's height ceiling, GNU's `max-mini-window-height'
 /// (default 0.25 of the frame).
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
-    match interpreter.lookup_var("max-mini-window-height", &crate::lisp::types::Env::new()) {
-        Some(Value::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
-        Some(Value::Float(fraction)) if fraction.get() > 0.0 => {
+    match interpreter
+        .lookup_var("max-mini-window-height", &crate::lisp::types::Env::new())
+        .map(|v| v.kind())
+    {
+        Some(Kind::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
+        Some(Kind::Float(fraction)) if fraction.get() > 0.0 => {
             (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
         }
         _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
@@ -1023,8 +1026,8 @@ fn command_loop(
                     // silently; unbound clicks echo like any key.
                     let silent = state.pending.len() == 1
                         && matches!(
-                            state.pending[0].car(),
-                            Ok(Value::Symbol(head)) if head.contains("down-mouse-")
+                            state.pending[0].car().map(|v| v.kind()),
+                            Ok(Kind::Symbol(head)) if head.contains("down-mouse-")
                         );
                     if !silent {
                         state.echo = format!("{} is undefined", describe_keys(&state.pending));
@@ -1330,13 +1333,13 @@ fn describe_keys(events: &[Value]) -> String {
     let mut parts = Vec::new();
     let mut meta = false;
     for event in events {
-        match event {
-            Value::Integer(27) => {
+        match event.kind() {
+            Kind::Integer(27) => {
                 meta = true;
                 continue;
             }
-            Value::Integer(code) => parts.push(describe_char(*code, meta)),
-            Value::Symbol(name) => parts.push(if meta {
+            Kind::Integer(code) => parts.push(describe_char(code, meta)),
+            Kind::Symbol(name) => parts.push(if meta {
                 format!("M-<{name}>")
             } else {
                 format!("<{name}>")
@@ -1451,9 +1454,12 @@ fn window_render_geometry(
     let truncate_lines = buffer_local(interpreter, "truncate-lines").is_truthy();
     let partial = info.width < frame_cols;
     let partial_truncates = partial
-        && match interpreter.lookup_var("truncate-partial-width-windows", env) {
-            Some(Value::Integer(columns)) => columns > info.width as i64,
-            Some(value) => value.is_truthy(),
+        && match interpreter
+            .lookup_var("truncate-partial-width-windows", env)
+            .map(|v| v.kind())
+        {
+            Some(Kind::Integer(columns)) => columns > info.width as i64,
+            Some(value) => value.value().is_truthy(),
             None => TRUNCATE_PARTIAL_WIDTH > info.width as i64,
         };
 
@@ -1471,8 +1477,8 @@ fn window_render_geometry(
     let auto_mode = auto_mode_value.is_truthy();
     // hscrolling_current_line_p: `current-line' hscrolls only the row
     // showing point, and only while auto-hscroll is not suspended.
-    let current_line_only =
-        !suspended && matches!(&auto_mode_value, Value::Symbol(name) if name == "current-line");
+    let current_line_only = !suspended
+        && matches!(auto_mode_value.kind(), Kind::Symbol(name) if name == "current-line");
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -1527,8 +1533,8 @@ fn window_render_geometry(
             // glyphs produced, so its current_x carries their columns.
             let current_x = point_dcol + lnum_cols as i64;
             let step = interpreter.lookup_var("hscroll-step", env);
-            let new_hscroll = match step {
-                Some(Value::Float(relative)) if relative.get() >= 0.0 => {
+            let new_hscroll = match step.map(|v| v.kind()) {
+                Some(Kind::Float(relative)) if relative.get() >= 0.0 => {
                     let wanted = if cursor_x >= text_w - margin {
                         (w as f64) * (1.0 - relative.get()) - margin as f64
                     } else {
@@ -1536,7 +1542,7 @@ fn window_render_geometry(
                     };
                     (current_x - wanted as i64).max(0)
                 }
-                Some(Value::Integer(step)) if step > 0 => {
+                Some(Kind::Integer(step)) if step > 0 => {
                     let wanted = if cursor_x >= text_w - margin {
                         w - step - margin
                     } else {
@@ -1570,14 +1576,14 @@ fn window_render_geometry(
 /// completion--insert-strings builds its columns from them).
 fn space_align_to_target(value: &Value) -> Option<usize> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
         return None;
     }
     let position = items
         .iter()
-        .position(|item| matches!(item, Value::Symbol(name) if name == ":align-to"))?;
-    match items.get(position + 1) {
-        Some(Value::Integer(column)) if *column >= 0 => Some(*column as usize),
+        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name == ":align-to"))?;
+    match items.get(position + 1).map(|v| v.kind()) {
+        Some(Kind::Integer(column)) if column >= 0 => Some(column as usize),
         _ => None,
     }
 }
@@ -1594,12 +1600,12 @@ enum SpecifiedSpace {
 /// width is one cell, so `:width 0.5' is deliberately a zero-cell stretch.
 fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
         return None;
     }
     if let Some(position) = items
         .iter()
-        .position(|item| matches!(item, Value::Symbol(name) if name == ":width"))
+        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name == ":width"))
         && let Some(width) = items
             .get(position + 1)
             .and_then(|value| value.as_float().ok())
@@ -1627,7 +1633,7 @@ fn window_margin_display(value: &Value) -> Option<(String, Value)> {
     let display = crate::lisp::primitives::string_property_at(value, 0, "display")?;
     let parts = display.to_vec().ok()?;
     let location = parts.first()?.to_vec().ok()?;
-    if !matches!(location.first(), Some(Value::Symbol(name)) if name == "margin") {
+    if !matches!(location.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "margin") {
         return None;
     }
     let side = location.get(1)?.as_symbol().ok()?.to_string();
@@ -1646,8 +1652,8 @@ fn tty_fringe_display(value: &Value, position: usize) -> bool {
     };
     display.to_vec().ok().is_some_and(|parts| {
         matches!(
-            parts.first(),
-            Some(Value::Symbol(name)) if name == "left-fringe" || name == "right-fringe"
+            parts.first().map(|v| v.kind()),
+            Some(Kind::Symbol(name)) if name == "left-fringe" || name == "right-fringe"
         )
     })
 }
@@ -1696,8 +1702,9 @@ impl<'a> GlyphlessDisplayContext<'a> {
         let table_id = match interpreter
             .buffer_local_toplevel_value(buffer_id, "glyphless-char-display")
             .or_else(|| interpreter.default_toplevel_value("glyphless-char-display"))
+            .map(|v| v.kind())
         {
-            Some(Value::CharTable(table_id)) => Some(table_id),
+            Some(Kind::CharTable(table_id)) => Some(table_id),
             _ => None,
         };
         // The shared term.c policy is what makes LANG=C produce glyphless
@@ -1715,15 +1722,15 @@ impl<'a> GlyphlessDisplayContext<'a> {
             .cons_values()
             .map(|(_, text_terminal)| text_terminal)
             .unwrap_or(value);
-        let method = match value {
-            Value::Symbol(name) if name == "zero-width" && no_font_fallback => {
+        let method = match value.kind() {
+            Kind::Symbol(name) if name == "zero-width" && no_font_fallback => {
                 GlyphlessDisplayMethod::EmptyBox
             }
-            Value::Symbol(name) if name == "zero-width" => GlyphlessDisplayMethod::ZeroWidth,
-            Value::Symbol(name) if name == "thin-space" => GlyphlessDisplayMethod::ThinSpace,
-            Value::Symbol(name) if name == "empty-box" => GlyphlessDisplayMethod::EmptyBox,
-            Value::Symbol(name) if name == "hex-code" => GlyphlessDisplayMethod::HexCode,
-            value => match crate::lisp::primitives::string_text(&value) {
+            Kind::Symbol(name) if name == "zero-width" => GlyphlessDisplayMethod::ZeroWidth,
+            Kind::Symbol(name) if name == "thin-space" => GlyphlessDisplayMethod::ThinSpace,
+            Kind::Symbol(name) if name == "empty-box" => GlyphlessDisplayMethod::EmptyBox,
+            Kind::Symbol(name) if name == "hex-code" => GlyphlessDisplayMethod::HexCode,
+            value => match crate::lisp::primitives::string_text(&value.value()) {
                 Ok(acronym) => GlyphlessDisplayMethod::Acronym(acronym),
                 Err(_) if no_font_fallback => GlyphlessDisplayMethod::EmptyBox,
                 Err(_) => return None,
@@ -2779,28 +2786,28 @@ fn run_fontification_functions(
 ) {
     let pos_value = Value::Integer(pos as i64);
     let is_bare_lambda = matches!(
-        value.car(),
-        Ok(Value::Symbol(ref name)) if name == "lambda"
+        value.car().map(|v| v.kind()),
+        Ok(Kind::Symbol(ref name)) if name == "lambda"
     );
-    if !matches!(value, Value::Cons(_)) || is_bare_lambda {
+    if !matches!(value.kind(), Kind::Cons(_)) || is_bare_lambda {
         let _ =
             interpreter.call_function_value(*value, None, std::slice::from_ref(&pos_value), env);
         return;
     }
     let mut rest = *value;
-    while let Value::Cons(_) = rest {
+    while let Kind::Cons(_) = rest.kind() {
         let Ok(function) = rest.car() else {
             break;
         };
-        if matches!(function, Value::T) {
+        if matches!(function.kind(), Kind::T) {
             let mut globals = interpreter
                 .default_value("fontification-functions")
                 .unwrap_or(Value::Nil);
-            while let Value::Cons(_) = globals {
+            while let Kind::Cons(_) = globals.kind() {
                 let Ok(global_fn) = globals.car() else {
                     break;
                 };
-                if !matches!(global_fn, Value::T) {
+                if !matches!(global_fn.kind(), Kind::T) {
                     let _ = interpreter.call_function_value(
                         global_fn,
                         None,
@@ -3280,7 +3287,7 @@ fn redraw_with_echo_policy(
                     &crate::lisp::types::Env::new(),
                 )
                 .unwrap_or(Value::Nil);
-            while let Value::Cons(_) = variables {
+            while let Kind::Cons(_) = variables.kind() {
                 let Ok(symbol_value) = variables.car() else {
                     break;
                 };
@@ -3288,8 +3295,9 @@ fn redraw_with_echo_policy(
                 let Ok(symbol) = symbol_value.as_symbol() else {
                     continue;
                 };
-                let Some(Value::Marker(marker)) =
-                    interpreter.lookup_var(symbol, &crate::lisp::types::Env::new())
+                let Some(Kind::Marker(marker)) = interpreter
+                    .lookup_var(symbol, &crate::lisp::types::Env::new())
+                    .map(|v| v.kind())
                 else {
                     continue;
                 };
@@ -3730,7 +3738,7 @@ fn redraw_with_echo_policy(
                 let to_col = to_col.min(col_cap);
                 if from_col < to_col {
                     let row = &mut frame[job.top + index];
-                    if matches!(face, Value::Symbol(name) if name == "default") {
+                    if matches!(face.kind(), Kind::Symbol(name) if name == "default") {
                         row.replace_attrs(job.left + from_col, job.left + to_col, attrs);
                     } else {
                         row.overlay(job.left + from_col, job.left + to_col, attrs);
@@ -4997,9 +5005,10 @@ mod tests {
         )
         .expect("erase the scratch banner");
         interpreter.buffer.insert("ö😀\n");
-        let Value::CharTable(table_id) = interpreter
+        let Kind::CharTable(table_id) = interpreter
             .default_toplevel_value("glyphless-char-display")
             .expect("initialized glyphless table")
+            .kind()
         else {
             panic!("glyphless-char-display is a char table")
         };
@@ -6633,9 +6642,9 @@ fn make_menu_executor(
             let mut pending_keystroke_echo = crate::lisp::primitives::take_pending_keystroke_echo();
             let echo_keystrokes = interpreter
                 .lookup_var("echo-keystrokes", env)
-                .map(|value| match value {
-                    Value::Integer(seconds) => seconds as f64,
-                    Value::Float(seconds) => seconds.get(),
+                .map(|value| match value.kind() {
+                    Kind::Integer(seconds) => seconds as f64,
+                    Kind::Float(seconds) => seconds.get(),
                     _ => 0.0,
                 })
                 .unwrap_or(1.0);
@@ -6833,9 +6842,9 @@ fn make_menu_executor(
                         Resolution::Undefined => break Value::Nil,
                     }
                 };
-                let name = match &command {
-                    Value::Symbol(name) => name.as_ref(),
-                    Value::T => "tty-menu-exit",
+                let name = match command.kind() {
+                    Kind::Symbol(name) => name.as_str(),
+                    Kind::T => "tty-menu-exit",
                     _ => "",
                 };
                 match name {

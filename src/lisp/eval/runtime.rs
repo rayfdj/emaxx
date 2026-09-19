@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use crate::lisp::types::RecordRef;
 
 /// What names a record to `find_record': the object, or an id in this
@@ -104,8 +105,8 @@ impl Interpreter {
     }
 
     pub(super) fn stored_value(value: Value) -> Value {
-        match value {
-            Value::String(_) => {
+        match value.kind() {
+            Kind::String(_) => {
                 let string = primitives::string_like(&value).expect("string_like handles strings");
                 primitives::make_shared_string_value_with_multibyte(
                     string.text,
@@ -113,7 +114,7 @@ impl Interpreter {
                     string.multibyte,
                 )
             }
-            other => other,
+            other => other.value(),
         }
     }
 
@@ -341,9 +342,9 @@ impl Interpreter {
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value {
-            Value::Buffer(buffer) if self.has_buffer_id(buffer.id) => Ok(buffer.id),
-            Value::Buffer(buffer) => {
+        match value.kind() {
+            Kind::Buffer(buffer) if self.has_buffer_id(buffer.id) => Ok(buffer.id),
+            Kind::Buffer(buffer) => {
                 self.find_buffer(&buffer.name)
                     .map(|(id, _)| id)
                     .ok_or_else(|| {
@@ -854,8 +855,9 @@ impl Interpreter {
         match self
             .find_record(id)
             .and_then(|record| record.slots.get(slot))
+            .map(|v| v.kind())
         {
-            Some(Value::Record(link)) => Some(link.id),
+            Some(Kind::Record(link)) => Some(link.id),
             _ => None,
         }
     }
@@ -868,12 +870,12 @@ impl Interpreter {
             .cloned()
             .unwrap_or(Value::Nil);
         let horizontal = matches!(
-            kind,
-            Value::Symbol(ref kind) if kind == primitives::INTERNAL_HORIZONTAL_WINDOW_KIND
+            kind.kind(),
+            Kind::Symbol(ref kind) if kind == primitives::INTERNAL_HORIZONTAL_WINDOW_KIND
         );
         let vertical = matches!(
-            kind,
-            Value::Symbol(ref kind) if kind == primitives::INTERNAL_VERTICAL_WINDOW_KIND
+            kind.kind(),
+            Kind::Symbol(ref kind) if kind == primitives::INTERNAL_VERTICAL_WINDOW_KIND
         );
         let mut children = Vec::new();
         let mut child = self.window_record_link(id, primitives::WINDOW_FIRST_CHILD_SLOT);
@@ -1059,11 +1061,11 @@ impl Interpreter {
         &self,
         value: &Value,
     ) -> Option<WindowConfigurationSnapshot> {
-        let Value::Record(id) = value else {
+        let Kind::Record(id) = value.kind() else {
             return None;
         };
         let record = self
-            .find_record(*id)
+            .find_record(id)
             .filter(|record| record.kind == RecordKind::WindowConfiguration)?;
         let slots = &record.slots;
         let selected_window_id = slots
@@ -1089,15 +1091,15 @@ impl Interpreter {
             .unwrap_or_else(|| vec![(selected_window_id, selected_window_slots.clone())]);
         Some(WindowConfigurationSnapshot {
             frame_id: slots.get(7).and_then(|value| {
-                if let Value::Frame(id) = value {
-                    Some(*id)
+                if let Kind::Frame(id) = value.kind() {
+                    Some(id)
                 } else {
                     None
                 }
             })?,
             selected_frame_id: slots.get(8).and_then(|value| {
-                if let Value::Frame(id) = value {
-                    Some(*id)
+                if let Kind::Frame(id) = value.kind() {
+                    Some(id)
                 } else {
                     None
                 }
@@ -1111,8 +1113,8 @@ impl Interpreter {
             window_records,
             root_window_id: slots
                 .get(5)
-                .and_then(|value| match value {
-                    Value::Record(id) => Some(id.id),
+                .and_then(|value| match value.kind() {
+                    Kind::Record(id) => Some(id.id),
                     _ => None,
                 })
                 .unwrap_or(selected_window_id),
@@ -1457,7 +1459,7 @@ impl Interpreter {
         let marker_id = match self.buffer_mark_marker_ids.get(&buffer_id).copied() {
             Some(marker_id) => marker_id,
             None => {
-                let Value::Marker(marker_id) = self.make_marker() else {
+                let Kind::Marker(marker_id) = self.make_marker().kind() else {
                     unreachable!("make_marker always returns a marker")
                 };
                 self.buffer_mark_marker_ids.insert(buffer_id, marker_id);
@@ -1581,23 +1583,23 @@ impl Interpreter {
         insertion_type: bool,
     ) -> Result<Value, LispError> {
         let marker_value = self.make_marker();
-        let Value::Marker(marker_id) = marker_value else {
+        let Kind::Marker(marker_id) = marker_value.kind() else {
             unreachable!("make_marker always returns a marker")
         };
-        match value {
-            Value::Nil => {
+        match value.kind() {
+            Kind::Nil => {
                 self.set_marker(marker_id, None, None)?;
             }
-            Value::Marker(source_id) => {
-                let source = self.find_marker(*source_id).cloned().ok_or_else(|| {
+            Kind::Marker(source_id) => {
+                let source = self.find_marker(source_id).cloned().ok_or_else(|| {
                     LispError::TypeError("marker".into(), format!("marker<{}>", source_id))
                 })?;
                 self.set_marker(marker_id, source.position, source.buffer_id)?;
             }
-            Value::Integer(position) => {
+            Kind::Integer(position) => {
                 self.set_marker(
                     marker_id,
-                    Some(*position as usize),
+                    Some(position as usize),
                     Some(self.current_buffer_id()),
                 )?;
             }
@@ -1922,10 +1924,10 @@ impl Interpreter {
         if crate::lisp::primitives::symbol_with_pos_parts(self, value).is_some() {
             return true;
         }
-        let Value::Cons(cell) = value else {
+        let Kind::Cons(cell) = value.kind() else {
             return false;
         };
-        let identity = crate::lisp::types::ConsCell::identity(cell);
+        let identity = crate::lisp::types::ConsCell::identity(&cell);
         if !visited.insert(identity) {
             return false;
         }
@@ -2195,7 +2197,7 @@ impl Interpreter {
         {
             return *answer;
         }
-        let mutable = |value: &Value| matches!(value, Value::Cons(_) | Value::StringObject(_));
+        let mutable = |value: &Value| matches!(value.kind(), Kind::Cons(_) | Kind::StringObject(_));
         let mut answer = false;
         let mut current = Some(table_id);
         let mut seen = HashSet::new();
@@ -2474,7 +2476,7 @@ impl Interpreter {
     /// from the standard table when its source had no parent.
     pub fn copy_syntax_table(&mut self, id: u64) -> Result<Value, LispError> {
         let copy = self.clone_char_table(id)?;
-        let Value::CharTable(copy_id) = copy else {
+        let Kind::CharTable(copy_id) = copy.kind() else {
             unreachable!("clone_char_table returns a character table")
         };
         let standard_id = self.standard_syntax_table_id;
@@ -2516,13 +2518,13 @@ impl Interpreter {
         prototype: &Value,
         closure_vars: &[Value],
     ) -> Result<Value, LispError> {
-        let Value::Record(id) = prototype else {
+        let Kind::Record(id) = prototype.kind() else {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
                 *prototype,
             ));
         };
-        let Some(record) = self.find_record(*id) else {
+        let Some(record) = self.find_record(id) else {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
                 *prototype,
@@ -2638,19 +2640,18 @@ impl Interpreter {
         let mut owned_ids = Vec::new();
         let mut watched_cells = Vec::new();
         let mut tail = *view;
-        while let Value::Cons(cell) = tail {
+        while let Kind::Cons(cell) = tail.kind() {
             let cell_id = crate::lisp::types::ConsCell::identity(&cell);
             if !seen.insert(cell_id) {
                 break;
             }
             // The parent's list is spliced in as the tail (its first cell
             // carries the `keymap' symbol); its cells are the parent's own.
-            if cell_id
-                != crate::lisp::types::ConsCell::identity(match &view {
-                    Value::Cons(root) => root,
-                    _ => break,
-                })
-                && matches!(&*cell.car.borrow(), Value::Symbol(name) if name == "keymap")
+            let Kind::Cons(root) = view.kind() else {
+                break;
+            };
+            if cell_id != crate::lisp::types::ConsCell::identity(&root)
+                && matches!((*cell.car.borrow()).kind(), Kind::Symbol(name) if name == "keymap")
             {
                 break;
             }
@@ -2665,12 +2666,12 @@ impl Interpreter {
             // claim arbitrary binding definitions or included keymap roots;
             // those either are not structure or have their own owner.
             let entry = *cell.car.borrow();
-            if let Value::Cons(entry_cell) = &entry
-                && !matches!(entry.car(), Ok(Value::Symbol(ref name)) if name == "keymap")
+            if let Kind::Cons(entry_cell) = entry.kind()
+                && !matches!(entry.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "keymap")
             {
-                let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
+                let entry_id = crate::lisp::types::ConsCell::identity(&entry_cell);
                 owned_ids.push(entry_id);
-                watched_cells.push(*entry_cell);
+                watched_cells.push(entry_cell);
                 self.keymap_public_cons_owners
                     .entry(entry_id)
                     .or_default()
@@ -2744,7 +2745,7 @@ impl Interpreter {
             "treesit-compiled-query",
             Vec::new(),
         );
-        let Value::Record(record_id) = query else {
+        let Kind::Record(record_id) = query.kind() else {
             unreachable!("Tree-sitter queries use opaque record identities");
         };
         self.treesit_queries.push(TreeSitterQueryState {
@@ -2757,7 +2758,7 @@ impl Interpreter {
     }
 
     pub(crate) fn treesit_query_state(&self, value: &Value) -> Option<&TreeSitterQueryState> {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             return None;
         };
         self.treesit_queries
@@ -2770,7 +2771,7 @@ impl Interpreter {
         value: &Value,
         query: std::rc::Rc<tree_sitter::Query>,
     ) {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             unreachable!("only compiled Tree-sitter query records are cached");
         };
         self.treesit_queries
@@ -2851,7 +2852,7 @@ impl Interpreter {
             .unwrap_or("eql")
             .to_string();
         let copy = self.create_record_with_kind(record.type_tag, slots, record.kind);
-        if let Value::Record(copy_id) = &copy {
+        if let Kind::Record(copy_id) = copy.kind() {
             if let Some(state) = custom_hash_state {
                 crate::lisp::native_comp::note_lisp_allocation(
                     super::gnu_hash_table_storage_bytes(state.capacity),
@@ -2961,8 +2962,8 @@ impl Interpreter {
         // `require' only records dependencies while reading a file.  GNU
         // recognizes that state by the final string in current-load-list.
         if !matches!(
-            entries.last(),
-            Some(Value::String(_) | Value::StringObject(_))
+            entries.last().map(|v| v.kind()),
+            Some(Kind::String(_) | Kind::StringObject(_))
         ) {
             return;
         }
@@ -3019,11 +3020,11 @@ impl Interpreter {
             .lookup_var("current-load-list", &Env::new())
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
-        while let Value::Cons(cell) = tail {
+        while let Kind::Cons(cell) = tail.kind() {
             let next = *cell.cdr.borrow();
             if next.is_nil() {
                 let last = cell.car.borrow();
-                if matches!(&*last, Value::String(_) | Value::StringObject(_)) {
+                if matches!((*last).kind(), Kind::String(_) | Kind::StringObject(_)) {
                     file = *last;
                 }
             }
@@ -3114,7 +3115,7 @@ impl Interpreter {
             let Some((key, functions)) = entry.cons_values() else {
                 continue;
             };
-            if !matches!(key, Value::Symbol(name) if name == feature) {
+            if !matches!(key.kind(), Kind::Symbol(name) if name == feature) {
                 continue;
             }
             for function in functions.to_vec()? {
@@ -3138,7 +3139,7 @@ impl Interpreter {
             .is_ok_and(|features| {
                 features
                     .iter()
-                    .any(|value| matches!(value, Value::Symbol(name) if name == feature))
+                    .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == feature))
             })
     }
 
@@ -3258,17 +3259,20 @@ impl Interpreter {
 #[cfg(test)]
 mod runtime_index_tests {
     use super::{CharTableEntry, Interpreter, Value};
+    use crate::lisp::types::Kind;
 
     #[test]
     fn dense_char_table_ids_resolve_their_own_slots() {
         let mut interp = Interpreter::new();
-        let Value::CharTable(first_id) =
-            interp.make_char_table(Some("first".into()), Value::Integer(11))
+        let Kind::CharTable(first_id) = interp
+            .make_char_table(Some("first".into()), Value::Integer(11))
+            .kind()
         else {
             unreachable!("make_char_table must return a char table")
         };
-        let Value::CharTable(second_id) =
-            interp.make_char_table(Some("second".into()), Value::Integer(22))
+        let Kind::CharTable(second_id) = interp
+            .make_char_table(Some("second".into()), Value::Integer(22))
+            .kind()
         else {
             unreachable!("make_char_table must return a char table")
         };
@@ -3288,8 +3292,9 @@ mod runtime_index_tests {
     #[test]
     fn ascii_char_table_index_preserves_overrides_inheritance_and_mutation() {
         let mut interp = Interpreter::new();
-        let Value::CharTable(parent_id) =
-            interp.make_char_table(Some("parent".into()), Value::Integer(10))
+        let Kind::CharTable(parent_id) = interp
+            .make_char_table(Some("parent".into()), Value::Integer(10))
+            .kind()
         else {
             unreachable!("make_char_table must return a char table")
         };
@@ -3297,8 +3302,9 @@ mod runtime_index_tests {
             .char_table_set_range(parent_id, 'a' as u32, 'z' as u32, Value::Integer(20))
             .expect("parent range must be writable");
 
-        let Value::CharTable(child_id) =
-            interp.make_char_table(Some("child".into()), Value::Integer(30))
+        let Kind::CharTable(child_id) = interp
+            .make_char_table(Some("child".into()), Value::Integer(30))
+            .kind()
         else {
             unreachable!("make_char_table must return a char table")
         };
@@ -3337,9 +3343,10 @@ mod runtime_index_tests {
             Some(Value::Integer(21))
         );
 
-        let Value::CharTable(clone_id) = interp
+        let Kind::CharTable(clone_id) = interp
             .clone_char_table(child_id)
             .expect("live child table must be cloneable")
+            .kind()
         else {
             unreachable!("clone_char_table must return a char table")
         };
@@ -3397,10 +3404,10 @@ mod runtime_index_tests {
     #[test]
     fn record_type_index_tracks_creation_and_retagging() {
         let mut interp = Interpreter::new();
-        let Value::Record(first_id) = interp.create_record("before", Vec::new()) else {
+        let Kind::Record(first_id) = interp.create_record("before", Vec::new()).kind() else {
             unreachable!("create_record must return a record")
         };
-        let Value::Record(second_id) = interp.create_record("before", Vec::new()) else {
+        let Kind::Record(second_id) = interp.create_record("before", Vec::new()).kind() else {
             unreachable!("create_record must return a record")
         };
 

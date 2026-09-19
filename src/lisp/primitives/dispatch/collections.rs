@@ -1,9 +1,10 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
-    match value {
-        Value::Integer(index) => Ok(*index),
-        other => Err(wrong_type_argument("fixnump", *other)),
+    match value.kind() {
+        Kind::Integer(index) => Ok(index),
+        other => Err(wrong_type_argument("fixnump", other.value())),
     }
 }
 
@@ -33,9 +34,9 @@ fn delete_from_list(
     let mut tail = *list;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match tail {
-            Value::Nil => return Ok(head),
-            Value::Cons(cell) => {
+        match tail.kind() {
+            Kind::Nil => return Ok(head),
+            Kind::Cons(cell) => {
                 if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("circular-list".into()),
@@ -70,8 +71,8 @@ fn delete_from_list(
 fn current_category_table_id(interp: &mut Interpreter) -> u64 {
     interp
         .buffer_local_value(interp.current_buffer_id(), "category-table")
-        .and_then(|value| match value {
-            Value::CharTable(id) => Some(id),
+        .and_then(|value| match value.kind() {
+            Kind::CharTable(id) => Some(id),
             _ => None,
         })
         .unwrap_or_else(|| interp.ensure_standard_category_table())
@@ -82,14 +83,14 @@ fn category_table_arg(
     value: Option<&Value>,
     default_to_standard: bool,
 ) -> Result<u64, LispError> {
-    let id = match value {
-        Some(Value::CharTable(id)) => *id,
-        Some(Value::Nil) | None if default_to_standard => interp.ensure_standard_category_table(),
-        Some(Value::Nil) | None => current_category_table_id(interp),
+    let id = match value.map(|v| v.kind()) {
+        Some(Kind::CharTable(id)) => id,
+        Some(Kind::Nil) | None if default_to_standard => interp.ensure_standard_category_table(),
+        Some(Kind::Nil) | None => current_category_table_id(interp),
         Some(other) => {
             return Err(LispError::TypeError(
                 "category-table".into(),
-                other.type_name(),
+                other.value().type_name(),
             ));
         }
     };
@@ -114,15 +115,15 @@ fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
             Err(LispError::Signal("Args out of range".into()))
         }
     };
-    match value {
-        Value::Integer(code) => checked(*code).map(|code| (code, code)),
-        Value::Cons(cell) => Ok((
+    match value.kind() {
+        Kind::Integer(code) => checked(code).map(|code| (code, code)),
+        Kind::Cons(cell) => Ok((
             checked(cell.car.borrow().as_integer()?)?,
             checked(cell.cdr.borrow().as_integer()?)?,
         )),
         other => Err(LispError::TypeError(
             "character-or-cons".into(),
-            other.type_name(),
+            other.value().type_name(),
         )),
     }
 }
@@ -170,9 +171,9 @@ define_dispatch!(
                 let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
-                    match current {
-                        Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(cons_cell) => {
+                    match current.kind() {
+                        Kind::Nil => return Ok(Value::Nil),
+                        Kind::Cons(cons_cell) => {
                             let car = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -181,14 +182,14 @@ define_dispatch!(
                             }
                             let property = *car.borrow();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match *cdr.borrow() {
-                                    Value::Cons(cell) => Ok(*cell.car.borrow()),
+                                return match (*cdr.borrow()).kind() {
+                                    Kind::Cons(cell) => Ok(*cell.car.borrow()),
                                     _ => Ok(Value::Nil),
                                 };
                             }
-                            match *cdr.borrow() {
-                                Value::Cons(cell) => current = *cell.cdr.borrow(),
-                                Value::Nil => return Ok(Value::Nil),
+                            match (*cdr.borrow()).kind() {
+                                Kind::Cons(cell) => current = *cell.cdr.borrow(),
+                                Kind::Nil => return Ok(Value::Nil),
                                 _ => return Ok(Value::Nil),
                             }
                         }
@@ -206,14 +207,14 @@ define_dispatch!(
                 let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
-                    match current {
-                        Value::Nil => {
+                    match current.kind() {
+                        Kind::Nil => {
                             let mut items = plist.to_vec()?;
                             items.push(*key);
                             items.push(*val);
                             return Ok(Value::list(items));
                         }
-                        Value::Cons(cons_cell) => {
+                        Kind::Cons(cons_cell) => {
                             let car = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -225,8 +226,8 @@ define_dispatch!(
                             }
                             let property = *car.borrow();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match *cdr.borrow() {
-                                    Value::Cons(cons_cell) => {
+                                return match (*cdr.borrow()).kind() {
+                                    Kind::Cons(cons_cell) => {
                                         let value = &cons_cell.car;
                                         let _ = &cons_cell.cdr;
                                         *value.borrow_mut() = *val;
@@ -235,8 +236,8 @@ define_dispatch!(
                                     _ => Err(plist_type_error(&plist)),
                                 };
                             }
-                            match *cdr.borrow() {
-                                Value::Cons(cons_cell) => {
+                            match (*cdr.borrow()).kind() {
+                                Kind::Cons(cons_cell) => {
                                     let _ = &cons_cell.car;
                                     let next_cdr = &cons_cell.cdr;
                                     let next = *next_cdr.borrow();
@@ -262,9 +263,9 @@ define_dispatch!(
                 let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
-                    match current {
-                        Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(cons_cell) => {
+                    match current.kind() {
+                        Kind::Nil => return Ok(Value::Nil),
+                        Kind::Cons(cons_cell) => {
                             let car = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -279,9 +280,9 @@ define_dispatch!(
                                 return Ok(Value::Cons(cons_cell));
                             }
                             // Skip the value
-                            match *cdr.borrow() {
-                                Value::Cons(cell) => current = *cell.cdr.borrow(),
-                                Value::Nil => return Ok(Value::Nil),
+                            match (*cdr.borrow()).kind() {
+                                Kind::Cons(cell) => current = *cell.cdr.borrow(),
+                                Kind::Nil => return Ok(Value::Nil),
                                 _ => return Err(plist_type_error(&plist)),
                             }
                         }
@@ -302,31 +303,31 @@ define_dispatch!(
                 let mut reverse = false;
                 let mut index = 1usize;
                 if let Some(arg) = args.get(index)
-                    && !matches!(arg, Value::Symbol(symbol) if symbol.starts_with(':'))
+                    && !matches!(arg.kind(), Kind::Symbol(symbol) if symbol.starts_with(':'))
                 {
                     lessp = Some(*arg);
                     index += 1;
                 }
                 while index + 1 < args.len() {
-                    match &args[index] {
-                        Value::Symbol(keyword) if keyword == ":key" => {
+                    match args[index].kind() {
+                        Kind::Symbol(keyword) if keyword == ":key" => {
                             key = if args[index + 1].is_nil() {
                                 None
                             } else {
                                 Some(args[index + 1])
                             };
                         }
-                        Value::Symbol(keyword) if keyword == ":lessp" => {
+                        Kind::Symbol(keyword) if keyword == ":lessp" => {
                             lessp = if args[index + 1].is_nil() {
                                 None
                             } else {
                                 Some(args[index + 1])
                             };
                         }
-                        Value::Symbol(keyword) if keyword == ":in-place" => {
+                        Kind::Symbol(keyword) if keyword == ":in-place" => {
                             in_place = args[index + 1].is_truthy();
                         }
-                        Value::Symbol(keyword) if keyword == ":reverse" => {
+                        Kind::Symbol(keyword) if keyword == ":reverse" => {
                             reverse = args[index + 1].is_truthy();
                         }
                         _ => return Err(LispError::WrongNumberOfArgs(name.into(), args.len())),
@@ -349,19 +350,19 @@ define_dispatch!(
                 if args.is_empty() || args[0].is_nil() {
                     Ok(Value::Integer(random_fixnum()))
                 } else {
-                    match &args[0] {
-                        Value::T => {
+                    match args[0].kind() {
+                        Kind::T => {
                             set_random_seed(nondeterministic_random_seed());
                             Ok(Value::Integer(random_fixnum()))
                         }
-                        Value::String(_) | Value::StringObject(_) => {
+                        Kind::String(_) | Kind::StringObject(_) => {
                             let seed = string_like(&args[0])
                                 .expect("string variants should be string-like")
                                 .text;
                             set_random_seed(random_seed_from_bytes(seed.as_bytes()));
                             Ok(Value::Integer(random_fixnum()))
                         }
-                        Value::Integer(_) | Value::BigInteger(_) => {
+                        Kind::Integer(_) | Kind::BigInteger(_) => {
                             let limit = integer_like_bigint(interp, &args[0])?;
                             if limit <= BigInt::zero() {
                                 Err(LispError::SignalValue(Value::list([
@@ -460,7 +461,7 @@ define_dispatch!(
                 let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
-                let readable_record = matches!(args[0], Value::Record(id)
+                let readable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
                     crate::lisp::eval::RecordKind::Record
@@ -470,7 +471,7 @@ define_dispatch!(
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0], Value::Lambda(_) | Value::CharTable(_))
+                    && !matches!(args[0].kind(), Kind::Lambda(_) | Kind::CharTable(_))
                     && !readable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
@@ -483,8 +484,8 @@ define_dispatch!(
                 if let Some(items) = literal {
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
-                match &args[0] {
-                    Value::String(_) | Value::StringObject(_) => {
+                match args[0].kind() {
+                    Kind::String(_) | Kind::StringObject(_) => {
                         match crate::lisp::primitives::strings::string_char_code_at_in_place(
                             &args[0], idx,
                         ) {
@@ -492,21 +493,21 @@ define_dispatch!(
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }
                     }
-                    Value::Lambda(lambda) => interp
-                        .interpreted_closure_slots(lambda)
+                    Kind::Lambda(lambda) => interp
+                        .interpreted_closure_slots(&lambda)
                         .get(idx)
                         .cloned()
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
-                    Value::CharTable(id) => {
+                    Kind::CharTable(id) => {
                         let key = raw_idx as u32;
                         Ok(syntax::char_table_public_value(
                             interp,
-                            *id,
-                            interp.char_table_get(*id, key).unwrap_or(Value::Nil),
+                            id,
+                            interp.char_table_get(id, key).unwrap_or(Value::Nil),
                         ))
                     }
-                    Value::Record(id) => {
-                        let record = interp.find_record(*id).ok_or_else(|| {
+                    Kind::Record(id) => {
+                        let record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
                         if record.kind == crate::lisp::eval::RecordKind::BoolVector {
@@ -552,7 +553,7 @@ define_dispatch!(
                 let raw_idx = fixnum_index_arg(&args[1])?;
                 // data.c:Faset permits actual records as well as arrays;
                 // native functions and other opaque pseudovectors are neither.
-                let writable_record = matches!(args[0], Value::Record(id)
+                let writable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
                     crate::lisp::eval::RecordKind::Record
@@ -560,7 +561,7 @@ define_dispatch!(
                 )));
                 if !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0], Value::CharTable(_))
+                    && !matches!(args[0].kind(), Kind::CharTable(_))
                     && !writable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
@@ -569,26 +570,26 @@ define_dispatch!(
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
                 let idx = raw_idx as usize;
-                match &args[0] {
-                    value if is_vector_value(value) => {
-                        aset_vector_value(value, idx, args[2])
+                match args[0].kind() {
+                    value if is_vector_value(&value.value()) => {
+                        aset_vector_value(&value.value(), idx, args[2])
                             .map_err(|_| args_out_of_range(&args[0], &args[1]))?;
                         Ok(args[2])
                     }
-                    Value::CharTable(id) => {
+                    Kind::CharTable(id) => {
                         let key = raw_idx as u32;
-                        interp.char_table_set(*id, key, args[2])?;
+                        interp.char_table_set(id, key, args[2])?;
                         Ok(args[2])
                     }
-                    value if is_bool_vector_value(interp, value) => {
-                        set_bool_vector_bit(interp, value, idx, args[2].is_truthy())?;
+                    value if is_bool_vector_value(interp, &value.value()) => {
+                        set_bool_vector_bit(interp, &value.value(), idx, args[2].is_truthy())?;
                         Ok(args[2])
                     }
-                    Value::String(_) | Value::StringObject(_) => {
+                    Kind::String(_) | Kind::StringObject(_) => {
                         aset_string_value(&args[0], idx, &args[2])?;
                         Ok(args[2])
                     }
-                    Value::Record(id) => {
+                    Kind::Record(id) => {
                         // GNU records are asettable; index 0 is the type tag
                         // (eieio's `make-instance' downgrades the class-object
                         // tag to the class symbol this way).
@@ -597,7 +598,7 @@ define_dispatch!(
                             return Ok(args[2]);
                         }
                         let record = interp
-                            .find_record_mut(*id)
+                            .find_record_mut(id)
                             .ok_or_else(|| args_out_of_range(&args[0], &args[1]))?;
                         let Some(slot) = record.slots.get_mut(idx - 1) else {
                             return Err(args_out_of_range(&args[0], &args[1]));
@@ -620,15 +621,15 @@ define_dispatch!(
             }
             "fillarray" => {
                 need_args(name, args, 2)?;
-                match &args[0] {
-                    value if is_vector_value(value) => {
-                        let len = vector_items(value)?.len();
+                match args[0].kind() {
+                    value if is_vector_value(&value.value()) => {
+                        let len = vector_items(&value.value())?.len();
                         for index in 0..len {
-                            aset_vector_value(value, index, args[1])?;
+                            aset_vector_value(&value.value(), index, args[1])?;
                         }
                         Ok(args[0])
                     }
-                    Value::StringObject(state) => {
+                    Kind::StringObject(state) => {
                         let mut state = state.borrow_mut();
                         let len = state.text.chars().count();
                         let fill_code = args[1].as_integer()?;
@@ -646,7 +647,7 @@ define_dispatch!(
                         state.props.clear();
                         Ok(args[0])
                     }
-                    Value::String(text) => {
+                    Kind::String(text) => {
                         let len = text.chars().count();
                         let fill_code = args[1].as_integer()?;
                         if !(0..=0x7F).contains(&fill_code) {
@@ -655,22 +656,27 @@ define_dispatch!(
                         let fill_char = char::from(fill_code as u8);
                         Ok(Value::String(std::iter::repeat_n(fill_char, len).collect()))
                     }
-                    value if is_bool_vector_value(interp, value) => {
-                        let len = bool_vector_bits(interp, value)?.len();
+                    value if is_bool_vector_value(interp, &value.value()) => {
+                        let len = bool_vector_bits(interp, &value.value())?.len();
                         for index in 0..len {
-                            set_bool_vector_bit(interp, value, index, args[1].is_truthy())?;
+                            set_bool_vector_bit(
+                                interp,
+                                &value.value(),
+                                index,
+                                args[1].is_truthy(),
+                            )?;
                         }
                         Ok(args[0])
                     }
-                    Value::CharTable(id) => {
-                        let table = interp.find_char_table_mut(*id).ok_or_else(|| {
+                    Kind::CharTable(id) => {
+                        let table = interp.find_char_table_mut(id).ok_or_else(|| {
                             LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
                         })?;
                         table.default = args[1];
                         table.clear_entries();
                         Ok(args[0])
                     }
-                    other => Err(LispError::WrongTypeArgument("arrayp".into(), *other)),
+                    other => Err(LispError::WrongTypeArgument("arrayp".into(), other.value())),
                 }
             }
             "load-average" => {
@@ -776,8 +782,8 @@ define_dispatch!(
             }
             "clear-string" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::StringObject(state) => {
+                match args[0].kind() {
+                    Kind::StringObject(state) => {
                         let mut state = state.borrow_mut();
                         let len = state.text.len();
                         state.text = "\0".repeat(len);
@@ -785,8 +791,11 @@ define_dispatch!(
                         state.multibyte = false;
                         Ok(Value::Nil)
                     }
-                    Value::String(_) => Ok(Value::Nil),
-                    other => Err(LispError::WrongTypeArgument("stringp".into(), *other)),
+                    Kind::String(_) => Ok(Value::Nil),
+                    other => Err(LispError::WrongTypeArgument(
+                        "stringp".into(),
+                        other.value(),
+                    )),
                 }
             }
 
@@ -822,11 +831,14 @@ define_dispatch!(
 
             "make-char-table" => {
                 need_args(name, args, 1)?;
-                let subtype = match &args[0] {
-                    Value::Nil => None,
-                    Value::Symbol(symbol) => Some(symbol.to_string()),
+                let subtype = match args[0].kind() {
+                    Kind::Nil => None,
+                    Kind::Symbol(symbol) => Some(symbol.to_string()),
                     other => {
-                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "symbolp".into(),
+                            other.value(),
+                        ));
                     }
                 };
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
@@ -835,7 +847,7 @@ define_dispatch!(
 
             "char-table-p" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::CharTable(_)) {
+                Ok(if matches!(args[0].kind(), Kind::CharTable(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -843,7 +855,7 @@ define_dispatch!(
             }
             "case-table-p" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Ok(Value::Nil);
                 };
                 if interp.char_table_purpose(id) != Some("case-table") {
@@ -852,24 +864,24 @@ define_dispatch!(
                 let up = interp.char_table_extra_slot(id, 0).unwrap_or(Value::Nil);
                 let canon = interp.char_table_extra_slot(id, 1).unwrap_or(Value::Nil);
                 let equivalences = interp.char_table_extra_slot(id, 2).unwrap_or(Value::Nil);
-                let valid = matches!(up, Value::Nil | Value::CharTable(_))
+                let valid = matches!(up.kind(), Kind::Nil | Kind::CharTable(_))
                     && ((canon.is_nil() && equivalences.is_nil())
-                        || (matches!(canon, Value::CharTable(_))
-                            && matches!(equivalences, Value::Nil | Value::CharTable(_))));
+                        || (matches!(canon.kind(), Kind::CharTable(_))
+                            && matches!(equivalences.kind(), Kind::Nil | Kind::CharTable(_))));
                 Ok(if valid { Value::T } else { Value::Nil })
             }
             "syntax-table-p" => {
                 need_args(name, args, 1)?;
                 let valid = matches!(
-                    args[0],
-                    Value::CharTable(id) if interp.char_table_purpose(id) == Some("syntax-table")
+                    args[0].kind(),
+                    Kind::CharTable(id) if interp.char_table_purpose(id) == Some("syntax-table")
                 );
                 Ok(if valid { Value::T } else { Value::Nil })
             }
 
             "char-table-subtype" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 Ok(interp
@@ -881,7 +893,7 @@ define_dispatch!(
 
             "char-table-parent" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 Ok(interp
@@ -897,14 +909,17 @@ define_dispatch!(
 
             "set-char-table-parent" => {
                 need_args(name, args, 2)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                let parent = match &args[1] {
-                    Value::Nil => None,
-                    Value::CharTable(parent_id) => Some(*parent_id),
+                let parent = match args[1].kind() {
+                    Kind::Nil => None,
+                    Kind::CharTable(parent_id) => Some(parent_id),
                     other => {
-                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "char-table-p".into(),
+                            other.value(),
+                        ));
                     }
                 };
                 interp.set_char_table_parent(id, parent)?;
@@ -913,7 +928,7 @@ define_dispatch!(
 
             "char-table-extra-slot" => {
                 need_args(name, args, 2)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
@@ -922,7 +937,7 @@ define_dispatch!(
 
             "set-char-table-extra-slot" => {
                 need_args(name, args, 3)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
@@ -932,7 +947,7 @@ define_dispatch!(
 
             "char-table-range" => {
                 need_args(name, args, 2)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 match char_table_range_spec(&args[1])? {
@@ -957,7 +972,7 @@ define_dispatch!(
 
             "set-char-table-range" => {
                 need_args(name, args, 3)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 match char_table_range_spec(&args[1])? {
@@ -968,7 +983,7 @@ define_dispatch!(
             }
             "optimize-char-table" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(args[0], Value::CharTable(_)) {
+                if !matches!(args[0].kind(), Kind::CharTable(_)) {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 }
                 // Emaxx stores ranges directly instead of allocating GNU's
@@ -979,7 +994,7 @@ define_dispatch!(
 
             "map-char-table" => {
                 need_args(name, args, 2)?;
-                let Value::CharTable(id) = args[1] else {
+                let Kind::CharTable(id) = args[1].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[1]));
                 };
                 let effective = interp
@@ -1011,7 +1026,7 @@ define_dispatch!(
 
             "set-case-table" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_current_case_table(id);
@@ -1020,7 +1035,7 @@ define_dispatch!(
 
             "set-standard-case-table" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_standard_case_table(id);
@@ -1031,11 +1046,14 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let source = match args.first() {
-                    Some(Value::CharTable(id)) => *id,
-                    Some(Value::Nil) | None => interp.standard_syntax_table_id(),
+                let source = match args.first().map(|v| v.kind()) {
+                    Some(Kind::CharTable(id)) => id,
+                    Some(Kind::Nil) | None => interp.standard_syntax_table_id(),
                     Some(other) => {
-                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "char-table-p".into(),
+                            other.value(),
+                        ));
                     }
                 };
                 if interp.char_table_purpose(source) != Some("syntax-table") {
@@ -1056,7 +1074,7 @@ define_dispatch!(
 
             "set-syntax-table" => {
                 need_args(name, args, 1)?;
-                let Value::CharTable(id) = args[0] else {
+                let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 interp.set_current_syntax_table(id);
@@ -1067,8 +1085,8 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let (start, end) = match &args[0] {
-                    Value::Cons(_) => {
+                let (start, end) = match args[0].kind() {
+                    Kind::Cons(_) => {
                         let start = u32::try_from(args[0].car()?.as_integer()?)
                             .map_err(|_| LispError::Signal("Invalid character".into()))?;
                         let end = u32::try_from(args[0].cdr()?.as_integer()?)
@@ -1088,13 +1106,16 @@ define_dispatch!(
                         "Invalid syntax description letter: {letter}"
                     )));
                 }
-                let table_id = match args.get(2) {
-                    Some(Value::CharTable(id)) => *id,
+                let table_id = match args.get(2).map(|v| v.kind()) {
+                    Some(Kind::CharTable(id)) => id,
                     // syntax.c:Fmodify_syntax_entry uses the current table
                     // for nil, including native calls' padded optional slot.
-                    Some(Value::Nil) | None => interp.current_syntax_table_id(),
+                    Some(Kind::Nil) | None => interp.current_syntax_table_id(),
                     Some(other) => {
-                        return Err(LispError::WrongTypeArgument("char-table-p".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "char-table-p".into(),
+                            other.value(),
+                        ));
                     }
                 };
                 interp.char_table_set_range(
@@ -1125,9 +1146,9 @@ define_dispatch!(
 
             "category-table-p" => {
                 need_args(name, args, 1)?;
-                Ok(match &args[0] {
-                    Value::CharTable(id)
-                        if interp.char_table_subtype(*id).flatten().as_deref()
+                Ok(match args[0].kind() {
+                    Kind::CharTable(id)
+                        if interp.char_table_subtype(id).flatten().as_deref()
                             == Some("category-table") =>
                     {
                         Value::T
@@ -1192,8 +1213,8 @@ define_dispatch!(
                 // GNU's CHECK_CATEGORY_SET accepts the 128-slot bool-vector
                 // that `char-category-set' returns; the internal string form
                 // remains accepted for entries stored as mnemonic strings.
-                if let Value::Record(id) = &args[0]
-                    && let Some(record) = interp.find_record(*id)
+                if let Kind::Record(id) = args[0].kind()
+                    && let Some(record) = interp.find_record(id)
                     && record.kind == crate::lisp::eval::RecordKind::BoolVector
                 {
                     let text: String = record
@@ -1258,15 +1279,15 @@ define_dispatch!(
                 let entry = interp.char_table_get(table_id, character);
                 let mut slots = vec![Value::Nil; 128];
                 if let Some(value) = entry {
-                    match &value {
-                        Value::String(text) => {
+                    match value.kind() {
+                        Kind::String(text) => {
                             for ch in text.chars() {
                                 if (ch as usize) < 128 {
                                     slots[ch as usize] = Value::T;
                                 }
                             }
                         }
-                        Value::Record(_) => return Ok(value),
+                        Kind::Record(_) => return Ok(value),
                         _ => {}
                     }
                 }
@@ -1287,8 +1308,8 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                let table_id = match &args[2] {
-                    Value::CharTable(id) => *id,
+                let table_id = match args[2].kind() {
+                    Kind::CharTable(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("char-table-p".into(), args[2]));
                     }
@@ -1323,9 +1344,9 @@ define_dispatch!(
                     let mut items = Vec::new();
                     let mut remaining = n;
                     while remaining > 0 {
-                        match current {
-                            Value::Nil => break,
-                            Value::Cons(cons_cell) => {
+                        match current.kind() {
+                            Kind::Nil => break,
+                            Kind::Cons(cons_cell) => {
                                 let car = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
                                 items.push(*car.borrow());
@@ -1333,7 +1354,10 @@ define_dispatch!(
                                 remaining -= 1;
                             }
                             value => {
-                                return Err(LispError::WrongTypeArgument("listp".into(), value));
+                                return Err(LispError::WrongTypeArgument(
+                                    "listp".into(),
+                                    value.value(),
+                                ));
                             }
                         }
                     }
@@ -1343,34 +1367,37 @@ define_dispatch!(
                     let mut current = head;
                     let mut remaining = n;
                     while remaining > 1 {
-                        match current {
-                            Value::Nil => return Ok(Value::Nil),
-                            Value::Cons(cons_cell) => {
+                        match current.kind() {
+                            Kind::Nil => return Ok(Value::Nil),
+                            Kind::Cons(cons_cell) => {
                                 let _ = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
                                 let next = *cdr.borrow();
-                                match next {
-                                    Value::Cons(_) => {
+                                match next.kind() {
+                                    Kind::Cons(_) => {
                                         current = next;
                                         remaining -= 1;
                                     }
-                                    Value::Nil => return Ok(head),
+                                    Kind::Nil => return Ok(head),
                                     value => {
                                         return Err(LispError::WrongTypeArgument(
                                             "listp".into(),
-                                            value,
+                                            value.value(),
                                         ));
                                     }
                                 }
                             }
                             value => {
-                                return Err(LispError::WrongTypeArgument("listp".into(), value));
+                                return Err(LispError::WrongTypeArgument(
+                                    "listp".into(),
+                                    value.value(),
+                                ));
                             }
                         }
                     }
-                    match current {
-                        Value::Nil => Ok(Value::Nil),
-                        Value::Cons(cons_cell) => {
+                    match current.kind() {
+                        Kind::Nil => Ok(Value::Nil),
+                        Kind::Cons(cons_cell) => {
                             let _ = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             *cdr.borrow_mut() = Value::Nil;
@@ -1379,7 +1406,7 @@ define_dispatch!(
                             }
                             Ok(head)
                         }
-                        value => Err(LispError::WrongTypeArgument("listp".into(), value)),
+                        value => Err(LispError::WrongTypeArgument("listp".into(), value.value())),
                     }
                 }
             }
@@ -1423,7 +1450,7 @@ pub(super) fn direct_setcar(
     let name = "setcar";
     need_args(name, args, 2)?;
     let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(&args[0], Value::Cons(_)) {
+    if matches!(args[0].kind(), Kind::Cons(_)) {
         args[0].set_car(args[1])?;
     } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
         view.set_car(args[1])?;
@@ -1449,7 +1476,7 @@ pub(super) fn direct_setcdr(
     let name = "setcdr";
     need_args(name, args, 2)?;
     let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(&args[0], Value::Cons(_)) {
+    if matches!(args[0].kind(), Kind::Cons(_)) {
         args[0].set_cdr(args[1])?;
     } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
         return Err(wrong_type_argument("consp", args[0]));

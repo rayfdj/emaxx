@@ -11,7 +11,7 @@ use crate::buffer::Buffer;
 use crate::compat;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 use crate::overlay::Overlay;
 
 pub const PERF_SCENARIO_MANIFEST_PATH: &str = "compat/perf_scenarios.json";
@@ -786,8 +786,8 @@ fn validate_interpreted_case_result(
     case_id: &str,
     result: Result<Value, LispError>,
 ) -> Result<(), String> {
-    match result {
-        Ok(Value::T) => Ok(()),
+    match result.map(|v| v.kind()) {
+        Ok(Kind::T) => Ok(()),
         Ok(value) => Err(format!(
             "{case_id} did not validate its checksum; returned {value}"
         )),
@@ -1067,7 +1067,7 @@ fn seed_markers(interpreter: &mut Interpreter, n: usize, seed: u64) {
     let point_max = interpreter.buffer.point_max();
     for _ in 0..n {
         let marker = interpreter.make_marker();
-        let Value::Marker(id) = marker else {
+        let Kind::Marker(id) = marker.kind() else {
             unreachable!("make_marker must return a marker");
         };
         let position = rng.emacs_overlay_begin(point_max);

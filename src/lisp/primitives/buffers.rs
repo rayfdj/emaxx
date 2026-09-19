@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn clamp_overlay_range(
     buffer: &crate::buffer::Buffer,
@@ -108,22 +109,22 @@ pub(crate) fn overlay_covers_position(
 }
 
 pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
-    match value {
+    match value.kind() {
         // GNU clamps an ordinary fixnum position below point-min at the
         // consuming buffer operation (for example, `goto-char -10' reaches
         // point-min).  Preserve that signed boundary here rather than
         // misclassifying a negative integer as a non-position type.
-        Value::Integer(pos) => Ok((*pos).max(0) as usize),
+        Kind::Integer(pos) => Ok((pos).max(0) as usize),
         // A small BigInteger can arise transiently inside Emaxx even though
         // GNU would represent the same numeric value as a fixnum.  Accept it
         // only when it fits the ordinary signed position domain; a genuine
         // out-of-range bignum retains GNU's integer-or-marker-p error.
-        Value::BigInteger(pos) => pos
+        Kind::BigInteger(pos) => pos
             .to_i64()
             .map(|pos| pos.max(0) as usize)
             .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
-        Value::Marker(id) => interp
-            .marker_position(*id)
+        Kind::Marker(id) => interp
+            .marker_position(id)
             .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
         _ => Err(LispError::WrongTypeArgument(
             "integer-or-marker-p".into(),
@@ -230,7 +231,8 @@ fn translation_characters(value: &Value) -> Option<Vec<u32>> {
             .map(|character| vec![character]);
     }
     let items = value.to_vec().ok()?;
-    let (Value::Symbol(marker), characters) = items.split_first()? else {
+    let (first, characters) = items.split_first()?;
+    let Kind::Symbol(marker) = first.kind() else {
         return None;
     };
     if marker != "vector-literal" {
@@ -264,8 +266,8 @@ fn translation_sequence_match(value: &Value, source: &[u32]) -> Option<(usize, V
 }
 
 pub(crate) fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
-    match value {
-        Value::Marker(id) => Ok(*id),
+    match value.kind() {
+        Kind::Marker(id) => Ok(id),
         _ => Err(LispError::WrongTypeArgument("markerp".into(), *value)),
     }
 }
@@ -275,11 +277,11 @@ pub(crate) fn marker_target(
     value: &Value,
     buffer: Option<&Value>,
 ) -> Result<(Option<usize>, Option<u64>), LispError> {
-    match value {
-        Value::Nil => Ok((None, None)),
-        Value::Marker(marker_id) => Ok((
-            interp.marker_position(*marker_id),
-            interp.marker_buffer_id(*marker_id),
+    match value.kind() {
+        Kind::Nil => Ok((None, None)),
+        Kind::Marker(marker_id) => Ok((
+            interp.marker_position(marker_id),
+            interp.marker_buffer_id(marker_id),
         )),
         _ => {
             let position = position_from_value(interp, value)?;
@@ -298,7 +300,7 @@ pub(crate) fn marker_target(
 }
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
-    if let Value::Vector(vector) = value {
+    if let Kind::Vector(vector) = value.kind() {
         Ok(vector.slots().to_vec())
     } else {
         Err(LispError::WrongTypeArgument("vectorp".into(), *value))
@@ -306,20 +308,20 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
 }
 
 pub(crate) fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Option<&'a str> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return None;
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .and_then(|record| record.symbol_type_name())
 }
 
 pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return false;
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::BoolVector)
 }
 
@@ -327,7 +329,7 @@ pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool 
 /// closures, and out-of-range accesses return None so the caller takes the
 /// full `aref' path and preserves GNU's exact error behavior.
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
-    let Value::Vector(vector) = value else {
+    let Kind::Vector(vector) = value.kind() else {
         return None;
     };
     vector.slots().get(index).cloned()
@@ -336,7 +338,7 @@ pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
 /// O(1) element write for the VM's Baset, same contract as
 /// [`vector_aref_fast`].
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
-    let Value::Vector(vector) = value else {
+    let Kind::Vector(vector) = value.kind() else {
         return None;
     };
     let slots = vector.slots_mut();
@@ -346,7 +348,7 @@ pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -
 }
 
 pub(crate) fn vector_slot_value(value: &Value, index: usize) -> Result<Value, LispError> {
-    let Value::Vector(vector) = value else {
+    let Kind::Vector(vector) = value.kind() else {
         return Err(LispError::WrongTypeArgument("vectorp".into(), *value));
     };
     vector.slots().get(index).cloned().ok_or_else(|| {
@@ -362,11 +364,11 @@ pub(crate) fn bool_vector_values(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Vec<Value>, LispError> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
     };
     let record = interp
-        .find_record(*id)
+        .find_record(id)
         .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
         return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
@@ -406,11 +408,11 @@ pub(crate) fn set_bool_vector_bit(
     index: usize,
     bit: bool,
 ) -> Result<(), LispError> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
     };
     let record = interp
-        .find_record_mut(*id)
+        .find_record_mut(id)
         .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), *value))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
         return Err(LispError::WrongTypeArgument("bool-vector-p".into(), *value));
@@ -423,11 +425,11 @@ pub(crate) fn set_bool_vector_bit(
 }
 
 pub(crate) fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return None;
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .filter(|record| record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE))
         .map(|_| id.id)
 }
@@ -443,13 +445,15 @@ pub(crate) fn is_abbrev_table_value(interp: &Interpreter, value: &Value) -> bool
     // mode construction must recognize and preserve its real representation.
     obarray_symbols(interp, value).is_ok_and(|symbols| {
         symbols.into_iter().any(|symbol| {
-            let Value::Symbol(name) = symbol else {
+            let Kind::Symbol(name) = symbol.kind() else {
                 return false;
             };
             crate::lisp::types::visible_symbol_name(&name).is_empty()
                 && matches!(
-                    interp.get_symbol_property(&name, ":abbrev-table-modiff"),
-                    Some(Value::Integer(_) | Value::BigInteger(_))
+                    interp
+                        .get_symbol_property(&name, ":abbrev-table-modiff")
+                        .map(|v| v.kind()),
+                    Some(Kind::Integer(_) | Kind::BigInteger(_))
                 )
         })
     })
@@ -470,7 +474,7 @@ pub(crate) fn make_runtime_abbrev_table(
             Value::Nil,
         ],
     );
-    if let Value::Record(id) = table {
+    if let Kind::Record(id) = table.kind() {
         let symbol = abbrev_symbol_name(id.id, "");
         interp.set_global_binding(&symbol, Value::Nil);
         let _ = interp.set_symbol_plist(&symbol, props);
@@ -640,34 +644,34 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
     // data.c:Fcl_type_of uses XTYPE/PSEUDOVECTOR_TYPE, not Lisp variable
     // values. Wide Integer values cross the native ABI as bignums; an
     // explicitly allocated BigInteger already has that object subtype.
-    let name = match value {
-        Value::Nil => "null",
-        Value::T => "boolean",
-        Value::Integer(number) => {
-            if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(number) {
+    let name = match value.kind() {
+        Kind::Nil => "null",
+        Kind::T => "boolean",
+        Kind::Integer(number) => {
+            if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&number) {
                 "fixnum"
             } else {
                 "bignum"
             }
         }
-        Value::BigInteger(_) => "bignum",
-        Value::Float(_) => "float",
-        Value::String(_) | Value::StringObject(_) => "string",
-        Value::Symbol(_) => "symbol",
-        Value::Vector(_) => "vector",
-        Value::Cons(_) if is_vector_value(value) => "vector",
-        Value::Cons(_) => "cons",
-        Value::BuiltinFunc(name) if is_special_form_name(name) => "special-form",
-        Value::BuiltinFunc(_) => "primitive-function",
-        Value::Lambda(_) => "interpreted-function",
-        Value::Buffer(_) => "buffer",
-        Value::Marker(_) => "marker",
-        Value::Overlay(_) => "overlay",
-        Value::CharTable(_) => "char-table",
-        Value::Frame(_) => "frame",
-        Value::Terminal(_) => "terminal",
-        Value::Record(id) => {
-            let Some(record) = interp.find_record(*id) else {
+        Kind::BigInteger(_) => "bignum",
+        Kind::Float(_) => "float",
+        Kind::String(_) | Kind::StringObject(_) => "string",
+        Kind::Symbol(_) => "symbol",
+        Kind::Vector(_) => "vector",
+        Kind::Cons(_) if is_vector_value(value) => "vector",
+        Kind::Cons(_) => "cons",
+        Kind::BuiltinFunc(name) if is_special_form_name(&name) => "special-form",
+        Kind::BuiltinFunc(_) => "primitive-function",
+        Kind::Lambda(_) => "interpreted-function",
+        Kind::Buffer(_) => "buffer",
+        Kind::Marker(_) => "marker",
+        Kind::Overlay(_) => "overlay",
+        Kind::CharTable(_) => "char-table",
+        Kind::Frame(_) => "frame",
+        Kind::Terminal(_) => "terminal",
+        Kind::Record(id) => {
+            let Some(record) = interp.find_record(id) else {
                 return Ok(Value::symbol("record"));
             };
             let type_name = match record.kind {
@@ -676,7 +680,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 // slot, it is a type descriptor and slot one names the type.
                 crate::lisp::eval::RecordKind::Record => {
                     let type_tag = record.type_tag;
-                    if let Value::Record(type_id) = type_tag
+                    if let Kind::Record(type_id) = type_tag.kind()
                         && let Some(type_record) = interp.find_record(type_id)
                         && type_record.kind == crate::lisp::eval::RecordKind::Record
                         && let Some(type_name) = type_record.slots.first()
@@ -713,13 +717,13 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
             };
             return Ok(Value::symbol(type_name));
         }
-        Value::Finalizer(_) => "finalizer",
-        Value::ReaderForm(_) => {
+        Kind::Finalizer(_) => "finalizer",
+        Kind::ReaderForm(_) => {
             return Err(LispError::Signal(
                 "reader form escaped object materialization".into(),
             ));
         }
-        Value::Unbound => "unbound",
+        Kind::Unbound => "unbound",
     };
     Ok(Value::symbol(name))
 }
@@ -765,13 +769,13 @@ pub(crate) fn buffer_byte_to_position_boundary(
 }
 
 pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>, LispError> {
-    match value {
-        Value::Nil => Ok(None),
-        Value::T => Ok(Some((0, char::MAX as u32))),
-        Value::Integer(codepoint) if *codepoint >= 0 => {
-            Ok(Some((*codepoint as u32, *codepoint as u32)))
+    match value.kind() {
+        Kind::Nil => Ok(None),
+        Kind::T => Ok(Some((0, char::MAX as u32))),
+        Kind::Integer(codepoint) if codepoint >= 0 => {
+            Ok(Some((codepoint as u32, codepoint as u32)))
         }
-        Value::Cons(cons_cell) => {
+        Kind::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
             let start = car.borrow().as_integer()?;
@@ -783,7 +787,7 @@ pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>,
         }
         other => Err(LispError::TypeError(
             "character-or-cons-or-nil".into(),
-            other.type_name(),
+            other.value().type_name(),
         )),
     }
 }
@@ -900,9 +904,9 @@ pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
     if value.is_nil() {
         return false;
     }
-    match spec {
-        Value::Nil => false,
-        Value::T => value.is_truthy(),
+    match spec.kind() {
+        Kind::Nil => false,
+        Kind::T => value.is_truthy(),
         _ => {
             if spec == value {
                 return true;
@@ -964,13 +968,13 @@ pub(crate) fn compare_buffer_substrings(
 }
 
 pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
-    Ok(match value {
-        Value::Nil => Value::Integer(1),
-        Value::Symbol(symbol) if symbol == "-" => Value::Integer(-1),
-        Value::Integer(_) => *value,
-        Value::Cons(_) => value
+    Ok(match value.kind() {
+        Kind::Nil => Value::Integer(1),
+        Kind::Symbol(symbol) if symbol == "-" => Value::Integer(-1),
+        Kind::Integer(_) => *value,
+        Kind::Cons(_) => value
             .cons_values()
-            .and_then(|(head, _)| matches!(head, Value::Integer(_)).then_some(head))
+            .and_then(|(head, _)| matches!(head.kind(), Kind::Integer(_)).then_some(head))
             .unwrap_or(Value::Integer(1)),
         // GNU accepts any Lisp object here.  Values outside the raw-prefix
         // representation, including floats and bignums, have numeric meaning

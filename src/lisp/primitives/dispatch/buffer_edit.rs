@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
 // their undo with a preceding run of the same command when the count's
@@ -24,7 +25,8 @@ fn word_boundary_function(
     env: &Env,
     character: char,
 ) -> Option<(Value, String)> {
-    let Value::CharTable(table_id) = interp.lookup_var("find-word-boundary-function-table", env)?
+    let Kind::CharTable(table_id) =
+        (interp.lookup_var("find-word-boundary-function-table", env)?).kind()
     else {
         return None;
     };
@@ -54,8 +56,8 @@ fn call_word_boundary_function(
         ],
         env,
     )?;
-    Ok(match result {
-        Value::Integer(position) => usize::try_from(position).ok(),
+    Ok(match result.kind() {
+        Kind::Integer(position) => usize::try_from(position).ok(),
         _ => None,
     })
 }
@@ -145,12 +147,12 @@ fn forward_word(interp: &mut Interpreter, count: i64, env: &mut Env) -> Result<V
 }
 
 fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
-    match setting {
-        Value::T => true,
-        Value::Cons(_) => setting.to_vec().is_ok_and(|items| {
+    match setting.kind() {
+        Kind::T => true,
+        Kind::Cons(_) => setting.to_vec().is_ok_and(|items| {
             items
                 .iter()
-                .any(|item| matches!(item, Value::Symbol(name) if name == prop))
+                .any(|item| matches!(item.kind(), Kind::Symbol(name) if name == prop))
         }),
         _ => false,
     }
@@ -161,7 +163,7 @@ fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
         let Some((name, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!(&*name.borrow(), Value::Symbol(candidate) if candidate == prop)
+        matches!((*name.borrow()).kind(), Kind::Symbol(candidate) if candidate == prop)
             && nonsticky.borrow().is_truthy()
     })
 }
@@ -262,7 +264,7 @@ fn buffer_text_property_at_insertion(
 }
 
 fn search_noerror_moves(noerror: Option<&Value>) -> bool {
-    noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
+    noerror.is_some_and(|value| value.is_truthy() && !matches!(value.kind(), Kind::T))
 }
 
 fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
@@ -382,10 +384,10 @@ define_dispatch!(
                     .or_else(|| interp.lookup_var("last-command-event", env))
                     .unwrap_or(Value::Nil);
                 interp.set_variable("last-command-event", event, env);
-                let ch = match event {
-                    Value::Integer(code) => char::from_u32(code as u32),
-                    Value::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
-                    Value::String(text) if text.chars().count() == 1 => text.chars().next(),
+                let ch = match event.kind() {
+                    Kind::Integer(code) => char::from_u32(code as u32),
+                    Kind::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
+                    Kind::String(text) if text.chars().count() == 1 => text.chars().next(),
                     _ => None,
                 }
                 .ok_or_else(|| LispError::Signal("No self-insert character".into()))?;
@@ -430,10 +432,10 @@ define_dispatch!(
                 {
                     let expanded =
                         interp.call_function_value(function, Some("expand-abbrev"), &[], env)?;
-                    if let Value::Symbol(abbrev) = expanded {
+                    if let Kind::Symbol(abbrev) = expanded.kind() {
                         let hook =
                             super::call(interp, "symbol-function", &[Value::Symbol(abbrev)], env)?;
-                        if matches!(hook, Value::Symbol(_))
+                        if matches!(hook.kind(), Kind::Symbol(_))
                             && super::call(
                                 interp,
                                 "get",
@@ -449,12 +451,13 @@ define_dispatch!(
                 let text: String = std::iter::repeat_n(ch, count).collect();
                 insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
 
-                let auto_fill_character = match interp.lookup_var("auto-fill-chars", env) {
-                    Some(Value::CharTable(table_id)) => interp
-                        .char_table_get(table_id, ch as u32)
-                        .is_some_and(|value| value.is_truthy()),
-                    _ => matches!(ch, ' ' | '\n'),
-                };
+                let auto_fill_character =
+                    match interp.lookup_var("auto-fill-chars", env).map(|v| v.kind()) {
+                        Some(Kind::CharTable(table_id)) => interp
+                            .char_table_get(table_id, ch as u32)
+                            .is_some_and(|value| value.is_truthy()),
+                        _ => matches!(ch, ' ' | '\n'),
+                    };
                 if auto_fill_character
                     && interp
                         .lookup_var("auto-fill-function", env)
@@ -562,22 +565,23 @@ define_dispatch!(
             }
             "vertical-motion" => {
                 need_arg_range(name, args, 1, 3)?;
-                let (goal_col, n) = match &args[0] {
-                    cons @ Value::Cons(_) => {
+                let (goal_col, n) = match args[0].kind() {
+                    cons @ Kind::Cons(_) => {
                         let (car, cdr) = cons
+                            .value()
                             .cons_values()
                             .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), args[0]))?;
                         // COLS may be a float (line-move-visual divides
                         // pixels by the frame char width); GNU truncates
                         // it to a pixel count.
-                        let goal = match &car {
-                            Value::Float(float) => float.max(0.0) as usize,
-                            other => other.as_integer()?.max(0) as usize,
+                        let goal = match car.kind() {
+                            Kind::Float(float) => float.max(0.0) as usize,
+                            other => other.value().as_integer()?.max(0) as usize,
                         };
                         (Some(goal), cdr.as_integer()?)
                     }
                     other => {
-                        let big = integer_like_bigint(interp, other)?;
+                        let big = integer_like_bigint(interp, &other.value())?;
                         (None, big.to_i64().unwrap_or(i64::MAX / 2))
                     }
                 };
@@ -616,9 +620,9 @@ define_dispatch!(
                 }
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                let target_depth = match args.get(2) {
-                    Some(Value::Nil) | None => None,
-                    Some(value) => Some(value.as_integer()?),
+                let target_depth = match args.get(2).map(|v| v.kind()) {
+                    Some(Kind::Nil) | None => None,
+                    Some(value) => Some(value.value().as_integer()?),
                 };
                 let stopbefore = args.get(3).is_some_and(Value::is_truthy);
                 let oldstate = args.get(4).filter(|value| !value.is_nil());
@@ -748,7 +752,7 @@ define_dispatch!(
 
             "buffer-name" => {
                 if !args.is_empty()
-                    && let Value::Buffer(buffer) = &args[0]
+                    && let Kind::Buffer(buffer) = args[0].kind()
                 {
                     return Ok(interp
                         .get_buffer_by_id(buffer.id)
@@ -773,7 +777,7 @@ define_dispatch!(
 
                 let original = interp.buffer.full_buffer_string();
                 let saved = interp.buffer.saved_text().to_string();
-                let preserve_utf8_sequences = matches!(args[0], Value::T);
+                let preserve_utf8_sequences = matches!(args[0].kind(), Kind::T);
                 let (converted, positions) = if enabled {
                     multibyte_buffer_text(&original, preserve_utf8_sequences)
                 } else {
@@ -833,10 +837,14 @@ define_dispatch!(
                     let string = string_like(string_value).ok_or_else(|| {
                         LispError::WrongTypeArgument("stringp".into(), *string_value)
                     })?;
-                    let position = match args.first().filter(|value| !value.is_nil()) {
-                        Some(Value::Integer(position)) if *position >= 0 => *position as usize,
+                    let position = match args
+                        .first()
+                        .filter(|value| !value.is_nil())
+                        .map(|v| v.kind())
+                    {
+                        Some(Kind::Integer(position)) if position >= 0 => position as usize,
                         Some(value) => {
-                            return Err(wrong_type_argument("wholenump", *value));
+                            return Err(wrong_type_argument("wholenump", value.value()));
                         }
                         None => 0,
                     };
@@ -1101,19 +1109,19 @@ define_dispatch!(
                 let pos = if args.is_empty() || args[0].is_nil() {
                     interp.buffer.point()
                 } else {
-                    match &args[0] {
-                        Value::Integer(pos) => {
-                            if *pos < 0 {
+                    match args[0].kind() {
+                        Kind::Integer(pos) => {
+                            if pos < 0 {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("args-out-of-range".into()),
-                                    Value::Integer(*pos),
+                                    Value::Integer(pos),
                                     Value::Integer(1),
                                     Value::Integer((interp.buffer.size_total() + 1) as i64),
                                 ])));
                             }
-                            *pos as usize
+                            pos as usize
                         }
-                        Value::Marker(id) => interp.marker_position(*id).ok_or_else(|| {
+                        Kind::Marker(id) => interp.marker_position(id).ok_or_else(|| {
                             LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0])
                         })?,
                         _ => {
@@ -1158,9 +1166,9 @@ define_dispatch!(
             "line-beginning-position" | "pos-bol" => {
                 // GNU treats an explicit nil N as 1 (lisp-mnt passes
                 // (if after 2) straight through).
-                let n = match args.first() {
-                    None | Some(Value::Nil) => 1,
-                    Some(value) => value.as_integer()?,
+                let n = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => 1,
+                    Some(value) => value.value().as_integer()?,
                 };
                 let saved = interp.buffer.point();
                 let count = (n - 1) as isize;
@@ -1206,9 +1214,9 @@ define_dispatch!(
             }
             "line-end-position" | "pos-eol" => {
                 // GNU treats an explicit nil N as 1.
-                let n = match args.first() {
-                    None | Some(Value::Nil) => 1,
-                    Some(value) => value.as_integer()?,
+                let n = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => 1,
+                    Some(value) => value.value().as_integer()?,
                 };
                 let saved = interp.buffer.point();
                 let count = (n - 1) as isize;
@@ -1303,7 +1311,7 @@ define_dispatch!(
             }
             "internal--set-buffer-modified-tick" => {
                 need_arg_range(name, args, 1, 2)?;
-                let Value::Integer(tick) = &args[0] else {
+                let Kind::Integer(tick) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 let buffer_id = match args.get(1) {
@@ -1313,7 +1321,7 @@ define_dispatch!(
                 interp
                     .get_buffer_by_id_mut(buffer_id)
                     .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?
-                    .set_modified_tick(*tick);
+                    .set_modified_tick(tick);
                 Ok(Value::Nil)
             }
             "set-buffer-modified-p" => {
@@ -1354,7 +1362,7 @@ define_dispatch!(
                 }
                 if flag.is_nil() {
                     interp.buffer.set_unmodified();
-                } else if matches!(&flag, Value::Symbol(symbol) if symbol == "autosaved") {
+                } else if matches!(flag.kind(), Kind::Symbol(symbol) if symbol == "autosaved") {
                     interp.buffer.set_modified();
                     interp.buffer.set_autosaved();
                 } else {
@@ -1595,10 +1603,10 @@ define_dispatch!(
             "next-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
                 let object = args.get(1).unwrap_or(&Value::Nil);
-                let next_interval_only = matches!(args.get(2), Some(Value::T));
+                let next_interval_only = matches!(args.get(2).map(|v| v.kind()), Some(Kind::T));
                 let explicit_limit = args
                     .get(2)
-                    .filter(|value| !value.is_nil() && !matches!(value, Value::T));
+                    .filter(|value| !value.is_nil() && !matches!(value.kind(), Kind::T));
                 if let Some(string) = string_like(object) {
                     let pos = args[0].as_integer()?.max(0) as usize;
                     let end = string.text.chars().count();
@@ -1931,8 +1939,8 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let prop = args[2].as_symbol()?.to_string();
-                let prop_value = match &args[3] {
-                    Value::StringObject(state) if state.borrow().props.is_empty() => {
+                let prop_value = match args[3].kind() {
+                    Kind::StringObject(state) if state.borrow().props.is_empty() => {
                         Value::String(state.borrow().text.clone().into())
                     }
                     _ => args[3],
@@ -2014,7 +2022,7 @@ define_dispatch!(
                 }
                 let props = plist_pairs(&args[2])?;
                 if let Some(object) = args.get(3) {
-                    if matches!(object, Value::String(_)) {
+                    if matches!(object.kind(), Kind::String(_)) {
                         return Ok(Value::T);
                     }
                     if string_like(object).is_some() {
@@ -2119,7 +2127,7 @@ define_dispatch!(
                 // Emaxx's native runner index only when it is an actual ERT
                 // record; ordinary user properties remain ordinary `put'.
                 if property_name.as_deref() == Some("ert--test")
-                    && matches!(&args[2], Value::Record(_))
+                    && matches!(args[2].kind(), Kind::Record(_))
                 {
                     return interp.ert_set_test(&symbol, &args[2]);
                 }
@@ -2151,17 +2159,17 @@ fn buffer_has_field_property(interp: &Interpreter) -> bool {
 /// lists are pixels (one per column on the batch frame), symbols are
 /// variables, and (+ ...)/(- ...) combine recursively.
 fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> i64 {
-    match spec {
-        Value::Integer(value) => *value,
-        Value::Float(value) => value.get() as i64,
-        Value::Symbol(name) => interp
-            .lookup_var(name, env)
+    match spec.kind() {
+        Kind::Integer(value) => value,
+        Kind::Float(value) => value.get() as i64,
+        Kind::Symbol(name) => interp
+            .lookup_var(&name, env)
             .map(|value| display_spec_width(interp, env, &value))
             .unwrap_or(0),
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let Ok(items) = spec.to_vec() else { return 0 };
-            match items.first() {
-                Some(Value::Symbol(op)) if op == "-" || op == "+" => {
+            match items.first().map(|v| v.kind()) {
+                Some(Kind::Symbol(op)) if op == "-" || op == "+" => {
                     let mut acc = items
                         .get(1)
                         .map(|item| display_spec_width(interp, env, item))
@@ -2176,7 +2184,7 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
                     }
                     acc
                 }
-                Some(inner) if items.len() == 1 => display_spec_width(interp, env, inner),
+                Some(inner) if items.len() == 1 => display_spec_width(interp, env, &inner.value()),
                 _ => 0,
             }
         }
@@ -2191,11 +2199,11 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
         return text.text.chars().count();
     }
     if let Ok(items) = prop.to_vec()
-        && matches!(items.first(), Some(Value::Symbol(head)) if head == "space")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space")
     {
         let mut cursor = 1;
         while cursor + 1 < items.len() {
-            if matches!(&items[cursor], Value::Symbol(key) if key == ":width") {
+            if matches!(items[cursor].kind(), Kind::Symbol(key) if key == ":width") {
                 return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
             }
             cursor += 2;
@@ -2416,8 +2424,8 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
         .cloned()
         .unwrap_or(Value::Nil);
     if matches!(
-        kind,
-        Value::Symbol(ref kind)
+        kind.kind(),
+        Kind::Symbol(ref kind)
             if matches!(
                 kind.as_str(),
                 INTERNAL_HORIZONTAL_WINDOW_KIND
@@ -2560,11 +2568,12 @@ fn compute_motion_value(
         }
         (hscroll, tab_offset)
     };
-    let truncates_partial_window = match interp.lookup_var("truncate-partial-width-windows", env) {
-        Some(Value::Integer(threshold)) => {
-            width + 1 < interp.frame_width() && width + 1 < threshold
-        }
-        Some(value) => value.is_truthy() && width + 1 < interp.frame_width(),
+    let truncates_partial_window = match interp
+        .lookup_var("truncate-partial-width-windows", env)
+        .map(|v| v.kind())
+    {
+        Some(Kind::Integer(threshold)) => width + 1 < interp.frame_width() && width + 1 < threshold,
+        Some(value) => value.value().is_truthy() && width + 1 < interp.frame_width(),
         None => false,
     };
     let truncates = hscroll > 0
@@ -2706,7 +2715,8 @@ fn line_number_display_width_value(
             .unwrap_or(Value::Nil);
         if mode.is_nil() {
             return Ok(
-                if matches!(pixelwise, Some(Value::Symbol(name)) if name == "columns") {
+                if matches!(pixelwise.map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "columns")
+                {
                     Value::float(0.0)
                 } else {
                     Value::Integer(0)
@@ -2723,8 +2733,8 @@ fn line_number_display_width_value(
             .saturating_add(body_height.saturating_sub(1))
             .min(last_line);
         let displayed_maximum = if matches!(
-            mode,
-            Value::Symbol(ref name) if matches!(name.as_str(), "relative" | "visual")
+            mode.kind(),
+            Kind::Symbol(ref name) if matches!(name.as_str(), "relative" | "visual")
         ) {
             let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
             point_line
@@ -2743,9 +2753,9 @@ fn line_number_display_width_value(
         // The line-number face contributes two canonical columns of
         // left/right padding in GNU's headless terminal display.
         let pixels = columns + 2;
-        Ok(match pixelwise {
-            Some(Value::Symbol(name)) if name == "columns" => Value::float(pixels as f64),
-            Some(value) if value.is_truthy() => Value::Integer(pixels),
+        Ok(match pixelwise.map(|v| v.kind()) {
+            Some(Kind::Symbol(name)) if name == "columns" => Value::float(pixels as f64),
+            Some(value) if value.value().is_truthy() => Value::Integer(pixels),
             _ => Value::Integer(columns),
         })
     })();
@@ -3026,15 +3036,15 @@ pub(super) fn direct_char_after(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let pos = match args.first() {
-        None | Some(Value::Nil) => Some(interp.buffer.point()),
-        Some(Value::Integer(position)) if *position >= 0 => usize::try_from(*position).ok(),
-        Some(Value::Integer(_)) => None,
-        Some(Value::Marker(id)) => interp.marker_position(*id),
+    let pos = match args.first().map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Some(interp.buffer.point()),
+        Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
+        Some(Kind::Integer(_)) => None,
+        Some(Kind::Marker(id)) => interp.marker_position(id),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
-                *value,
+                value.value(),
             ));
         }
     };
@@ -3050,15 +3060,15 @@ pub(super) fn direct_char_before(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let pos = match args.first() {
-        None | Some(Value::Nil) => Some(interp.buffer.point()),
-        Some(Value::Integer(position)) if *position >= 0 => usize::try_from(*position).ok(),
-        Some(Value::Integer(_)) => None,
-        Some(Value::Marker(id)) => interp.marker_position(*id),
+    let pos = match args.first().map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Some(interp.buffer.point()),
+        Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
+        Some(Kind::Integer(_)) => None,
+        Some(Kind::Marker(id)) => interp.marker_position(id),
         Some(value) => {
             return Err(LispError::WrongTypeArgument(
                 "integer-or-marker-p".into(),
-                *value,
+                value.value(),
             ));
         }
     };
@@ -3128,13 +3138,13 @@ fn search_named(
         _ => 1,
     };
     let forward = (name == "search-forward") == (count >= 0);
-    let limit = match args.get(1) {
+    let limit = match args.get(1).map(|v| v.kind()) {
         // GNU clamps a BOUND outside the accessible region
         // (loaddefs-gen searches backward with (- (point-max) 1000)).
-        Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+        Some(Kind::Integer(pos)) if pos < interp.buffer.point_min() as i64 => {
             interp.buffer.point_min()
         }
-        Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+        Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
         _ if forward => interp.buffer.point_max(),
         _ => interp.buffer.point_min(),
     };

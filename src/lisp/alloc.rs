@@ -19,14 +19,14 @@
 //! -- that no other OS thread holds Lisp objects in registers or on its
 //! stack while it runs.
 
-use super::types::{ConsCell, MarkBit, Value};
+use super::types::{ConsCell, Kind, MarkBit, Value};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
 mod symbols;
-mod vectors;
+pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
@@ -34,7 +34,7 @@ pub(crate) use vectors::{
     FreedRecord, live_record_census, live_string_object_census, live_vector_census, sweep_vectors,
     take_freed_records,
 };
-pub use vectors::{VectorHeader, VectorRef, VectorlikeRef};
+pub use vectors::{VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 
 /// alloc.c's block geometry: the cells per block that its formulas give
 /// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'
@@ -166,6 +166,16 @@ impl FloatRef {
 
     pub fn get(&self) -> f64 {
         self.cell().value
+    }
+
+    /// The handle for a cell the allocator handed out (a value's word).
+    ///
+    /// # Safety
+    /// CELL must be an allocated float cell.
+    #[inline(always)]
+    pub(crate) unsafe fn from_raw(cell: *mut FloatCell) -> Self {
+        // SAFETY: the caller's contract.
+        Self(unsafe { NonNull::new_unchecked(cell) })
     }
 
     pub(crate) fn identity_ptr(&self) -> usize {
@@ -379,9 +389,24 @@ impl TextRef {
         &self.cell().text
     }
 
+    /// The text.  Its lifetime is the cell's, which the collector keeps
+    /// while the string is reachable: a `Lisp_Object' read of `SDATA'.
     #[inline]
-    pub fn as_str(&self) -> &str {
-        self.cell().text.as_str()
+    pub fn as_str(&self) -> &'static str {
+        // SAFETY: the cell is allocated while the caller holds a value
+        // naming it (the collector's contract); the text is not moved or
+        // freed before the cell is.
+        unsafe { &*(self.cell().text.as_str() as *const str) }
+    }
+
+    /// The handle for a cell the allocator handed out (a value's word).
+    ///
+    /// # Safety
+    /// CELL must be an allocated string cell.
+    #[inline(always)]
+    pub(crate) unsafe fn from_raw(cell: *mut StringCell) -> Self {
+        // SAFETY: the caller's contract.
+        Self(unsafe { NonNull::new_unchecked(cell) })
     }
 
     pub(crate) fn identity_ptr(&self) -> usize {
@@ -1489,12 +1514,12 @@ fn verify_marking(epoch: u32) {
                         describe(&value),
                     );
                 }
-                if let super::types::Value::Cons(target) = &*value {
+                if let super::types::Kind::Cons(target) = (*value).kind() {
                     // SAFETY: the pointer came from a marked cell; its
                     // words are readable in every state.
                     let target_mark = unsafe { mark_of(target.as_ptr().cast_mut()) }.raw();
                     if target_mark != epoch && target_mark != FREE_MARK {
-                        let dead = &**target;
+                        let dead = &*target;
                         let mut with_target_mark = 0usize;
                         let mut with_epoch = 0usize;
                         for start in all_blocks() {
@@ -1551,14 +1576,13 @@ fn verify_marking(epoch: u32) {
 
 /// The mark word of a vectorlike the value names, for the checks.
 fn vectorlike_mark_raw(value: &super::types::Value) -> Option<u32> {
-    use super::types::Value;
-    match value {
-        Value::Vector(vector) => Some(vector.mark_bit().raw()),
-        Value::Lambda(lambda) => Some(lambda.mark_bit().raw()),
-        Value::Buffer(buffer) => Some(buffer.mark_bit().raw()),
-        Value::StringObject(state) => Some(state.mark_bit().raw()),
-        Value::ReaderForm(form) => Some(form.mark_bit().raw()),
-        Value::BigInteger(integer) => Some(integer.mark_bit().raw()),
+    match value.kind() {
+        Kind::Vector(vector) => Some(vector.mark_bit().raw()),
+        Kind::Lambda(lambda) => Some(lambda.mark_bit().raw()),
+        Kind::Buffer(buffer) => Some(buffer.mark_bit().raw()),
+        Kind::StringObject(state) => Some(state.mark_bit().raw()),
+        Kind::ReaderForm(form) => Some(form.mark_bit().raw()),
+        Kind::BigInteger(integer) => Some(integer.mark_bit().raw()),
         _ => None,
     }
 }
@@ -1566,16 +1590,15 @@ fn vectorlike_mark_raw(value: &super::types::Value) -> Option<u32> {
 /// A word of a cell, for the reports: its kind, a symbol's name, an
 /// integer, a cons's address.
 fn describe(value: &super::types::Value) -> String {
-    use super::types::Value;
-    match value {
-        Value::Symbol(symbol) => format!("symbol {}", symbol.as_str()),
-        Value::Integer(n) => format!("integer {n}"),
-        Value::Cons(cell) => format!("cons {:#x}", cell.as_ptr() as usize),
-        Value::String(text) => format!(
+    match value.kind() {
+        Kind::Symbol(symbol) => format!("symbol {}", symbol.as_str()),
+        Kind::Integer(n) => format!("integer {n}"),
+        Kind::Cons(cell) => format!("cons {:#x}", cell.as_ptr() as usize),
+        Kind::String(text) => format!(
             "string {:?}",
             text.as_str().chars().take(24).collect::<String>()
         ),
-        other => other.type_name().to_string(),
+        other => other.value().type_name().to_string(),
     }
 }
 
@@ -1594,7 +1617,7 @@ fn verify_heap() {
             let live = unsafe { &*cell };
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.value_in_place();
-                if let super::types::Value::Cons(target) = *value {
+                if let super::types::Kind::Cons(target) = (*value).kind() {
                     // SAFETY: the pointer came from a live cell; only its
                     // mark word is read.
                     if unsafe { mark_of(target.as_ptr().cast_mut()) }.raw() == FREE_MARK {
@@ -1755,6 +1778,9 @@ pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(Value)) {
     std::hint::black_box(&spill);
 }
 
+/// lisp.h's `VALMASK' complement: the three tag bits of a `Lisp_Object'.
+const TAG_BITS: usize = 7;
+
 /// Mark every cell a word of [LOW, HIGH) names (a parked coroutine's
 /// stack, given its saved stack pointer and base).
 ///
@@ -1767,14 +1793,11 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
         // SAFETY: the caller's contract.
         let word = unsafe { std::ptr::read_volatile(address as *const usize) };
         address += std::mem::size_of::<usize>();
-        // A reference into a cell is word-aligned (every field a reference
-        // can name is); a word that names an odd byte inside one is a
-        // stale pointer whose low bytes a narrower store overwrote, and
-        // is not taken.  (alloc.c's live_cons_holding takes any byte of
-        // a 16-byte cons; the cell here is seven times as wide.)
-        if word & (std::mem::size_of::<usize>() - 1) != 0 {
-            continue;
-        }
+        // alloc.c:mark_maybe_pointer under USE_LSB_TAG: a `Lisp_Object'
+        // word carries its type in the low three bits, so the tag is
+        // taken off before the word is looked up; a handle (an untagged
+        // address) has them clear already.
+        let word = word & !TAG_BITS;
         // SAFETY: `mem_find' validates the word before any cell is read.
         match unsafe { mem_find(word) } {
             // SAFETY: allocated cells.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn call_function_value(
     interp: &mut Interpreter,
@@ -206,7 +207,7 @@ pub(crate) fn hook_values(
     });
     let mut hooks = value_hooks(current);
     if !local {
-        hooks.retain(|hook| !matches!(hook, Value::T));
+        hooks.retain(|hook| !matches!(hook.kind(), Kind::T));
         return hooks;
     }
 
@@ -216,10 +217,10 @@ pub(crate) fn hook_values(
     // absent.  A local `t' sentinel splices the default at that exact point;
     // local nil deliberately suppresses the default.
     let mut default = value_hooks(interp.default_value(hook_name));
-    default.retain(|hook| !matches!(hook, Value::T));
+    default.retain(|hook| !matches!(hook.kind(), Kind::T));
     let mut result = Vec::new();
     for hook in hooks {
-        if matches!(hook, Value::T) {
+        if matches!(hook.kind(), Kind::T) {
             result.extend(default.iter().cloned());
         } else {
             result.push(hook);
@@ -604,13 +605,13 @@ pub(crate) fn delete_region_with_hooks(
         })
         .unwrap_or(false);
     let preserved_bounds = if has_before_hooks {
-        let Value::Marker(preserve_id) = interp.make_marker() else {
+        let Kind::Marker(preserve_id) = interp.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
-        let Value::Marker(start_id) = interp.make_marker() else {
+        let Kind::Marker(start_id) = interp.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
-        let Value::Marker(end_id) = interp.make_marker() else {
+        let Kind::Marker(end_id) = interp.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
         let buffer_id = interp.current_buffer_id();
@@ -707,7 +708,10 @@ pub(crate) fn ensure_region_modifiable(
             // textprop.c's text_read_only: the property's string as the
             // datum, none for any other value.
             let mut data = vec![Value::Symbol("text-read-only".into())];
-            if matches!(read_only_value, Value::String(_) | Value::StringObject(_)) {
+            if matches!(
+                read_only_value.kind(),
+                Kind::String(_) | Kind::StringObject(_)
+            ) {
                 data.push(read_only_value);
             }
             return Err(LispError::SignalValue(Value::list(data)));
@@ -759,7 +763,7 @@ pub(crate) fn inhibit_read_only_matches(inhibit: &Value, property: &Value) -> bo
     if inhibit.is_nil() {
         return false;
     }
-    if matches!(inhibit, Value::T) {
+    if matches!(inhibit.kind(), Kind::T) {
         return true;
     }
     if let Ok(items) = inhibit.to_vec() {
@@ -922,7 +926,7 @@ pub(crate) fn font_lock_previous_property_items(prop: &str, previous: Value) -> 
 
 pub(crate) fn font_lock_value_items(value: &Value) -> Vec<Value> {
     match value.to_vec() {
-        Ok(items) if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol.starts_with(':')) => {
+        Ok(items) if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol.starts_with(':')) => {
             items
         }
         _ => vec![*value],
@@ -934,8 +938,8 @@ pub(crate) fn anonymous_font_lock_face(value: &Value) -> bool {
         return false;
     };
     matches!(
-        items.first(),
-        Some(Value::Symbol(symbol))
+        items.first().map(|v| v.kind()),
+        Some(Kind::Symbol(symbol))
             if symbol.starts_with(':')
                 || matches!(symbol.as_str(), "foreground-color" | "background-color")
     )

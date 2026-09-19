@@ -1,17 +1,18 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(), LispError> {
-    match frame {
-        None | Some(Value::Nil) => Ok(()),
-        Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("frame-live-p", *frame)),
+    match frame.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => Ok(()),
+        Some(Kind::Frame(id)) if interp.frame_is_live(id) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.value())),
     }
 }
 
 fn require_any_frame(frame: Option<&Value>) -> Result<(), LispError> {
-    match frame {
-        None | Some(Value::Nil | Value::Frame(_)) => Ok(()),
-        Some(frame) => Err(wrong_type_argument("framep", *frame)),
+    match frame.map(|v| v.kind()) {
+        None | Some(Kind::Nil | Kind::Frame(_)) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("framep", frame.value())),
     }
 }
 
@@ -24,7 +25,7 @@ fn window_system_frame_required() -> LispError {
 }
 
 fn require_fixnum(value: &Value) -> Result<(), LispError> {
-    if matches!(value, Value::Integer(_)) {
+    if matches!(value.kind(), Kind::Integer(_)) {
         Ok(())
     } else {
         Err(wrong_type_argument("fixnump", *value))
@@ -38,7 +39,7 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
     let items = position
         .to_vec()
         .map_err(|_| wrong_type_argument("listp", *position))?;
-    if let Some(Value::Cons(_)) = items.first() {
+    if let Some(Kind::Cons(_)) = items.first().map(|v| v.kind()) {
         let coordinates = items[0]
             .to_vec()
             .map_err(|_| wrong_type_argument("listp", items[0]))?;
@@ -47,9 +48,9 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
             require_fixnum(&coordinates[1])?;
         }
         if let Some(window) = items.get(1) {
-            let valid_window = matches!(window, Value::Frame(id) if interp.frame_is_live(*id))
-                || matches!(window, Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record|
+            let valid_window = matches!(window.kind(), Kind::Frame(id) if interp.frame_is_live(id))
+                || matches!(window.kind(), Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record|
                             record.kind == crate::lisp::eval::RecordKind::Window));
             if !valid_window {
                 return Err(wrong_type_argument("windowp", *window));
@@ -88,14 +89,16 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
 /// The first (X . Y) coordinate pair inside POSITION, whatever of the
 /// accepted position forms carries it.
 fn popup_position_xy(position: &Value) -> Option<(i64, i64)> {
-    match position {
-        Value::Cons(_) => {
-            if let (Ok(Value::Integer(x)), Ok(Value::Integer(y))) = (position.car(), position.cdr())
-            {
+    match position.kind() {
+        Kind::Cons(_) => {
+            if let (Ok(Kind::Integer(x)), Ok(Kind::Integer(y))) = (
+                position.car().map(|v| v.kind()),
+                position.cdr().map(|v| v.kind()),
+            ) {
                 return Some((x, y));
             }
             let mut tail = *position;
-            while let Value::Cons(_) = tail {
+            while let Kind::Cons(_) = tail.kind() {
                 if let Ok(car) = tail.car()
                     && let Some(xy) = popup_position_xy(&car)
                 {
@@ -125,8 +128,8 @@ fn tty_popup_menu(
         .to_vec()
         .ok()
         .and_then(|items| items.get(1)?.to_vec().ok())
-        .and_then(|posn| match posn.first() {
-            Some(Value::Record(id)) => Some(*id),
+        .and_then(|posn| match posn.first().map(|v| v.kind()) {
+            Some(Kind::Record(id)) => Some(id),
             _ => None,
         })
     {
@@ -141,7 +144,7 @@ fn tty_popup_menu(
         let projected = crate::lisp::primitives::public_keymap_value(interp, menu);
         let mut title = String::new();
         let mut tail = projected.cdr().unwrap_or(Value::Nil);
-        while let Value::Cons(_) = tail {
+        while let Kind::Cons(_) = tail.kind() {
             if let Ok(car) = tail.car()
                 && let Ok(text) = string_text(&car)
             {
@@ -271,12 +274,12 @@ define_dispatch!(
             }
             "x-close-connection" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Nil | Value::String(_) | Value::StringObject(_) => {}
-                    Value::Frame(id) if interp.frame_is_live(*id) => {}
-                    Value::Terminal(id) if *id == 0 && interp.terminal_live() => {}
+                match args[0].kind() {
+                    Kind::Nil | Kind::String(_) | Kind::StringObject(_) => {}
+                    Kind::Frame(id) if interp.frame_is_live(id) => {}
+                    Kind::Terminal(id) if id == 0 && interp.terminal_live() => {}
                     terminal => {
-                        return Err(wrong_type_argument("frame-live-p", *terminal));
+                        return Err(wrong_type_argument("frame-live-p", terminal.value()));
                     }
                 }
                 Err(window_system_unavailable())
@@ -310,14 +313,14 @@ define_dispatch!(
             }
             "x-popup-dialog" => {
                 need_arg_range(name, args, 2, 3)?;
-                match &args[0] {
-                    Value::T => {}
-                    Value::Frame(id) if interp.frame_is_live(*id) => {}
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                match args[0].kind() {
+                    Kind::T => {}
+                    Kind::Frame(id) if interp.frame_is_live(id) => {}
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::Window
                         }) => {}
-                    Value::Cons(_) => {}
+                    Kind::Cons(_) => {}
                     _ => return Err(wrong_type_argument("windowp", Value::Nil)),
                 }
                 let contents = args[1]

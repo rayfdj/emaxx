@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
     interp
@@ -19,8 +20,8 @@ fn fringe_bits_length(value: &Value) -> Result<usize, LispError> {
 }
 
 fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
-    match value {
-        Value::Integer(value) => Ok(*value),
+    match value.kind() {
+        Kind::Integer(value) => Ok(value),
         _ => Err(wrong_type_argument("fixnump", *value)),
     }
 }
@@ -67,8 +68,8 @@ fn define_fringe_bitmap(
     }
     if !align.is_nil()
         && !matches!(
-            align,
-            Value::Symbol(ref name) if matches!(name.as_str(), "top" | "center" | "bottom")
+            align.kind(),
+            Kind::Symbol(ref name) if matches!(name.as_str(), "top" | "center" | "bottom")
         )
     {
         return Err(LispError::Signal("Bad align argument".into()));
@@ -168,19 +169,19 @@ pub(super) fn bare_symbol_identity(
     env: &Env,
     value: &Value,
 ) -> Option<crate::lisp::types::SymbolName> {
-    match value {
-        Value::Symbol(symbol) => return Some(*symbol),
-        Value::Nil => return Some("nil".into()),
-        Value::T => return Some("t".into()),
+    match value.kind() {
+        Kind::Symbol(symbol) => return Some(symbol),
+        Kind::Nil => return Some("nil".into()),
+        Kind::T => return Some("t".into()),
         _ => {}
     }
     if symbols_with_pos_enabled(interp, env)
         && let Some((bare, _)) = symbol_with_pos_parts(interp, value)
     {
-        return match bare {
-            Value::Symbol(symbol) => Some(symbol),
-            Value::Nil => Some("nil".into()),
-            Value::T => Some("t".into()),
+        return match bare.kind() {
+            Kind::Symbol(symbol) => Some(symbol),
+            Kind::Nil => Some("nil".into()),
+            Kind::T => Some("t".into()),
             _ => None,
         };
     }
@@ -208,7 +209,7 @@ fn symbol_property_by_eq(
 ) -> Option<Value> {
     let mut tail = interp.symbol_plist(symbol);
     let mut guard = crate::lisp::types::CycleGuard::new();
-    while let Value::Cons(ref cell) = tail {
+    while let Kind::Cons(ref cell) = tail.kind() {
         if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
             return None;
         }
@@ -238,7 +239,7 @@ fn overriding_plist_property(
         return None;
     }
     let mut entry_guard = crate::lisp::types::CycleGuard::new();
-    while let Value::Cons(ref entries_cell) = entries {
+    while let Kind::Cons(ref entries_cell) = entries.kind() {
         if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
             break;
         }
@@ -250,13 +251,13 @@ fn overriding_plist_property(
         if entry_key.as_deref() == Some(symbol) {
             let mut plist = entry.cdr().ok()?;
             let mut plist_guard = crate::lisp::types::CycleGuard::new();
-            while let Value::Cons(ref plist_cell) = plist {
+            while let Kind::Cons(ref plist_cell) = plist.kind() {
                 if plist_guard.step(crate::lisp::types::ConsCell::identity(plist_cell)) {
                     break;
                 }
                 let key = plist.car().ok()?;
                 let rest = plist.cdr().ok()?;
-                if !matches!(rest, Value::Cons(_)) {
+                if !matches!(rest.kind(), Kind::Cons(_)) {
                     break;
                 }
                 if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
@@ -492,11 +493,11 @@ define_dispatch!(
                 // emacs.c accepts only a fixnum here.  Preserve its explicit
                 // INT_MIN/INT_MAX masking before the CLI boundary narrows the
                 // platform status to what the parent process can observe.
-                let exit_code = match args.first() {
-                    Some(Value::Integer(value)) if *value < 0 => {
-                        ((*value as u32) | (i32::MIN as u32)) as i32
+                let exit_code = match args.first().map(|v| v.kind()) {
+                    Some(Kind::Integer(value)) if value < 0 => {
+                        ((value as u32) | (i32::MIN as u32)) as i32
                     }
-                    Some(Value::Integer(value)) => ((*value as u32) & (i32::MAX as u32)) as i32,
+                    Some(Kind::Integer(value)) => ((value as u32) & (i32::MAX as u32)) as i32,
                     _ => 0,
                 };
                 let termination = EmacsTermination {
@@ -563,7 +564,7 @@ define_dispatch!(
                 // errors raised after a file was found still propagate.
                 if noerror
                     && let Err(LispError::SignalValue(condition)) = &result
-                    && matches!(condition.car(), Ok(Value::Symbol(kind))
+                    && matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
                     if kind == "file-missing" || kind == "file-error")
                 {
                     return Ok(Value::Nil);
@@ -681,16 +682,16 @@ define_dispatch!(
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
                     });
-                let symbol_name = match &args[0] {
+                let symbol_name = match args[0].kind() {
                     // `nil' and `t' are symbols in Elisp even though Emaxx
                     // gives their canonical values dedicated representations.
                     // Like every other symbol argument, GNU's `intern-soft'
                     // returns the exact object only when it belongs to the
                     // requested obarray.  `nil' is also the miss result, so it
                     // can be returned immediately for every obarray.
-                    Value::Nil => return Ok(Value::Nil),
-                    Value::T if obarray.is_none() => return Ok(Value::T),
-                    Value::T if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(id.id)) =>
+                    Kind::Nil => return Ok(Value::Nil),
+                    Kind::T if obarray.is_none() => return Ok(Value::T),
+                    Kind::T if matches!(obarray.map(|v| v.kind()), Some(Kind::Record(id)) if interp.is_standard_obarray_id(id.id)) =>
                     {
                         return Ok(if interp.standard_obarray_contains_symbol("t") {
                             Value::T
@@ -698,36 +699,36 @@ define_dispatch!(
                             Value::Nil
                         });
                     }
-                    Value::T => return Ok(Value::Nil),
-                    Value::Symbol(symbol) if obarray.is_none() => {
-                        return Ok(if interp.standard_obarray_contains_symbol(symbol) {
-                            Value::Symbol(*symbol)
+                    Kind::T => return Ok(Value::Nil),
+                    Kind::Symbol(symbol) if obarray.is_none() => {
+                        return Ok(if interp.standard_obarray_contains_symbol(&symbol) {
+                            Value::Symbol(symbol)
                         } else {
                             Value::Nil
                         });
                     }
-                    Value::Symbol(symbol)
-                        if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(id.id))
-                            && crate::lisp::types::visible_symbol_name(symbol) == symbol =>
+                    Kind::Symbol(symbol)
+                        if matches!(obarray.map(|v| v.kind()), Some(Kind::Record(id)) if interp.is_standard_obarray_id(id.id))
+                            && crate::lisp::types::visible_symbol_name(&symbol) == symbol =>
                     {
                         // An ordinary symbol object read by Lisp is already a
                         // member of the standard obarray.  Synthetic `make-symbol'
                         // and private-obarray names carry identity markers and
                         // must still miss here.
-                        return Ok(if interp.standard_obarray_contains_symbol(symbol) {
-                            Value::Symbol(*symbol)
+                        return Ok(if interp.standard_obarray_contains_symbol(&symbol) {
+                            Value::Symbol(symbol)
                         } else {
                             Value::Nil
                         });
                     }
-                    Value::Symbol(symbol) => {
+                    Kind::Symbol(symbol) => {
                         let Some(obarray) = &obarray else {
-                            return Ok(Value::Symbol(*symbol));
+                            return Ok(Value::Symbol(symbol));
                         };
                         let interned = intern_soft_in_obarray(
                             interp,
                             obarray,
-                            crate::lisp::types::visible_symbol_name(symbol),
+                            crate::lisp::types::visible_symbol_name(&symbol),
                         )?;
                         return Ok(if interned == args[0] {
                             args[0]
@@ -737,18 +738,18 @@ define_dispatch!(
                     }
                     positioned
                         if symbols_with_pos_enabled(interp, env)
-                            && symbol_with_pos_parts(interp, positioned).is_some() =>
+                            && symbol_with_pos_parts(interp, &positioned.value()).is_some() =>
                     {
                         // GNU 30.2 lread.c:Fintern_soft treats a positioned
                         // symbol as a symbol while the dynamic switch is on,
                         // searches for its bare symbol, and returns the exact
                         // positioned object on a hit.
-                        let (bare, _) = symbol_with_pos_parts(interp, positioned)
+                        let (bare, _) = symbol_with_pos_parts(interp, &positioned.value())
                             .expect("guard established symbol-with-position");
                         let bare_name = bare.as_symbol()?;
                         if obarray.is_none() {
                             return Ok(if interp.standard_obarray_contains_symbol(bare_name) {
-                                *positioned
+                                positioned.value()
                             } else {
                                 Value::Nil
                             });
@@ -760,7 +761,7 @@ define_dispatch!(
                             crate::lisp::types::visible_symbol_name(bare_name),
                         )?;
                         return Ok(if interned == bare {
-                            *positioned
+                            positioned.value()
                         } else {
                             Value::Nil
                         });
@@ -771,7 +772,7 @@ define_dispatch!(
                 if let Some(obarray) = obarray {
                     let interned = intern_soft_in_obarray(interp, &obarray, &symbol_name)?;
                     if interned.is_nil()
-                        && matches!(&obarray, Value::Record(id) if interp.is_standard_obarray_id(id.id))
+                        && matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id))
                     {
                         // Built-in loaddefs entries are part of the standard
                         // obarray even before their libraries are loaded.  The
@@ -858,9 +859,10 @@ define_dispatch!(
                 };
                 let funname = args.get(1).cloned().unwrap_or(Value::Nil);
                 let macro_only = args.get(2).cloned().unwrap_or(Value::Nil);
-                let loads_macro = matches!(kind, Value::T)
-                    || matches!(&kind, Value::Symbol(symbol) if symbol == "t" || symbol == "macro");
-                if matches!(&macro_only, Value::Symbol(symbol) if symbol == "macro") && !loads_macro
+                let loads_macro = matches!(kind.kind(), Kind::T)
+                    || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "t" || symbol == "macro");
+                if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol == "macro")
+                    && !loads_macro
                 {
                     return Ok(fundef);
                 }
@@ -975,7 +977,7 @@ define_dispatch!(
                 while let Ok(symbol) = probe.as_symbol() {
                     let symbol = symbol.to_string();
                     if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
-                        && !matches!(form, Value::Nil)
+                        && !matches!(form.kind(), Kind::Nil)
                     {
                         return Ok(form);
                     }
@@ -1349,8 +1351,8 @@ define_dispatch!(
                             .lookup_var("process-environment", env)
                             .unwrap_or(Value::Nil)
                     });
-                if let Some((Value::Symbol(symbol), environment)) =
-                    process_environment.cons_values()
+                if let Some((symbol_value, environment)) = process_environment.cons_values()
+                    && let Kind::Symbol(symbol) = symbol_value.kind()
                     && symbol == "environment"
                 {
                     process_environment = environment;
@@ -1391,40 +1393,40 @@ define_dispatch!(
             }
             "subr-type" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::BuiltinFunc(_) => Ok(Value::Nil),
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
+                match args[0].kind() {
+                    Kind::BuiltinFunc(_) => Ok(Value::Nil),
+                    Kind::Record(id)
+                        if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        Ok(interp.find_record(*id).expect("record checked above").slots[4])
+                        Ok(interp.find_record(id).expect("record checked above").slots[4])
                     }
-                    other => Err(wrong_type_argument("subrp", *other)),
+                    other => Err(wrong_type_argument("subrp", other.value())),
                 }
             }
             "function-equal" => {
                 need_args(name, args, 2)?;
-                let same = match (&args[0], &args[1]) {
-                    (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-                    (Value::Integer(left), Value::Integer(right)) => left == right,
-                    (Value::Symbol(left), Value::Symbol(right))
-                    | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
-                    (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
-                    (Value::Cons(left), Value::Cons(right)) => {
-                        crate::lisp::types::SharedCons::ptr_eq(left, right)
+                let same = match (args[0].kind(), args[1].kind()) {
+                    (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+                    (Kind::Integer(left), Kind::Integer(right)) => left == right,
+                    (Kind::Symbol(left), Kind::Symbol(right))
+                    | (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
+                    (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
+                    (Kind::Cons(left), Kind::Cons(right)) => {
+                        crate::lisp::types::SharedCons::ptr_eq(&left, &right)
                     }
-                    (Value::Lambda(left), Value::Lambda(right)) => {
+                    (Kind::Lambda(left), Kind::Lambda(right)) => {
                         Rc::ptr_eq(&left.body, &right.body)
                     }
-                    (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-                    (Value::Marker(left), Value::Marker(right))
-                    | (Value::Overlay(left), Value::Overlay(right))
-                    | (Value::CharTable(left), Value::CharTable(right))
-                    | (Value::Frame(left), Value::Frame(right))
-                    | (Value::Terminal(left), Value::Terminal(right))
-                    | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
-                    (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
+                    (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+                    (Kind::Marker(left), Kind::Marker(right))
+                    | (Kind::Overlay(left), Kind::Overlay(right))
+                    | (Kind::CharTable(left), Kind::CharTable(right))
+                    | (Kind::Frame(left), Kind::Frame(right))
+                    | (Kind::Terminal(left), Kind::Terminal(right))
+                    | (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
+                    (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
                     _ => false,
                 };
                 Ok(if same { Value::T } else { Value::Nil })
@@ -1444,13 +1446,12 @@ define_dispatch!(
                 if args.first().is_none_or(Value::is_nil) {
                     return Ok(Value::Integer(interp.lossage_size));
                 }
-                let Value::Integer(new_size) = &args[0] else {
+                let Kind::Integer(new_size) = args[0].kind() else {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("user-error"),
                         Value::String("Value must be a positive integer".into()),
                     ])));
                 };
-                let new_size = *new_size;
                 if new_size < 0 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("user-error"),
@@ -1548,7 +1549,7 @@ define_dispatch!(
                 // walk joins a fresh enumeration, which this snapshot does
                 // not see, as GNU's walk need not) instead of copying every
                 // symbol into a vector first -- a quarter of a walk's cost.
-                if let Value::Record(id) = &obarray
+                if let Kind::Record(id) = obarray.kind()
                     && interp.is_standard_obarray_id(id.id)
                 {
                     let symbols = interp.known_symbols_shared();
@@ -1846,7 +1847,7 @@ fn doc_reference_parts(
     // a (FILE . POS) cons reads FILE against `lisp-directory'.  A
     // non-string directory or file answers nil there (doc.c:135-139),
     // never a wrong-type-argument signal.
-    let (filename, directory, position) = if let Value::Integer(position) = value {
+    let (filename, directory, position) = if let Kind::Integer(position) = value.kind() {
         (
             interp
                 .lookup_var("internal-doc-file-name", env)
@@ -1854,13 +1855,13 @@ fn doc_reference_parts(
             interp
                 .lookup_var("doc-directory", env)
                 .unwrap_or(Value::Nil),
-            *position,
+            position,
         )
     } else {
         let Some((filename, position)) = value.cons_values() else {
             return Ok(None);
         };
-        let Value::Integer(position) = position else {
+        let Kind::Integer(position) = position.kind() else {
             return Ok(None);
         };
         (
@@ -1886,10 +1887,12 @@ fn resolve_doc_reference(
         return Ok(None);
     };
     match std::fs::read(&path) {
-        Ok(bytes) => Ok(
-            decode_doc_string(&bytes, position, !matches!(value, Value::Integer(_)))?
-                .map(|value| Value::String(value.into())),
-        ),
+        Ok(bytes) => {
+            Ok(
+                decode_doc_string(&bytes, position, !matches!(value.kind(), Kind::Integer(_)))?
+                    .map(|value| Value::String(value.into())),
+            )
+        }
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
             let filename = path
                 .file_name()
@@ -1907,9 +1910,9 @@ fn resolve_doc_reference(
 }
 
 fn is_doc_reference(value: &Value) -> bool {
-    matches!(value, Value::Integer(_))
+    matches!(value.kind(), Kind::Integer(_))
         || value.cons_values().is_some_and(|(filename, position)| {
-            string_like(&filename).is_some() && matches!(position, Value::Integer(_))
+            string_like(&filename).is_some() && matches!(position.kind(), Kind::Integer(_))
         })
 }
 
@@ -1974,8 +1977,8 @@ fn snarf_documentation(
         }
         match entry.kind {
             b'F' => {
-                if let Ok(Value::BuiltinFunc(native_name)) =
-                    interp.lookup_function(&entry.name, env)
+                if let Ok(Kind::BuiltinFunc(native_name)) =
+                    interp.lookup_function(&entry.name, env).map(|v| v.kind())
                 {
                     interp
                         .builtin_doc_offsets
@@ -1983,9 +1986,9 @@ fn snarf_documentation(
                 }
             }
             b'V' if interp.lookup_var(&entry.name, env).is_some()
-                || delayed
-                    .iter()
-                    .any(|value| matches!(value, Value::Symbol(name) if name == &entry.name)) =>
+                || delayed.iter().any(
+                    |value| matches!(value.kind(), Kind::Symbol(name) if name.as_str() == entry.name.as_str()),
+                ) =>
             {
                 interp.put_symbol_property(
                     &entry.name,
@@ -2030,12 +2033,12 @@ fn internal_subr_documentation(
     function: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    match function {
-        Value::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
-            interp, name, env,
+    match function.kind() {
+        Kind::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
+            interp, &name, env,
         )?)),
-        Value::Record(id)
-            if interp.find_record(*id).is_some_and(|record| {
+        Kind::Record(id)
+            if interp.find_record(id).is_some_and(|record| {
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
             }) =>
         {
@@ -2084,9 +2087,9 @@ fn documentation(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let raw = args.get(1).is_some_and(Value::is_truthy);
-    if let Value::Symbol(symbol) = &args[0]
+    if let Kind::Symbol(symbol) = args[0].kind()
         && interp
-            .get_symbol_property(symbol, "function-documentation")
+            .get_symbol_property(&symbol, "function-documentation")
             .is_some_and(|value| !value.is_nil())
     {
         return documentation_property(
@@ -2103,7 +2106,8 @@ fn documentation(
     let function = resolve_callable(interp, &args[0], env)?;
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons, unwrapped before the dispatch.
-    let function = if matches!(function.car(), Ok(Value::Symbol(ref name)) if name == "macro") {
+    let function = if matches!(function.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
+    {
         function.cdr()?
     } else {
         function
@@ -2115,35 +2119,37 @@ fn documentation(
     let generic_available = interp
         .lookup_function("function-documentation", env)
         .is_ok();
-    let module_function = matches!(function, Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction));
-    let mut doc =
-        if generic_available && !matches!(function, Value::BuiltinFunc(_)) && !module_function {
-            interp.call_function_value(
-                Value::symbol("function-documentation"),
-                Some("function-documentation"),
-                std::slice::from_ref(&function),
-                env,
-            )?
-        } else {
-            match &function {
-                Value::BuiltinFunc(name) => {
-                    let offset = ensure_builtin_doc_offset(interp, name, env)?;
-                    if offset == 0 {
-                        fallback_function_documentation(interp, name)
-                            .map(|value| Value::String(value.into()))
-                            .unwrap_or(Value::Nil)
-                    } else {
-                        resolve_doc_reference(interp, &Value::Integer(offset), env)?
-                            .unwrap_or(Value::Nil)
-                    }
-                }
-                _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
-            }
-        };
-    if doc.is_nil()
-        && let Value::Symbol(symbol) = &args[0]
+    let module_function = matches!(function.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction));
+    let mut doc = if generic_available
+        && !matches!(function.kind(), Kind::BuiltinFunc(_))
+        && !module_function
     {
-        doc = fallback_function_documentation(interp, symbol)
+        interp.call_function_value(
+            Value::symbol("function-documentation"),
+            Some("function-documentation"),
+            std::slice::from_ref(&function),
+            env,
+        )?
+    } else {
+        match function.kind() {
+            Kind::BuiltinFunc(name) => {
+                let offset = ensure_builtin_doc_offset(interp, &name, env)?;
+                if offset == 0 {
+                    fallback_function_documentation(interp, &name)
+                        .map(|value| Value::String(value.into()))
+                        .unwrap_or(Value::Nil)
+                } else {
+                    resolve_doc_reference(interp, &Value::Integer(offset), env)?
+                        .unwrap_or(Value::Nil)
+                }
+            }
+            _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
+        }
+    };
+    if doc.is_nil()
+        && let Kind::Symbol(symbol) = args[0].kind()
+    {
+        doc = fallback_function_documentation(interp, &symbol)
             .map(|value| Value::String(value.into()))
             .unwrap_or(Value::Nil);
     }
@@ -2274,11 +2280,11 @@ pub(super) fn direct_get(
     // environment: plist_get on the symbol's plist, nothing
     // else read (the general path below resolves positioned
     // symbols and the overriding alist first).
-    if let (Value::Symbol(symbol), Value::Symbol(property)) = (&args[0], &args[1])
+    if let (Kind::Symbol(symbol), Kind::Symbol(property)) = (args[0].kind(), args[1].kind())
         && interp.overriding_plist_environment_is_nil()
     {
         return Ok(interp
-            .get_symbol_property_of(symbol, property)
+            .get_symbol_property_of(&symbol, &property)
             .unwrap_or(Value::Nil));
     }
     // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and

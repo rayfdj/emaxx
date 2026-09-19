@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 #[test]
 fn buffer_positions_accept_integer_values_independent_of_internal_width() {
@@ -217,11 +218,11 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
             &mut env,
         ),
         Err(LispError::SignalValue(value))
-            if matches!(value.to_vec().ok().as_deref(), Some([
-                Value::Symbol(name),
-                Value::Integer(-1),
-                Value::Integer(1),
-                Value::Integer(11),
+            if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
+                Kind::Symbol(name),
+                Kind::Integer(-1),
+                Kind::Integer(1),
+                Kind::Integer(11),
             ]) if name == "args-out-of-range")
     ));
     assert!(matches!(
@@ -232,11 +233,11 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
             &mut env,
         ),
         Err(LispError::SignalValue(value))
-            if matches!(value.to_vec().ok().as_deref(), Some([
-                Value::Symbol(name),
-                Value::Integer(100),
-                Value::Integer(1),
-                Value::Integer(11),
+            if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
+                Kind::Symbol(name),
+                Kind::Integer(100),
+                Kind::Integer(1),
+                Kind::Integer(11),
             ]) if name == "args-out-of-range")
     ));
 }
@@ -685,14 +686,14 @@ fn random_matches_emacs_limit_and_seed_behavior() {
     assert!(matches!(
         call(&mut interp, "random", &[Value::Integer(0)], &mut env),
         Err(LispError::SignalValue(value))
-            if matches!(value.to_vec().ok().as_deref(),
-                Some([Value::Symbol(name), Value::Integer(0)]) if name == "args-out-of-range")
+            if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
+                Some([Kind::Symbol(name), Kind::Integer(0)]) if name == "args-out-of-range")
     ));
     assert!(matches!(
         call(&mut interp, "random", &[Value::Integer(-1)], &mut env),
         Err(LispError::SignalValue(value))
-            if matches!(value.to_vec().ok().as_deref(),
-                Some([Value::Symbol(name), Value::Integer(-1)]) if name == "args-out-of-range")
+            if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
+                Some([Kind::Symbol(name), Kind::Integer(-1)]) if name == "args-out-of-range")
     ));
 
     let seeded_a = call(
@@ -1371,7 +1372,7 @@ fn selected_window_is_a_record_and_tracks_window_start() {
     let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
     let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
-    assert!(matches!(window, Value::Record(_)));
+    assert!(matches!(window.kind(), Kind::Record(_)));
 
     assert_eq!(
         call(

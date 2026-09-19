@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::EnvFrame;
+use crate::lisp::types::Kind;
 
 mod file;
 mod search;
@@ -10,7 +11,7 @@ mod tests;
 
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "autoload") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "autoload") {
         return None;
     }
     let file = string_like(items.get(1)?)
@@ -23,8 +24,8 @@ pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
 
 pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, value: &Value) -> bool {
     autoload_parts(value).is_some_and(|(_, _, kind)| {
-        matches!(kind, Value::T)
-            || matches!(&kind, Value::Symbol(name) if name == "t" || name == "macro")
+        matches!(kind.kind(), Kind::T)
+            || matches!(kind.kind(), Kind::Symbol(name) if name == "t" || name == "macro")
     }) || symbol.is_some_and(|name| {
         interp
             .get_symbol_property(name, "autoload-macro")
@@ -34,7 +35,7 @@ pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, valu
 
 pub(crate) fn autoload_command_p(value: &Value) -> bool {
     autoload_parts(value).is_some_and(|(_, interactive, kind)| {
-        interactive.is_truthy() || matches!(kind, Value::Symbol(symbol) if symbol == "keymap")
+        interactive.is_truthy() || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "keymap")
     })
 }
 
@@ -45,7 +46,7 @@ pub(crate) fn resolve_callable_aliases(
 ) -> Result<Value, LispError> {
     let mut current = *func;
     let mut seen = HashSet::new();
-    while let Value::Symbol(name) = current {
+    while let Kind::Symbol(name) = current.kind() {
         if !seen.insert(name.as_str().to_owned()) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("cyclic-function-indirection".into()),
@@ -70,7 +71,7 @@ pub(crate) fn collect_interactive_args(
     // records, not interpreted lambdas, so ask the real `oclosure-type'
     // owner when the native lambda-shape probe misses.
     let is_oclosure = crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
-        || (matches!(&func, Value::Record(_) | Value::Lambda(_))
+        || (matches!(func.kind(), Kind::Record(_) | Kind::Lambda(_))
             && interp.has_lisp_function("oclosure-type")
             && interp
                 .call_function_value(
@@ -101,9 +102,9 @@ pub(crate) fn collect_interactive_args(
     let Some(spec) = oclosure_spec.or_else(|| interactive_spec_form(interp, &func)) else {
         return Ok(Vec::new());
     };
-    match spec {
-        Value::String(spec) => parse_interactive_string(&spec, interp, env),
-        Value::StringObject(state) => parse_interactive_string(&state.borrow().text, interp, env),
+    match spec.kind() {
+        Kind::String(spec) => parse_interactive_string(&spec, interp, env),
+        Kind::StringObject(state) => parse_interactive_string(&state.borrow().text, interp, env),
         _ => {
             if let Some(items) = interactive_list_form_items(&spec) {
                 let mut values = Vec::with_capacity(items.len());
@@ -134,13 +135,14 @@ pub(crate) fn call_interactively_impl(
     // callint.c requires an interactive form, including forms supplied by
     // the Lisp generic for closures and advice.
     if !matches!(
-        call(
+        (call(
             interp,
             "interactive-form",
             std::slice::from_ref(&args[0]),
             env
-        )?,
-        Value::Cons(_)
+        )?)
+        .kind(),
+        Kind::Cons(_)
     ) {
         return Err(wrong_type_argument("commandp", args[0]));
     }
@@ -202,9 +204,9 @@ pub(crate) fn eval_impl(
         // (lexical) || NILP (lexical) ? lexical : list_of_t)' -- an alist
         // is the environment itself, its conses the bindings' storage.
         let _ = caller_env;
-        let (capture_lexical, mut eval_env) = match lexical {
-            Value::Nil => (false, crate::lisp::types::Env::new()),
-            Value::Cons(_) => (
+        let (capture_lexical, mut eval_env) = match lexical.kind() {
+            Kind::Nil => (false, crate::lisp::types::Env::new()),
+            Kind::Cons(_) => (
                 true,
                 crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(*lexical)]),
             ),
@@ -334,7 +336,7 @@ pub(crate) fn eval_region_impl(
         .or_else(|| {
             interp
                 .lookup_var("load-read-function", env)
-                .filter(|value| !matches!(value, Value::Symbol(symbol) if symbol == "read"))
+                .filter(|value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "read"))
         });
     let buffer_id = interp.current_buffer_id();
     let buffer_name = interp.buffer.name.clone();
@@ -518,7 +520,7 @@ fn eval_buffer_forms(
     // is called from inside a lexical closure (testcover's
     // instrumentation runner is exactly that caller).
     let lexical = lisp_file_lexical_cookie(&text).unwrap_or(false);
-    if !matches!(&load_read, Value::Symbol(symbol) if symbol == "read") {
+    if !matches!(load_read.kind(), Kind::Symbol(symbol) if symbol == "read") {
         // A customized reader (like `edebug--read') reads from the buffer
         // itself, form by form, moving point like `readevalloop' does.
         return with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
@@ -602,7 +604,7 @@ fn eager_expand_eval_inner(
 ) -> Result<Value, LispError> {
     let expanded = call_internal_macroexpand_for_load(interp, form, Value::Nil, env)?;
     if let Ok(items) = expanded.to_vec()
-        && matches!(items.first(), Some(Value::Symbol(head)) if head == "progn")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "progn")
     {
         // A top-level progn is expanded form by form so a macro defined by
         // one subform is live while expanding the rest.
@@ -624,12 +626,12 @@ fn call_internal_macroexpand_for_load(
 ) -> Result<Value, LispError> {
     let owner = interp.lookup_function("internal-macroexpand-for-load", env)?;
     if std::env::var_os("EMAXX_DEBUG_EAGER_MACROEXPAND").is_some() {
-        let head = match form {
-            Value::Cons(cell) => format!("{}", cell.car.borrow().clone()),
+        let head = match form.kind() {
+            Kind::Cons(cell) => format!("{}", cell.car.borrow().clone()),
             other => format!("{other}"),
         };
-        let second = if let Value::Cons(cell) = form {
-            if let Value::Cons(inner) = &cell.cdr.borrow().clone() {
+        let second = if let Kind::Cons(cell) = form.kind() {
+            if let Kind::Cons(inner) = (*cell.cdr.borrow()).kind() {
                 format!(" {}", inner.car.borrow().clone())
             } else {
                 String::new()
@@ -1101,10 +1103,10 @@ pub(crate) fn history_args_for_call(
     actual_args: &[Value],
 ) -> Vec<Value> {
     let mut recorded = actual_args.to_vec();
-    let Value::Symbol(command) = command else {
+    let Kind::Symbol(command) = command.kind() else {
         return recorded;
     };
-    let Some(replacements) = interp.get_symbol_property(command, "interactive-args") else {
+    let Some(replacements) = interp.get_symbol_property(&command, "interactive-args") else {
         return recorded;
     };
     let Ok(replacements) = replacements.to_vec() else {
@@ -1114,7 +1116,7 @@ pub(crate) fn history_args_for_call(
         let Some((index, value)) = replacement.cons_values() else {
             continue;
         };
-        let Value::Integer(index) = index else {
+        let Kind::Integer(index) = index.kind() else {
             continue;
         };
         let Ok(index) = usize::try_from(index) else {

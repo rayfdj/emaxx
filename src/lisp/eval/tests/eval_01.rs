@@ -74,7 +74,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
         for index in 0..100_000 {
             chain = Value::cons(Value::float(index as f64), chain);
         }
-        let Value::Cons(cell) = &chain else {
+        let Kind::Cons(cell) = chain.kind() else {
             unreachable!("constructed cons");
         };
         ((cell.as_ptr() as usize) ^ HIDE, cell.serial)
@@ -102,10 +102,15 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
         "the sweep returned the chain's floats to the float free list"
     );
     assert!(matches!(
-        interp.lookup_var("emaxx-gc-test-kept", &env),
-        Some(Value::Cons(_))
+        interp
+            .lookup_var("emaxx-gc-test-kept", &env)
+            .map(|v| v.kind()),
+        Some(Kind::Cons(_))
     ));
-    assert!(matches!(kept.car().expect("kept cell"), Value::Integer(37)));
+    assert!(matches!(
+        kept.car().expect("kept cell").kind(),
+        Kind::Integer(37)
+    ));
 }
 
 #[test]
@@ -2589,17 +2594,19 @@ fn eval_string_ops() {
 #[test]
 fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
     let positive_infinity = eval_str(r#"(string-to-number "1.0e+INFjunk")"#);
-    assert!(matches!(positive_infinity, Value::Float(value) if value.get() == f64::INFINITY));
+    assert!(matches!(positive_infinity.kind(), Kind::Float(value) if value.get() == f64::INFINITY));
     let negative_infinity = eval_str(r#"(string-to-number "-2.e+INF")"#);
-    assert!(matches!(negative_infinity, Value::Float(value) if value.get() == f64::NEG_INFINITY));
+    assert!(
+        matches!(negative_infinity.kind(), Kind::Float(value) if value.get() == f64::NEG_INFINITY)
+    );
 
     let positive_nan = eval_str(r#"(string-to-number "2.e+NaNjunk")"#);
     assert!(
-        matches!(positive_nan, Value::Float(value) if value.is_nan() && value.is_sign_positive())
+        matches!(positive_nan.kind(), Kind::Float(value) if value.is_nan() && value.is_sign_positive())
     );
     let negative_nan = eval_str(r#"(string-to-number "-2.e+NaN")"#);
     assert!(
-        matches!(negative_nan, Value::Float(value) if value.is_nan() && value.is_sign_negative())
+        matches!(negative_nan.kind(), Kind::Float(value) if value.is_nan() && value.is_sign_negative())
     );
 
     assert_eq!(
@@ -2607,7 +2614,9 @@ fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
         Value::Integer(1)
     );
     assert_eq!(eval_str("'1e-INF"), Value::Symbol("1e-INF".into()));
-    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value.get() == f64::INFINITY));
+    assert!(
+        matches!(eval_str("1e+INF").kind(), Kind::Float(value) if value.get() == f64::INFINITY)
+    );
     assert_string_value(eval_str(r#"(prin1-to-string (intern "1e-INF"))"#), "1e-INF");
     assert_string_value(
         eval_str(r#"(prin1-to-string (intern "1e+INF"))"#),
@@ -5015,12 +5024,12 @@ fn copy_alist_copies_entry_cells() {
 #[test]
 fn copy_alist_rejects_vectors_and_strings() {
     assert!(matches!(
-        eval_str("(condition-case err (copy-alist [(a . 1)]) (wrong-type-argument 'caught))"),
-        Value::Symbol(name) if name == "caught"
+        eval_str("(condition-case err (copy-alist [(a . 1)]) (wrong-type-argument 'caught))").kind(),
+        Kind::Symbol(name) if name == "caught"
     ));
     assert!(matches!(
-        eval_str("(condition-case err (copy-alist \"abc\") (wrong-type-argument 'caught))"),
-        Value::Symbol(name) if name == "caught"
+        eval_str("(condition-case err (copy-alist \"abc\") (wrong-type-argument 'caught))").kind(),
+        Kind::Symbol(name) if name == "caught"
     ));
 }
 
@@ -6047,9 +6056,10 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
             ]),
         ])
     );
-    let Value::Record(comp_units_id) = interp
+    let Kind::Record(comp_units_id) = interp
         .lookup_var("comp-loaded-comp-units-h", &env)
         .expect("comp.c initializes the loaded-unit table")
+        .kind()
     else {
         panic!("comp-loaded-comp-units-h is not a hash table record")
     };
@@ -7966,7 +7976,7 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
     assert!(
         without_region
             .iter()
-            .all(|(_, _, face)| !matches!(face, Value::Symbol(s) if s == "region")),
+            .all(|(_, _, face)| !matches!(face.kind(), Kind::Symbol(s) if s == "region")),
         "non-selected windows do not paint the region"
     );
 }

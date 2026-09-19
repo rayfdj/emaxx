@@ -9,6 +9,7 @@
 use super::*;
 use crate::lisp::primitives::pdumper::image::RootSlot;
 use crate::lisp::primitives::pdumper::load::{LoadedImage, LoadedSymbol};
+use crate::lisp::types::Kind;
 
 /// What pdumper.c keeps of a load: `dump_private.dump_filename' and
 /// `load_time', for `pdumper-stats'.
@@ -279,7 +280,7 @@ impl Interpreter {
             }
             return;
         }
-        if let Value::BuiltinFunc(subr) = function
+        if let Kind::BuiltinFunc(subr) = function.kind()
             && subr.as_str() == name
             && !self.functions_index.contains_key(name)
         {
@@ -325,7 +326,8 @@ impl Interpreter {
             RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
             RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,
             RootSlot::CurrentGlobalMap => {
-                self.current_global_map = (!matches!(value, Value::Unbound)).then_some(*value);
+                self.current_global_map =
+                    (!matches!(value.kind(), Kind::Unbound)).then_some(*value);
             }
             _ => {}
         }

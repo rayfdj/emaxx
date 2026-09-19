@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
     let seconds = args
@@ -6,9 +7,9 @@ pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
         .map(Value::as_float)
         .transpose()?
         .unwrap_or(0.0);
-    let millis = match args.get(1) {
-        None | Some(Value::Nil) => 0.0,
-        Some(value) => value.as_float()?,
+    let millis = match args.get(1).map(|v| v.kind()) {
+        None | Some(Kind::Nil) => 0.0,
+        Some(value) => value.value().as_float()?,
     };
     let total = seconds + millis / 1000.0;
     if !total.is_finite() || total <= 0.0 {
@@ -199,8 +200,8 @@ fn closure_arity_value(
     function: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    if let Value::Integer(packed) = argument_spec {
-        if *packed < 0 {
+    if let Kind::Integer(packed) = argument_spec.kind() {
+        if packed < 0 {
             return Err(invalid_function_arity(function));
         }
         let mandatory = packed & 127;
@@ -222,7 +223,7 @@ fn closure_arity_value(
     let mut cursor = *argument_spec;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        let Value::Cons(cell) = cursor else {
+        let Kind::Cons(cell) = cursor.kind() else {
             return if cursor.is_nil() {
                 Ok(Value::cons(
                     Value::Integer(required),
@@ -276,38 +277,38 @@ pub(crate) fn function_arity_value(
         return function_arity_value(interp, &resolved, env);
     }
 
-    match function {
+    match function.kind() {
         // Every genuine subr has its arity in the GNU-generated table; a
         // miss means an emaxx coverage gap, never a value to invent.
-        Value::BuiltinFunc(name) => builtin_arity_value(name)
-            .or_else(|| special_form_arity_value(name))
+        Kind::BuiltinFunc(name) => builtin_arity_value(&name)
+            .or_else(|| special_form_arity_value(&name))
             .ok_or_else(|| {
                 LispError::Signal(format!("emaxx: no GNU-derived arity for subr {name}"))
             }),
-        Value::Lambda(lambda) => match &lambda.public_parameters {
+        Kind::Lambda(lambda) => match &lambda.public_parameters {
             Some(parameters) => closure_arity_value(interp, parameters, function, env),
             None => Ok(lambda_arity_value(&lambda.params)),
         },
-        Value::Record(id)
+        Kind::Record(id)
             if interp
-                .find_record(*id)
+                .find_record(id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure) =>
         {
             let argument_spec = interp
-                .find_record(*id)
+                .find_record(id)
                 .and_then(|record| record.slots.first())
                 .ok_or_else(|| invalid_function_arity(function))?;
             closure_arity_value(interp, argument_spec, function, env)
         }
-        Value::Record(id)
-            if interp.find_record(*id).is_some_and(|record| {
+        Kind::Record(id)
+            if interp.find_record(id).is_some_and(|record| {
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
             }) =>
         {
-            let record = interp.find_record(*id).expect("record checked above");
+            let record = interp.find_record(id).expect("record checked above");
             Ok(Value::cons(record.slots[1], record.slots[2]))
         }
-        Value::Record(id) if interp.modules.functions.contains_key(&id.id) => {
+        Kind::Record(id) if interp.modules.functions.contains_key(&id.id) => {
             let function = &interp.modules.functions[&id.id];
             Ok(Value::cons(
                 Value::Integer(function.min as i64),
@@ -318,8 +319,8 @@ pub(crate) fn function_arity_value(
                 },
             ))
         }
-        value if is_lambda_expression(interp, value, env) => {
-            let items = value.to_vec()?;
+        value if is_lambda_expression(interp, &value.value(), env) => {
+            let items = value.value().to_vec()?;
             let parameters = items[1]
                 .to_vec()?
                 .into_iter()
@@ -331,16 +332,16 @@ pub(crate) fn function_arity_value(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(lambda_arity_value(&parameters))
         }
-        Value::Cons(_) => Err(invalid_function_arity(function)),
+        Kind::Cons(_) => Err(invalid_function_arity(function)),
         _ => Err(LispError::WrongTypeArgument("functionp".into(), *function)),
     }
 }
 
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
-    match value {
-        Value::Integer(n) => Ok(*n),
-        Value::Marker(id) => interp
-            .marker_position(*id)
+    match value.kind() {
+        Kind::Integer(n) => Ok(n),
+        Kind::Marker(id) => interp
+            .marker_position(id)
             .map(|pos| pos as i64)
             .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Err(LispError::WrongTypeArgument(
@@ -354,11 +355,11 @@ pub(crate) fn integer_like_bigint(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<BigInt, LispError> {
-    match value {
-        Value::Integer(n) => Ok(BigInt::from(*n)),
-        Value::BigInteger(n) => Ok((*n).into()),
-        Value::Marker(id) => interp
-            .marker_position(*id)
+    match value.kind() {
+        Kind::Integer(n) => Ok(BigInt::from(n)),
+        Kind::BigInteger(n) => Ok((n).into()),
+        Kind::Marker(id) => interp
+            .marker_position(id)
             .map(BigInt::from)
             .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Err(LispError::WrongTypeArgument(
@@ -369,9 +370,9 @@ pub(crate) fn integer_like_bigint(
 }
 
 pub(crate) fn numeric_to_f64(interp: &Interpreter, value: &Value) -> Result<f64, LispError> {
-    match value {
-        Value::Float(f) => Ok(f.get()),
-        Value::BigInteger(n) => n
+    match value.kind() {
+        Kind::Float(f) => Ok(f.get()),
+        Kind::BigInteger(n) => n
             .to_f64()
             .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value)),
         _ => Ok(integer_like_i64(interp, value)? as f64),
@@ -425,7 +426,7 @@ pub(crate) fn integer_rounding_value(
             args.len(),
         ));
     }
-    if float_result && !matches!(args[0], Value::Float(_)) {
+    if float_result && !matches!(args[0].kind(), Kind::Float(_)) {
         return Err(LispError::WrongTypeArgument("floatp".into(), args[0]));
     }
 
@@ -442,8 +443,8 @@ pub(crate) fn integer_rounding_value(
                 numeric_to_f64(interp, &args[0])?,
             )));
         }
-        return match &args[0] {
-            Value::Integer(_) | Value::BigInteger(_) => Ok(args[0]),
+        return match args[0].kind() {
+            Kind::Integer(_) | Kind::BigInteger(_) => Ok(args[0]),
             _ => rounded_f64_to_number_value(apply_rounding_kind(
                 kind,
                 numeric_to_f64(interp, &args[0])?,
@@ -497,8 +498,8 @@ pub(crate) fn integer_like_bigint_for_rounding(
     interp: &Interpreter,
     value: &Value,
 ) -> Option<BigInt> {
-    match value {
-        Value::Float(value) => bigint_from_integral_float(value.get()),
+    match value.kind() {
+        Kind::Float(value) => bigint_from_integral_float(value.get()),
         _ => integer_like_bigint(interp, value).ok(),
     }
 }
@@ -607,16 +608,16 @@ pub(crate) fn ldexp_value(significand: f64, exponent: i64) -> f64 {
 }
 
 pub(crate) fn logb_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
-    match value {
-        Value::Integer(number) => {
-            if *number == 0 {
+    match value.kind() {
+        Kind::Integer(number) => {
+            if number == 0 {
                 return Err(LispError::Signal("Arithmetic error".into()));
             }
             Ok(Value::Integer(
                 i64::BITS as i64 - 1 - number.unsigned_abs().leading_zeros() as i64,
             ))
         }
-        Value::BigInteger(number) => {
+        Kind::BigInteger(number) => {
             if number.is_zero() {
                 return Err(LispError::Signal("Arithmetic error".into()));
             }
@@ -641,7 +642,7 @@ pub(crate) fn expt_value(
     exponent: &Value,
 ) -> Result<Value, LispError> {
     let exponent_bigint = integer_like_bigint(interp, exponent);
-    if matches!(base, Value::Float(_)) || matches!(exponent, Value::Float(_)) {
+    if matches!(base.kind(), Kind::Float(_)) || matches!(exponent.kind(), Kind::Float(_)) {
         return Ok(Value::float(
             numeric_to_f64(interp, base)?.powf(numeric_to_f64(interp, exponent)?),
         ));
@@ -679,11 +680,11 @@ pub(crate) fn exact_binary_rational(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<(BigInt, i32)>, LispError> {
-    match value {
-        Value::Float(value) => Ok(exact_float_binary_rational(value.get())),
-        Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
-        Value::BigInteger(value) => Ok(Some(((*value).into(), 0))),
-        Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
+    match value.kind() {
+        Kind::Float(value) => Ok(exact_float_binary_rational(value.get())),
+        Kind::Integer(value) => Ok(Some((BigInt::from(value), 0))),
+        Kind::BigInteger(value) => Ok(Some(((value).into(), 0))),
+        Kind::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
             *value,
@@ -834,15 +835,15 @@ pub(crate) enum TimeValueForm {
 }
 
 pub(crate) fn time_value_form(value: &Value) -> TimeValueForm {
-    match value {
-        Value::Cons(_)
+    match value.kind() {
+        Kind::Cons(_)
             if value
                 .to_vec()
                 .is_ok_and(|items| (2..=4).contains(&items.len())) =>
         {
             TimeValueForm::Other
         }
-        Value::Cons(_) => TimeValueForm::TicksHz,
+        Kind::Cons(_) => TimeValueForm::TicksHz,
         _ => TimeValueForm::Other,
     }
 }
@@ -852,12 +853,12 @@ pub(crate) fn exact_time_from_value(
     value: &Value,
     now: &ExactTimeValue,
 ) -> Result<ExactTimeValue, LispError> {
-    match value {
-        Value::Nil => Ok(now.clone()),
-        Value::Integer(value) => exact_time_value(BigInt::from(*value), BigInt::from(1u8)),
-        Value::BigInteger(value) => exact_time_value((*value).into(), BigInt::from(1u8)),
-        Value::Float(value) => exact_time_from_float(value.get()),
-        Value::Cons(cons_cell) => {
+    match value.kind() {
+        Kind::Nil => Ok(now.clone()),
+        Kind::Integer(value) => exact_time_value(BigInt::from(value), BigInt::from(1u8)),
+        Kind::BigInteger(value) => exact_time_value((value).into(), BigInt::from(1u8)),
+        Kind::Float(value) => exact_time_from_float(value.get()),
+        Kind::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
             if let Ok(items) = value.to_vec()
@@ -1413,7 +1414,7 @@ impl PosixTimeZone {
 }
 
 fn local_time_zone_rule_is_wall(rule: &Value) -> bool {
-    rule.is_nil() || matches!(rule, Value::Symbol(symbol) if symbol == "wall")
+    rule.is_nil() || matches!(rule.kind(), Kind::Symbol(symbol) if symbol == "wall")
 }
 
 pub(crate) fn zone_spec_from_value(
@@ -1421,9 +1422,9 @@ pub(crate) fn zone_spec_from_value(
     zone: &Value,
     time: Option<&ExactTimeValue>,
 ) -> Result<ZoneSpec, LispError> {
-    match zone {
-        Value::Nil => Ok(local_zone_spec(interp, time)),
-        Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(interp, time)),
+    match zone.kind() {
+        Kind::Nil => Ok(local_zone_spec(interp, time)),
+        Kind::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(interp, time)),
         _ => explicit_zone_spec_from_value(zone, time),
     }
 }
@@ -1432,18 +1433,18 @@ fn explicit_zone_spec_from_value(
     zone: &Value,
     time: Option<&ExactTimeValue>,
 ) -> Result<ZoneSpec, LispError> {
-    match zone {
-        Value::T => Ok(ZoneSpec {
+    match zone.kind() {
+        Kind::T => Ok(ZoneSpec {
             offset_seconds: 0,
             abbreviation: "UTC".into(),
             is_dst: false,
         }),
-        Value::Integer(value) => Ok(ZoneSpec {
-            offset_seconds: *value as i32,
-            abbreviation: format_numeric_zone_name(*value as i32),
+        Kind::Integer(value) => Ok(ZoneSpec {
+            offset_seconds: value as i32,
+            abbreviation: format_numeric_zone_name(value as i32),
             is_dst: false,
         }),
-        Value::BigInteger(value) => {
+        Kind::BigInteger(value) => {
             let offset = value
                 .to_i32()
                 .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), *zone))?;
@@ -1466,14 +1467,14 @@ fn explicit_zone_spec_from_value(
                 is_dst: false,
             }))
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let items = zone.to_vec()?;
             if items.is_empty() {
                 return Err(LispError::TypeError("time-zone".into(), zone.type_name()));
             }
-            let offset = match &items[0] {
-                Value::Integer(value) => *value as i32,
-                Value::BigInteger(value) => value
+            let offset = match items[0].kind() {
+                Kind::Integer(value) => value as i32,
+                Kind::BigInteger(value) => value
                     .to_i32()
                     .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), items[0]))?,
                 _ => {
@@ -1987,9 +1988,9 @@ pub(crate) fn decode_time_value(
         BigInt::from(datetime.second()) * time.hz.clone() + fractional_ticks,
         time.hz.clone(),
     )?;
-    let second_field = match form {
-        Value::Symbol(symbol) if symbol == "integer" => exact_time_floor_integer_value(&seconds),
-        Value::T => exact_time_to_tick_pair(&seconds),
+    let second_field = match form.kind() {
+        Kind::Symbol(symbol) if symbol == "integer" => exact_time_floor_integer_value(&seconds),
+        Kind::T => exact_time_to_tick_pair(&seconds),
         _ => exact_time_to_value(&seconds),
     };
     Ok(Value::list([
@@ -2026,9 +2027,9 @@ pub(crate) fn integer_field(interp: &Interpreter, value: &Value) -> Result<i32, 
 }
 
 pub(crate) fn value_is_unspecified(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Nil) => true,
-        Some(Value::Symbol(symbol)) if symbol == "-" => true,
+    match value.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => true,
+        Some(Kind::Symbol(symbol)) if symbol == "-" => true,
         _ => false,
     }
 }
@@ -2042,15 +2043,15 @@ fn current_time_list_is_set(interp: &Interpreter) -> bool {
 }
 
 pub(crate) fn time_convert_value(time: &ExactTimeValue, form: &Value) -> Result<Value, LispError> {
-    match form {
-        Value::Nil => Ok(exact_time_to_value(time)),
-        Value::T => Ok(exact_time_to_tick_pair(time)),
-        Value::Symbol(symbol) if symbol == "integer" => Ok(exact_time_floor_integer_value(time)),
-        Value::Symbol(symbol) if symbol == "list" => exact_time_to_old_style(time),
-        Value::Integer(value) if *value == 4 => exact_time_to_old_style(time),
-        Value::BigInteger(value) if value == &BigInt::from(4u8) => exact_time_to_old_style(time),
-        Value::Integer(value) => exact_time_to_scaled_pair(time, &BigInt::from(*value)),
-        Value::BigInteger(value) => exact_time_to_scaled_pair(time, value),
+    match form.kind() {
+        Kind::Nil => Ok(exact_time_to_value(time)),
+        Kind::T => Ok(exact_time_to_tick_pair(time)),
+        Kind::Symbol(symbol) if symbol == "integer" => Ok(exact_time_floor_integer_value(time)),
+        Kind::Symbol(symbol) if symbol == "list" => exact_time_to_old_style(time),
+        Kind::Integer(4) => exact_time_to_old_style(time),
+        Kind::BigInteger(value) if *value == BigInt::from(4u8) => exact_time_to_old_style(time),
+        Kind::Integer(value) => exact_time_to_scaled_pair(time, &BigInt::from(value)),
+        Kind::BigInteger(value) => exact_time_to_scaled_pair(time, &value),
         _ => Err(LispError::TypeError(
             "time-convert form".into(),
             form.type_name(),
@@ -2391,8 +2392,8 @@ pub(crate) fn numeric_ordering(
     // arithmetic, so keep the comparison contract here.
     for value in [left, right] {
         if !matches!(
-            value,
-            Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Marker(_)
+            value.kind(),
+            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) | Kind::Marker(_)
         ) {
             return Err(LispError::WrongTypeArgument(
                 "number-or-marker-p".into(),
@@ -2400,8 +2401,8 @@ pub(crate) fn numeric_ordering(
             ));
         }
     }
-    if matches!(left, Value::Float(value) if value.is_nan())
-        || matches!(right, Value::Float(value) if value.is_nan())
+    if matches!(left.kind(), Kind::Float(value) if value.is_nan())
+        || matches!(right.kind(), Kind::Float(value) if value.is_nan())
     {
         return Ok(None);
     }
@@ -2410,8 +2411,8 @@ pub(crate) fn numeric_ordering(
     // fixnums at the same boundary, so keep this overwhelmingly common path
     // allocation-free and reserve exact-rational construction for mixed or
     // genuinely large representations.
-    if matches!(left, Value::Integer(_) | Value::Marker(_))
-        && matches!(right, Value::Integer(_) | Value::Marker(_))
+    if matches!(left.kind(), Kind::Integer(_) | Kind::Marker(_))
+        && matches!(right.kind(), Kind::Integer(_) | Kind::Marker(_))
     {
         return Ok(Some(
             integer_like_i64(interp, left)?.cmp(&integer_like_i64(interp, right)?),
@@ -2428,14 +2429,14 @@ pub(crate) fn numeric_ordering(
         )));
     }
 
-    match (left, right) {
-        (Value::Float(left), Value::Float(right)) => Ok(left.get().partial_cmp(&right.get())),
-        (Value::Float(left), _) if left.is_infinite() => Ok(Some(if left.is_sign_positive() {
+    match (left.kind(), right.kind()) {
+        (Kind::Float(left), Kind::Float(right)) => Ok(left.get().partial_cmp(&right.get())),
+        (Kind::Float(left), _) if left.is_infinite() => Ok(Some(if left.is_sign_positive() {
             Ordering::Greater
         } else {
             Ordering::Less
         })),
-        (_, Value::Float(right)) if right.is_infinite() => Ok(Some(if right.is_sign_positive() {
+        (_, Kind::Float(right)) if right.is_infinite() => Ok(Some(if right.is_sign_positive() {
             Ordering::Less
         } else {
             Ordering::Greater
@@ -2464,13 +2465,13 @@ pub(crate) fn extremum_numeric_value(
     choose_max: bool,
 ) -> Result<Value, LispError> {
     let mut best = numeric_result_value(interp, &args[0])?;
-    if matches!(&best, Value::Float(value) if value.is_nan()) {
+    if matches!(best.kind(), Kind::Float(value) if value.is_nan()) {
         return Ok(best);
     }
 
     for arg in &args[1..] {
         let candidate = numeric_result_value(interp, arg)?;
-        if matches!(&candidate, Value::Float(value) if value.is_nan()) {
+        if matches!(candidate.kind(), Kind::Float(value) if value.is_nan()) {
             return Ok(candidate);
         }
         let ordering = numeric_ordering(interp, &best, &candidate)?;
@@ -2488,13 +2489,13 @@ pub(crate) fn numeric_result_value(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
-    match value {
-        Value::Integer(number) => Ok(Value::Integer(*number)),
-        Value::BigInteger(number) => Ok(normalize_bigint_value((*number).into())),
-        Value::Float(number) => Ok(Value::Float(*number)),
-        Value::Marker(id) => Ok(Value::Integer(
+    match value.kind() {
+        Kind::Integer(number) => Ok(Value::Integer(number)),
+        Kind::BigInteger(number) => Ok(normalize_bigint_value((number).into())),
+        Kind::Float(number) => Ok(Value::Float(number)),
+        Kind::Marker(id) => Ok(Value::Integer(
             interp
-                .marker_position(*id)
+                .marker_position(id)
                 .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), *value))?
                 as i64,
         )),
@@ -2676,10 +2677,10 @@ pub(crate) fn digit_value_for_base(ch: char, base: u32) -> Option<u32> {
 }
 
 pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::Integer(n) => Ok(n.to_string()),
-        Value::BigInteger(n) => Ok(n.to_string()),
-        Value::Float(f) => Ok(crate::lisp::types::format_float(f.get())),
+    match value.kind() {
+        Kind::Integer(n) => Ok(n.to_string()),
+        Kind::BigInteger(n) => Ok(n.to_string()),
+        Kind::Float(f) => Ok(crate::lisp::types::format_float(f.get())),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
             *value,
@@ -2694,24 +2695,24 @@ mod tests {
     #[test]
     fn make_int_boundary_matches_gnu_fixnum_representation() {
         assert!(matches!(
-            normalize_integer_value(MOST_NEGATIVE_FIXNUM),
-            Value::Integer(MOST_NEGATIVE_FIXNUM)
+            normalize_integer_value(MOST_NEGATIVE_FIXNUM).kind(),
+            Kind::Integer(MOST_NEGATIVE_FIXNUM)
         ));
         assert!(matches!(
-            normalize_integer_value(MOST_POSITIVE_FIXNUM),
-            Value::Integer(MOST_POSITIVE_FIXNUM)
+            normalize_integer_value(MOST_POSITIVE_FIXNUM).kind(),
+            Kind::Integer(MOST_POSITIVE_FIXNUM)
         ));
         assert!(matches!(
-            normalize_integer_value(MOST_NEGATIVE_FIXNUM - 1),
-            Value::BigInteger(_)
+            normalize_integer_value(MOST_NEGATIVE_FIXNUM - 1).kind(),
+            Kind::BigInteger(_)
         ));
         assert!(matches!(
-            normalize_integer_value(MOST_POSITIVE_FIXNUM + 1),
-            Value::BigInteger(_)
+            normalize_integer_value(MOST_POSITIVE_FIXNUM + 1).kind(),
+            Kind::BigInteger(_)
         ));
         assert!(matches!(
-            normalize_bigint_value(BigInt::from(MOST_POSITIVE_FIXNUM) + 1),
-            Value::BigInteger(_)
+            normalize_bigint_value(BigInt::from(MOST_POSITIVE_FIXNUM) + 1).kind(),
+            Kind::BigInteger(_)
         ));
     }
 }

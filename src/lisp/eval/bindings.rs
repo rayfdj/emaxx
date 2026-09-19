@@ -1,6 +1,6 @@
 use super::symbol_cells::LOCALIZED;
 use super::*;
-use crate::lisp::types::{SymbolName, assq_binding, assq_binding_named, current_environment};
+use crate::lisp::types::{Kind, SymbolName, assq_binding, assq_binding_named, current_environment};
 
 pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
@@ -792,7 +792,7 @@ impl Interpreter {
         let Some(binding) = self.raw_function_binding_symbol(symbol, env) else {
             return Err(LispError::VoidFunction(symbol.as_str().to_string()));
         };
-        let Value::Symbol(next) = binding else {
+        let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
         };
         let mut current = next;
@@ -808,9 +808,9 @@ impl Interpreter {
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
                 return Err(LispError::VoidFunction(current.as_str().to_string()));
             };
-            match binding {
-                Value::Symbol(next) => current = next,
-                other => return Ok(other),
+            match binding.kind() {
+                Kind::Symbol(next) => current = next,
+                other => return Ok(other.value()),
             }
         }
     }
@@ -864,9 +864,9 @@ impl Interpreter {
             }
             let (binding, frame_hit) = self.macro_position_binding(&current, env)?;
             from_frame |= frame_hit;
-            match binding {
-                Value::Symbol(next) => current = next.to_string(),
-                other => return Some((other, from_frame)),
+            match binding.kind() {
+                Kind::Symbol(next) => current = next.to_string(),
+                other => return Some((other.value(), from_frame)),
             }
         }
     }
@@ -878,7 +878,7 @@ impl Interpreter {
         let Some(binding) = self.raw_function_binding(name, env) else {
             return Err(LispError::VoidFunction(name.to_string()));
         };
-        let Value::Symbol(next) = binding else {
+        let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
         };
 
@@ -896,9 +896,9 @@ impl Interpreter {
             let Some(binding) = self.raw_function_binding(&current, env) else {
                 return Err(LispError::VoidFunction(current));
             };
-            match binding {
-                Value::Symbol(next) => current = next.to_string(),
-                other => return Ok(other),
+            match binding.kind() {
+                Kind::Symbol(next) => current = next.to_string(),
+                other => return Ok(other.value()),
             }
         }
     }
@@ -1203,20 +1203,20 @@ impl Interpreter {
         let resolved = symbol.as_str();
         let value = Self::stored_value(value);
         if resolved == "buffer-file-name" {
-            let file = match value {
-                Value::Nil => None,
-                Value::String(path) => Some(path.to_string()),
-                Value::StringObject(state) => Some(state.borrow().text.clone()),
+            let file = match value.kind() {
+                Kind::Nil => None,
+                Kind::String(path) => Some(path.to_string()),
+                Kind::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
             self.set_current_buffer_file_name(file);
             return;
         }
         if resolved == "buffer-file-truename" {
-            self.buffer.file_truename = match value {
-                Value::Nil => None,
-                Value::String(path) => Some(path.to_string()),
-                Value::StringObject(state) => Some(state.borrow().text.clone()),
+            self.buffer.file_truename = match value.kind() {
+                Kind::Nil => None,
+                Kind::String(path) => Some(path.to_string()),
+                Kind::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
             return;
@@ -1229,7 +1229,7 @@ impl Interpreter {
             if value.is_nil() {
                 self.buffer.enable_undo();
                 self.buffer.clear_undo_history();
-            } else if matches!(value, Value::T) {
+            } else if matches!(value.kind(), Kind::T) {
                 self.buffer.disable_undo();
             } else if let Some((head, tail)) = value.cons_values()
                 && crate::lisp::primitives::values_eql(
@@ -1282,15 +1282,15 @@ impl Interpreter {
     pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
         let mut current: Option<SymbolName> = None;
         for _ in 0..10 {
-            let (binding, _) = self
-                .macro_position_binding(current.as_ref().map_or(name, SymbolName::as_str), env)?;
-            match binding {
-                Value::Symbol(next) => current = Some(next),
-                Value::Cons(cons_cell) => {
+            let (binding, _) =
+                self.macro_position_binding(current.as_ref().map_or(name, |s| s.as_str()), env)?;
+            match binding.kind() {
+                Kind::Symbol(next) => current = Some(next),
+                Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
-                    return match &*car.borrow() {
-                        Value::Symbol(head) if head == "macro" => Some(*cdr.borrow()),
+                    return match (*car.borrow()).kind() {
+                        Kind::Symbol(head) if head == "macro" => Some(*cdr.borrow()),
                         _ => None,
                     };
                 }
@@ -1367,13 +1367,13 @@ impl Interpreter {
     }
 
     pub fn function_binding_name(&self, function: &Value) -> Option<String> {
-        match function {
-            Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
+        match function.kind() {
+            Kind::Symbol(name) | Kind::BuiltinFunc(name) => Some(name.to_string()),
             other => self
                 .functions
                 .iter()
                 .rev()
-                .find(|(_, value)| value == other)
+                .find(|(_, value)| *value == other.value())
                 .map(|(name, _)| name.clone()),
         }
     }
@@ -1439,8 +1439,9 @@ impl Interpreter {
             .lookup_var("native-comp-enable-subr-trampolines", env)
             .is_some_and(|value| value.is_truthy());
         let replaces_primitive = matches!(
-            self.logical_function_binding(name, &Env::new()),
-            Some(Value::BuiltinFunc(_))
+            self.logical_function_binding(name, &Env::new())
+                .map(|v| v.kind()),
+            Some(Kind::BuiltinFunc(_))
         );
         if installs_trampolines
             && replaces_primitive
@@ -1511,7 +1512,7 @@ impl Interpreter {
     }
 
     pub fn validate_function_binding(&self, name: &str, function: &Value) -> Result<(), LispError> {
-        let Value::Symbol(current) = function else {
+        let Kind::Symbol(current) = function.kind() else {
             return Ok(());
         };
         let mut current = current.to_string();
@@ -1532,7 +1533,7 @@ impl Interpreter {
             else {
                 return Ok(());
             };
-            let Value::Symbol(next) = value else {
+            let Kind::Symbol(next) = value.kind() else {
                 return Ok(());
             };
             current = next.to_string();

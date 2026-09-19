@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(super) fn next_overlay_change_position(
     buffer: &crate::buffer::Buffer,
@@ -57,7 +58,7 @@ define_dispatch!(
                 let buffer_id = if let Some(buffer_arg) = args.get(2) {
                     if buffer_arg.is_nil() {
                         interp.current_buffer_id()
-                    } else if matches!(buffer_arg, Value::Buffer(_)) {
+                    } else if matches!(buffer_arg.kind(), Kind::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
                         return Err(LispError::WrongTypeArgument("bufferp".into(), *buffer_arg));
@@ -92,7 +93,7 @@ define_dispatch!(
 
             "overlayp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(&args[0], Value::Overlay(_)) {
+                Ok(if matches!(args[0].kind(), Kind::Overlay(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -101,8 +102,8 @@ define_dispatch!(
 
             "overlay-buffer" => {
                 need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -123,8 +124,8 @@ define_dispatch!(
 
             "overlay-start" => {
                 need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -151,8 +152,8 @@ define_dispatch!(
 
             "overlay-end" => {
                 need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -182,8 +183,8 @@ define_dispatch!(
                 if !(3..=4).contains(&args.len()) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -191,7 +192,7 @@ define_dispatch!(
                 let target_buffer_id = if let Some(buffer_arg) = args.get(3) {
                     if buffer_arg.is_nil() {
                         interp.current_buffer_id()
-                    } else if matches!(buffer_arg, Value::Buffer(_)) {
+                    } else if matches!(buffer_arg.kind(), Kind::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
                         return Err(LispError::WrongTypeArgument("bufferp".into(), *buffer_arg));
@@ -229,8 +230,8 @@ define_dispatch!(
 
             "delete-overlay" => {
                 need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -240,9 +241,9 @@ define_dispatch!(
             }
 
             "delete-all-overlays" => {
-                let buffer_id = match args.first() {
-                    None | Some(Value::Nil) => interp.current_buffer_id(),
-                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                let buffer_id = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => interp.current_buffer_id(),
+                    Some(buffer) => interp.resolve_buffer_id(&buffer.value())?,
                 };
                 interp.delete_buffer_overlays(buffer_id);
                 Ok(Value::Nil)
@@ -250,8 +251,8 @@ define_dispatch!(
 
             "overlay-put" => {
                 need_args(name, args, 3)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -265,7 +266,7 @@ define_dispatch!(
                     // overlay the evaporate property deletes it on the
                     // spot (rfn-eshadow's shadow overlay starts life
                     // this way; move-overlay later revives it).
-                    if matches!(&args[1], Value::Symbol(prop) if prop == "evaporate")
+                    if matches!(args[1].kind(), Kind::Symbol(prop) if prop == "evaporate")
                         && value.is_truthy()
                         && ov.beg == ov.end
                     {
@@ -280,8 +281,8 @@ define_dispatch!(
 
             "overlay-get" => {
                 need_args(name, args, 2)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }
@@ -289,8 +290,8 @@ define_dispatch!(
                 let key = args[1];
                 match interp.find_overlay(ov_id) {
                     Some(ov) => {
-                        if let Value::Symbol(name) = &key {
-                            Ok(overlay_property_with_category(interp, ov, name)
+                        if let Kind::Symbol(name) = key.kind() {
+                            Ok(overlay_property_with_category(interp, ov, &name)
                                 .unwrap_or(Value::Nil))
                         } else {
                             Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil))
@@ -302,8 +303,8 @@ define_dispatch!(
 
             "overlay-properties" => {
                 need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
+                let ov_id = match args[0].kind() {
+                    Kind::Overlay(id) => id,
                     _ => {
                         return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
                     }

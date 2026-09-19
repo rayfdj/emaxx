@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 /// lisp.h:FOR_EACH_TAIL_INTERNAL. Keep the current cons, not a snapshot of
 /// its cars: a file-name handler or predicate can change a later entry.
@@ -133,8 +134,8 @@ pub(super) fn openp_search(
                 filename.multibyte || suffix_multibyte,
             );
             let handler = find_file_name_handler(interp, env, &text, "file-exists-p")?;
-            let mask = match predicate {
-                Value::Integer(mask) if *mask >= 0 => Some(*mask),
+            let mask = match predicate.kind() {
+                Kind::Integer(mask) if mask >= 0 => Some(mask),
                 _ => None,
             };
             let ordinary =

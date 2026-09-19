@@ -2864,7 +2864,7 @@ fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
         .expect("unhandled evaluation keeps its deepest frame snapshot");
     assert!(!snapshot.enabled);
     assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-inner")
+        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-inner")
     }));
 
     let form = Reader::new(
@@ -2883,10 +2883,10 @@ fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
         .take_batch_error_backtrace()
         .expect("a handled error cannot mask the later unhandled snapshot");
     assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-second")
+        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-second")
     }));
     assert!(!snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-first")
+        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-first")
     }));
 }
 
@@ -3746,8 +3746,8 @@ fn backquote_preserves_record_literal_dotted_pair_tails() {
     let mut interp = gnu_early_lisp_interpreter();
     let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);
     let (left, right) = value.cons_values().expect("dotted pair");
-    assert!(matches!(left, Value::Record(_)));
-    assert!(matches!(right, Value::Record(_)));
+    assert!(matches!(left.kind(), Kind::Record(_)));
+    assert!(matches!(right.kind(), Kind::Record(_)));
 }
 
 #[test]
@@ -3759,8 +3759,8 @@ fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
     );
     let pair = value.car().expect("backquoted list element");
     let (left, right) = pair.cons_values().expect("dotted record pair");
-    assert!(matches!(left, Value::Record(_)));
-    assert!(matches!(right, Value::Record(_)));
+    assert!(matches!(left.kind(), Kind::Record(_)));
+    assert!(matches!(right.kind(), Kind::Record(_)));
 }
 
 #[test]
@@ -3769,17 +3769,17 @@ fn backquote_materializes_record_literals() {
     let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
     let items = value.to_vec().expect("backquoted list");
     assert_eq!(items.len(), 2);
-    let Value::Record(inner_id) = &items[0] else {
+    let Kind::Record(inner_id) = items[0].kind() else {
         panic!("expected inner record");
     };
-    let inner = interp.find_record(*inner_id).expect("inner record");
+    let inner = interp.find_record(inner_id).expect("inner record");
     assert_eq!(inner.type_tag, Value::symbol("a"));
     assert_eq!(inner.slots, vec![Value::Symbol("b".into())]);
-    let Value::Record(outer_id) = &items[1] else {
+    let Kind::Record(outer_id) = items[1].kind() else {
         panic!("expected outer record");
     };
-    let outer = interp.find_record(*outer_id).expect("outer record");
-    assert!(matches!(outer.type_tag, Value::Record(_)));
+    let outer = interp.find_record(outer_id).expect("outer record");
+    assert!(matches!(outer.type_tag.kind(), Kind::Record(_)));
     assert_eq!(outer.slots, vec![Value::symbol("e")]);
 }
 

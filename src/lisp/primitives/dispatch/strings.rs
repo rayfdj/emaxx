@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 /// Map an Emacs character code to a Rust char, translating the raw-byte
 /// range (RAW_BYTE8_BASE #x3FFF00..) to the internal private-use marker.
@@ -153,17 +154,17 @@ define_dispatch!(
                 // here, so track that.
                 let mut all_plain_scanned = true;
                 for a in args {
-                    match a {
-                        Value::String(text) => {
+                    match a.kind() {
+                        Kind::String(text) => {
                             if !multibyte && !text.is_ascii() {
                                 multibyte |= text
                                     .chars()
                                     .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
                             }
-                            result.push_str(text);
+                            result.push_str(&text);
                             continue;
                         }
-                        Value::StringObject(state) if state.borrow().props.is_empty() => {
+                        Kind::StringObject(state) if state.borrow().props.is_empty() => {
                             let state = state.borrow();
                             // Cached flags may be stale relative to the text, so
                             // route the final value through the re-scanning
@@ -182,7 +183,7 @@ define_dispatch!(
                         props.extend(copied_string_props(&string.props, offset));
                         multibyte |= string.multibyte;
                     } else if a.is_nil() {
-                    } else if matches!(a, Value::Cons(_))
+                    } else if matches!(a.kind(), Kind::Cons(_))
                         || is_vector_value(a)
                         || is_bool_vector_value(interp, a)
                     {
@@ -307,7 +308,7 @@ define_dispatch!(
                     copied_string_props(&slice_string_props(&string.props, from, to), 0)
                 };
                 let text = chars[from..to].iter().collect();
-                if matches!(args[0], Value::StringObject(_)) {
+                if matches!(args[0].kind(), Kind::StringObject(_)) {
                     Ok(make_shared_string_value_with_multibyte(
                         text,
                         props,
@@ -479,9 +480,9 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let s = string_text(&args[0])?;
-                let base = match args.get(1) {
-                    None | Some(Value::Nil) => None,
-                    Some(value) => Some(value.as_integer()?),
+                let base = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(value) => Some(value.value().as_integer()?),
                 };
                 parse_string_to_number_value(&s, base)
             }
@@ -982,7 +983,7 @@ define_dispatch!(
             }
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
-                let Value::CharTable(table_id) = args[0] else {
+                let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
@@ -996,7 +997,7 @@ define_dispatch!(
             }
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
-                let Value::CharTable(table_id) = args[0] else {
+                let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
@@ -1026,8 +1027,8 @@ pub(crate) fn uniprop_table_id(
     property: &str,
     env: &mut Env,
 ) -> Option<u64> {
-    match registered_unicode_property(interp, property, env).ok()?? {
-        Value::CharTable(table_id) => Some(table_id),
+    match (registered_unicode_property(interp, property, env).ok()??).kind() {
+        Kind::CharTable(table_id) => Some(table_id),
         _ => None,
     }
 }
@@ -1048,8 +1049,8 @@ fn registered_unicode_property(
     let Some(mut registered) = find_registered_unicode_property(interp, property) else {
         return Ok(None);
     };
-    let filename = match &registered {
-        Value::String(_) | Value::StringObject(_) => string_text(&registered)?,
+    let filename = match registered.kind() {
+        Kind::String(_) | Kind::StringObject(_) => string_text(&registered)?,
         _ => return Ok(Some(registered)),
     };
     let target = format!("international/{filename}");
@@ -1076,10 +1077,10 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
         .with(|symbol| interp.symbol_value_cell_symbol(symbol))
         .ok()?;
     loop {
-        let Value::Cons(cell) = &tail else {
+        let Kind::Cons(cell) = tail.kind() else {
             return None;
         };
-        if let Value::Cons(entry) = &*cell.car.borrow()
+        if let Kind::Cons(entry) = (*cell.car.borrow()).kind()
             && entry.car.borrow().as_symbol().ok() == Some(property)
         {
             return Some(*entry.cdr.borrow());
@@ -1090,8 +1091,8 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
 }
 
 fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
-    match value {
-        Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(*character as u32),
+    match value.kind() {
+        Kind::Integer(character) if (0..=0x3f_ffff).contains(&character) => Ok(character as u32),
         _ => Err(wrong_type_argument("characterp", *value)),
     }
 }
@@ -1111,8 +1112,8 @@ pub(crate) fn decode_unicode_property_value(
     };
     let items = vector.to_vec()?;
     let values = if matches!(
-        items.first(),
-        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+        items.first().map(|v| v.kind()),
+        Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
     ) {
         &items[1..]
     } else {
@@ -1125,8 +1126,8 @@ fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError
     let items = value.to_vec()?;
     Ok(
         if matches!(
-            items.first(),
-            Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+            items.first().map(|v| v.kind()),
+            Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
         ) {
             items[1..].to_vec()
         } else {
@@ -1140,13 +1141,14 @@ fn encode_unicode_property_value(
     table_id: u64,
     value: &Value,
 ) -> Result<Value, LispError> {
-    let Some(Value::Integer(encoder)) = interp.char_table_extra_slot(table_id, 2) else {
+    let Some(Kind::Integer(encoder)) = interp.char_table_extra_slot(table_id, 2).map(|v| v.kind())
+    else {
         return Ok(*value);
     };
     match encoder {
         0 => {
             if value.is_nil()
-                || matches!(value, Value::Integer(character) if (0..=0x3f_ffff).contains(character))
+                || matches!(value.kind(), Kind::Integer(character) if (0..=0x3f_ffff).contains(&character))
             {
                 Ok(*value)
             } else {
@@ -1154,7 +1156,7 @@ fn encode_unicode_property_value(
             }
         }
         1 | 2 => {
-            if encoder == 2 && !matches!(value, Value::Integer(_)) {
+            if encoder == 2 && !matches!(value.kind(), Kind::Integer(_)) {
                 return Err(wrong_type_argument("fixnump", *value));
             }
             let vector = interp

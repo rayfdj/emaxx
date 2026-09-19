@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(items))
@@ -65,8 +66,8 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
     let components = args.get(2).cloned().unwrap_or(Value::Nil);
     if !matches!(
-        components,
-        Value::Nil | Value::Integer(_) | Value::Cons(_) | Value::String(_) | Value::StringObject(_)
+        components.kind(),
+        Kind::Nil | Kind::Integer(_) | Kind::Cons(_) | Kind::String(_) | Kind::StringObject(_)
     ) && !is_vector_value(&components)
     {
         return Err(wrong_type_argument("vectorp", components));
@@ -195,20 +196,20 @@ fn composition_chars(
 }
 
 fn components_vector(components: &Value, chars: &[char]) -> Result<Value, LispError> {
-    let items = match components {
-        Value::Nil => chars
+    let items = match components.kind() {
+        Kind::Nil => chars
             .iter()
             .map(|character| Value::Integer(*character as i64))
             .collect(),
-        Value::Integer(_) => vec![*components],
-        Value::String(_) | Value::StringObject(_) => string_like(components)
+        Kind::Integer(_) => vec![*components],
+        Kind::String(_) | Kind::StringObject(_) => string_like(components)
             .expect("string variant must be string-like")
             .text
             .chars()
             .map(|character| Value::Integer(character as i64))
             .collect(),
-        value if is_vector_value(value) => vector_items(value)?,
-        Value::Cons(_) => components.to_vec()?,
+        value if is_vector_value(&value.value()) => vector_items(&value.value())?,
+        Kind::Cons(_) => components.to_vec()?,
         _ => return Err(LispError::Signal("Invalid composition".into())),
     };
     Ok(vector_value(items))
@@ -254,7 +255,7 @@ fn register_composition(
     let Some((head, tail)) = range.property.cons_values() else {
         return Ok(None);
     };
-    if let Value::Integer(id) = head {
+    if let Kind::Integer(id) = head.kind() {
         let Ok(index) = usize::try_from(id) else {
             return Ok(None);
         };
@@ -285,8 +286,8 @@ fn register_composition(
         return Ok(None);
     }
     if !matches!(
-        components,
-        Value::Nil | Value::Integer(_) | Value::String(_) | Value::StringObject(_) | Value::Cons(_)
+        components.kind(),
+        Kind::Nil | Kind::Integer(_) | Kind::String(_) | Kind::StringObject(_) | Kind::Cons(_)
     ) && !is_vector_value(&components)
     {
         return Ok(None);
@@ -294,7 +295,7 @@ fn register_composition(
     let chars = composition_chars(interp, string, range.start, range.end)?;
     let key = components_vector(&components, &chars)?;
     let key_items = vector_items(&key)?;
-    let rule_based = matches!(components, Value::Cons(_)) || is_vector_value(&components);
+    let rule_based = matches!(components.kind(), Kind::Cons(_)) || is_vector_value(&components);
     if rule_based {
         let glyph_string = key_items.first().is_some_and(is_vector_value);
         let valid = if glyph_string {
@@ -303,7 +304,7 @@ fn register_composition(
             key_items.len() % 2 == 1
                 && key_items
                     .iter()
-                    .all(|value| matches!(value, Value::Integer(_)))
+                    .all(|value| matches!(value.kind(), Kind::Integer(_)))
         };
         if !valid {
             return Ok(None);
@@ -339,8 +340,8 @@ fn register_composition(
 }
 
 fn char_table_id_from_var(interp: &Interpreter, env: &Env, name: &str) -> Option<u64> {
-    match interp.lookup_var(name, env)? {
-        Value::CharTable(id) => Some(id),
+    match (interp.lookup_var(name, env)?).kind() {
+        Kind::CharTable(id) => Some(id),
         _ => None,
     }
 }
@@ -363,8 +364,8 @@ fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
             || (TAG_SPACE..=CANCEL_TAG).contains(&c)
             || matches!(
                 char_table_id_from_var(interp, env, "unicode-category-table")
-                    .and_then(|id| interp.char_table_get(id, c)),
-                Some(Value::Integer(category)) if category <= UNICODE_CATEGORY_ZS
+                    .and_then(|id| interp.char_table_get(id, c)).map(|v| v.kind()),
+                Some(Kind::Integer(category)) if category <= UNICODE_CATEGORY_ZS
             ))
 }
 
@@ -647,7 +648,7 @@ fn find_automatic_composition(
                 if items.len() != 3 {
                     continue;
                 }
-                let Value::Integer(lookback) = items[1] else {
+                let Kind::Integer(lookback) = items[1].kind() else {
                     continue;
                 };
                 if lookback < 0 || lookback as usize > cur {
@@ -719,8 +720,8 @@ fn find_automatic_composition(
 
 fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     if value.is_nil()
-        || matches!(value, Value::Terminal(0))
-        || matches!(value, Value::Frame(id) if interp.frame_is_live(*id))
+        || matches!(value.kind(), Kind::Terminal(0))
+        || matches!(value.kind(), Kind::Frame(id) if interp.frame_is_live(id))
     {
         Ok(Value::symbol(&interp.effective_terminal_coding_system()))
     } else {
@@ -805,14 +806,14 @@ fn find_composition(
     let limit = if args[1].is_nil() {
         None
     } else {
-        let raw = match &args[1] {
-            Value::Integer(value) => *value,
-            Value::Marker(id) => interp
-                .marker_position(*id)
+        let raw = match args[1].kind() {
+            Kind::Integer(value) => value,
+            Kind::Marker(id) => interp
+                .marker_position(id)
                 .map(|position| position as i64)
                 .ok_or_else(|| wrong_type_argument("integer-or-marker-p", args[1]))?,
             value => {
-                return Err(wrong_type_argument("integer-or-marker-p", *value));
+                return Err(wrong_type_argument("integer-or-marker-p", value.value()));
             }
         };
         Some(raw.clamp(minimum as i64, maximum as i64) as usize)
@@ -913,7 +914,7 @@ fn sort_rules(rules: &Value) -> Result<Value, LispError> {
     let mut keyed = Vec::with_capacity(rules.len());
     for rule in rules.drain(..) {
         let valid = vector_items(&rule).ok().filter(|items| {
-            items.len() == 3 && matches!(items.get(1), Some(Value::Integer(value)) if *value >= 0)
+            items.len() == 3 && matches!(items.get(1).map(|v| v.kind()), Some(Kind::Integer(value)) if value >= 0)
         });
         let Some(items) = valid else {
             return Err(LispError::Signal(

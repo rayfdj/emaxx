@@ -1,9 +1,10 @@
 use super::*;
+use crate::lisp::types::Kind;
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::SymbolName;
 
 fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
-    matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
+    matches!(record.slots.get(2).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "dynamic-binding")
 }
 
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
@@ -200,8 +201,8 @@ define_native_forms! {
 /// The cell after CELL, when its cdr is one (`CONSP (XCDR (tail))').
 #[inline]
 pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
-    match &*cell.cdr.borrow() {
-        Value::Cons(next) => Some(*next),
+    match (*cell.cdr.borrow()).kind() {
+        Kind::Cons(next) => Some(next),
         _ => None,
     }
 }
@@ -214,8 +215,8 @@ pub(super) struct ListForms(Option<SharedCons>);
 /// The elements of LIST, from its first cell.
 #[inline]
 pub(super) fn list_forms(list: &Value) -> ListForms {
-    ListForms(match list {
-        Value::Cons(cell) => Some(*cell),
+    ListForms(match list.kind() {
+        Kind::Cons(cell) => Some(cell),
         _ => None,
     })
 }
@@ -244,8 +245,8 @@ impl Iterator for ListForms {
 /// loops do).
 #[inline]
 pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
-    match tail {
-        Value::Cons(cell) => Some((*cell.car.borrow(), *cell.cdr.borrow())),
+    match tail.kind() {
+        Kind::Cons(cell) => Some((*cell.car.borrow(), *cell.cdr.borrow())),
         _ => None,
     }
 }
@@ -253,8 +254,8 @@ pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
 /// Fcar of a list: the first element, nil for nil.
 #[inline]
 pub(super) fn list_car(list: &Value) -> Value {
-    match list {
-        Value::Cons(cell) => *cell.car.borrow(),
+    match list.kind() {
+        Kind::Cons(cell) => *cell.car.borrow(),
         _ => Value::Nil,
     }
 }
@@ -262,8 +263,8 @@ pub(super) fn list_car(list: &Value) -> Value {
 /// Fcdr of a list: the rest, nil for nil.
 #[inline]
 pub(super) fn list_cdr(list: &Value) -> Value {
-    match list {
-        Value::Cons(cell) => *cell.cdr.borrow(),
+    match list.kind() {
+        Kind::Cons(cell) => *cell.cdr.borrow(),
         _ => Value::Nil,
     }
 }
@@ -285,10 +286,10 @@ pub(super) fn list_has_at_least(list: &Value, n: usize) -> bool {
     if n == 0 {
         return true;
     }
-    let Value::Cons(first) = list else {
+    let Kind::Cons(first) = list.kind() else {
         return false;
     };
-    let mut cur = *first;
+    let mut cur = first;
     for _ in 1..n {
         match next_cons(&cur) {
             Some(next) => cur = next,
@@ -316,14 +317,14 @@ pub(super) fn list_to_vector(list: &Value) -> Result<smallvec::SmallVec<[Value; 
     let mut items = smallvec::SmallVec::new();
     let mut tail = *list;
     loop {
-        match &tail {
-            Value::Nil => return Ok(items),
-            Value::Cons(cell) => {
+        match tail.kind() {
+            Kind::Nil => return Ok(items),
+            Kind::Cons(cell) => {
                 items.push(*cell.car.borrow());
                 let next = *cell.cdr.borrow();
                 tail = next;
             }
-            other => return Err(LispError::WrongTypeArgument("listp".into(), *other)),
+            other => return Err(LispError::WrongTypeArgument("listp".into(), other.value())),
         }
     }
 }
@@ -376,8 +377,8 @@ impl Interpreter {
     /// enables that mode while macroexpanding source forms, so this is part of
     /// ordinary evaluator dispatch rather than merely a predicate detail.
     fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
-        if let Value::Symbol(name) = value {
-            return Some(*name);
+        if let Kind::Symbol(name) = value.kind() {
+            return Some(name);
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
             && let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, value)
@@ -403,7 +404,7 @@ impl Interpreter {
         // eval_sub: a symbol or a self-evaluating object returns before the
         // quit, collection and depth tests; the body below is inlined here,
         // one function as eval_sub is (its result crossed two frames before).
-        if !matches!(expr, Value::Cons(_)) {
+        if !matches!(expr.kind(), Kind::Cons(_)) {
             let result = self.eval_inner(expr, env);
             if outermost && result.is_ok() {
                 self.clear_batch_error_backtrace();
@@ -482,28 +483,28 @@ impl Interpreter {
 
     #[inline(always)]
     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        match expr {
-            Value::Nil
-            | Value::T
-            | Value::Integer(_)
-            | Value::BigInteger(_)
-            | Value::Float(_)
-            | Value::StringObject(_) => Ok(*expr),
+        match expr.kind() {
+            Kind::Nil
+            | Kind::T
+            | Kind::Integer(_)
+            | Kind::BigInteger(_)
+            | Kind::Float(_)
+            | Kind::StringObject(_) => Ok(*expr),
 
             // GNU has already constructed every nested reader object by the
             // time eval_sub sees a vector.  Emaxx's parser is deliberately
             // interpreter-free, so finish that existing reader contract at
             // the evaluation boundary before returning this self-evaluating
             // object.
-            Value::Vector(_) => self.materialize_read_object_literals(*expr, env),
+            Kind::Vector(_) => self.materialize_read_object_literals(*expr, env),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
             // literals while `(memq (car l) l)' still finds the element the
             // evaluation put there (GNU strings are always heap objects).
-            Value::String(_) => Ok(Self::stored_value(*expr)),
+            Kind::String(_) => Ok(Self::stored_value(*expr)),
 
-            Value::Record(_)
+            Kind::Record(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
             {
@@ -530,35 +531,35 @@ impl Interpreter {
                 }
             }
 
-            Value::BuiltinFunc(_)
-            | Value::Lambda(_)
-            | Value::Buffer(_)
-            | Value::Marker(_)
-            | Value::Overlay(_)
-            | Value::CharTable(_)
-            | Value::Frame(_)
-            | Value::Terminal(_)
-            | Value::Record(_)
-            | Value::Finalizer(_)
-            | Value::Unbound => Ok(*expr),
+            Kind::BuiltinFunc(_)
+            | Kind::Lambda(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::CharTable(_)
+            | Kind::Frame(_)
+            | Kind::Terminal(_)
+            | Kind::Record(_)
+            | Kind::Finalizer(_)
+            | Kind::Unbound => Ok(*expr),
 
-            Value::ReaderForm(_) => self.materialize_read_object_literals(*expr, env),
+            Kind::ReaderForm(_) => self.materialize_read_object_literals(*expr, env),
 
-            Value::Symbol(name) => self.lookup_symbol(name, env),
+            Kind::Symbol(name) => self.lookup_symbol(&name, env),
 
-            Value::Cons(cell) => {
+            Kind::Cons(cell) => {
                 // eval_sub: XCAR (form) read for its symbol (copied only
                 // when it is something else), XCDR (form) held by its
                 // cell, CHECK_LIST (original_args).
-                let (head_symbol, head_value) = match &*cell.car.borrow() {
-                    Value::Symbol(name) => (Some(*name), None),
-                    other => (None, Some(*other)),
+                let (head_symbol, head_value) = match (*cell.car.borrow()).kind() {
+                    Kind::Symbol(name) => (Some(name), None),
+                    other => (None, Some(other.value())),
                 };
-                let args_cell: Option<SharedCons> = match &*cell.cdr.borrow() {
-                    Value::Cons(args) => Some(*args),
-                    Value::Nil => None,
+                let args_cell: Option<SharedCons> = match (*cell.cdr.borrow()).kind() {
+                    Kind::Cons(args) => Some(args),
+                    Kind::Nil => None,
                     other => {
-                        return Err(LispError::WrongTypeArgument("listp".into(), *other));
+                        return Err(LispError::WrongTypeArgument("listp".into(), other.value()));
                     }
                 };
                 let callable_name = match head_value.as_ref() {
@@ -576,13 +577,13 @@ impl Interpreter {
                         .native_form_or(name, || native_form_for_symbol(name))
                         .or_else(|| {
                             if !matches!(
-                                self.globals.function(name),
-                                Some(Value::Symbol(_) | Value::BuiltinFunc(_))
+                                self.globals.function(name).map(|v| v.kind()),
+                                Some(Kind::Symbol(_) | Kind::BuiltinFunc(_))
                             ) {
                                 return None;
                             }
-                            let Value::BuiltinFunc(target) =
-                                self.lookup_function_symbol(name, env).ok()?
+                            let Kind::BuiltinFunc(target) =
+                                (self.lookup_function_symbol(name, env).ok()?).kind()
                             else {
                                 return None;
                             };
@@ -680,8 +681,8 @@ impl Interpreter {
                     // on every evaluation: it can inspect state, perform
                     // side effects, or create fresh uninterned symbols.
                     if matches!(
-                        self.globals.function(name),
-                        Some(Value::Cons(_) | Value::Symbol(_))
+                        self.globals.function(name).map(|v| v.kind()),
+                        Some(Kind::Cons(_) | Kind::Symbol(_))
                     ) {
                         // apply1's spread of the unevaluated forms.
                         let args_value = match &args_cell {
@@ -933,9 +934,8 @@ impl Interpreter {
         if profile_path().is_some() {
             return self.call_function_value(*func, None, args, env);
         }
-        match func {
-            Value::Record(id) if self.has_cached_bytecode_program(id.id) => {
-                let id = *id;
+        match func.kind() {
+            Kind::Record(id) if self.has_cached_bytecode_program(id.id) => {
                 self.begin_funcall(env)?;
                 let result = if let Some(termination) = self.pending_termination().cloned() {
                     Err(LispError::Terminate(termination))
@@ -945,27 +945,29 @@ impl Interpreter {
                 self.end_funcall();
                 result
             }
-            Value::Symbol(name) => {
+            Kind::Symbol(name) => {
                 self.begin_funcall(env)?;
                 let result = if let Some(termination) = self.pending_termination().cloned() {
                     Err(LispError::Terminate(termination))
                 } else {
-                    match self.resolve_symbol_call(name, env) {
+                    match self.resolve_symbol_call(&name, env) {
                         Ok(FunctionResolution::DirectBuiltin(facts)) => self
                             .dispatch_named_builtin(
-                                name,
+                                &name,
                                 facts,
-                                Some(CallName::Symbol(name)),
+                                Some(CallName::Symbol(&name)),
                                 args,
                                 env,
                                 true,
                             ),
-                        Ok(FunctionResolution::Resolved(Value::Record(id)))
-                            if self.has_cached_bytecode_program(id.id) =>
+                        Ok(FunctionResolution::Resolved(value)) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
                         {
+                            let Kind::Record(id) = value.kind() else {
+                                unreachable!("matched above")
+                            };
                             self.execute_bytecode_record_named(
                                 id.id,
-                                Some(CallName::Symbol(name)),
+                                Some(CallName::Symbol(&name)),
                                 args,
                                 env,
                             )
@@ -1069,7 +1071,7 @@ impl Interpreter {
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
         }
-        if matches!(&flag, Value::Symbol(name) if name == "kill-emacs") {
+        if matches!(flag.kind(), Kind::Symbol(name) if name == "kill-emacs") {
             return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
         }
 
@@ -1332,17 +1334,17 @@ impl Interpreter {
         &self,
         func: &Value,
     ) -> Option<(std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>, u64)> {
-        let id = match func {
-            Value::Record(id) => *id,
-            Value::Symbol(name) => {
+        let id = match func.kind() {
+            Kind::Record(id) => id,
+            Kind::Symbol(name) => {
                 let facts = self
                     .globals
-                    .facts_or(name, || crate::lisp::primitives::name_facts_symbol(name));
+                    .facts_or(&name, || crate::lisp::primitives::name_facts_symbol(&name));
                 if facts.prefer_override {
                     return None;
                 }
-                match self.globals.function(name) {
-                    Some(Value::Record(id)) => *id,
+                match self.globals.function(&name).map(|v| v.kind()) {
+                    Some(Kind::Record(id)) => id,
                     _ => return None,
                 }
             }
@@ -1398,14 +1400,14 @@ impl Interpreter {
         // A record with a cached program is a genuine byte-code function
         // (only execute_record populates the cache), so skip the
         // lambda/autoload probes and the record-type guards below.
-        if let Value::Record(id) = &func
+        if let Kind::Record(id) = func.kind()
             && self.has_cached_bytecode_program(id.id)
         {
             return self.execute_bytecode_record_named(id.id, original_name, args, env);
         }
         let mut owned_name: Option<SymbolName> = None;
-        let func = match func {
-            Value::Symbol(name) => {
+        let func = match func.kind() {
+            Kind::Symbol(name) => {
                 let resolution = match self.resolve_symbol_call(&name, env) {
                     Ok(resolution) => resolution,
                     Err(error) => {
@@ -1429,9 +1431,11 @@ impl Interpreter {
                     }
                     // funcall_general's COMPILEDP arm: the function cell
                     // holds a byte-code object already decoded once.
-                    FunctionResolution::Resolved(Value::Record(id))
-                        if self.has_cached_bytecode_program(id.id) =>
+                    FunctionResolution::Resolved(value) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
                     {
+                        let Kind::Record(id) = value.kind() else {
+                            unreachable!("matched above")
+                        };
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
                         return self.execute_bytecode_record_named(id.id, call_name, args, env);
                     }
@@ -1443,11 +1447,11 @@ impl Interpreter {
                     }
                 }
             }
-            other => other,
+            other => other.value(),
         };
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
-        let func = match func {
-            Value::Cons(_) => {
+        let func = match func.kind() {
+            Kind::Cons(_) => {
                 let func = if is_lambda_form(self, &func, env) {
                     let mut lambda = func.to_vec()?;
                     lambda[0] = Value::symbol("lambda");
@@ -1494,14 +1498,14 @@ impl Interpreter {
                     func
                 }
             }
-            other => other,
+            other => other.value(),
         };
 
-        match func {
-            Value::BuiltinFunc(ref name) if name == "selected-window" && args.is_empty() => {
+        match func.kind() {
+            Kind::BuiltinFunc(ref name) if name == "selected-window" && args.is_empty() => {
                 Ok(self.selected_window_value())
             }
-            Value::BuiltinFunc(ref name) => {
+            Kind::BuiltinFunc(ref name) => {
                 let backtrace_function = original_name
                     .map(|original| original.symbol_value(name))
                     .unwrap_or_else(|| Value::Symbol(*name));
@@ -1518,7 +1522,7 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Value::Record(id)
+            Kind::Record(id)
                 if self
                     .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::NativeCompiledFunction) =>
@@ -1537,7 +1541,7 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Value::Record(id)
+            Kind::Record(id)
                 if self
                     .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::ModuleFunction) =>
@@ -1561,7 +1565,7 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Value::Record(id)
+            Kind::Record(id)
                 if self
                     .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Closure) =>
@@ -1594,7 +1598,7 @@ impl Interpreter {
                     self.call_function_value_named(inner, original_name, args, env, funcall)
                 }
             }
-            Value::Lambda(ref lambda) => {
+            Kind::Lambda(ref lambda) => {
                 let params = &lambda.params;
                 let body = &lambda.body;
                 let wrong_arity = || {
@@ -1747,13 +1751,13 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Value::Nil => Err(LispError::SignalValue(Value::list([
+            Kind::Nil => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("void-function".into()),
                 Value::Nil,
             ]))),
             other => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("invalid-function".into()),
-                other,
+                other.value(),
             ]))),
         }
     }
@@ -1944,7 +1948,7 @@ mod eval_value_buffer_tests {
                 &env
             ));
             let reachability = interpreter.weak_hash_reachability(&env, &[]);
-            let Value::Record(id) = table else {
+            let Kind::Record(id) = table.kind() else {
                 panic!("hash table")
             };
             let (_, entries, retained) = reachability
@@ -1977,7 +1981,7 @@ mod eval_value_buffer_tests {
             &env
         ));
         let reachability = interpreter.weak_hash_reachability(&env, &[]);
-        let Value::Record(id) = table else {
+        let Kind::Record(id) = table.kind() else {
             panic!("hash table")
         };
         let (_, _, retained) = reachability
@@ -2415,7 +2419,7 @@ mod eval_value_buffer_tests {
             &mut env,
         )
         .expect("weak-key table");
-        let Value::Record(table_id) = table else {
+        let Kind::Record(table_id) = table.kind() else {
             panic!("hash table record")
         };
         interpreter.set_global_binding("weak-table-root", Value::Record(table_id));

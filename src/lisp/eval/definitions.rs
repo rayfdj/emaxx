@@ -1,5 +1,6 @@
 use super::core::{list_car, list_cons_count, list_next, list_nth, next_cons};
 use super::*;
+use crate::lisp::types::Kind;
 
 type NormalizedClosureBody = (Option<Value>, Option<Value>, Vec<Value>);
 
@@ -12,16 +13,22 @@ impl Interpreter {
         let Some(first) = forms.first() else {
             return Ok((None, Vec::new()));
         };
-        let documentation = match first {
-            Value::String(text) if forms.len() > 1 => Some(Value::String(*text)),
-            Value::StringObject(state) if forms.len() > 1 => {
+        let documentation = match first.kind() {
+            Kind::String(text) if forms.len() > 1 => Some(Value::String(text)),
+            Kind::StringObject(state) if forms.len() > 1 => {
                 Some(Value::String(state.borrow().text.clone().into()))
             }
-            Value::Cons(_) => {
+            Kind::Cons(_) => {
                 let items = first.to_vec()?;
-                match items.as_slice() {
-                    [Value::Symbol(head), expression] if head == ":documentation" => {
-                        Some(self.eval(expression, env)?)
+                match items
+                    .as_slice()
+                    .iter()
+                    .map(|v| v.kind())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+                {
+                    [Kind::Symbol(head), expression] if head == ":documentation" => {
+                        Some(self.eval(&expression.value(), env)?)
                     }
                     _ => None,
                 }
@@ -102,8 +109,8 @@ impl Interpreter {
         // its value form signals wrong-number-of-arguments with the count
         // read so far.
         let mut result = Value::Nil;
-        let mut cur = match args {
-            Value::Cons(cell) => Some(*cell),
+        let mut cur = match args.kind() {
+            Kind::Cons(cell) => Some(cell),
             _ => None,
         };
         let mut nargs = 0usize;
@@ -116,12 +123,15 @@ impl Interpreter {
             cur = next_cons(&value_cell);
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.
-            let symbol = match &sym {
-                Value::Symbol(symbol) => *symbol,
-                Value::Nil => SymbolName::intern_str("nil"),
-                Value::T => SymbolName::intern_str("t"),
+            let symbol = match sym.kind() {
+                Kind::Symbol(symbol) => symbol,
+                Kind::Nil => SymbolName::intern_str("nil"),
+                Kind::T => SymbolName::intern_str("t"),
                 other => {
-                    return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
+                    return Err(LispError::WrongTypeArgument(
+                        "symbolp".into(),
+                        other.value(),
+                    ));
                 }
             };
             // Fsetq: the value, then the lexical alist, then Fset -- for
@@ -247,13 +257,14 @@ impl Interpreter {
         let Some((quoted, _)) = list_next(args) else {
             return Ok(Value::Nil);
         };
-        if let Value::Symbol(name) = &quoted {
-            return Ok(Value::Symbol(*name));
+        if let Kind::Symbol(name) = quoted.kind() {
+            return Ok(Value::Symbol(name));
         }
         if let Ok(name) = super::function_name_from_binding_form(&quoted) {
             return Ok(Value::Symbol(name.into()));
         }
-        if matches!(quoted.car(), Ok(Value::Symbol(ref head)) if head == "lambda") {
+        if matches!(quoted.car().map(|v| v.kind()), Ok(Kind::Symbol(ref head)) if head == "lambda")
+        {
             let lambda_items = quoted.to_vec()?;
             return self.sf_lambda_from_source(&quoted, &lambda_items, env);
         }

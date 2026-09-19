@@ -288,6 +288,7 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lisp::types::Kind;
     use crate::lisp::{json, primitives};
 
     // A key held by a Rust local is reachable while its frame lives (the
@@ -309,7 +310,7 @@ mod tests {
 
     #[inline(never)]
     fn weak_entries(interpreter: &mut Interpreter, table: &Value) -> usize {
-        let Value::Record(id) = table else {
+        let Kind::Record(id) = table.kind() else {
             panic!("hash table must be a record");
         };
         primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
@@ -323,7 +324,7 @@ mod tests {
     #[inline(never)]
     fn weak_key_table(interpreter: &mut Interpreter, root: &str) -> Value {
         let table = json::make_hash_table(interpreter, "eq", Vec::new());
-        let Value::Record(id) = table else {
+        let Kind::Record(id) = table.kind() else {
             panic!("hash table must be a record");
         };
         interpreter.find_record_mut(id).expect("weak table").slots[5] = Value::symbol("key");
@@ -353,7 +354,7 @@ mod tests {
                     1,
                     "the parked Rust scope remains a root"
                 );
-                let Value::Record(id) = table else {
+                let Kind::Record(id) = table.kind() else {
                     panic!("hash table must be a record");
                 };
                 let entries = active

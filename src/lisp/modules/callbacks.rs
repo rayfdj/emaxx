@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use num_bigint::{BigInt, Sign};
 use num_traits::{ToPrimitive, Zero};
 
@@ -138,7 +139,7 @@ pub(super) unsafe extern "C" fn make_function(
             "module-function",
             vec![documentation, Value::Nil, Value::Nil],
         );
-        let Value::Record(id) = value else {
+        let Kind::Record(id) = value.kind() else {
             unreachable!()
         };
         a.interpreter_mut().modules.functions.insert(
@@ -208,9 +209,9 @@ pub(super) unsafe extern "C" fn eq(env: *mut ModuleEnv, left: Handle, right: Han
 }
 
 fn integer(value: &Value) -> Result<BigInt, LispError> {
-    match value {
-        Value::Integer(n) => Ok(BigInt::from(*n)),
-        Value::BigInteger(n) => Ok((*n).into()),
+    match value.kind() {
+        Kind::Integer(n) => Ok(BigInt::from(n)),
+        Kind::BigInteger(n) => Ok((n).into()),
         _ => Err(primitives::wrong_type_argument("integerp", *value)),
     }
 }
@@ -228,9 +229,9 @@ pub(super) unsafe extern "C" fn make_integer(env: *mut ModuleEnv, n: i64) -> Han
     })
 }
 pub(super) unsafe extern "C" fn extract_float(env: *mut ModuleEnv, handle: Handle) -> f64 {
-    api(env, 0.0, |a| match a.value(handle) {
-        Value::Float(n) => Ok(n.get()),
-        value => Err(primitives::wrong_type_argument("floatp", value)),
+    api(env, 0.0, |a| match a.value(handle).kind() {
+        Kind::Float(n) => Ok(n.get()),
+        value => Err(primitives::wrong_type_argument("floatp", value.value())),
     })
 }
 pub(super) unsafe extern "C" fn make_float(env: *mut ModuleEnv, n: f64) -> Handle {
@@ -382,7 +383,7 @@ fn record_id(
     predicate: &str,
 ) -> Result<u64, LispError> {
     let value = a.value(handle);
-    if let Value::Record(id) = value
+    if let Kind::Record(id) = value.kind()
         && a.interpreter()
             .find_record(id)
             .is_some_and(|record| record.kind == kind)
@@ -402,7 +403,7 @@ pub(super) unsafe extern "C" fn make_user_ptr(
             "user-ptr",
             Vec::new(),
         );
-        let Value::Record(id) = value else {
+        let Kind::Record(id) = value.kind() else {
             unreachable!()
         };
         a.interpreter_mut()
@@ -507,7 +508,7 @@ pub(super) unsafe extern "C" fn make_interactive(
 
 fn vector(a: &Context<'_>, handle: Handle, index: Option<isize>) -> Result<Value, LispError> {
     let value = a.value(handle);
-    let Value::Vector(ref vector) = value else {
+    let Kind::Vector(ref vector) = value.kind() else {
         return Err(primitives::wrong_type_argument("vectorp", value));
     };
     if let Some(index) = index
@@ -552,7 +553,7 @@ pub(super) unsafe extern "C" fn vec_set(
 }
 pub(super) unsafe extern "C" fn vec_size(env: *mut ModuleEnv, handle: Handle) -> isize {
     api(env, 0, |a| {
-        let Value::Vector(vector) = vector(a, handle, None)? else {
+        let Kind::Vector(vector) = (vector(a, handle, None)?).kind() else {
             unreachable!()
         };
         Ok(vector.slots().len() as isize)

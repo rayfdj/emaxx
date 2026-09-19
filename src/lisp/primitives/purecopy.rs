@@ -1,7 +1,8 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 fn purify_table(interp: &Interpreter, env: &Env) -> Option<u64> {
-    let Value::Record(id) = interp.lookup_var("purify-flag", env)? else {
+    let Kind::Record(id) = (interp.lookup_var("purify-flag", env)?).kind() else {
         return None;
     };
     json::is_hash_table(interp, &Value::Record(id)).then_some(id.id)
@@ -110,7 +111,7 @@ fn purecopy_hash_table(
 
     let copied = interp.copy_record(id)?;
     set_hash_table_entries(interp, &copied, copied_entries)?;
-    let Value::Record(copied_id) = copied else {
+    let Kind::Record(copied_id) = copied.kind() else {
         unreachable!("copy_record preserves the hash-table representation")
     };
     interp.mark_hash_table_immutable(copied_id.id);
@@ -157,7 +158,7 @@ fn purecopy_record(
         slots.push(purecopy_inner(interp, &slot, table, env)?);
     }
     let copied = interp.copy_record(id)?;
-    let Value::Record(copied_id) = copied else {
+    let Kind::Record(copied_id) = copied.kind() else {
         unreachable!("copy_record preserves the record representation")
     };
     if record.kind == crate::lisp::eval::RecordKind::Record {
@@ -181,8 +182,8 @@ fn purecopy_inner(
     table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if matches!(value, Value::Record(id)
-        if interp.find_record(*id).is_some_and(|record|
+    if matches!(value.kind(), Kind::Record(id)
+        if interp.find_record(id).is_some_and(|record|
             record.kind == crate::lisp::eval::RecordKind::SymbolWithPos))
         && symbols_with_pos_enabled(interp, env)
     {
@@ -190,33 +191,33 @@ fn purecopy_inner(
         // so alloc.c:Fpurecopy returns it unchanged with ordinary symbols.
         return Ok(*value);
     }
-    if matches!(value, Value::Record(id)
-        if interp.find_record(*id).is_some_and(|record|
+    if matches!(value.kind(), Kind::Record(id)
+        if interp.find_record(id).is_some_and(|record|
             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
     {
         // Native compiled functions use GNU's PVEC_SUBR representation and
         // therefore take alloc.c:Fpurecopy's SUBRP already-pure return.
         return Ok(*value);
     }
-    match value {
-        Value::Nil
-        | Value::T
-        | Value::Integer(_)
-        | Value::Symbol(_)
-        | Value::BuiltinFunc(_)
-        | Value::Marker(_)
-        | Value::Overlay(_) => return Ok(*value),
+    match value.kind() {
+        Kind::Nil
+        | Kind::T
+        | Kind::Integer(_)
+        | Kind::Symbol(_)
+        | Kind::BuiltinFunc(_)
+        | Kind::Marker(_)
+        | Kind::Overlay(_) => return Ok(*value),
         _ => {}
     }
     if let Some(cached) = hash_cons_lookup(interp, table, value, env) {
         return Ok(cached);
     }
 
-    let copied = match value {
-        Value::BigInteger(integer) => Value::big_integer((**integer).clone()),
-        Value::Float(number) => Value::Float(*number),
-        Value::String(text) => Value::String(text.to_string().into()),
-        Value::StringObject(_) => {
+    let copied = match value.kind() {
+        Kind::BigInteger(integer) => Value::big_integer((*integer).clone()),
+        Kind::Float(number) => Value::Float(number),
+        Kind::String(text) => Value::String(text.to_string().into()),
+        Kind::StringObject(_) => {
             let string = string_like(value).expect("StringObject is string-like");
             if string.extended_chars.is_empty() {
                 Value::String(string.text.into())
@@ -229,39 +230,39 @@ fn purecopy_inner(
                 )
             }
         }
-        Value::Vector(_) => return purecopy_vector(interp, value, table, env),
-        Value::Cons(_) if is_vector_value(value) => {
+        Kind::Vector(_) => return purecopy_vector(interp, value, table, env),
+        Kind::Cons(_) if is_vector_value(value) => {
             return purecopy_vector(interp, value, table, env);
         }
-        Value::Cons(_) => return purecopy_cons_chain(interp, value, table, env),
-        Value::Lambda(lambda) => {
-            let slots = interp.interpreted_closure_slots(lambda);
+        Kind::Cons(_) => return purecopy_cons_chain(interp, value, table, env),
+        Kind::Lambda(lambda) => {
+            let slots = interp.interpreted_closure_slots(&lambda);
             let mut copied_slots = Vec::with_capacity(slots.len());
             for slot in slots {
                 copied_slots.push(purecopy_inner(interp, &slot, table, env)?);
             }
             interp.make_interpreted_closure_value(&copied_slots)?
         }
-        Value::Record(id) => return purecopy_record(interp, id.id, table, env),
-        Value::Buffer(_)
-        | Value::CharTable(_)
-        | Value::Frame(_)
-        | Value::Terminal(_)
-        | Value::Finalizer(_)
-        | Value::ReaderForm(_)
-        | Value::Unbound => {
+        Kind::Record(id) => return purecopy_record(interp, id.id, table, env),
+        Kind::Buffer(_)
+        | Kind::CharTable(_)
+        | Kind::Frame(_)
+        | Kind::Terminal(_)
+        | Kind::Finalizer(_)
+        | Kind::ReaderForm(_)
+        | Kind::Unbound => {
             return Err(LispError::Signal(format!(
                 "Don't know how to purify: {}",
                 value.type_name()
             )));
         }
-        Value::Nil
-        | Value::T
-        | Value::Integer(_)
-        | Value::Symbol(_)
-        | Value::BuiltinFunc(_)
-        | Value::Marker(_)
-        | Value::Overlay(_) => unreachable!("returned before hash-cons lookup"),
+        Kind::Nil
+        | Kind::T
+        | Kind::Integer(_)
+        | Kind::Symbol(_)
+        | Kind::BuiltinFunc(_)
+        | Kind::Marker(_)
+        | Kind::Overlay(_) => unreachable!("returned before hash-cons lookup"),
     };
     Ok(hash_cons_insert(interp, table, copied, env))
 }
@@ -304,23 +305,23 @@ mod tests {
 
         assert!(is_vector_value(&copied));
         let (
-            Value::Vector(source_vector),
-            Value::Vector(copied_vector),
-            Value::Vector(equal_copy_vector),
-        ) = (&source, &copied, &equal_copy)
+            Kind::Vector(source_vector),
+            Kind::Vector(copied_vector),
+            Kind::Vector(equal_copy_vector),
+        ) = (source.kind(), copied.kind(), equal_copy.kind())
         else {
             panic!("purecopy must preserve GNU's vector object class")
         };
-        assert!(!source_vector.ptr_eq(copied_vector));
-        assert!(copied_vector.ptr_eq(equal_copy_vector));
+        assert!(!source_vector.ptr_eq(&copied_vector));
+        assert!(copied_vector.ptr_eq(&equal_copy_vector));
 
         let source_items = vector_items(&source).expect("source should remain vectorlike");
         let copied_items = vector_items(&copied).expect("copy should remain vectorlike");
-        let (Value::Vector(source_nested), Value::Vector(copied_nested)) =
-            (&source_items[1], &copied_items[1])
+        let (Kind::Vector(source_nested), Kind::Vector(copied_nested)) =
+            (source_items[1].kind(), copied_items[1].kind())
         else {
             panic!("nested values remain vectors")
         };
-        assert!(!source_nested.ptr_eq(copied_nested));
+        assert!(!source_nested.ptr_eq(&copied_nested));
     }
 }

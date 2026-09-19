@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -13,9 +14,9 @@ fn decode_frame(
     require_live: bool,
 ) -> Result<u64, LispError> {
     let value = value.unwrap_or(&Value::Nil);
-    let id = match value {
-        Value::Nil if nil_defaults_to_selected => interp.selected_frame_id,
-        Value::Frame(id) if interp.frame_state(*id).is_some() => *id,
+    let id = match value.kind() {
+        Kind::Nil if nil_defaults_to_selected => interp.selected_frame_id,
+        Kind::Frame(id) if interp.frame_state(id).is_some() => id,
         _ => {
             return Err(wrong_type_argument(
                 if require_live {
@@ -103,9 +104,9 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         // (term.c's set_tty_color_mode): tty_setup_colors publishes the
         // count, then safe_calln (Qtty_set_up_initial_frame_faces) has
         // faces.el recompute every face against the new display.
-        let cells = match &value {
-            Value::Integer(mode) if *mode > 1 => *mode,
-            Value::Integer(_) | Value::Nil => 0,
+        let cells = match value.kind() {
+            Kind::Integer(mode) if mode > 1 => mode,
+            Kind::Integer(_) | Kind::Nil => 0,
             _ => 8,
         };
         interp.set_tty_display_colors(cells);
@@ -249,15 +250,15 @@ define_dispatch!(
             }
             "framep" => {
                 need_args(name, args, 1)?;
-                Ok(match args[0] {
-                    Value::Frame(id) if interp.frame_state(id).is_some() => Value::T,
+                Ok(match args[0].kind() {
+                    Kind::Frame(id) if interp.frame_state(id).is_some() => Value::T,
                     _ => Value::Nil,
                 })
             }
             "frame-live-p" => {
                 need_args(name, args, 1)?;
-                Ok(match args[0] {
-                    Value::Frame(id) if interp.frame_is_live(id) => Value::T,
+                Ok(match args[0].kind() {
+                    Kind::Frame(id) if interp.frame_is_live(id) => Value::T,
                     _ => Value::Nil,
                 })
             }
@@ -472,8 +473,8 @@ define_dispatch!(
                     .copied()
                     .find(|candidate| {
                         frame_parameter_value(interp, *candidate, "no-other-frame").is_nil()
-                            && match args.get(1) {
-                                Some(Value::Record(window)) => {
+                            && match args.get(1).map(|v| v.kind()) {
+                                Some(Kind::Record(window)) => {
                                     interp
                                         .frame_state(*candidate)
                                         .expect("decoded frame has state")
@@ -499,7 +500,7 @@ define_dispatch!(
                 .to_vec()
                 .ok()
                 .filter(|items| {
-                    matches!(items.first(), Some(Value::Symbol(event)) if event == "switch-frame")
+                    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(event)) if event == "switch-frame")
                 })
                 .and_then(|items| items.get(1).cloned())
                 .unwrap_or_else(|| args[0]);
@@ -553,9 +554,9 @@ define_dispatch!(
             "redirect-frame-focus" => {
                 need_arg_range(name, args, 1, 2)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                let focus = match args.get(1) {
-                    None | Some(Value::Nil) => None,
-                    Some(value) => Some(decode_live_frame(interp, Some(value), false)?),
+                let focus = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(value) => Some(decode_live_frame(interp, Some(&value.value()), false)?),
                 };
                 interp
                     .frame_state_mut(id)

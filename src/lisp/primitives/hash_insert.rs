@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn hash_table_user_test_functions(
     interp: &Interpreter,
@@ -19,7 +20,7 @@ pub(crate) fn call_hash_table_test_function(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Value::Record(id) = table else {
+    let Kind::Record(id) = table.kind() else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if !json::is_hash_table(interp, table) {
@@ -63,9 +64,9 @@ fn custom_hash_code(
     };
     let hash =
         call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
-    Ok(match hash {
-        Value::Integer(hash) => hash,
-        other => sxhash_value_in_env(interp, &other, HashMode::Equal, env),
+    Ok(match hash.kind() {
+        Kind::Integer(hash) => hash,
+        other => sxhash_value_in_env(interp, &other.value(), HashMode::Equal, env),
     })
 }
 
@@ -203,10 +204,10 @@ pub(crate) fn hash_table_metadata_slot(
     slot: usize,
     default: Value,
 ) -> Result<Value, LispError> {
-    let Value::Record(id) = table else {
+    let Kind::Record(id) = table.kind() else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
-    let Some(record) = interp.find_record(*id) else {
+    let Some(record) = interp.find_record(id) else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if record.kind != crate::lisp::eval::RecordKind::HashTable {
@@ -239,7 +240,7 @@ pub(crate) fn keymap_record_list_items(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<Vec<Value>>, LispError> {
-    if matches!(value, Value::Cons(_)) {
+    if matches!(value.kind(), Kind::Cons(_)) {
         return Ok(None);
     }
     keymap_list_items(interp, value)
@@ -254,7 +255,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let table = json::make_hash_table(&mut interp, "eq", Vec::new());
-        let Value::Record(table_id) = table else {
+        let Kind::Record(table_id) = table.kind() else {
             panic!("hash table is not a record");
         };
         interp.find_record_mut(table_id).expect("new table").slots[5] = Value::symbol("key");
@@ -266,7 +267,7 @@ mod tests {
             &mut env,
         )
         .expect("make overlay");
-        let Value::Overlay(id) = overlay else {
+        let Kind::Overlay(id) = overlay.kind() else {
             panic!("not an overlay");
         };
         assert!(interp.equal_hash_put(table_id.id, overlay, Value::T, &env));
@@ -316,7 +317,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let table = json::make_hash_table(&mut interp, "equal", Vec::new());
-        let Value::Record(id) = table else {
+        let Kind::Record(id) = table.kind() else {
             panic!("hash table is not a record");
         };
         interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
@@ -469,14 +470,14 @@ pub(crate) fn set_hash_table_entries(
     table: &Value,
     entries: Vec<(Value, Value)>,
 ) -> Result<(), LispError> {
-    let Value::Record(id) = table else {
+    let Kind::Record(id) = table.kind() else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if !interp.hash_table_is_mutable(id.id) {
         return Err(LispError::Signal("hash table test modifies table".into()));
     }
     let Some(test) = interp
-        .find_record(*id)
+        .find_record(id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::HashTable)
         .and_then(|record| record.slots.first())
         .and_then(|value| value.as_symbol().ok())
@@ -490,7 +491,7 @@ pub(crate) fn set_hash_table_entries(
     } else {
         hash_table_entries_to_value(entries.clone())
     };
-    let Some(record) = interp.find_record_mut(*id) else {
+    let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
     if record.slots.len() < 2 {
@@ -669,12 +670,13 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
 
 pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
     if let Ok(items) = value.to_vec() {
-        if let Some(Value::Symbol(name)) = items.first()
+        if let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind())
             && name == property
         {
             return items.get(1).cloned();
         }
-        if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
+        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "vector-literal")
+        {
             for item in items.iter().skip(1) {
                 if let Some(found) = display_property_value(item, property) {
                     return Some(found);
@@ -898,21 +900,21 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
                     .map(|(position, code)| (offset + position, code)),
             );
         } else {
-            let fragment = match arg {
-                Value::Integer(n) => {
+            let fragment = match arg.kind() {
+                Kind::Integer(n) => {
                     let offset = text.chars().count();
-                    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(n) {
-                        raw_byte_regex_char((*n - RAW_BYTE8_BASE as i64) as u8).to_string()
-                    } else if let Some(c) = char::from_u32(*n as u32) {
+                    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&n) {
+                        raw_byte_regex_char((n - RAW_BYTE8_BASE as i64) as u8).to_string()
+                    } else if let Some(c) = char::from_u32(n as u32) {
                         c.to_string()
-                    } else if (0..=0x3F_FFFF).contains(n) {
-                        extended_chars.push((offset, *n as u32));
+                    } else if (0..=0x3F_FFFF).contains(&n) {
+                        extended_chars.push((offset, n as u32));
                         RAW_CHAR_SENTINEL.to_string()
                     } else {
                         String::new()
                     }
                 }
-                Value::Nil => String::new(),
+                Kind::Nil => String::new(),
                 _ => arg.to_string(),
             };
             text.push_str(&fragment);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn format_source_props(
     value: &Value,
@@ -417,7 +418,7 @@ pub(crate) fn make_temp_file_internal(
         );
         let candidate = PathBuf::from(&path);
         last = path;
-        if matches!(dir_flag, Value::Integer(0)) {
+        if matches!(dir_flag.kind(), Kind::Integer(0)) {
             if candidate.exists() {
                 continue;
             }
@@ -632,7 +633,7 @@ pub(crate) fn write_region_value_with_logical_path(
     };
     let visiting = args
         .get(4)
-        .is_some_and(|visit| matches!(visit, Value::T) || string_like(visit).is_some());
+        .is_some_and(|visit| matches!(visit.kind(), Kind::T) || string_like(visit).is_some());
     let coding = current_write_coding(interp, env, &text, visiting)?;
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
@@ -752,9 +753,9 @@ pub(crate) fn write_region_value_with_logical_path(
         dispatch_file_notification(interp, env, &path, "attribute-changed")?;
     }
     if let Some(visit) = args.get(4)
-        && (matches!(visit, Value::T) || string_like(visit).is_some())
+        && (matches!(visit.kind(), Kind::T) || string_like(visit).is_some())
     {
-        let visited_name = if matches!(visit, Value::T) {
+        let visited_name = if matches!(visit.kind(), Kind::T) {
             logical_path.to_string()
         } else {
             string_text(visit)?
@@ -769,7 +770,7 @@ pub(crate) fn write_region_value_with_logical_path(
         .lookup_var("noninteractive", env)
         .is_none_or(|value| value.is_nil())
         && args.get(4).is_none_or(|visit| {
-            visit.is_nil() || matches!(visit, Value::T) || string_like(visit).is_some()
+            visit.is_nil() || matches!(visit.kind(), Kind::T) || string_like(visit).is_some()
         })
     {
         call_named_function(
@@ -819,12 +820,12 @@ pub(crate) fn write_printer_output(
     stream: Option<&Value>,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    match stream {
+    match stream.map(|v| v.kind()) {
         // An explicit `t' stream prints to the echo area, which
         // `ert-with-message-capture' observes like the upstream print
         // advice; it never inserts into the current buffer.  In batch mode
         // GNU also treats that echo-area stream as the process stdout.
-        Some(Value::T) => {
+        Some(Kind::T) => {
             interp.append_message_capture(text, false, env);
             if interp
                 .lookup_var("noninteractive", env)
@@ -842,12 +843,12 @@ pub(crate) fn write_printer_output(
             }
             Ok(())
         }
-        None | Some(Value::Nil) => {
+        None | Some(Kind::Nil) => {
             interp.append_message_capture(text, false, env);
             interp.buffer.insert(text);
             Ok(())
         }
-        Some(Value::Buffer(_)) => {
+        Some(Kind::Buffer(_)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
             if buffer_id == interp.current_buffer_id() {
                 interp.insert_current_buffer(text);
@@ -867,9 +868,9 @@ pub(crate) fn write_printer_output(
             }
             Ok(())
         }
-        Some(Value::Marker(id)) => {
+        Some(Kind::Marker(id)) => {
             let (buffer_id, position) = {
-                let marker = interp.find_marker(*id).ok_or_else(|| {
+                let marker = interp.find_marker(id).ok_or_else(|| {
                     LispError::TypeError("marker".into(), format!("marker<{id}>"))
                 })?;
                 let buffer_id = marker
@@ -891,13 +892,13 @@ pub(crate) fn write_printer_output(
                 buffer.goto_char(saved_point);
                 new_position
             };
-            interp.set_marker(*id, Some(new_position), Some(buffer_id))?;
+            interp.set_marker(id, Some(new_position), Some(buffer_id))?;
             Ok(())
         }
-        Some(Value::Symbol(name)) if name == "external-debugging-output" => {
+        Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
             append_external_debugging_output(interp, text)
         }
-        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_)) => {
+        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Lambda(_)) => {
             let function = *stream.expect("matched Some");
             for ch in text.chars() {
                 call_function_value(interp, &function, &[Value::Integer(ch as i64)], env)?;
@@ -906,7 +907,7 @@ pub(crate) fn write_printer_output(
         }
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
-            other.type_name(),
+            other.value().type_name(),
         )),
     }
 }
@@ -922,7 +923,7 @@ pub(crate) fn record_batch_standard_output_char(
     env: &Env,
     ch: char,
 ) {
-    if stream.is_some_and(|value| matches!(value, Value::T))
+    if stream.is_some_and(|value| matches!(value.kind(), Kind::T))
         && interp
             .lookup_var("noninteractive", env)
             .is_some_and(|value| value.is_truthy())
@@ -939,16 +940,16 @@ pub(crate) fn native_print_updates_batch_last_char(
     env: &Env,
     escaped: bool,
 ) -> bool {
-    match value {
-        Value::Integer(integer) => {
+    match value.kind() {
+        Kind::Integer(integer) => {
             interp
                 .lookup_var("print-integers-as-characters", env)
                 .is_some_and(|value| value.is_truthy())
-                && render_princ_integer_as_character(&Value::Integer(*integer)).is_some()
+                && render_princ_integer_as_character(&Value::Integer(integer)).is_some()
         }
-        Value::BigInteger(_) | Value::Float(_) => false,
-        Value::String(_) | Value::StringObject(_) => escaped,
-        Value::Symbol(name) => !name.is_empty(),
+        Kind::BigInteger(_) | Kind::Float(_) => false,
+        Kind::String(_) | Kind::StringObject(_) => escaped,
+        Kind::Symbol(name) => !name.is_empty(),
         _ => true,
     }
 }
@@ -958,16 +959,16 @@ pub(crate) fn printer_stream_value(
     env: &Env,
     explicit: Option<&Value>,
 ) -> Option<Value> {
-    let resolved = match explicit {
-        Some(Value::Nil) => interp.lookup_var("standard-output", env),
-        Some(value) => Some(*value),
+    let resolved = match explicit.map(|v| v.kind()) {
+        Some(Kind::Nil) => interp.lookup_var("standard-output", env),
+        Some(value) => Some(value.value()),
         None => interp.lookup_var("standard-output", env),
     };
-    match resolved {
+    match resolved.map(|v| v.kind()) {
         // GNU's `print_prepare' turns a nil effective stream into t after
         // resolving `standard-output'.
-        Some(Value::Nil) => Some(Value::T),
-        other => other,
+        Some(Kind::Nil) => Some(Value::T),
+        other => other.map(|k| k.value()),
     }
 }
 
@@ -985,32 +986,33 @@ pub(crate) fn printer_env_with_overrides(
     let mut adjusted = env.clone();
     let mut bindings = Vec::new();
 
-    match overrides {
-        Value::T => {
+    match overrides.kind() {
+        Kind::T => {
             bindings.push(("print-length".into(), Value::Nil));
             bindings.push(("print-level".into(), Value::Nil));
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let items = overrides
                 .to_vec()
                 .map_err(|_| LispError::Signal("invalid print overrides".into()))?;
             let mut start = 0usize;
-            if matches!(items.first(), Some(Value::T)) {
+            if matches!(items.first().map(|v| v.kind()), Some(Kind::T)) {
                 bindings.push(("print-length".into(), Value::Nil));
                 bindings.push(("print-level".into(), Value::Nil));
                 start = 1;
             }
             for item in &items[start..] {
                 let (name, value) = if let Ok(spec) = item.to_vec() {
-                    let [Value::Symbol(name), value] = spec.as_slice() else {
+                    let kinds = spec.iter().map(|v| v.kind()).collect::<Vec<_>>();
+                    let [Kind::Symbol(name), value] = kinds.as_slice() else {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     };
-                    (*name, *value)
+                    (*name, value.value())
                 } else if let Some((car, cdr)) = item.cons_values() {
-                    let Value::Symbol(name) = car else {
+                    let Kind::Symbol(name) = car.kind() else {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     };
-                    if matches!(cdr, Value::Nil | Value::Cons(_)) {
+                    if matches!(cdr.kind(), Kind::Nil | Kind::Cons(_)) {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     }
                     (name, cdr)
@@ -1050,21 +1052,21 @@ pub(crate) fn printer_stream_at_line_start(
     interp: &Interpreter,
     stream: Option<&Value>,
 ) -> Result<bool, LispError> {
-    match stream {
-        None | Some(Value::Nil | Value::T) => Ok(buffer_position_at_line_start(
+    match stream.map(|v| v.kind()) {
+        None | Some(Kind::Nil | Kind::T) => Ok(buffer_position_at_line_start(
             &interp.buffer,
             interp.buffer.point(),
         )),
-        Some(Value::Buffer(_)) => {
+        Some(Kind::Buffer(_)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
             Ok(buffer_position_at_line_start(buffer, buffer.point()))
         }
-        Some(Value::Marker(id)) => {
+        Some(Kind::Marker(id)) => {
             let marker = interp
-                .find_marker(*id)
+                .find_marker(id)
                 .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{id}>")))?;
             let buffer_id = marker
                 .buffer_id
@@ -1077,17 +1079,17 @@ pub(crate) fn printer_stream_at_line_start(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
             Ok(buffer_position_at_line_start(buffer, position))
         }
-        Some(Value::Symbol(name)) if name == "external-debugging-output" => {
+        Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
             let Some(buffer) = external_debugging_output_buffer(interp) else {
                 return Ok(false);
             };
             let empty = buffer.point_min() == buffer.point_max();
             Ok(!empty && buffer_position_at_line_start(buffer, buffer.point()))
         }
-        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_)) => Ok(false),
+        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Lambda(_)) => Ok(false),
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
-            other.type_name(),
+            other.value().type_name(),
         )),
     }
 }
@@ -1642,9 +1644,9 @@ pub(crate) fn finish_insert_file_contents(
 
         if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env) {
             for hook in hooks.to_vec()? {
-                let function = match &hook {
-                    Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
-                    function => *function,
+                let function = match hook.kind() {
+                    Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
+                    function => function.value(),
                 };
                 let original_name = hook.as_symbol().ok();
                 let result = interp.call_function_value(

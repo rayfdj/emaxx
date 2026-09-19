@@ -15,7 +15,7 @@ use super::gccjit::{
 };
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::string_like;
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 use std::ffi::CString;
 
 const HELPER_COUNT: usize = 15;
@@ -1064,7 +1064,7 @@ impl Compiler {
         let constant_valid = call_lisp_one(interp, env, "comp-cstr-imm-vld-p", *mvar)?.is_truthy();
         if constant_valid {
             let value = call_lisp_one(interp, env, "comp-cstr-imm", *mvar)?;
-            if let Value::Integer(integer) = value {
+            if let Kind::Integer(integer) = value.kind() {
                 if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer) {
                     return self
                         .fixnum_value(integer)

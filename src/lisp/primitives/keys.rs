@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) const KEY_DESCRIPTION_ALT_BIT: i64 = 0x0400000;
 pub(crate) const KEY_DESCRIPTION_SUPER_BIT: i64 = 0x0800000;
@@ -113,13 +114,13 @@ pub(crate) fn event_convert_list_value(
     }
 
     let mut base = base.unwrap_or(Value::Nil);
-    if let Value::Symbol(symbol) = &base
+    if let Kind::Symbol(symbol) = base.kind()
         && symbol.chars().count() == 1
     {
         base = Value::Integer(symbol.chars().next().expect("one character") as i64);
     }
-    match base {
-        Value::Integer(mut code) => {
+    match base.kind() {
+        Kind::Integer(mut code) => {
             if modifiers & KEY_DESCRIPTION_SHIFT_BIT != 0
                 && (b'a' as i64..=b'z' as i64).contains(&code)
             {
@@ -135,7 +136,7 @@ pub(crate) fn event_convert_list_value(
             }
             Ok(Value::Integer(code | modifiers))
         }
-        Value::Symbol(base) => {
+        Kind::Symbol(base) => {
             let modified = modified_event_symbol_name(modifiers, &base);
             if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
                 interp.put_symbol_property(&modified, "event-kind", kind);
@@ -360,11 +361,11 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
     {
-        match event {
-            Value::Symbol(symbol) => return Ok(vec![symbol.to_string()]),
+        match event.kind() {
+            Kind::Symbol(symbol) => return Ok(vec![symbol.to_string()]),
             // GNU renders the [t] default binding as "<t>", which also keeps
             // it distinct from a binding on the letter t.
-            Value::T => return Ok(vec!["<t>".into()]),
+            Kind::T => return Ok(vec!["<t>".into()]),
             _ => {}
         }
     }
@@ -421,7 +422,7 @@ pub(crate) fn normalize_xemacs_macro_definition(
     let Ok(events) = vector_items(def) else {
         return Ok(*def);
     };
-    if !matches!(events.first(), Some(Value::Cons(_))) {
+    if !matches!(events.first().map(|v| v.kind()), Some(Kind::Cons(_))) {
         return Ok(*def);
     }
     let mut converted = vec![Value::Symbol("vector-literal".into())];
@@ -438,7 +439,7 @@ pub(crate) fn normalize_xemacs_macro_definition(
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
 fn lucid_event_type_list_p(event: &Value) -> bool {
-    if !matches!(event, Value::Cons(_)) {
+    if !matches!(event.kind(), Kind::Cons(_)) {
         return false;
     }
     // GNU's CONSP is false for a real vector; Emaxx's vector-literal
@@ -447,8 +448,8 @@ fn lucid_event_type_list_p(event: &Value) -> bool {
         return false;
     }
     if matches!(
-        event.car(),
-        Ok(Value::Symbol(head)) if head == "help-echo"
+        event.car().map(|v| v.kind()),
+        Ok(Kind::Symbol(head)) if head == "help-echo"
             || head == "vertical-line"
             || head == "mode-line"
             || head == "tab-line"
@@ -461,7 +462,7 @@ fn lucid_event_type_list_p(event: &Value) -> bool {
     };
     items
         .iter()
-        .all(|item| matches!(item, Value::Integer(_) | Value::Symbol(_)))
+        .all(|item| matches!(item.kind(), Kind::Integer(_) | Kind::Symbol(_)))
 }
 
 /// Return the event path used to store or traverse a keymap binding.
@@ -540,7 +541,12 @@ fn keymap_parts_from_display_parts(display_parts: Vec<String>) -> Result<Vec<Str
     let mut parts = Vec::with_capacity(display_parts.len());
     for part in display_parts {
         let events = parse_kbd_token(&part);
-        if let [Value::Integer(code)] = events.as_slice()
+        if let [Kind::Integer(code)] = events
+            .as_slice()
+            .iter()
+            .map(|v| v.kind())
+            .collect::<Vec<_>>()
+            .as_slice()
             && code & KEY_DESCRIPTION_META_BIT != 0
         {
             parts.push("ESC".into());
@@ -560,12 +566,12 @@ pub(crate) fn append_key_description_parts(
     let mut add_meta = false;
     for event in events {
         if add_meta {
-            match event {
-                Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {
+            match event.kind() {
+                Kind::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {
                     output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
                     add_meta = true;
                 }
-                Value::Integer(code)
+                Kind::Integer(code)
                     if code != KEY_DESCRIPTION_META_PREFIX
                         && code & KEY_DESCRIPTION_META_BIT == 0 =>
                 {
@@ -574,14 +580,14 @@ pub(crate) fn append_key_description_parts(
                 }
                 other => {
                     output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
-                    output.push(single_key_description_text(&other, false)?);
+                    output.push(single_key_description_text(&other.value(), false)?);
                     add_meta = false;
                 }
             }
             continue;
         }
 
-        if matches!(&event, Value::Integer(code) if *code == KEY_DESCRIPTION_META_PREFIX) {
+        if matches!(event.kind(), Kind::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX) {
             add_meta = true;
             continue;
         }
@@ -627,15 +633,13 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
         return Ok(events);
     }
 
-    match sequence {
-        Value::Nil => Ok(Vec::new()),
-        value if is_vector_value(value) => Ok(vector_items(sequence)?
+    match sequence.kind() {
+        Kind::Nil => Ok(Vec::new()),
+        value if is_vector_value(&value.value()) => Ok(vector_items(sequence)?
             .into_iter()
             .map(normalize_key_description_event)
             .collect()),
-        Value::Integer(_) | Value::Symbol(_) => {
-            Ok(vec![normalize_key_description_event(*sequence)])
-        }
+        Kind::Integer(_) | Kind::Symbol(_) => Ok(vec![normalize_key_description_event(*sequence)]),
         _ => Err(LispError::WrongTypeArgument("arrayp".into(), *sequence)),
     }
 }
@@ -644,8 +648,8 @@ pub(crate) fn normalize_key_description_event(event: Value) -> Value {
     let Some((start, end)) = event.cons_values() else {
         return event;
     };
-    match (start, end) {
-        (Value::Integer(start), Value::Integer(end)) if start == end => Value::Integer(start),
+    match (start.kind(), end.kind()) {
+        (Kind::Integer(start), Kind::Integer(end)) if start == end => Value::Integer(start),
         _ => event,
     }
 }
@@ -658,7 +662,7 @@ pub(crate) fn sequence_values(
         Ok(string_sequence_values(&string))
     } else if let Some(items) = keymap_list_items(interp, sequence)? {
         Ok(items)
-    } else if matches!(sequence, Value::Nil | Value::Cons(_)) {
+    } else if matches!(sequence.kind(), Kind::Nil | Kind::Cons(_)) {
         sequence.to_vec()
     } else if is_bool_vector_value(interp, sequence) {
         bool_vector_values(interp, sequence)
@@ -689,32 +693,32 @@ pub(crate) fn string_sequence_value(string: &StringLike, ch: char) -> Value {
 }
 
 pub(crate) fn concat_character_value(value: &Value) -> Result<(char, bool), LispError> {
-    let Value::Integer(code) = value else {
+    let Kind::Integer(code) = value.kind() else {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
             *value,
         ])));
     };
-    if *code < 0 {
+    if code < 0 {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
             *value,
         ])));
     }
-    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(code) {
-        let byte = (*code - RAW_BYTE8_BASE as i64) as u8;
+    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&code) {
+        let byte = (code - RAW_BYTE8_BASE as i64) as u8;
         return Ok((raw_byte_regex_char(byte), false));
     }
-    let Some(ch) = char::from_u32(*code as u32) else {
+    let Some(ch) = char::from_u32(code as u32) else {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("characterp".into()),
             *value,
         ])));
     };
-    Ok((ch, !is_raw_byte_regex_char(ch) && (*code as u32) > 0x7F))
+    Ok((ch, !is_raw_byte_regex_char(ch) && (code as u32) > 0x7F))
 }
 
 pub(crate) fn concat_sequence_string(
@@ -733,12 +737,12 @@ pub(crate) fn concat_sequence_string(
 }
 
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
-    match value {
-        Value::String(_) | Value::StringObject(_) => string_like(value),
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::String(_) | Kind::StringObject(_) => string_like(value),
+        Kind::Cons(_) => {
             let items = value.to_vec().ok()?;
-            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-                && matches!(items.get(1), Some(Value::String(_)))
+            if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
+                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::String(_)))
             {
                 string_like(value)
             } else {
@@ -753,14 +757,14 @@ pub(crate) fn single_key_description_text(
     key: &Value,
     no_angles: bool,
 ) -> Result<String, LispError> {
-    match key {
-        Value::Nil => Ok(describe_symbolic_key("nil", no_angles)),
-        Value::Integer(code) => Ok(describe_key_code(*code)),
-        Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
-        Value::T => Ok(describe_symbolic_key("t", no_angles)),
-        Value::String(text) => Ok(text.to_string()),
-        Value::StringObject(state) => Ok(state.borrow().text.clone()),
-        Value::Cons(_) => list_event_key_description_text(key, no_angles),
+    match key.kind() {
+        Kind::Nil => Ok(describe_symbolic_key("nil", no_angles)),
+        Kind::Integer(code) => Ok(describe_key_code(code)),
+        Kind::Symbol(symbol) => Ok(describe_symbolic_key(&symbol, no_angles)),
+        Kind::T => Ok(describe_symbolic_key("t", no_angles)),
+        Kind::String(text) => Ok(text.to_string()),
+        Kind::StringObject(state) => Ok(state.borrow().text.clone()),
+        Kind::Cons(_) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
             "integer, symbol, or string".into(),
             key.type_name(),
@@ -798,31 +802,31 @@ pub(crate) fn list_event_key_description_text(
         };
     }
 
-    match base {
-        Value::Integer(code) => Ok(describe_key_code(*code | bits)),
-        Value::Symbol(symbol) => {
-            if let Some(ch) = event_name_character(symbol) {
+    match base.kind() {
+        Kind::Integer(code) => Ok(describe_key_code(code | bits)),
+        Kind::Symbol(symbol) => {
+            if let Some(ch) = event_name_character(&symbol) {
                 Ok(describe_key_code(ch as i64 | bits))
             } else {
                 Ok(describe_symbolic_key(
-                    &symbolic_kbd_event(bits, symbol),
+                    &symbolic_kbd_event(bits, &symbol),
                     no_angles,
                 ))
             }
         }
-        Value::String(text) => {
-            if let Some(ch) = event_name_character(text) {
+        Kind::String(text) => {
+            if let Some(ch) = event_name_character(&text) {
                 Ok(describe_key_code(ch as i64 | bits))
             } else if bits == 0 {
                 Ok(text.to_string())
             } else {
                 Ok(describe_symbolic_key(
-                    &symbolic_kbd_event(bits, text),
+                    &symbolic_kbd_event(bits, &text),
                     no_angles,
                 ))
             }
         }
-        Value::StringObject(state) => {
+        Kind::StringObject(state) => {
             let text = state.borrow().text.clone();
             if let Some(ch) = event_name_character(&text) {
                 Ok(describe_key_code(ch as i64 | bits))
@@ -1048,8 +1052,7 @@ pub(crate) fn resolve_keymap_without_autoload(
     object: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let is_keymap_list =
-        |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
+    let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "keymap");
     if is_keymap_list(object) {
         return Ok(*object);
     }
@@ -1161,10 +1164,10 @@ fn copy_keymap_1(
     let mut items = Vec::new();
     let mut tail = keymap.cdr()?;
     while let Some((elt, rest)) = tail.cons_values() {
-        if matches!(&elt, Value::Symbol(head) if head == "keymap") {
+        if matches!(elt.kind(), Kind::Symbol(head) if head == "keymap") {
             break;
         }
-        let copied = if matches!(elt, Value::CharTable(_)) {
+        let copied = if matches!(elt.kind(), Kind::CharTable(_)) {
             copy_keymap_char_table(interp, &elt, depth + 1, env)?
         } else if is_vector_value(&elt) {
             let mut copied = Vec::new();
@@ -1173,7 +1176,7 @@ fn copy_keymap_1(
             }
             Value::vector(copied)
         } else if let Some((car, cdr)) = elt.cons_values() {
-            if matches!(&car, Value::Symbol(head) if head == "keymap") {
+            if matches!(car.kind(), Kind::Symbol(head) if head == "keymap") {
                 copy_keymap_1(interp, &elt, depth + 1, env)?
             } else {
                 Value::cons(car, copy_keymap_item(interp, &cdr, depth + 1, env)?)
@@ -1203,7 +1206,7 @@ fn copy_keymap_char_table(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let copy = call(interp, "copy-sequence", std::slice::from_ref(table), env)?;
-    let Value::CharTable(copy_id) = copy else {
+    let Kind::CharTable(copy_id) = copy.kind() else {
         return Ok(copy);
     };
     let entries = interp.char_table_entries(copy_id).unwrap_or_default();
@@ -1243,8 +1246,7 @@ fn copy_keymap_item(
     let Some((car, cdr)) = elt.cons_values() else {
         return Ok(*elt);
     };
-    let is_keymap_list =
-        |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
+    let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "keymap");
     let rebuild = |cells: Vec<Value>, rest: Value| {
         let mut result = rest;
         for cell in cells.into_iter().rev() {
@@ -1252,7 +1254,7 @@ fn copy_keymap_item(
         }
         result
     };
-    if matches!(&car, Value::Symbol(head) if head == "menu-item") {
+    if matches!(car.kind(), Kind::Symbol(head) if head == "menu-item") {
         let mut cells = vec![car];
         let mut rest = cdr;
         if let Some((name, after_name)) = rest.cons_values() {
@@ -1286,7 +1288,7 @@ fn copy_keymap_item(
         };
         return Ok(rebuild(cells, rest));
     }
-    if matches!(&car, Value::Symbol(head) if head == "keymap") {
+    if matches!(car.kind(), Kind::Symbol(head) if head == "keymap") {
         return copy_keymap_1(interp, elt, depth, env);
     }
     Ok(*elt)

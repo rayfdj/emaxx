@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, LispError> {
     let mut options = JsonParseOptions {
@@ -13,21 +14,27 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
         let value = args[index + 1];
         match key {
             ":object-type" => {
-                options.object_type = match &value {
-                    Value::Symbol(symbol) if symbol == "hash-table" => JsonObjectType::HashTable,
-                    Value::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
-                    Value::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
+                options.object_type = match value.kind() {
+                    Kind::Symbol(symbol) if symbol == "hash-table" => JsonObjectType::HashTable,
+                    Kind::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
+                    Kind::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
                     other => {
-                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "symbolp".into(),
+                            other.value(),
+                        ));
                     }
                 };
             }
             ":array-type" => {
-                options.array_type = match &value {
-                    Value::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
-                    Value::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
+                options.array_type = match value.kind() {
+                    Kind::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
+                    Kind::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
                     other => {
-                        return Err(LispError::WrongTypeArgument("symbolp".into(), *other));
+                        return Err(LispError::WrongTypeArgument(
+                            "symbolp".into(),
+                            other.value(),
+                        ));
                     }
                 };
             }
@@ -271,16 +278,16 @@ pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
 /// high/low cons form.  User and group primitives share this one contract.
 pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
     fn integer_part(value: &Value) -> Option<u64> {
-        match value {
-            Value::Integer(value) => u64::try_from(*value).ok(),
-            Value::BigInteger(value) => value.to_u64(),
+        match value.kind() {
+            Kind::Integer(value) => u64::try_from(value).ok(),
+            Kind::BigInteger(value) => value.to_u64(),
             _ => None,
         }
     }
 
-    let decoded = match value {
-        Value::Integer(_) | Value::BigInteger(_) => integer_part(value),
-        Value::Float(value)
+    let decoded = match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) => integer_part(value),
+        Kind::Float(value)
             if value.is_finite()
                 && value.get() >= 0.0
                 && value.get() <= f64::from(u32::MAX)
@@ -288,7 +295,7 @@ pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
         {
             Some(value.get() as u64)
         }
-        Value::Cons(_) => (|| {
+        Kind::Cons(_) => (|| {
             let (high, rest) = value.cons_values().expect("matched cons");
             let high = integer_part(&high)?;
             if let Some((middle, low)) = rest.cons_values()
@@ -1104,9 +1111,9 @@ pub(crate) fn expand_file_name_runtime(
             None
         };
     if let Some(handler) = handler {
-        let function = match handler {
-            Value::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
-            other => other,
+        let function = match handler.kind() {
+            Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
+            other => other.value(),
         };
         let handled = call_function_value(
             interp,
@@ -1612,12 +1619,12 @@ pub(crate) fn find_file_name_handler(
                 cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text)
                     && !regexp::pattern_depends_on_category_table(&pattern_text.text);
                 pattern_snapshots.push((pattern, pattern_text.text.clone()));
-                if let Value::Symbol(symbol) = &handler {
-                    plist_snapshots.push((symbol.to_string(), interp.symbol_plist(symbol)));
+                if let Kind::Symbol(symbol) = handler.kind() {
+                    plist_snapshots.push((symbol.to_string(), interp.symbol_plist(&symbol)));
                 }
             }
-            if let Value::Symbol(symbol) = &handler
-                && let Some(operations) = interp.get_symbol_property(symbol, "operations")
+            if let Kind::Symbol(symbol) = handler.kind()
+                && let Some(operations) = interp.get_symbol_property(&symbol, "operations")
                 && !operations.is_nil()
                 && !operations.to_vec()?.contains(&operation)
             {
@@ -1863,8 +1870,8 @@ fn normalize_copy_family_args(
     // Fmake_symbolic_link keeps TARGET verbatim so links to relative names
     // stay possible; only the interactive path (a fixnum
     // OK-IF-ALREADY-EXISTS) expands a leading `~' or drops a `/:' quote.
-    let interactive_symlink =
-        operation == "make-symbolic-link" && matches!(args.get(2), Some(Value::Integer(_)));
+    let interactive_symlink = operation == "make-symbolic-link"
+        && matches!(args.get(2).map(|v| v.kind()), Some(Kind::Integer(_)));
     let file = if expand_first || (interactive_symlink && first_text.text.starts_with('~')) {
         expand_file_name_runtime(interp, env, &first_text.text, None)?
     } else if interactive_symlink && first_text.text.starts_with("/:") {
@@ -1951,12 +1958,12 @@ pub(crate) fn dispatch_file_name_handler(
         let Some(handler) = find_file_name_handler(interp, env, &file, operation)? else {
             continue;
         };
-        let (function, original_name) = match handler {
-            Value::Symbol(symbol) => {
+        let (function, original_name) = match handler.kind() {
+            Kind::Symbol(symbol) => {
                 let function = interp.lookup_function(&symbol, env)?;
                 (function, Some(symbol))
             }
-            function => (function, None),
+            function => (function.value(), None),
         };
         let mut handler_args = std::iter::once(Value::Symbol(operation.into()))
             .chain(args.iter().cloned())
@@ -1991,14 +1998,14 @@ pub(crate) fn dispatch_file_name_handler(
         }
         if operation == "write-region"
             && let Some(visit) = args.get(4)
-            && (matches!(visit, Value::T) || string_like(visit).is_some())
+            && (matches!(visit.kind(), Kind::T) || string_like(visit).is_some())
         {
             // GNU's native write-region retains responsibility for the
             // VISIT postconditions even when a Lisp file-name handler writes
             // the bytes.  Handlers such as jka-compr update the visited
             // modtime, then rely on this outer primitive boundary to record
             // the visited name and mark the source buffer saved.
-            let visited_name = if matches!(visit, Value::T) {
+            let visited_name = if matches!(visit.kind(), Kind::T) {
                 args.get(2)
                     .and_then(string_like)
                     .map(|name| name.text)

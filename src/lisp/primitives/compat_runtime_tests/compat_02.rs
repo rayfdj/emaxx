@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 // `coding-system-get' is mule.el Lisp; the bare host reads the C-owned
 // coding-system plist directly (mule.el's accessor is plist-get over it).
@@ -1216,7 +1217,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
     let (buffer_id, buffer_name) = interp.create_buffer("*value-less-buffer*");
     let buffer = Value::buffer(buffer_id, buffer_name);
     let marker = interp.make_marker();
-    let Value::Marker(marker_id) = marker else {
+    let Kind::Marker(marker_id) = marker.kind() else {
         panic!("make_marker should return a marker");
     };
     interp
@@ -1281,28 +1282,28 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     interp.kill_buffer_id(buf3_id);
 
     let mark1 = interp.make_marker();
-    let Value::Marker(mark1_id) = mark1 else {
+    let Kind::Marker(mark1_id) = mark1.kind() else {
         panic!("mark1 should be a marker");
     };
     interp
         .set_marker(mark1_id, Some(12), Some(buf1_id))
         .expect("set mark1");
     let mark2 = interp.make_marker();
-    let Value::Marker(mark2_id) = mark2 else {
+    let Kind::Marker(mark2_id) = mark2.kind() else {
         panic!("mark2 should be a marker");
     };
     interp
         .set_marker(mark2_id, Some(13), Some(buf1_id))
         .expect("set mark2");
     let mark3 = interp.make_marker();
-    let Value::Marker(mark3_id) = mark3 else {
+    let Kind::Marker(mark3_id) = mark3.kind() else {
         panic!("mark3 should be a marker");
     };
     interp
         .set_marker(mark3_id, Some(12), Some(buf2_id))
         .expect("set mark3");
     let mark4 = interp.make_marker();
-    let Value::Marker(mark4_id) = mark4 else {
+    let Kind::Marker(mark4_id) = mark4.kind() else {
         panic!("mark4 should be a marker");
     };
     interp

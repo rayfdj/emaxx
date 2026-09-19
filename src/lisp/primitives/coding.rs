@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
 mod detect;
@@ -24,7 +25,7 @@ pub(crate) fn coding_system_error(name: impl Into<String>) -> LispError {
 fn charset_plist_property(interp: &Interpreter, charset: &str, property: &str) -> Option<Value> {
     let items = interp.charset_plist_value(charset)?.to_vec().ok()?;
     items.windows(2).find_map(|pair| {
-        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1])
+        matches!(pair[0].kind(), Kind::Symbol(name) if name == property).then(|| pair[1])
     })
 }
 
@@ -193,10 +194,10 @@ fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, 
     let items = superset.to_vec().ok()?;
     let children: Vec<(String, i64)> = items
         .iter()
-        .filter_map(|item| match item {
-            Value::Symbol(name) => Some((name.to_string(), 0)),
+        .filter_map(|item| match item.kind() {
+            Kind::Symbol(name) => Some((name.to_string(), 0)),
             other => {
-                let (car, cdr) = other.cons_values()?;
+                let (car, cdr) = other.value().cons_values()?;
                 Some((car.as_symbol().ok()?.to_string(), cdr.as_integer().ok()?))
             }
         })
@@ -240,20 +241,20 @@ pub(crate) fn make_charset_character(
             let byte = if position.is_nil() {
                 bounds[dimension - index - 1].0
             } else {
-                let Value::Integer(number) = position else {
+                let Kind::Integer(number) = position.kind() else {
                     return Err(LispError::WrongTypeArgument("wholenump".into(), *position));
                 };
-                if *number < 0 {
+                if number < 0 {
                     return Err(LispError::WrongTypeArgument("wholenump".into(), *position));
                 }
-                if *number >= 256 {
+                if number >= 256 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("args-out-of-range"),
                         Value::Integer(255),
                         *position,
                     ])));
                 }
-                *number as u32
+                number as u32
             };
             code = (code << 8) | byte;
         }
@@ -444,7 +445,7 @@ pub(crate) fn encode_charset_char(
 fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
     let items = interp.coding_system_plist_value(coding)?.to_vec().ok()?;
     items.windows(2).find_map(|pair| {
-        matches!(&pair[0], Value::Symbol(name) if name == property).then(|| pair[1])
+        matches!(pair[0].kind(), Kind::Symbol(name) if name == property).then(|| pair[1])
     })
 }
 
@@ -485,8 +486,8 @@ fn coding_system_utf16_options(
     coding: &str,
     kind: &str,
 ) -> (bool, bool, bool) {
-    let big_endian = match coding_system_property(interp, coding, ":endian") {
-        Some(Value::Symbol(endian)) => endian != "little",
+    let big_endian = match coding_system_property(interp, coding, ":endian").map(|v| v.kind()) {
+        Some(Kind::Symbol(endian)) => endian != "little",
         _ => !matches!(kind, "utf-16le"),
     };
     let bom = coding_system_property(interp, coding, ":bom");
@@ -832,7 +833,7 @@ pub(crate) fn aset_vector_value(
     index: usize,
     new_value: Value,
 ) -> Result<(), LispError> {
-    let Value::Vector(vector) = target else {
+    let Kind::Vector(vector) = target.kind() else {
         return Err(LispError::WrongTypeArgument("arrayp".into(), *target));
     };
     let slots = vector.slots_mut();
@@ -2873,9 +2874,9 @@ pub(crate) fn find_operation_coding_system_value(
             "Too few arguments for operation `{operation}'"
         )));
     };
-    let operation_target = match target {
-        Value::Cons(cell) if operation == "insert-file-contents" => *cell.car.borrow(),
-        other => *other,
+    let operation_target = match target.kind() {
+        Kind::Cons(cell) if operation == "insert-file-contents" => *cell.car.borrow(),
+        other => other.value(),
     };
     let Some(alist) = interp.lookup_var(alist_name, env) else {
         return Ok(Value::Nil);
@@ -2884,10 +2885,12 @@ pub(crate) fn find_operation_coding_system_value(
         let Some((pattern, target)) = entry.cons_values() else {
             continue;
         };
-        let matches = match (&pattern, &operation_target) {
-            (Value::Integer(pattern), Value::Integer(target)) => pattern == target,
+        let matches = match (pattern.kind(), operation_target.kind()) {
+            (Kind::Integer(pattern), Kind::Integer(target)) => pattern == target,
             (pattern, target) => {
-                let (Ok(pattern), Ok(target)) = (string_text(pattern), string_text(target)) else {
+                let (Ok(pattern), Ok(target)) =
+                    (string_text(&pattern.value()), string_text(&target.value()))
+                else {
                     continue;
                 };
                 Regex::new(&regexp::translate_elisp_regex(&pattern))
@@ -2898,14 +2901,14 @@ pub(crate) fn find_operation_coding_system_value(
             continue;
         }
         // A cons is already the requested (DECODING . ENCODING) pair.
-        if matches!(target, Value::Cons(_)) {
+        if matches!(target.kind(), Kind::Cons(_)) {
             return Ok(target);
         }
-        let coding = match target {
-            Value::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
+        let coding = match target.kind() {
+            Kind::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
                 .coding_system_canonical_name(&symbol)
                 .unwrap_or_else(|| symbol.to_string()),
-            Value::Symbol(symbol) => {
+            Kind::Symbol(symbol) => {
                 let result =
                     call_named_function(interp, &symbol, &[Value::list(args.to_vec())], env)?;
                 if let Some((decode, encode)) = result.cons_values() {
@@ -2914,8 +2917,12 @@ pub(crate) fn find_operation_coding_system_value(
                 checked_coding_symbol(interp, &result)?
             }
             other => {
-                let result =
-                    call_function_value(interp, &other, &[Value::list(args.to_vec())], env)?;
+                let result = call_function_value(
+                    interp,
+                    &other.value(),
+                    &[Value::list(args.to_vec())],
+                    env,
+                )?;
                 if let Some((decode, encode)) = result.cons_values() {
                     return Ok(Value::cons(decode, encode));
                 }

@@ -12,6 +12,7 @@
 use super::iso2022::{IsoAttributes, charset_dimension, iso_attributes};
 use super::*;
 use crate::lisp::eval::coding::*;
+use crate::lisp::types::Kind;
 
 const fn mask(category: usize) -> u32 {
     1 << category
@@ -175,9 +176,9 @@ fn truthy_var(interp: &Interpreter, name: &str, env: &Env) -> bool {
 /// coding.c encode_inhibit_flag / inhibit_flag: nil never inhibits, t
 /// always does, anything else (the C-defined 0) asks the variable.
 fn inhibit_flag(attribute: Option<&Value>, variable: bool) -> bool {
-    let encoded = match attribute {
-        None | Some(Value::Nil) => -1,
-        Some(Value::T) => 1,
+    let encoded = match attribute.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => -1,
+        Some(Kind::T) => 1,
         Some(_) => 0,
     };
     encoded + i32::from(variable) > 0
@@ -536,10 +537,10 @@ fn ccl_valids(interp: &Interpreter, coding: &str) -> Option<[u8; 256]> {
     let ranges = state.type_args.get(2)?.to_vec().ok()?;
     let mut valids = [0u8; 256];
     for range in ranges {
-        let (from, to) = match &range {
-            Value::Integer(byte) => (*byte, *byte),
+        let (from, to) = match range.kind() {
+            Kind::Integer(byte) => (byte, byte),
             other => {
-                let (from, to) = other.cons_values()?;
+                let (from, to) = other.value().cons_values()?;
                 (from.as_integer().ok()?, to.as_integer().ok()?)
             }
         };

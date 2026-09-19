@@ -11,7 +11,7 @@
 use super::super::*;
 use super::image::*;
 use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
-use crate::lisp::types::{ConsCell, SymbolName};
+use crate::lisp::types::{ConsCell, Kind, SymbolName};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -51,52 +51,52 @@ pub(crate) enum ObjectKey {
 }
 
 pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
-    Some(match value {
-        Value::Cons(cell) => ObjectKey::Cons(ConsCell::identity(cell)),
-        Value::String(text) => ObjectKey::String(text.identity_ptr()),
-        Value::StringObject(state) => ObjectKey::StringObject(state.identity()),
-        Value::Symbol(name) => {
+    Some(match value.kind() {
+        Kind::Cons(cell) => ObjectKey::Cons(ConsCell::identity(&cell)),
+        Kind::String(text) => ObjectKey::String(text.identity_ptr()),
+        Kind::StringObject(state) => ObjectKey::StringObject(state.identity()),
+        Kind::Symbol(name) => {
             if name == "nil" || name == "t" {
                 return None;
             }
             ObjectKey::Symbol(name.id())
         }
-        Value::Vector(vector) => ObjectKey::Vector(vector.identity()),
-        Value::Float(float) => ObjectKey::Float(float.identity_ptr()),
-        Value::BigInteger(integer) => ObjectKey::Bignum(integer.identity_ptr()),
-        Value::Integer(integer) => {
-            if fixnum_word(*integer).is_some() {
+        Kind::Vector(vector) => ObjectKey::Vector(vector.identity()),
+        Kind::Float(float) => ObjectKey::Float(float.identity_ptr()),
+        Kind::BigInteger(integer) => ObjectKey::Bignum(integer.identity_ptr()),
+        Kind::Integer(integer) => {
+            if fixnum_word(integer).is_some() {
                 return None;
             }
-            ObjectKey::WideInteger(*integer)
+            ObjectKey::WideInteger(integer)
         }
-        Value::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
-        Value::Nil | Value::T | Value::Unbound => return None,
+        Kind::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
+        Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
-        Value::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
-        Value::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
-        Value::Marker(id) => ObjectKey::Marker(*id),
-        Value::Overlay(id) => ObjectKey::Overlay(*id),
-        Value::CharTable(id) => ObjectKey::CharTable(*id),
-        Value::Frame(id) => ObjectKey::Frame(*id),
-        Value::Terminal(id) => ObjectKey::Terminal(*id),
-        Value::Record(record) => ObjectKey::Record(record.id),
-        Value::Finalizer(id) => ObjectKey::Finalizer(*id),
-        Value::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
+        Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
+        Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
+        Kind::Marker(id) => ObjectKey::Marker(id),
+        Kind::Overlay(id) => ObjectKey::Overlay(id),
+        Kind::CharTable(id) => ObjectKey::CharTable(id),
+        Kind::Frame(id) => ObjectKey::Frame(id),
+        Kind::Terminal(id) => ObjectKey::Terminal(id),
+        Kind::Record(record) => ObjectKey::Record(record.id),
+        Kind::Finalizer(id) => ObjectKey::Finalizer(id),
+        Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
 }
 
 /// dump_object_self_representing_p: fixnums and the built-in symbols
 /// Emaxx represents specially.
 pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
-    match value {
-        Value::Nil => Some(WORD_NIL),
-        Value::T => Some(WORD_T),
-        Value::Unbound => Some(WORD_UNBOUND),
-        Value::Symbol(name) if name == "nil" => Some(WORD_NIL),
-        Value::Symbol(name) if name == "t" => Some(WORD_T),
-        Value::Integer(integer) => fixnum_word(*integer),
+    match value.kind() {
+        Kind::Nil => Some(WORD_NIL),
+        Kind::T => Some(WORD_T),
+        Kind::Unbound => Some(WORD_UNBOUND),
+        Kind::Symbol(name) if name == "nil" => Some(WORD_NIL),
+        Kind::Symbol(name) if name == "t" => Some(WORD_T),
+        Kind::Integer(integer) => fixnum_word(integer),
         _ => None,
     }
 }
@@ -528,9 +528,9 @@ impl DumpContext {
     /// symbol is not one (all of Emaxx's symbols are heap objects
     /// addressed by name).
     fn in_emacs_image(&self, value: &Value) -> bool {
-        match value {
-            Value::BuiltinFunc(_) => true,
-            Value::Record(id) => id.id == self.main_thread_id,
+        match value.kind() {
+            Kind::BuiltinFunc(_) => true,
+            Kind::Record(id) => id.id == self.main_thread_id,
             _ => false,
         }
     }
@@ -540,24 +540,24 @@ impl DumpContext {
         if let Some(kind) = object_key(value).and_then(|key| self.object_types.get(&key)) {
             return *kind;
         }
-        match value {
-            Value::Cons(_) => DumpType::Cons,
-            Value::String(_) => DumpType::String,
-            Value::StringObject(_) => DumpType::StringObject,
-            Value::Symbol(_) => DumpType::Symbol,
-            Value::Vector(_) => DumpType::Vector,
-            Value::Float(_) => DumpType::Float,
-            Value::BigInteger(_) | Value::Integer(_) => DumpType::Bignum,
-            Value::BuiltinFunc(_) => DumpType::Subr,
-            Value::Lambda(_) => DumpType::Closure,
-            Value::CharTable(_) => DumpType::CharTable,
-            Value::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
-            Value::Buffer(_) => DumpType::Buffer,
-            Value::Marker(_) => DumpType::Marker,
-            Value::Overlay(_) => DumpType::Overlay,
-            Value::Finalizer(_) => DumpType::Finalizer,
-            Value::Frame(_) => DumpType::Frame,
-            Value::Terminal(_) => DumpType::Terminal,
+        match value.kind() {
+            Kind::Cons(_) => DumpType::Cons,
+            Kind::String(_) => DumpType::String,
+            Kind::StringObject(_) => DumpType::StringObject,
+            Kind::Symbol(_) => DumpType::Symbol,
+            Kind::Vector(_) => DumpType::Vector,
+            Kind::Float(_) => DumpType::Float,
+            Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
+            Kind::BuiltinFunc(_) => DumpType::Subr,
+            Kind::Lambda(_) => DumpType::Closure,
+            Kind::CharTable(_) => DumpType::CharTable,
+            Kind::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
+            Kind::Buffer(_) => DumpType::Buffer,
+            Kind::Marker(_) => DumpType::Marker,
+            Kind::Overlay(_) => DumpType::Overlay,
+            Kind::Finalizer(_) => DumpType::Finalizer,
+            Kind::Frame(_) => DumpType::Frame,
+            Kind::Terminal(_) => DumpType::Terminal,
             _ => panic!("no dump type recorded for {value:?}"),
         }
     }
@@ -996,7 +996,7 @@ impl DumpContext {
         }
         let state = self.recall_object(object);
 
-        let cold = matches!(object, Value::Float(_)) || is_bool_vector(interp, object);
+        let cold = matches!(object.kind(), Kind::Float(_)) || is_bool_vector(interp, object);
         if cold && self.flags.defer_cold_objects {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
@@ -1040,39 +1040,37 @@ impl DumpContext {
 
         // Object needs to be dumped.
         self.set_referrer(*object);
-        let (offset, kind) = match object {
-            Value::String(_) | Value::StringObject(_) => self.dump_string(interp, object)?,
-            Value::Vector(vector) => (self.dump_vector(vector)?, DumpType::Vector),
-            Value::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
-            Value::Cons(cell) => (self.dump_cons(cell)?, DumpType::Cons),
-            Value::Float(float) => (self.dump_float(**float)?, DumpType::Float),
-            Value::BigInteger(_) | Value::Integer(_) => {
-                (self.dump_bignum(object)?, DumpType::Bignum)
-            }
-            Value::BuiltinFunc(name) => (self.dump_subr(name)?, DumpType::Subr),
-            Value::Lambda(lambda) => (self.dump_closure(lambda)?, DumpType::Closure),
-            Value::CharTable(id) => (
-                self.dump_char_table(interp, *id, object)?,
+        let (offset, kind) = match object.kind() {
+            Kind::String(_) | Kind::StringObject(_) => self.dump_string(interp, object)?,
+            Kind::Vector(vector) => (self.dump_vector(&vector)?, DumpType::Vector),
+            Kind::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
+            Kind::Cons(cell) => (self.dump_cons(&cell)?, DumpType::Cons),
+            Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
+            Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
+            Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
+            Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
+            Kind::CharTable(id) => (
+                self.dump_char_table(interp, id, object)?,
                 DumpType::CharTable,
             ),
-            Value::Record(id) => self.dump_record(interp, id.id, object)?,
-            Value::Nil | Value::T | Value::Unbound => {
+            Kind::Record(id) => self.dump_record(interp, id.id, object)?,
+            Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
-            Value::Buffer(buffer) => (
+            Kind::Buffer(buffer) => (
                 self.dump_buffer(interp, buffer.id, object)?,
                 DumpType::Buffer,
             ),
-            Value::Marker(id) => (self.dump_marker(interp, *id, object)?, DumpType::Marker),
-            Value::Overlay(id) => (self.dump_overlay(interp, *id, object)?, DumpType::Overlay),
-            Value::Finalizer(id) => (
-                self.dump_finalizer(interp, *id, object)?,
+            Kind::Marker(id) => (self.dump_marker(interp, id, object)?, DumpType::Marker),
+            Kind::Overlay(id) => (self.dump_overlay(interp, id, object)?, DumpType::Overlay),
+            Kind::Finalizer(id) => (
+                self.dump_finalizer(interp, id, object)?,
                 DumpType::Finalizer,
             ),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
-            Value::Frame(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Frame),
-            Value::Terminal(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Terminal),
-            Value::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
+            Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
+            Kind::Terminal(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Terminal),
+            Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
 
@@ -1110,8 +1108,8 @@ impl DumpContext {
         object: &Value,
     ) -> Result<(u32, DumpType), DumpError> {
         let string = string_like(object).expect("a string");
-        let kind = match object {
-            Value::String(_) => DumpType::String,
+        let kind = match object.kind() {
+            Kind::String(_) => DumpType::String,
             _ => DumpType::StringObject,
         };
         let size = string.text.chars().count() as u64;
@@ -1175,10 +1173,10 @@ impl DumpContext {
     /// dump_symbol: the flags, name, value cell, function, plist and the
     /// watcher list.
     fn dump_symbol(&mut self, interp: &Interpreter, object: &Value) -> Result<u32, DumpError> {
-        let Value::Symbol(symbol) = object else {
+        let Kind::Symbol(symbol) = object.kind() else {
             unreachable!()
         };
-        let cell = interp.dump_symbol_cell(symbol);
+        let cell = interp.dump_symbol_cell(&symbol);
         let function = interp
             .raw_function_binding(symbol.as_str(), &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
@@ -1187,7 +1185,12 @@ impl DumpContext {
         let start = self.object_start()?;
         let uninterned_from_obarray = interp.standard_obarray_symbol_is_uninterned(symbol.as_str());
         let mut words = vec![
-            symbol_flags_word(symbol, &cell, !watchers.is_empty(), uninterned_from_obarray),
+            symbol_flags_word(
+                &symbol,
+                &cell,
+                !watchers.is_empty(),
+                uninterned_from_obarray,
+            ),
             0,
             0,
             0,
@@ -1350,7 +1353,7 @@ impl DumpContext {
         type_tag: &Value,
         slots: &[Value],
     ) -> Result<u32, DumpError> {
-        if !matches!(slots.first(), Some(Value::Cons(_))) {
+        if !matches!(slots.first().map(|v| v.kind()), Some(Kind::Cons(_))) {
             return Err(DumpError::Lisp(LispError::Signal(
                 "trying to dump non fixed-up eln file".into(),
             )));
@@ -2106,8 +2109,8 @@ impl DumpContext {
     /// by the built-in's name, the identity a subr has.
     pub(crate) fn sort_copied_objects(&mut self) {
         self.copied_queue.sort_by(|a, b| {
-            let name = |value: &Value| match value {
-                Value::BuiltinFunc(name) => name.as_str().to_owned(),
+            let name = |value: &Value| match value.kind() {
+                Kind::BuiltinFunc(name) => name.as_str().to_owned(),
                 _ => String::new(),
             };
             name(a).cmp(&name(b))
@@ -2159,7 +2162,7 @@ impl DumpContext {
         let Some(ObjectState::Dumped(buffer_offset)) = self.recall_object(object) else {
             panic!("cold buffer was dumped");
         };
-        let Value::Buffer(buffer) = object else {
+        let Kind::Buffer(buffer) = object.kind() else {
             unreachable!()
         };
         let Some(buffer) = interp.get_buffer_by_id(buffer.id) else {
@@ -2456,13 +2459,13 @@ pub(crate) const HASH_TEST_EQL: u64 = 1;
 pub(crate) const HASH_TEST_EQUAL: u64 = 2;
 
 fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value, Value::Record(id)
-        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::HashTable))
+    matches!(value.kind(), Kind::Record(id)
+        if interp.find_record(id).is_some_and(|record| record.kind == RecordKind::HashTable))
 }
 
 fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value, Value::Record(id)
-        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::BoolVector))
+    matches!(value.kind(), Kind::Record(id)
+        if interp.find_record(id).is_some_and(|record| record.kind == RecordKind::BoolVector))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2615,14 +2618,14 @@ pub(crate) const OVERLAY_REAR_ADVANCE: u64 = 2;
 
 /// mpz_export: sign and little-endian 64-bit limbs.
 pub(crate) fn bignum_limbs(object: &Value) -> (bool, Vec<u64>) {
-    match object {
-        Value::BigInteger(integer) => {
+    match object.kind() {
+        Kind::BigInteger(integer) => {
             let (sign, limbs) = integer.to_u64_digits();
             (sign == num_bigint::Sign::Minus, limbs)
         }
-        Value::Integer(integer) => {
+        Kind::Integer(integer) => {
             let magnitude = integer.unsigned_abs();
-            (*integer < 0, vec![magnitude])
+            (integer < 0, vec![magnitude])
         }
         _ => panic!("not a bignum"),
     }

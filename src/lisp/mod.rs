@@ -1086,12 +1086,12 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
 }
 
 fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispError> {
-    match value {
-        types::Value::String(text) => Ok(text.to_string()),
-        types::Value::StringObject(state) => Ok(state.borrow().text.clone()),
+    match value.kind() {
+        types::Kind::String(text) => Ok(text.to_string()),
+        types::Kind::StringObject(state) => Ok(state.borrow().text.clone()),
         other => Err(types::LispError::WrongTypeArgument(
             "stringp".into(),
-            *other,
+            other.value(),
         )),
     }
 }
@@ -1830,15 +1830,19 @@ mod tests {
             "GNU's Lisp macroexpander must receive the C-reader object, not a private placeholder"
         );
         assert!(matches!(
-            interp.lookup_var("loaded-source-table", &env),
-            Some(super::types::Value::CharTable(_))
+            interp
+                .lookup_var("loaded-source-table", &env)
+                .map(|v| v.kind()),
+            Some(super::types::Kind::CharTable(_))
         ));
 
         super::load_file_strict(&mut interp, &compiled_path)
             .expect("load compiled reader-object fixture");
         assert!(matches!(
-            interp.lookup_var("loaded-compiled-table", &env),
-            Some(super::types::Value::CharTable(_))
+            interp
+                .lookup_var("loaded-compiled-table", &env)
+                .map(|v| v.kind()),
+            Some(super::types::Kind::CharTable(_))
         ));
 
         std::fs::remove_dir_all(directory).expect("remove reader-boundary fixture directory");
@@ -1867,7 +1871,7 @@ mod tests {
         let materialized = interp
             .materialize_read_object_literals(literal, &mut env)
             .expect("reader construction must treat every closure slot as data");
-        let super::types::Value::Record(record_id) = materialized else {
+        let super::types::Kind::Record(record_id) = materialized.kind() else {
             panic!("byte-code reader form must become a closure pseudovector");
         };
         let record = interp

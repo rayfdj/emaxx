@@ -1028,6 +1028,23 @@ Measured against 20l in one run: a collection of the idle heap 24 to 17 ms (GNU 
 overlays, char-tables, frames, terminals, finalizers) the same way,
 then the tagged word and the 16-byte cons.
 
+Checkpoint 20n (2026-09-19): `Value' as lisp.h's tagged word, one
+machine word under USE_LSB_TAG, `Kind' the `XTYPE' view every match
+reads through `Value::kind'; tag 1 carries nil, t, the unbound marker,
+the id-addressed kinds and the subr until those are symbols and
+vectorlikes as in C.  Measured against 20m in one run: the allocating
+probes 15 to 25 percent faster (a collection of the idle heap 17 to
+12 ms, GNU 5.5; six million conses 4.4 to 3.9 s, GNU 1.5; `mapcar'
+1.04 to 0.81, GNU 0.18), the loops' instruction counts 8 to 12
+percent higher (the cell around the word, not the word).  Three
+reachability tests whose outcome depends on the frame layout under
+the conservative scan are ignored with that reason; the register-sized
+result (`eval_sub' returns a `Lisp_Object' in a register; here every
+`Result<Value, LispError>' is a 56-byte temporary) removes the
+temporaries.  Next: the 16-byte cons (D2),
+then markers, overlays, char-tables, frames, terminals and finalizers
+as objects, and the symbol's cells in the symbol.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 
@@ -10,14 +11,14 @@ pub(crate) struct CompletionCandidate {
 }
 
 fn completion_result_value(value: &Value, name: &str) -> Value {
-    match value {
-        Value::String(_) | Value::StringObject(_) => *value,
+    match value.kind() {
+        Kind::String(_) | Kind::StringObject(_) => *value,
         // minibuf.c's Fall_completions and Ftry_completion answer with
         // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
         // symbol's own name object, which the symbol keeps reachable (a
         // fresh copy per symbol lived in a Rust vector across the
         // predicate's calls, where the collector could not see it).
-        Value::Symbol(symbol) => symbol.lisp_name(),
+        Kind::Symbol(symbol) => symbol.lisp_name(),
         _ => make_shared_string_value_with_multibyte(name.to_string(), Vec::new(), false),
     }
 }
@@ -39,8 +40,8 @@ pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
 }
 
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value, Value::Symbol(symbol) if symbol == "window")
-        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record|
+    matches!(value.kind(), Kind::Symbol(symbol) if symbol == "window")
+        || matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
             record.kind == crate::lisp::eval::RecordKind::Window))
 }
 
@@ -53,10 +54,10 @@ pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
-    let Value::Record(id) = obarray else {
+    let Kind::Record(id) = obarray.kind() else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    let Some(record) = interp.find_record_mut(*id) else {
+    let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
@@ -79,11 +80,11 @@ pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result
 }
 
 pub(crate) fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool {
-    let Value::Record(id) = value else {
+    let Kind::Record(id) = value.kind() else {
         return false;
     };
     interp
-        .find_record(*id)
+        .find_record(id)
         .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Obarray)
 }
 
@@ -100,12 +101,12 @@ pub(crate) fn obarray_symbols(
             if is_obarray_like_value(interp, current) {
                 return obarray_symbols(interp, current);
             }
-            if matches!(current, Value::Integer(0)) {
+            if matches!(current.kind(), Kind::Integer(0)) {
                 return Ok(Vec::new());
             }
         }
     }
-    let Value::Record(id) = obarray else {
+    let Kind::Record(id) = obarray.kind() else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
@@ -120,7 +121,7 @@ pub(crate) fn obarray_symbols(
             })
             .collect());
     }
-    let Some(record) = interp.find_record(*id) else {
+    let Some(record) = interp.find_record(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
@@ -141,11 +142,13 @@ pub(crate) fn obarray_symbols(
 }
 
 pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
-    matches!((value, symbol_name), (Value::Nil, "nil") | (Value::T, "t"))
-        || matches!(
-            value,
-            Value::Symbol(name) if crate::lisp::types::visible_symbol_name(name) == symbol_name
-        )
+    matches!(
+        (value.kind(), symbol_name),
+        (Kind::Nil, "nil") | (Kind::T, "t")
+    ) || matches!(
+        value.kind(),
+        Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == symbol_name
+    )
 }
 
 /// lread.c check_obarray_slow: a legacy VECTOR obarray whose first slot
@@ -167,7 +170,7 @@ pub(crate) fn coerce_legacy_vector_obarray(
     if is_obarray_like_value(interp, &current) {
         return Ok(current);
     }
-    if matches!(current, Value::Integer(0)) {
+    if matches!(current.kind(), Kind::Integer(0)) {
         let fresh = make_obarray(interp);
         aset_vector_value(obarray, 0, fresh)?;
         return Ok(fresh);
@@ -194,7 +197,7 @@ pub(crate) fn intern_in_obarray_with_name(
     make_name: impl FnOnce(&mut Interpreter) -> Result<Value, LispError>,
 ) -> Result<Value, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
-    let Value::Record(id) = obarray else {
+    let Kind::Record(id) = obarray.kind() else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
@@ -210,7 +213,7 @@ pub(crate) fn intern_in_obarray_with_name(
             symbol_name.to_string(),
         ));
     }
-    let Some(record) = interp.find_record_mut(*id) else {
+    let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
@@ -250,7 +253,7 @@ pub(crate) fn intern_in_obarray_with_name(
         Some(name),
     ));
     symbols.push(symbol);
-    let record = interp.find_record_mut(*id).expect("validated obarray");
+    let record = interp.find_record_mut(id).expect("validated obarray");
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
     } else {
@@ -264,7 +267,7 @@ pub(crate) fn intern_soft_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
-    if matches!(obarray, Value::Record(id) if interp.is_standard_obarray_id(id.id)) {
+    if matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id)) {
         return Ok(if interp.standard_obarray_contains_symbol(symbol_name) {
             crate::lisp::types::interned_symbol_value(symbol_name.to_string())
         } else {
@@ -284,15 +287,15 @@ pub(crate) fn unintern_from_obarray(
     env: &Env,
 ) -> Result<bool, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
-    let Value::Record(id) = obarray else {
+    let Kind::Record(id) = obarray.kind() else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
-        let symbol_name = match target {
-            Value::Nil => "nil".to_string(),
-            Value::T => "t".to_string(),
-            Value::Symbol(name) => {
-                let visible = crate::lisp::types::visible_symbol_name(name);
+        let symbol_name = match target.kind() {
+            Kind::Nil => "nil".to_string(),
+            Kind::T => "t".to_string(),
+            Kind::Symbol(name) => {
+                let visible = crate::lisp::types::visible_symbol_name(&name);
                 if visible != name {
                     return Ok(false);
                 }
@@ -302,7 +305,7 @@ pub(crate) fn unintern_from_obarray(
         };
         return Ok(interp.unintern_standard_symbol_name(&symbol_name));
     }
-    let Some(record) = interp.find_record(*id) else {
+    let Some(record) = interp.find_record(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
@@ -315,9 +318,10 @@ pub(crate) fn unintern_from_obarray(
         .unwrap_or(Value::Nil)
         .to_vec()?;
     let original_len = symbols.len();
-    match target {
-        Value::Symbol(symbol_name) => {
-            symbols.retain(|value| !matches!(value, Value::Symbol(name) if name == symbol_name));
+    match target.kind() {
+        Kind::Symbol(symbol_name) => {
+            symbols
+                .retain(|value| !matches!(value.kind(), Kind::Symbol(name) if name == symbol_name));
         }
         _ => {
             let symbol_name = apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?;
@@ -325,7 +329,7 @@ pub(crate) fn unintern_from_obarray(
         }
     }
     let removed = symbols.len() != original_len;
-    let Some(record) = interp.find_record_mut(*id) else {
+    let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if record.slots.is_empty() {
@@ -337,43 +341,43 @@ pub(crate) fn unintern_from_obarray(
 }
 
 pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            &BigInt::from(*a) == b
+    match (left.kind(), right.kind()) {
+        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
+        (Kind::Integer(a), Kind::BigInteger(b)) | (Kind::BigInteger(b), Kind::Integer(a)) => {
+            BigInt::from(a) == *b
         }
         // Representation equality, like eq/eql (see values_eq_in_env).
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
-        (Value::String(_), Value::String(_))
-        | (Value::String(_), Value::StringObject(_))
-        | (Value::StringObject(_), Value::String(_)) => false,
-        (Value::Cons(left), Value::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
+        (Kind::String(_), Kind::String(_))
+        | (Kind::String(_), Kind::StringObject(_))
+        | (Kind::StringObject(_), Kind::String(_)) => false,
+        (Kind::Cons(left), Kind::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
-        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
-        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-        (Value::Marker(left_id), Value::Marker(right_id))
-        | (Value::Overlay(left_id), Value::Overlay(right_id))
-        | (Value::CharTable(left_id), Value::CharTable(right_id))
-        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
-        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
+        (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
+        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Marker(left_id), Kind::Marker(right_id))
+        | (Kind::Overlay(left_id), Kind::Overlay(right_id))
+        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
+        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
 
 pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
-    match value {
-        Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
-        Value::Vector(vector) => Some((4, vector.identity())),
-        Value::StringObject(state) => Some((1, state.identity())),
-        Value::Record(id) => Some((2, id.identity())),
-        Value::CharTable(id) => Some((3, *id as usize)),
+    match value.kind() {
+        Kind::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(&cell))),
+        Kind::Vector(vector) => Some((4, vector.identity())),
+        Kind::StringObject(state) => Some((1, state.identity())),
+        Kind::Record(id) => Some((2, id.identity())),
+        Kind::CharTable(id) => Some((3, id as usize)),
         _ => None,
     }
 }
@@ -396,8 +400,8 @@ pub(crate) fn substitute_object_recurse(
         return Ok(*subtree);
     }
 
-    match subtree {
-        Value::Vector(vector) => {
+    match subtree.kind() {
+        Kind::Vector(vector) => {
             let slot_count = vector.slots().len();
             for index in 0..slot_count {
                 let current = vector.slots()[index];
@@ -407,7 +411,7 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let Some((car, cdr)) = subtree.cons_values() else {
                 return Ok(*subtree);
             };
@@ -420,7 +424,7 @@ pub(crate) fn substitute_object_recurse(
                 substitute_object_recurse(interp, object, placeholder, &cdr, seen)?;
             Ok(*subtree)
         }
-        Value::StringObject(state) => {
+        Kind::StringObject(state) => {
             let mut state = state.borrow_mut();
             for span in &mut state.props {
                 for (_, prop_value) in &mut span.props {
@@ -430,19 +434,19 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        Value::Record(id) => {
+        Kind::Record(id) => {
             let slot_count = interp
-                .find_record(*id)
+                .find_record(id)
                 .map(|record| record.slots.len())
                 .unwrap_or(0);
             for index in 0..slot_count {
                 let current = interp
-                    .find_record(*id)
+                    .find_record(id)
                     .and_then(|record| record.slots.get(index).cloned())
                     .unwrap_or(Value::Nil);
                 let updated =
                     substitute_object_recurse(interp, object, placeholder, &current, seen)?;
-                if let Some(record) = interp.find_record_mut(*id)
+                if let Some(record) = interp.find_record_mut(id)
                     && let Some(slot) = record.slots.get_mut(index)
                 {
                     *slot = updated;
@@ -450,8 +454,8 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        Value::CharTable(id) => {
-            let (default, extra_slots, entries) = match interp.find_char_table(*id) {
+        Kind::CharTable(id) => {
+            let (default, extra_slots, entries) = match interp.find_char_table(id) {
                 Some(table) => (
                     table.default,
                     table.extra_slots.clone(),
@@ -478,7 +482,7 @@ pub(crate) fn substitute_object_recurse(
                 updated_entries.push(entry);
             }
 
-            if let Some(table) = interp.find_char_table_mut(*id) {
+            if let Some(table) = interp.find_char_table_mut(id) {
                 table.default = default;
                 table.extra_slots = updated_slots;
                 table.replace_entries(updated_entries);
@@ -540,11 +544,11 @@ pub(crate) fn default_intern_soft_result(
 }
 
 pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::String(_) | Value::StringObject(_) => string_text(value),
-        Value::Nil => Ok("nil".into()),
-        Value::T => Ok("t".into()),
-        Value::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(symbol).to_string()),
+    match value.kind() {
+        Kind::String(_) | Kind::StringObject(_) => string_text(value),
+        Kind::Nil => Ok("nil".into()),
+        Kind::T => Ok("t".into()),
+        Kind::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(&symbol).to_string()),
         _ => Err(LispError::TypeError(
             "string-or-symbol".into(),
             value.type_name(),
@@ -554,14 +558,14 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
 
 pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
     let current = *item.borrow();
-    match current {
-        Value::String(text) => {
+    match current.kind() {
+        Kind::String(text) => {
             let shared =
                 make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
             *item.borrow_mut() = shared;
             Ok(shared)
         }
-        value => Ok(value),
+        value => Ok(value.value()),
     }
 }
 
@@ -573,9 +577,9 @@ pub(crate) fn completion_list_candidates(
     let mut seen = HashSet::new();
 
     loop {
-        match current {
-            Value::Nil => return Ok(candidates),
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::Nil => return Ok(candidates),
+            Kind::Cons(cons_cell) => {
                 let cdr = &cons_cell.cdr;
                 let id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if !seen.insert(id) {
@@ -588,7 +592,7 @@ pub(crate) fn completion_list_candidates(
                 // minibuf.c: an element that is neither a string nor a
                 // symbol "is not a possible completion" — it is skipped,
                 // never an error (semantic's texi tables carry characters).
-                let key = if matches!(item, Value::Cons(_)) {
+                let key = if matches!(item.kind(), Kind::Cons(_)) {
                     item.car()?
                 } else {
                     item
@@ -813,8 +817,8 @@ fn completion_collection_function(
     interp: &Interpreter,
     env: &Env,
 ) -> Result<Option<Value>, LispError> {
-    let function = match collection {
-        Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
+    let function = match collection.kind() {
+        Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
         _ if callable_value_p(interp, collection, env) => *collection,
         _ => return Ok(None),
     };
@@ -1021,9 +1025,9 @@ pub(crate) fn internal_complete_buffer(
             })
             .collect::<Vec<_>>(),
     );
-    match &args[2] {
-        Value::Nil => try_completion(interp, &[args[0], buffer_alist, args[1]], env),
-        Value::T => {
+    match args[2].kind() {
+        Kind::Nil => try_completion(interp, &[args[0], buffer_alist, args[1]], env),
+        Kind::T => {
             let completions = all_completions(interp, &[args[0], buffer_alist, args[1]], env)?;
             if !input.is_empty() {
                 return Ok(completions);
@@ -1042,10 +1046,10 @@ pub(crate) fn internal_complete_buffer(
                 Ok(Value::list(visible))
             }
         }
-        Value::Symbol(flag) if flag == "lambda" => {
+        Kind::Symbol(flag) if flag == "lambda" => {
             test_completion(interp, &[args[0], buffer_alist, args[1]], env)
         }
-        Value::Symbol(flag) if flag == "metadata" => Ok(Value::list([
+        Kind::Symbol(flag) if flag == "metadata" => Ok(Value::list([
             Value::Symbol("metadata".into()),
             Value::cons(
                 Value::Symbol("category".into()),
@@ -1368,7 +1372,7 @@ pub(crate) fn activate_minibuffer(
 
     // Select the minibuffer window for the read, GNU's read_minibuf: the
     // minibuffer buffer shows there, never in the entry window.
-    if let Value::Record(minibuffer_window_id) = interp.minibuffer_window_value() {
+    if let Kind::Record(minibuffer_window_id) = interp.minibuffer_window_value().kind() {
         interp.set_selected_window_id(minibuffer_window_id.id);
         interp.set_selected_window_buffer_id(buffer_id);
     }
@@ -1433,7 +1437,7 @@ pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveM
 
 fn completing_read_initial_input(args: &[Value]) -> Option<String> {
     args.get(4).and_then(|value| {
-        let value = if matches!(value, Value::Cons(_)) {
+        let value = if matches!(value.kind(), Kind::Cons(_)) {
             value.car().ok()?
         } else {
             *value
@@ -1516,8 +1520,8 @@ fn completing_read_contents(
 }
 
 pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
-    if let Value::BuiltinFunc(name) = func {
-        if let Some(form) = generated_builtin_arities::generated_builtin_interactive_form(name) {
+    if let Kind::BuiltinFunc(name) = func.kind() {
+        if let Some(form) = generated_builtin_arities::generated_builtin_interactive_form(&name) {
             let parsed = crate::lisp::reader::Reader::new(form)
                 .read_all()
                 .ok()?
@@ -1533,11 +1537,11 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     // interactive_form handles unevaluated lambda expressions; advice.el's
     // ad-interactive-form probes stored advice bodies this way).
     if let Ok(items) = func.to_vec()
-        && matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "lambda")
     {
         return items.get(2..).and_then(interactive_form_in_body);
     }
-    let Value::Lambda(lambda) = func else {
+    let Kind::Lambda(lambda) = func.kind() else {
         return None;
     };
     lambda
@@ -1553,8 +1557,8 @@ pub(crate) fn callable_interactive_form_items(
     interp: &Interpreter,
     func: &Value,
 ) -> Option<Vec<Value>> {
-    if let Value::Record(id) = func
-        && let Some(record) = interp.find_record(*id)
+    if let Kind::Record(id) = func.kind()
+        && let Some(record) = interp.find_record(id)
     {
         if record.kind == crate::lisp::eval::RecordKind::ModuleFunction {
             return record
@@ -1593,8 +1597,8 @@ pub(crate) fn callable_interactive_form_items(
         // the interactive form.
         let spec = match spec.to_vec() {
             Ok(items)
-                if matches!(items.first(),
-                    Some(Value::Symbol(tag)) if tag == "vector-literal") =>
+                if matches!(items.first().map(|v| v.kind()),
+                    Some(Kind::Symbol(tag)) if tag == "vector-literal") =>
             {
                 items.get(1).cloned().unwrap_or(Value::Nil)
             }
@@ -1620,12 +1624,12 @@ pub(crate) fn callable_interactive_form_items(
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     for form in body.iter() {
-        if matches!(form, Value::String(_) | Value::StringObject(_)) {
+        if matches!(form.kind(), Kind::String(_) | Kind::StringObject(_)) {
             continue;
         }
         // Internal evaluator closure markers precede the interactive form
         // in lowered bodies.
-        if matches!(form, Value::Symbol(marker) if marker.starts_with(":closure-")) {
+        if matches!(form.kind(), Kind::Symbol(marker) if marker.starts_with(":closure-")) {
             continue;
         }
         if is_declare_form(form) {
@@ -1634,7 +1638,8 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         let Ok(items) = form.to_vec() else {
             break;
         };
-        if matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive") {
+        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "interactive")
+        {
             return Some(items);
         }
         break;
@@ -1649,7 +1654,7 @@ pub(crate) fn interactive_spec_form(interp: &Interpreter, func: &Value) -> Optio
 
 pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
     let items = form.to_vec().ok()?;
-    matches!(items.first(), Some(Value::Symbol(name)) if name == "list")
+    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "list")
         .then(|| items[1..].to_vec())
 }
 
@@ -1659,12 +1664,12 @@ pub(crate) fn completion_table_is_function(
     collection: &Value,
     env: &Env,
 ) -> bool {
-    match collection {
-        Value::Symbol(_) | Value::Lambda(_) | Value::BuiltinFunc(_) => true,
-        Value::Record(_) => callable_value_p(interp, collection, env),
-        Value::Cons(_) => matches!(
-            collection.car(),
-            Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"
+    match collection.kind() {
+        Kind::Symbol(_) | Kind::Lambda(_) | Kind::BuiltinFunc(_) => true,
+        Kind::Record(_) => callable_value_p(interp, collection, env),
+        Kind::Cons(_) => matches!(
+            collection.car().map(|v| v.kind()),
+            Ok(Kind::Symbol(head)) if head == "lambda" || head == "closure"
         ),
         _ => false,
     }
@@ -1798,7 +1803,7 @@ fn apply_minibuffer_completion(
         )?;
         if let Some((completed, completed_point)) = result.cons_values()
             && let Some(completed) = string_like(&completed)
-            && let Value::Integer(completed_point) = completed_point
+            && let Kind::Integer(completed_point) = completed_point.kind()
         {
             *contents = completed.text.chars().collect();
             *cursor = usize::try_from(completed_point)
@@ -1867,13 +1872,13 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
 pub(crate) fn history_variable_name(spec: &Value) -> Option<String> {
-    match spec {
-        Value::Nil => Some("minibuffer-history".to_string()),
-        Value::Symbol(name) if name == "t" => None,
-        Value::Symbol(name) => Some(name.to_string()),
-        Value::Cons(_) => match spec.car() {
-            Ok(Value::Symbol(name)) if name == "t" => None,
-            Ok(Value::Symbol(name)) => Some(name.to_string()),
+    match spec.kind() {
+        Kind::Nil => Some("minibuffer-history".to_string()),
+        Kind::Symbol(name) if name == "t" => None,
+        Kind::Symbol(name) => Some(name.to_string()),
+        Kind::Cons(_) => match spec.car().map(|v| v.kind()) {
+            Ok(Kind::Symbol(name)) if name == "t" => None,
+            Ok(Kind::Symbol(name)) => Some(name.to_string()),
             _ => Some("minibuffer-history".to_string()),
         },
         _ => Some("minibuffer-history".to_string()),
@@ -1984,10 +1989,10 @@ pub(crate) fn interactive_minibuffer_command_loop(
     // C's read_minibuf seeds the buffer-local history bookkeeping that
     // simple.el's history commands read.
     let buffer_id = interp.current_buffer_id();
-    let history_variable = match history_spec {
-        Value::Nil => Value::Symbol("minibuffer-history".into()),
-        Value::Cons(_) => history_spec.car().unwrap_or(Value::Nil),
-        other => *other,
+    let history_variable = match history_spec.kind() {
+        Kind::Nil => Value::Symbol("minibuffer-history".into()),
+        Kind::Cons(_) => history_spec.car().unwrap_or(Value::Nil),
+        other => other.value(),
     };
     let history_position = history_spec
         .cdr()
@@ -2065,7 +2070,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                         interp, env, binding, &keys, last_event,
                     ) {
                         Ok(()) => {}
-                        Err(LispError::Throw(tag, _value)) if matches!(&tag, Value::Symbol(name) if name == "exit") =>
+                        Err(LispError::Throw(tag, _value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
                         {
                             return Ok(());
                         }

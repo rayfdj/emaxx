@@ -14,6 +14,7 @@
 
 use super::*;
 use crate::lisp::primitives::pdumper::image::RootSlot;
+use crate::lisp::types::Kind;
 
 /// The root groups the mark phase visits that the image does not carry,
 /// each with the GNU reason: the state is re-created after a load, or is
@@ -915,8 +916,8 @@ mod install {
     }
 
     fn expect_vector(value: &Value, what: &str) -> Result<Vec<Value>, String> {
-        match value {
-            Value::Vector(vector) => Ok(vector.slots().to_vec()),
+        match value.kind() {
+            Kind::Vector(vector) => Ok(vector.slots().to_vec()),
             other => Err(format!("{what}: not a vector: {other:?}")),
         }
     }
@@ -956,22 +957,22 @@ mod install {
     }
 
     fn expect_char_table(value: &Value, what: &str) -> Result<u64, String> {
-        match value {
-            Value::CharTable(id) => Ok(*id),
+        match value.kind() {
+            Kind::CharTable(id) => Ok(id),
             other => Err(format!("{what}: not a char-table: {other:?}")),
         }
     }
 
     fn expect_marker(value: &Value, what: &str) -> Result<u64, String> {
-        match value {
-            Value::Marker(id) => Ok(*id),
+        match value.kind() {
+            Kind::Marker(id) => Ok(id),
             other => Err(format!("{what}: not a marker: {other:?}")),
         }
     }
 
     fn expect_buffer(value: &Value, what: &str) -> Result<u64, String> {
-        match value {
-            Value::Buffer(buffer) => Ok(buffer.id),
+        match value.kind() {
+            Kind::Buffer(buffer) => Ok(buffer.id),
             other => Err(format!("{what}: not a buffer: {other:?}")),
         }
     }

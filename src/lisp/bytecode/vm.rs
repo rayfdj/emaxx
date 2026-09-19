@@ -12,6 +12,7 @@ use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, Value, VectorRef};
 use super::{ArgSpec, ByteCodeObject, Op};
+use crate::lisp::types::Kind;
 use std::rc::Rc;
 
 /// bytecode.c's per-thread bytecode stack (`bc_thread_state'): one
@@ -153,8 +154,8 @@ fn packed_arity_error(mandatory: usize, nonrest: usize, nargs: usize) -> LispErr
 /// funcall_lambda's arity signal for a dynamic arglist: the closure
 /// itself and NARGS (the old spelling when the object is not a record).
 fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
-    match function {
-        Value::Record(_) => LispError::SignalValue(Value::list([
+    match function.kind() {
+        Kind::Record(_) => LispError::SignalValue(Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             *function,
             Value::Integer(nargs as i64),
@@ -556,8 +557,8 @@ fn run_fast(
             }
             Op::Eq => {
                 let len = ops.len();
-                if matches!(ops[len - 1], Value::Record(_))
-                    || matches!(ops[len - 2], Value::Record(_))
+                if matches!(ops[len - 1].kind(), Kind::Record(_))
+                    || matches!(ops[len - 2].kind(), Kind::Record(_))
                 {
                     slow!();
                 }
@@ -567,10 +568,10 @@ fn run_fast(
                 ops.push_within_frame(if equal { Value::T } else { Value::Nil });
             }
             Op::Consp => {
-                let is_cons = match ops.last().expect("validated bytecode") {
-                    Value::Cons(_) => true,
+                let is_cons = match ops.last().expect("validated bytecode").kind() {
+                    Kind::Cons(_) => true,
                     // A keymap record reads as a cons; the full arm asks.
-                    Value::Record(_) => slow!(),
+                    Kind::Record(_) => slow!(),
                     _ => false,
                 };
                 pop!().discard();
@@ -578,18 +579,20 @@ fn run_fast(
             }
             Op::Plus | Op::Diff | Op::Mult | Op::Quo | Op::Rem => {
                 let len = ops.len();
-                let (Value::Integer(x), Value::Integer(y)) = (&ops[len - 2], &ops[len - 1]) else {
+                let (Kind::Integer(x), Kind::Integer(y)) =
+                    (ops[len - 2].kind(), ops[len - 1].kind())
+                else {
                     slow!();
                 };
                 // checked_div/checked_rem refuse y == 0 and the MIN/-1
                 // overflow, which fall through to the full arithmetic
                 // (and its arith-error); overflow falls through to bignums.
                 let fast = match op {
-                    Op::Plus => x.checked_add(*y),
-                    Op::Diff => x.checked_sub(*y),
-                    Op::Mult => x.checked_mul(*y),
-                    Op::Quo => x.checked_div(*y),
-                    _ => x.checked_rem(*y),
+                    Op::Plus => x.checked_add(y),
+                    Op::Diff => x.checked_sub(y),
+                    Op::Mult => x.checked_mul(y),
+                    Op::Quo => x.checked_div(y),
+                    _ => x.checked_rem(y),
                 };
                 let Some(n) = fast else { slow!() };
                 ops.truncate(len - 2);
@@ -597,7 +600,9 @@ fn run_fast(
             }
             Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
                 let len = ops.len();
-                let (Value::Integer(x), Value::Integer(y)) = (&ops[len - 2], &ops[len - 1]) else {
+                let (Kind::Integer(x), Kind::Integer(y)) =
+                    (ops[len - 2].kind(), ops[len - 1].kind())
+                else {
                     slow!();
                 };
                 let holds = match op {
@@ -611,7 +616,7 @@ fn run_fast(
                 ops.push_within_frame(if holds { Value::T } else { Value::Nil });
             }
             Op::Add1 | Op::Sub1 | Op::Negate => {
-                let Value::Integer(x) = ops.last().expect("validated bytecode") else {
+                let Kind::Integer(x) = ops.last().expect("validated bytecode").kind() else {
                     slow!();
                 };
                 let fast = match op {
@@ -624,7 +629,7 @@ fn run_fast(
             }
             Op::Aref => {
                 let len = ops.len();
-                let Value::Integer(index) = ops[len - 1] else {
+                let Kind::Integer(index) = ops[len - 1].kind() else {
                     slow!()
                 };
                 if index < 0 {
@@ -642,7 +647,7 @@ fn run_fast(
             Op::Aset => {
                 // Stack: [.. vector index value]; aset returns the value.
                 let len = ops.len();
-                let Value::Integer(index) = ops[len - 2] else {
+                let Kind::Integer(index) = ops[len - 2].kind() else {
                     slow!()
                 };
                 if index < 0
@@ -664,15 +669,15 @@ fn run_fast(
                 // bytecode.c reads the car or cdr of the object on the stack
                 // top and stores it there: the operand is read in place,
                 // never copied first.
-                let replacement = match ops.last().expect("validated bytecode") {
-                    Value::Cons(cell) => {
+                let replacement = match ops.last().expect("validated bytecode").kind() {
+                    Kind::Cons(cell) => {
                         if matches!(op, Op::Car | Op::CarSafe) {
                             *cell.car.borrow()
                         } else {
                             *cell.cdr.borrow()
                         }
                     }
-                    Value::Nil => continue,
+                    Kind::Nil => continue,
                     _ if matches!(op, Op::CarSafe | Op::CdrSafe) => Value::Nil,
                     // The full arm signals wrong-type-argument.
                     _ => slow!(),
@@ -893,12 +898,12 @@ fn run_frames(
             let mut optional = false;
             let mut rest = false;
             for formal in &formals {
-                let name = match formal {
-                    Value::Symbol(name) => *name,
+                let name = match formal.kind() {
+                    Kind::Symbol(name) => name,
                     other => {
                         let error = LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
-                            *other,
+                            other.value(),
                         ]));
                         return Err(error);
                     }
@@ -1130,9 +1135,9 @@ fn run_frames(
                 }
                 Op::Plus | Op::Diff | Op::Mult => {
                     let len = interp.bc_stack.len();
-                    if let (Value::Integer(x), Value::Integer(y)) = {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2], operands[len - 1])
+                        (operands[len - 2].kind(), operands[len - 1].kind())
                     } {
                         let fast = match op {
                             Op::Plus => x.checked_add(y),
@@ -1148,9 +1153,9 @@ fn run_frames(
                 }
                 Op::Quo | Op::Rem => {
                     let len = interp.bc_stack.len();
-                    if let (Value::Integer(x), Value::Integer(y)) = {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2], operands[len - 1])
+                        (operands[len - 2].kind(), operands[len - 1].kind())
                     } {
                         // checked_div/checked_rem refuse y == 0 and the MIN/-1
                         // overflow, which fall through to the full arithmetic
@@ -1168,9 +1173,9 @@ fn run_frames(
                 }
                 Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
                     let len = interp.bc_stack.len();
-                    if let (Value::Integer(x), Value::Integer(y)) = {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = {
                         let operands = &interp.bc_stack;
-                        (operands[len - 2], operands[len - 1])
+                        (operands[len - 2].kind(), operands[len - 1].kind())
                     } {
                         let holds = match op {
                             Op::Eqlsign => x == y,
@@ -1185,7 +1190,9 @@ fn run_frames(
                     }
                 }
                 Op::Add1 | Op::Sub1 | Op::Negate => {
-                    if let Some(Value::Integer(x)) = { interp.bc_stack.last().cloned() } {
+                    if let Some(Kind::Integer(x)) =
+                        ({ interp.bc_stack.last().cloned() }).map(|v| v.kind())
+                    {
                         let fast = match op {
                             Op::Add1 => x.checked_add(1),
                             Op::Sub1 => x.checked_sub(1),
@@ -1200,7 +1207,7 @@ fn run_frames(
                 }
                 Op::Aref => {
                     let len = interp.bc_stack.len();
-                    if let Value::Integer(index) = { interp.bc_stack[len - 1] }
+                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 1] }).kind()
                         && index >= 0
                         && let Some(value) = {
                             let operands = &interp.bc_stack;
@@ -1218,7 +1225,7 @@ fn run_frames(
                 Op::Aset => {
                     // Stack: [.. vector index value]; aset returns the value.
                     let len = interp.bc_stack.len();
-                    if let Value::Integer(index) = { interp.bc_stack[len - 2] }
+                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 2] }).kind()
                         && index >= 0
                         && {
                             let operands = &interp.bc_stack;
@@ -1248,15 +1255,15 @@ fn run_frames(
                     }
                     let step = {
                         let operands = &interp.bc_stack;
-                        match operands.last().expect("validated bytecode") {
-                            Value::Cons(cell) => {
+                        match operands.last().expect("validated bytecode").kind() {
+                            Kind::Cons(cell) => {
                                 Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
                                     *cell.car.borrow()
                                 } else {
                                     *cell.cdr.borrow()
                                 })
                             }
-                            Value::Nil => Step::Keep,
+                            Kind::Nil => Step::Keep,
                             _ if matches!(op, Op::CarSafe | Op::CdrSafe) => {
                                 Step::Replace(Value::Nil)
                             }
@@ -1323,8 +1330,8 @@ fn run_frames(
                     // symbol reaches the cell directly, anything else takes
                     // Fsymbol_value's CHECK_SYMBOL path.
                     let name = program.constant(index);
-                    let value = match &name {
-                        Value::Symbol(symbol) => match interp.symbol_value_cell_symbol(symbol) {
+                    let value = match name.kind() {
+                        Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
                             Ok(value) => value,
                             Err(LispError::Void(_)) => {
                                 return Err(LispError::SignalValue(Value::list([
@@ -1342,10 +1349,10 @@ fn run_frames(
                     // bytecode.c:Bvarset is set_internal on the constant.
                     let name = program.constant(index);
                     let value = pop!();
-                    match &name {
-                        Value::Symbol(symbol) => {
+                    match name.kind() {
+                        Kind::Symbol(symbol) => {
                             crate::lisp::primitives::set_internal_symbol(
-                                interp, symbol, value, env,
+                                interp, &symbol, value, env,
                             )?;
                         }
                         _ => {
@@ -1376,7 +1383,7 @@ fn run_frames(
                 Op::SaveExcursion => {
                     let buffer_id = interp.current_buffer_id();
                     let saved_pt = interp.buffer.point();
-                    let Value::Marker(marker_id) = interp.make_marker() else {
+                    let Kind::Marker(marker_id) = interp.make_marker().kind() else {
                         unreachable!("make_marker returns a marker")
                     };
                     interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
@@ -1405,10 +1412,10 @@ fn run_frames(
                             .bc_unwinds
                             .push(UnwindEntry::RestrictionWide { buffer_id, labeled });
                     } else {
-                        let Value::Marker(beg_id) = interp.make_marker() else {
+                        let Kind::Marker(beg_id) = interp.make_marker().kind() else {
                             unreachable!("make_marker returns a marker")
                         };
-                        let Value::Marker(end_id) = interp.make_marker() else {
+                        let Kind::Marker(end_id) = interp.make_marker().kind() else {
                             unreachable!("make_marker returns a marker")
                         };
                         let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
@@ -1654,15 +1661,15 @@ fn run_frames(
                         // frame returns or unwinds.
                         let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
                         interp.push_backtrace_frame_borrowed(
-                            match &func {
-                                Value::Symbol(_) => func,
+                            match func.kind() {
+                                Kind::Symbol(_) => func,
                                 _ => interp.record_value(callee_id),
                             },
                             call_args,
                         );
                         interp.capture_current_backtrace_context(
-                            match &func {
-                                Value::Symbol(name) => Some(name.as_str()),
+                            match func.kind() {
+                                Kind::Symbol(name) => Some(name.as_str()),
                                 _ => None,
                             },
                             env,
@@ -1823,7 +1830,7 @@ fn run_frames(
                     let table = pop!();
                     let value = pop!();
                     let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
-                    if let Value::Integer(dest) = dest {
+                    if let Kind::Integer(dest) = dest.kind() {
                         pc = program.instr_at(dest as usize);
                     }
                 }
@@ -1868,7 +1875,7 @@ fn run_frames(
                 Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
                     let b = pop!();
                     let a = pop!();
-                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
                         let holds = match op {
                             Op::Eqlsign => x == y,
                             Op::Gtr => x > y,
@@ -1892,11 +1899,11 @@ fn run_frames(
                 Op::Plus | Op::Diff | Op::Mult => {
                     let b = pop!();
                     let a = pop!();
-                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
                         let fast = match op {
-                            Op::Plus => x.checked_add(*y),
-                            Op::Diff => x.checked_sub(*y),
-                            _ => x.checked_mul(*y),
+                            Op::Plus => x.checked_add(y),
+                            Op::Diff => x.checked_sub(y),
+                            _ => x.checked_mul(y),
                         };
                         if let Some(n) = fast {
                             push!(Value::Integer(n));
@@ -1914,11 +1921,11 @@ fn run_frames(
                 Op::Max | Op::Min => {
                     let b = pop!();
                     let a = pop!();
-                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
                         let n = if matches!(op, Op::Max) {
-                            (*x).max(*y)
+                            (x).max(y)
                         } else {
-                            (*x).min(*y)
+                            (x).min(y)
                         };
                         push!(Value::Integer(n));
                         continue;
@@ -1997,16 +2004,16 @@ fn run_frames(
                 // One-argument ops with inline fast paths.
                 Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
                     let a = pop!();
-                    match (&a, op) {
-                        (Value::Cons(cell), Op::Car | Op::CarSafe) => {
+                    match (a.kind(), op) {
+                        (Kind::Cons(cell), Op::Car | Op::CarSafe) => {
                             let value = *cell.car.borrow();
                             push!(value);
                         }
-                        (Value::Cons(cell), _) => {
+                        (Kind::Cons(cell), _) => {
                             let value = *cell.cdr.borrow();
                             push!(value);
                         }
-                        (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
+                        (Kind::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
                             push!(Value::Nil)
                         }
                         _ => {
@@ -2038,7 +2045,7 @@ fn run_frames(
                 }
                 Op::Add1 | Op::Sub1 | Op::Negate => {
                     let a = pop!();
-                    if let Value::Integer(x) = &a {
+                    if let Kind::Integer(x) = a.kind() {
                         let fast = match op {
                             Op::Add1 => x.checked_add(1),
                             Op::Sub1 => x.checked_sub(1),
@@ -2354,8 +2361,10 @@ mod tests {
             .expect("materialize outer byte-code closure");
 
         assert!(matches!(
-            interp.call_function_value(closure, None, &[], &mut env),
-            Ok(Value::Record(_))
+            interp
+                .call_function_value(closure, None, &[], &mut env)
+                .map(|v| v.kind()),
+            Ok(Kind::Record(_))
         ));
     }
 
@@ -2373,7 +2382,10 @@ mod tests {
             .expect("materialize nested byte-code function");
         let items = materialized.to_vec().expect("proper list constant");
 
-        assert!(matches!(items.get(1), Some(Value::Record(_))));
+        assert!(matches!(
+            items.get(1).map(|v| v.kind()),
+            Some(Kind::Record(_))
+        ));
     }
 
     #[test]
@@ -2715,7 +2727,7 @@ mod native_surface_tests {
             .expect("valid bytecode")
             .expect("bytecode slots");
         let program = build_cached(&object).expect("decoded program");
-        let Value::Vector(vector) = &constants else {
+        let Kind::Vector(vector) = constants.kind() else {
             panic!("constants vector")
         };
         assert!(vector.ptr_eq(&object.constants));

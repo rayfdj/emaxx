@@ -1,12 +1,13 @@
 use super::core::{list_car, list_cdr, list_cons_count, list_forms, list_next, list_nth};
 use super::*;
+use crate::lisp::types::Kind;
 
 impl Interpreter {
     pub(crate) fn save_excursion_state(&mut self) -> SavedExcursion {
         let buffer_id = self.current_buffer_id();
         let point = self.buffer.point();
-        let marker_id = match self.make_marker() {
-            Value::Marker(id) => id,
+        let marker_id = match self.make_marker().kind() {
+            Kind::Marker(id) => id,
             _ => unreachable!("make_marker returns a marker"),
         };
         self.set_marker(marker_id, Some(point), Some(buffer_id))
@@ -38,12 +39,12 @@ impl Interpreter {
         let bounds = if beginning == 1 && end == self.buffer.size_total() + 1 {
             SavedRestrictionBounds::Wide
         } else {
-            let beginning_marker_id = match self.make_marker() {
-                Value::Marker(id) => id,
+            let beginning_marker_id = match self.make_marker().kind() {
+                Kind::Marker(id) => id,
                 _ => unreachable!("make_marker returns a marker"),
             };
-            let end_marker_id = match self.make_marker() {
-                Value::Marker(id) => id,
+            let end_marker_id = match self.make_marker().kind() {
+                Kind::Marker(id) => id,
                 _ => unreachable!("make_marker returns a marker"),
             };
             self.set_marker(beginning_marker_id, Some(beginning), Some(buffer_id))
@@ -137,10 +138,10 @@ impl Interpreter {
         if list_cons_count(args) < 2 {
             return Ok(Value::Nil);
         }
-        let var = match list_car(args) {
-            Value::Symbol(s) => Some(s),
-            Value::Nil => None,
-            other => return Err(wrong_type_argument("symbolp", other)),
+        let var = match list_car(args).kind() {
+            Kind::Symbol(s) => Some(s),
+            Kind::Nil => None,
+            other => return Err(wrong_type_argument("symbolp", other.value())),
         };
         let bodyform = list_nth(args, 1);
         let handlers = list_cdr(&list_cdr(args));
@@ -156,7 +157,7 @@ impl Interpreter {
             else {
                 continue;
             };
-            if !matches!(&head, Value::Symbol(symbol) if symbol == ":success") {
+            if !matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":success") {
                 clause_heads.push(head);
             }
         }
@@ -173,7 +174,7 @@ impl Interpreter {
             Ok(val) => {
                 for handler in list_forms(&handlers) {
                     let parts = handler.to_vec()?;
-                    if !matches!(parts.first(), Some(Value::Symbol(symbol)) if symbol == ":success")
+                    if !matches!(parts.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == ":success")
                     {
                         continue;
                     }

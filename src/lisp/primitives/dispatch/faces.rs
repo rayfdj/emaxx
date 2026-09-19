@@ -1,11 +1,12 @@
 use super::*;
 use crate::lisp::eval::LFACE_VECTOR_SIZE;
 use crate::lisp::reader::Reader;
+use crate::lisp::types::Kind;
 
 fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
-    let mut name = match value {
-        Value::Symbol(name) => name.to_string(),
-        Value::String(_) | Value::StringObject(_) => string_text(value)?,
+    let mut name = match value.kind() {
+        Kind::Symbol(name) => name.to_string(),
+        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
         _ => return Err(wrong_type_argument("symbolp", *value)),
     };
     let mut seen = HashSet::new();
@@ -33,7 +34,7 @@ fn unspecified_face_vector() -> Value {
 }
 
 fn face_target_is_global(frame: Option<&Value>) -> bool {
-    matches!(frame, Some(Value::T))
+    matches!(frame.map(|v| v.kind()), Some(Kind::T))
 }
 
 fn face_attribute_error(attribute: &Value) -> LispError {
@@ -54,8 +55,8 @@ fn invalid_face_error(face: &str) -> LispError {
 
 fn special_face_value(value: &Value) -> bool {
     matches!(
-        value,
-        Value::Symbol(symbol)
+        value.kind(),
+        Kind::Symbol(symbol)
             if matches!(
                 symbol.as_str(),
                 "unspecified" | "ignore-defface" | "reset"
@@ -65,14 +66,16 @@ fn special_face_value(value: &Value) -> bool {
 
 fn valid_named_value(value: &Value, choices: &[&str]) -> bool {
     special_face_value(value)
-        || matches!(value, Value::Symbol(symbol) if choices.contains(&symbol.as_str()))
+        || matches!(value.kind(), Kind::Symbol(symbol) if choices.contains(&symbol.as_str()))
 }
 
 fn valid_inherit_value(value: &Value) -> bool {
-    matches!(value, Value::Nil | Value::Symbol(_))
-        || value
-            .to_vec()
-            .is_ok_and(|items| items.iter().all(|item| matches!(item, Value::Symbol(_))))
+    matches!(value.kind(), Kind::Nil | Kind::Symbol(_))
+        || value.to_vec().is_ok_and(|items| {
+            items
+                .iter()
+                .all(|item| matches!(item.kind(), Kind::Symbol(_)))
+        })
 }
 
 fn normalize_face_attribute_value(
@@ -83,7 +86,7 @@ fn normalize_face_attribute_value(
         .ok_or_else(|| face_attribute_error(&Value::symbol(attribute)))?;
     let normalized = match attribute {
         ":bold" => {
-            if matches!(value, Value::Symbol(symbol) if symbol == "reset") {
+            if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "reset") {
                 *value
             } else if value.is_nil() {
                 Value::symbol("normal")
@@ -92,7 +95,7 @@ fn normalize_face_attribute_value(
             }
         }
         ":italic" => {
-            if matches!(value, Value::Symbol(symbol) if symbol == "reset") {
+            if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "reset") {
                 *value
             } else if value.is_nil() {
                 Value::symbol("normal")
@@ -108,10 +111,10 @@ fn normalize_face_attribute_value(
             }
             *value
         }
-        ":height" => match value {
-            Value::Integer(height) if *height > 0 => *value,
-            Value::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
-            Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => *value,
+        ":height" => match value.kind() {
+            Kind::Integer(height) if height > 0 => *value,
+            Kind::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
+            Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
         ":weight" => {
@@ -170,19 +173,20 @@ fn normalize_face_attribute_value(
             *value
         }
         ":underline" => {
-            if !(matches!(value, Value::Nil | Value::T | Value::Cons(..)) || value.is_string()) {
+            if !(matches!(value.kind(), Kind::Nil | Kind::T | Kind::Cons(..)) || value.is_string())
+            {
                 return Err(LispError::Signal("Invalid face underline".into()));
             }
             *value
         }
         ":overline" | ":strike-through" => {
-            if !(matches!(value, Value::Nil | Value::T) || value.is_string()) {
+            if !(matches!(value.kind(), Kind::Nil | Kind::T) || value.is_string()) {
                 return Err(LispError::Signal("Invalid face line attribute".into()));
             }
             *value
         }
         ":inverse-video" | ":reverse-video" | ":extend" => {
-            if !matches!(value, Value::Nil | Value::T) {
+            if !matches!(value.kind(), Kind::Nil | Kind::T) {
                 return Err(LispError::Signal("Invalid boolean face attribute".into()));
             }
             *value
@@ -201,13 +205,13 @@ fn normalize_face_attribute_value(
         ":stipple" => *value,
         ":box" => {
             if !(matches!(
-                value,
-                Value::Nil | Value::T | Value::Integer(_) | Value::Cons(..)
+                value.kind(),
+                Kind::Nil | Kind::T | Kind::Integer(_) | Kind::Cons(..)
             ) || value.is_string())
             {
                 return Err(LispError::Signal("Invalid face box".into()));
             }
-            if matches!(value, Value::T) {
+            if matches!(value.kind(), Kind::T) {
                 Value::Integer(1)
             } else {
                 *value
@@ -249,7 +253,9 @@ fn set_face_attribute_on(
     frame: Option<u64>,
 ) -> Result<Value, LispError> {
     let (index, mut normalized) = normalize_face_attribute_value(attribute, value)?;
-    if frame.is_none() && matches!(&normalized, Value::Symbol(symbol) if symbol == "unspecified") {
+    if frame.is_none()
+        && matches!(normalized.kind(), Kind::Symbol(symbol) if symbol == "unspecified")
+    {
         normalized = Value::symbol("ignore-defface");
     }
     interp.set_lisp_face_attribute_on(face, index, normalized, frame)?;
@@ -262,15 +268,15 @@ fn merge_face_height(
     to: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    match from {
-        Value::Integer(_) => Ok(*from),
-        Value::Float(scale) => match to {
-            Value::Integer(height) => Ok(Value::Integer((scale.get() * *height as f64) as i64)),
-            Value::Float(height) => Ok(Value::float(scale.get() * height.get())),
-            Value::Symbol(symbol) if symbol == "unspecified" => Ok(*from),
+    match from.kind() {
+        Kind::Integer(_) => Ok(*from),
+        Kind::Float(scale) => match to.kind() {
+            Kind::Integer(height) => Ok(Value::Integer((scale.get() * height as f64) as i64)),
+            Kind::Float(height) => Ok(Value::float(scale.get() * height.get())),
+            Kind::Symbol(symbol) if symbol == "unspecified" => Ok(*from),
             _ => Ok(*from),
         },
-        Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => {
+        Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => {
             interp.call_function_value(*from, None, std::slice::from_ref(to), env)
         }
         _ => Ok(*from),
@@ -305,13 +311,14 @@ fn bitmap_spec_p(value: &Value) -> bool {
     let Ok(items) = value.to_vec() else {
         return false;
     };
-    let [Value::Integer(width), Value::Integer(height), data, ..] = items.as_slice() else {
+    let kinds = items.iter().map(|v| v.kind()).collect::<Vec<_>>();
+    let [Kind::Integer(width), Kind::Integer(height), data, ..] = kinds.as_slice() else {
         return false;
     };
     if *width <= 0 || *height <= 0 {
         return false;
     }
-    let Some(data) = string_like(data) else {
+    let Some(data) = string_like(&data.value()) else {
         return false;
     };
     let bytes_per_row = (*width as usize).div_ceil(8);
@@ -470,9 +477,13 @@ define_dispatch!(
                 let face = args[0]
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[0]))?;
-                let target = match args.get(1) {
-                    None | Some(Value::Nil) => None,
-                    Some(frame) => Some(frames::decode_live_frame(interp, Some(frame), true)?),
+                let target = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(frame) => Some(frames::decode_live_frame(
+                        interp,
+                        Some(&frame.value()),
+                        true,
+                    )?),
                 };
                 let vector = interp.ensure_lisp_face_on(face, target, true)?;
                 interp.register_lisp_face_id(face);
@@ -481,15 +492,19 @@ define_dispatch!(
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 if !matches!(
-                    &args[0],
-                    Value::Symbol(_) | Value::String(_) | Value::StringObject(_)
+                    args[0].kind(),
+                    Kind::Symbol(_) | Kind::String(_) | Kind::StringObject(_)
                 ) {
                     return Ok(Value::Nil);
                 }
                 let face = resolve_face_name(interp, &args[0])?;
-                let target = match args.get(1) {
-                    None | Some(Value::Nil) => None,
-                    Some(frame) => Some(frames::decode_live_frame(interp, Some(frame), true)?),
+                let target = match args.get(1).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => None,
+                    Some(frame) => Some(frames::decode_live_frame(
+                        interp,
+                        Some(&frame.value()),
+                        true,
+                    )?),
                 };
                 Ok(interp
                     .lisp_face_vector_on(&face, target)
@@ -503,7 +518,7 @@ define_dispatch!(
                 let to = args[1]
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
-                let (source, target) = if matches!(args[2], Value::T) {
+                let (source, target) = if matches!(args[2].kind(), Kind::T) {
                     (None, None)
                 } else {
                     let source = frames::decode_live_frame(interp, Some(&args[2]), false)?;
@@ -525,7 +540,7 @@ define_dispatch!(
                 let face = resolve_face_name(interp, &Value::symbol(face_symbol))?;
                 let attribute = args[1].as_symbol()?;
                 let frame = args.get(3).unwrap_or(&Value::Nil);
-                if matches!(frame, Value::Integer(0)) {
+                if matches!(frame.kind(), Kind::Integer(0)) {
                     if interp.lisp_face_vector(&face, true).is_none() {
                         return Err(invalid_face_error(&face));
                     }
@@ -540,7 +555,7 @@ define_dispatch!(
                         set_face_attribute_on(interp, &face, attribute, &args[2], Some(frame))?;
                     }
                     Ok(Value::symbol(&face))
-                } else if matches!(frame, Value::T) {
+                } else if matches!(frame.kind(), Kind::T) {
                     if interp.lisp_face_vector(&face, true).is_none() {
                         return Err(invalid_face_error(&face));
                     }
@@ -571,8 +586,8 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let attribute = args[0].as_symbol()?;
                 Ok(
-                    if matches!(&args[1], Value::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "ignore-defface"))
-                        || (attribute == ":height" && !matches!(args[1], Value::Integer(_)))
+                    if matches!(args[1].kind(), Kind::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "ignore-defface"))
+                        || (attribute == ":height" && !matches!(args[1].kind(), Kind::Integer(_)))
                     {
                         Value::T
                     } else {
@@ -583,7 +598,7 @@ define_dispatch!(
             "merge-face-attribute" => {
                 need_args(name, args, 3)?;
                 let attribute = args[0].as_symbol()?;
-                if matches!(&args[1], Value::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "ignore-defface"))
+                if matches!(args[1].kind(), Kind::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "ignore-defface"))
                 {
                     Ok(args[2])
                 } else if attribute == ":height" {
@@ -608,7 +623,7 @@ define_dispatch!(
                     .and_then(|vector| vector_slot_value(&vector, index).ok())
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {face}")))?;
                 Ok(
-                    if matches!(&value, Value::Symbol(symbol) if symbol == "ignore-defface") {
+                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ignore-defface") {
                         Value::symbol("unspecified")
                     } else {
                         value
@@ -643,9 +658,10 @@ define_dispatch!(
                 let local = interp.ensure_lisp_face(&face, true, false)?;
                 for index in 1..LFACE_VECTOR_SIZE {
                     let value = vector_slot_value(&global, index)?;
-                    if matches!(&value, Value::Symbol(symbol) if symbol == "ignore-defface") {
+                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ignore-defface") {
                         aset_vector_value(&local, index, Value::symbol("unspecified"))?;
-                    } else if !matches!(&value, Value::Symbol(symbol) if symbol == "unspecified") {
+                    } else if !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified")
+                    {
                         aset_vector_value(&local, index, value)?;
                     }
                 }
@@ -654,18 +670,18 @@ define_dispatch!(
             "face-font" => {
                 need_arg_range(name, args, 1, 3)?;
                 let face = resolve_face_name(interp, &args[0])?;
-                if matches!(args.get(1), Some(Value::T)) {
+                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::T)) {
                     let vector = interp
                         .lisp_face_vector(&face, true)
                         .ok_or_else(|| LispError::Signal(format!("Invalid face: {face}")))?;
                     let weight = vector_slot_value(&vector, 5)?;
                     let slant = vector_slot_value(&vector, 6)?;
                     let mut result = Vec::new();
-                    if !matches!(&weight, Value::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "normal"))
+                    if !matches!(weight.kind(), Kind::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "normal"))
                     {
                         result.push(Value::symbol("bold"));
                     }
-                    if !matches!(&slant, Value::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "normal"))
+                    if !matches!(slant.kind(), Kind::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | "normal"))
                     {
                         result.insert(0, Value::symbol("italic"));
                     }
@@ -708,8 +724,8 @@ define_dispatch!(
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {face}")))?;
                 for index in 1..LFACE_VECTOR_SIZE {
                     if !matches!(
-                        vector_slot_value(&vector, index)?,
-                        Value::Symbol(symbol) if symbol == "unspecified"
+                        (vector_slot_value(&vector, index)?).kind(),
+                        Kind::Symbol(symbol) if symbol == "unspecified"
                     ) {
                         return Ok(Value::Nil);
                     }
@@ -736,7 +752,7 @@ define_dispatch!(
                 let expected = [":width", ":height", ":weight", ":slant"];
                 if values.len() != expected.len()
                 || values.iter().any(|value| {
-                    !matches!(value, Value::Symbol(symbol) if expected.contains(&symbol.as_str()))
+                    !matches!(value.kind(), Kind::Symbol(symbol) if expected.contains(&symbol.as_str()))
                 })
             {
                 return Err(LispError::Signal("Invalid font sort order".into()));
@@ -813,13 +829,19 @@ pub(crate) fn tty_defined_color(
         )?;
         let items = desc.to_vec().unwrap_or_default();
         if items.len() >= 2 {
-            match items.as_slice() {
+            match items
+                .as_slice()
+                .iter()
+                .map(|v| v.kind())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
                 [
                     _,
-                    Value::Integer(_),
-                    Value::Integer(r),
-                    Value::Integer(g),
-                    Value::Integer(b),
+                    Kind::Integer(_),
+                    Kind::Integer(r),
+                    Kind::Integer(g),
+                    Kind::Integer(b),
                     ..,
                 ] => Some(Some([*r as u16, *g as u16, *b as u16])),
                 _ => Some(None),

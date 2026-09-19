@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 impl Interpreter {
     // ── ERT support ──
@@ -8,11 +9,11 @@ impl Interpreter {
     // this way (bypassing `ert-deftest'), so mirror the definition into the
     // native test registry too.
     pub(crate) fn ert_set_test(&mut self, name: &str, test: &Value) -> Result<Value, LispError> {
-        let Value::Record(record_id) = test else {
+        let Kind::Record(record_id) = test.kind() else {
             return Err(LispError::TypeError("ert-test".into(), test.type_name()));
         };
         let slots = self
-            .find_record(*record_id)
+            .find_record(record_id)
             .filter(|record| record.has_symbol_type("ert-test"))
             .map(|record| record.slots.clone())
             .ok_or_else(|| LispError::TypeError("ert-test".into(), test.type_name()))?;
@@ -45,10 +46,10 @@ impl Interpreter {
     }
 
     fn set_ert_test_most_recent_result(&mut self, test: &Value, result: Value) {
-        let Value::Record(record_id) = test else {
+        let Kind::Record(record_id) = test.kind() else {
             return;
         };
-        let Some(record) = self.find_record_mut(*record_id) else {
+        let Some(record) = self.find_record_mut(record_id) else {
             return;
         };
         debug_assert!(record.has_symbol_type("ert-test"));
@@ -241,7 +242,7 @@ impl Interpreter {
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
             // terminates the test successfully by throwing to that tag.
             if let Err(LispError::Throw(tag, _)) = &result
-                && matches!(tag, Value::Symbol(name) if name == "ert--pass")
+                && matches!(tag.kind(), Kind::Symbol(name) if name == "ert--pass")
             {
                 result = Ok(Value::Nil);
             }
@@ -269,7 +270,7 @@ impl Interpreter {
                     let status = match &e {
                         LispError::TestSkipped(_) => TestStatus::Skipped,
                         LispError::SignalValue(condition)
-                            if matches!(condition.car(), Ok(Value::Symbol(kind))
+                            if matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
                                 if kind == "ert-test-skipped") =>
                         {
                             TestStatus::Skipped
@@ -316,24 +317,24 @@ impl Interpreter {
 }
 
 fn selector_atom(value: &Value) -> String {
-    match unquote(value) {
-        Value::Symbol(name) => name.to_string(),
-        Value::String(value) => value.to_string(),
+    match unquote(value).kind() {
+        Kind::Symbol(name) => name.to_string(),
+        Kind::String(value) => value.to_string(),
         other => other.to_string(),
     }
 }
 
 fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
-    match unquote(selector) {
-        Value::Nil => false,
-        Value::T => true,
-        Value::Symbol(name) if name == "t" => true,
-        Value::Symbol(name) if name == "nil" => false,
-        Value::Symbol(name) => test.name == name,
-        Value::String(pattern) => Regex::new(&pattern)
+    match unquote(selector).kind() {
+        Kind::Nil => false,
+        Kind::T => true,
+        Kind::Symbol(name) if name == "t" => true,
+        Kind::Symbol(name) if name == "nil" => false,
+        Kind::Symbol(name) => test.name == name,
+        Kind::String(pattern) => Regex::new(&pattern)
             .map(|regex| regex.is_match(&test.name))
             .unwrap_or(false),
-        Value::Cons(_) => {
+        Kind::Cons(_) => {
             let Ok(items) = unquote(selector).to_vec() else {
                 return false;
             };

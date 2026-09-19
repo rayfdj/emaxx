@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
+use crate::lisp::types::Kind;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
@@ -10,10 +11,10 @@ fn event_array(events: &[Value], force_vector: bool) -> Value {
         let characters = events
             .iter()
             .map(|event| {
-                let Value::Integer(code) = event else {
+                let Kind::Integer(code) = event.kind() else {
                     return None;
                 };
-                u32::try_from(*code).ok().and_then(char::from_u32)
+                u32::try_from(code).ok().and_then(char::from_u32)
             })
             .collect::<Option<String>>();
         if let Some(characters) = characters {
@@ -29,7 +30,7 @@ fn execute_kbd_macro(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     need_arg_range("execute-kbd-macro", args, 1, 3)?;
-    let final_macro = if matches!(&args[0], Value::Symbol(_)) {
+    let final_macro = if matches!(args[0].kind(), Kind::Symbol(_)) {
         super::call(
             interp,
             "indirect-function",
@@ -107,7 +108,7 @@ fn execute_kbd_macro(
         let iteration = match run_kbd_macro_events(interp, env) {
             // GNU's outermost command loop catches `top-level`, terminating
             // the keyboard macro without propagating an error.
-            Err(LispError::Throw(tag, _)) if matches!(&tag, Value::Symbol(symbol) if symbol == "top-level") => {
+            Err(LispError::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
                 Ok(())
             }
             other => other,
@@ -205,13 +206,14 @@ fn load_autoloaded_prefix_map(
     binding: &Value,
     env: &Env,
 ) -> Result<(), LispError> {
-    let Value::Symbol(name) = binding else {
+    let Kind::Symbol(name) = binding.kind() else {
         return Ok(());
     };
-    let Ok(function) = interp.lookup_function(name, env) else {
+    let Ok(function) = interp.lookup_function(&name, env) else {
         return Ok(());
     };
-    if let Some((file, _, Value::Symbol(kind))) = autoload_parts(&function)
+    if let Some((file, _, Kind::Symbol(kind))) =
+        autoload_parts(&function).map(|(a0, a1, a2)| (a0, a1, a2.kind()))
         && kind == "keymap"
     {
         interp.load_autoload_target(&file, env)?;
@@ -407,9 +409,9 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         // bytes.  Minibuffer editing must see C-a/C-k identically in both
         // representations.
         let mut event = crate::lisp::primitives::reader_key_event_value(event);
-        let code = match &event {
-            Value::Integer(code) => *code,
-            Value::Symbol(name) => function_key_default_translation(name).unwrap_or(-1),
+        let code = match event.kind() {
+            Kind::Integer(code) => code,
+            Kind::Symbol(name) => function_key_default_translation(&name).unwrap_or(-1),
             _ => -1,
         };
         if code < 0 {
@@ -417,13 +419,13 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         }
         let key = Value::list([Value::Symbol("vector-literal".into()), event]);
         let mut event_key = key_sequence_binding_text(&key)?;
-        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
         }
         // GNU's local-function-key-map translates unbound function-key
         // symbols to their ASCII equivalents before lookup.
         if pending_keys.is_empty()
-            && matches!(&event, Value::Symbol(_))
+            && matches!(event.kind(), Kind::Symbol(_))
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
@@ -449,7 +451,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
             interp.pop_catch_tag();
             match dispatch {
                 Ok(()) => {}
-                Err(LispError::Throw(tag, _)) if matches!(&tag, Value::Symbol(name) if name == "exit") =>
+                Err(LispError::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
                 {
                     // The exiting command leaves the recursive loop before
                     // its post-command phase.  The prompting command
@@ -590,12 +592,12 @@ fn read_minibuffer_text_from_unread_events_inner(
         );
         let key = Value::list([Value::Symbol("vector-literal".into()), event]);
         let mut event_key = key_sequence_binding_text(&key)?;
-        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
         }
         if pending_keys.is_empty()
-            && let Value::Symbol(name) = &event
-            && let Some(translated) = function_key_default_translation(name)
+            && let Kind::Symbol(name) = event.kind()
+            && let Some(translated) = function_key_default_translation(&name)
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
@@ -665,7 +667,7 @@ fn read_minibuffer_text_from_unread_events_inner(
         if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
             && (binding.is_nil()
-                || matches!(&binding, Value::Symbol(command) if command == "self-insert-command"))
+                || matches!(binding.kind(), Kind::Symbol(command) if command == "self-insert-command"))
         {
             let command = Value::Symbol("self-insert-command".into());
             set_command_key_state(interp, pending_events.clone(), pending_events.clone(), env);
@@ -796,16 +798,16 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         // GNU describes function-key symbol events in angle brackets
         // ("<escape>"), which is also what the string-parsing lookup path
         // needs to see one named key instead of one key per character.
-        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
         }
         // GNU's local-function-key-map translates unbound function-key
         // symbols to their ASCII equivalents ([escape] a1 ESC dispatches
         // viper's ESC binding, not an `escape' text insertion).
-        let default_translation = match &event {
-            Value::Symbol(name) => function_key_default_translation(name).map(Value::Integer),
-            Value::Integer(code)
-                if *code
+        let default_translation = match event.kind() {
+            Kind::Symbol(name) => function_key_default_translation(&name).map(Value::Integer),
+            Kind::Integer(code)
+                if code
                     == (crate::lisp::primitives::KEY_DESCRIPTION_SHIFT_BIT | i64::from(b'\t')) =>
             {
                 Some(Value::Symbol("backtab".into()))
@@ -820,7 +822,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             event = translated_event;
             let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
             event_key = key_sequence_binding_text(&translated)?;
-            if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+            if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
                 event_key = format!("<{event_key}>");
             }
         }
@@ -929,7 +931,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
     match result {
-        Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(symbol) if symbol == "exit") => {
+        Err(LispError::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
             if value.is_truthy() {
                 Err(LispError::SignalValue(Value::list([Value::Symbol(
                     "quit".into(),
@@ -1016,7 +1018,7 @@ fn execute_kbd_macro_command(
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
         .unwrap_or(command);
-    let command_result = if matches!(&dispatched_command, Value::Symbol(name) if name == "narrow-to-region")
+    let command_result = if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")
     {
         prepare_native_kbd_command_body(interp, env)?;
         let mark = interp.buffer.mark().unwrap_or(interp.buffer.point());
@@ -1105,8 +1107,8 @@ fn execute_kbd_macro_self_insert(
     // GNU amalgamates consecutive self-insertions into one undo group;
     // any other preceding command starts a fresh group.
     if !matches!(
-        interp.lookup_var("last-command", env),
-        Some(Value::Symbol(last)) if last == "self-insert-command"
+        interp.lookup_var("last-command", env).map(|v| v.kind()),
+        Some(Kind::Symbol(last)) if last == "self-insert-command"
     ) {
         interp.buffer.push_undo_boundary();
     }
@@ -1190,10 +1192,10 @@ fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
     // one traversal authority so negative counts, bignums, improper tails,
     // and circular lists cannot drift between the three public primitives.
     let tail = nthcdr_value(count, list)?;
-    match tail {
-        Value::Nil => Ok(Value::Nil),
-        Value::Cons(ref cell) => Ok(*cell.car.borrow()),
-        other => Err(wrong_type_argument("listp", other)),
+    match tail.kind() {
+        Kind::Nil => Ok(Value::Nil),
+        Kind::Cons(ref cell) => Ok(*cell.car.borrow()),
+        other => Err(wrong_type_argument("listp", other.value())),
     }
 }
 
@@ -1258,13 +1260,13 @@ define_dispatch!(
                     // fns.c concat_to_list: CLOSUREP args flatten to their
                     // slots (edebug-unwrap* rebuilds compiled closures with
                     // `(nthcdr 3 (append fn ()))').
-                    match a {
-                        Value::Lambda(lambda) => {
-                            items.extend(interp.interpreted_closure_slots(lambda));
+                    match a.kind() {
+                        Kind::Lambda(lambda) => {
+                            items.extend(interp.interpreted_closure_slots(&lambda));
                             continue;
                         }
-                        Value::Record(id) => {
-                            if let Some(record) = interp.find_record(*id)
+                        Kind::Record(id) => {
+                            if let Some(record) = interp.find_record(id)
                                 && record.kind == crate::lisp::eval::RecordKind::Closure
                             {
                                 items.extend(record.slots.iter().cloned());
@@ -1315,9 +1317,9 @@ define_dispatch!(
                 let mut current = args[1];
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
-                    match current {
-                        Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(cons_cell) => {
+                    match current.kind() {
+                        Kind::Nil => return Ok(Value::Nil),
+                        Kind::Cons(cons_cell) => {
                             let car = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -1328,7 +1330,7 @@ define_dispatch!(
                                 ])));
                             }
                             let item = *car.borrow();
-                            if matches!(item, Value::Cons(_))
+                            if matches!(item.kind(), Kind::Cons(_))
                                 && values_equal_in_env(interp, &item.cdr()?, &args[0], env)
                             {
                                 return Ok(item);
@@ -1339,7 +1341,7 @@ define_dispatch!(
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("wrong-type-argument".into()),
                                 Value::Symbol("listp".into()),
-                                other,
+                                other.value(),
                             ])));
                         }
                     }
@@ -1350,9 +1352,9 @@ define_dispatch!(
                 let mut current = args[1];
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
-                    match current {
-                        Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(cons_cell) => {
+                    match current.kind() {
+                        Kind::Nil => return Ok(Value::Nil),
+                        Kind::Cons(cons_cell) => {
                             let car = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
@@ -1363,7 +1365,7 @@ define_dispatch!(
                                 ])));
                             }
                             let item = *car.borrow();
-                            if matches!(item, Value::Cons(_))
+                            if matches!(item.kind(), Kind::Cons(_))
                                 && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                                 {
                                     call_function_value(
@@ -1385,7 +1387,7 @@ define_dispatch!(
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("wrong-type-argument".into()),
                                 Value::Symbol("listp".into()),
-                                other,
+                                other.value(),
                             ])));
                         }
                     }
@@ -1404,8 +1406,8 @@ define_dispatch!(
                     key
                 };
                 for item in &items {
-                    let thiscar = match item {
-                        Value::Cons(_) => item.car()?,
+                    let thiscar = match item.kind() {
+                        Kind::Cons(_) => item.car()?,
                         _ => *item,
                     };
                     let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
@@ -1514,15 +1516,15 @@ define_dispatch!(
                 // with position yields its symbol), and POS is a fixnum OR
                 // a symbol with position whose position is borrowed (cconv
                 // repositions `ignore' from the unused variable this way).
-                let bare = match &args[0] {
-                    Value::Symbol(_) | Value::Nil | Value::T => args[0],
-                    other => symbol_with_pos_parts(interp, other)
+                let bare = match args[0].kind() {
+                    Kind::Symbol(_) | Kind::Nil | Kind::T => args[0],
+                    other => symbol_with_pos_parts(interp, &other.value())
                         .map(|(symbol, _)| symbol)
                         .ok_or_else(|| bare_symbol_type_error(&args[0]))?,
                 };
-                let position = match &args[1] {
-                    Value::Integer(position) => *position,
-                    other => symbol_with_pos_parts(interp, other)
+                let position = match args[1].kind() {
+                    Kind::Integer(position) => position,
+                    other => symbol_with_pos_parts(interp, &other.value())
                         .map(|(_, position)| position)
                         .ok_or_else(|| {
                             LispError::WrongTypeArgument(
@@ -1556,9 +1558,9 @@ define_dispatch!(
                 // data.c Fbare_symbol: unlike remove-pos-from-symbol, a
                 // non-symbol argument signals wrong-type-argument.
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Symbol(_) | Value::Nil | Value::T => Ok(args[0]),
-                    other => symbol_with_pos_parts(interp, other)
+                match args[0].kind() {
+                    Kind::Symbol(_) | Kind::Nil | Kind::T => Ok(args[0]),
+                    other => symbol_with_pos_parts(interp, &other.value())
                         .map(|(symbol, _)| symbol)
                         .ok_or_else(|| bare_symbol_type_error(&args[0])),
                 }
@@ -1790,8 +1792,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let event = args[0].to_vec().unwrap_or_default();
                 let valid = matches!(
-                    event.as_slice(),
-                    [Value::Symbol(kind), Value::Frame(frame), ..]
+                    event.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
+                    [Kind::Symbol(kind), Kind::Frame(frame), ..]
                         if kind == "focus-in" && interp.frame_is_live(*frame)
                 );
                 if !valid {
@@ -2159,9 +2161,9 @@ define_dispatch!(
             "completing-read" => completing_read(interp, args, env),
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
-                let default = match args.get(1).cloned().unwrap_or(Value::Nil) {
-                    Value::Buffer(buffer) => Value::String(buffer.name),
-                    other => other,
+                let default = match args.get(1).cloned().unwrap_or(Value::Nil).kind() {
+                    Kind::Buffer(buffer) => Value::String(buffer.name),
+                    other => other.value(),
                 };
                 if let Some(function) = interp
                     .lookup_var("read-buffer-function", env)
@@ -2213,8 +2215,8 @@ define_dispatch!(
                     .to_vec()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter_map(|buffer| match buffer {
-                        Value::Buffer(handle) => Some(Value::cons(
+                    .filter_map(|buffer| match buffer.kind() {
+                        Kind::Buffer(handle) => Some(Value::cons(
                             Value::String(handle.name),
                             Value::Buffer(handle),
                         )),
@@ -2238,13 +2240,13 @@ define_dispatch!(
             "read-command" | "read-variable" => {
                 need_arg_range(name, args, 1, 2)?;
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
-                let default = match default {
-                    Value::Symbol(symbol) => Value::String(
+                let default = match default.kind() {
+                    Kind::Symbol(symbol) => Value::String(
                         crate::lisp::types::visible_symbol_name(&symbol)
                             .to_string()
                             .into(),
                     ),
-                    other => other,
+                    other => other.value(),
                 };
                 let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
                 let predicate = if name == "read-command" {
@@ -2292,9 +2294,9 @@ pub(super) fn direct_car_safe(
 ) -> Result<Value, LispError> {
     let name = "car-safe";
     need_args(name, args, 1)?;
-    Ok(match &args[0] {
-        Value::Cons(cell) => *cell.car.borrow(),
-        value => runtime_keymap_public_view(interp, value)
+    Ok(match args[0].kind() {
+        Kind::Cons(cell) => *cell.car.borrow(),
+        value => runtime_keymap_public_view(interp, &value.value())
             .and_then(|view| view.car().ok())
             .unwrap_or(Value::Nil),
     })
@@ -2308,9 +2310,9 @@ pub(super) fn direct_cdr_safe(
 ) -> Result<Value, LispError> {
     let name = "cdr-safe";
     need_args(name, args, 1)?;
-    Ok(match &args[0] {
-        Value::Cons(cell) => *cell.cdr.borrow(),
-        value => runtime_keymap_public_view(interp, value)
+    Ok(match args[0].kind() {
+        Kind::Cons(cell) => *cell.cdr.borrow(),
+        value => runtime_keymap_public_view(interp, &value.value())
             .and_then(|view| view.cdr().ok())
             .unwrap_or(Value::Nil),
     })
@@ -2340,8 +2342,8 @@ pub(super) fn direct_nthcdr(
     let name = "nthcdr";
     need_args(name, args, 2)?;
     if let Some(items) = keymap_record_list_items(interp, &args[1])? {
-        if matches!(&args[0], Value::Integer(count) if *count <= 0)
-            || matches!(&args[0], Value::BigInteger(count) if **count <= BigInt::from(0))
+        if matches!(args[0].kind(), Kind::Integer(count) if count <= 0)
+            || matches!(args[0].kind(), Kind::BigInteger(count) if *count <= BigInt::from(0))
         {
             // Runtime keymaps project to GNU's cons-list surface,
             // but nthcdr with a nonpositive count returns the
@@ -2361,14 +2363,14 @@ pub(super) fn direct_elt(
 ) -> Result<Value, LispError> {
     let name = "elt";
     need_args(name, args, 2)?;
-    if matches!(args[0], Value::Cons(_))
+    if matches!(args[0].kind(), Kind::Cons(_))
         && matches!(
-            args[0].to_vec().ok().and_then(|items| items.first().cloned()),
-            Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+            args[0].to_vec().ok().and_then(|items| items.first().cloned()).map(|v| v.kind()),
+            Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
         )
     {
         super::call(interp, "aref", args, env)
-    } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
+    } else if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
         nth_list_element(&args[0], &args[1])
     } else {
         super::call(interp, "aref", args, env)
@@ -2408,11 +2410,11 @@ pub(super) fn direct_member_family(
     let mut current = args[1];
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        let next = match &current {
-            Value::Cons(cons_cell) => {
+        let next = match current.kind() {
+            Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
-                if seen.step(crate::lisp::types::ConsCell::identity(cons_cell)) {
+                if seen.step(crate::lisp::types::ConsCell::identity(&cons_cell)) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("circular-list".into()),
                         Value::String("Circular list".into()),
@@ -2431,20 +2433,20 @@ pub(super) fn direct_member_family(
                 }
                 *cdr.borrow()
             }
-            Value::Nil => return Ok(Value::Nil),
+            Kind::Nil => return Ok(Value::Nil),
             other => {
                 let matches = match name {
-                    "member" => values_equal_in_env(interp, other, &args[0], env),
-                    "memql" => values_eql(other, &args[0]),
-                    _ => values_eq_in_env(interp, other, &args[0], env),
+                    "member" => values_equal_in_env(interp, &other.value(), &args[0], env),
+                    "memql" => values_eql(&other.value(), &args[0]),
+                    _ => values_eq_in_env(interp, &other.value(), &args[0], env),
                 };
                 if matches {
-                    return Ok(*other);
+                    return Ok(other.value());
                 }
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("wrong-type-argument".into()),
                     Value::Symbol("listp".into()),
-                    *other,
+                    other.value(),
                 ])));
             }
         };
@@ -2496,14 +2498,14 @@ pub(super) fn direct_assq_family(
     let mut seen = crate::lisp::types::CycleGuard::new();
     // Walk by cons cells rather than by cloned Values: one Rc
     // bump per step and no whole-Value churn.
-    let mut cell = match alist {
-        Value::Nil => return Ok(Value::Nil),
-        Value::Cons(cell) => *cell,
+    let mut cell = match alist.kind() {
+        Kind::Nil => return Ok(Value::Nil),
+        Kind::Cons(cell) => cell,
         other => {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("wrong-type-argument".into()),
                 Value::Symbol("listp".into()),
-                *other,
+                other.value(),
             ])));
         }
     };
@@ -2516,26 +2518,26 @@ pub(super) fn direct_assq_family(
         }
         let matched = {
             let item = cell.car.borrow();
-            match &*item {
-                Value::Cons(cons_cell) => {
+            match (*item).kind() {
+                Kind::Cons(cons_cell) => {
                     let item_car = &cons_cell.car;
                     let item_cdr = &cons_cell.cdr;
                     let slot = if want_car { item_car } else { item_cdr };
                     let entry_key = slot.borrow();
-                    match (&*entry_key, key) {
-                        (Value::Integer(a), Value::Integer(b)) => a == b,
-                        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-                        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-                        (Value::Nil | Value::T, _)
-                        | (_, Value::Nil | Value::T)
-                        | (Value::Integer(_), Value::Symbol(_))
-                        | (Value::Symbol(_), Value::Integer(_)) => false,
+                    match ((*entry_key).kind(), key.kind()) {
+                        (Kind::Integer(a), Kind::Integer(b)) => a == b,
+                        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+                        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
+                        (Kind::Nil | Kind::T, _)
+                        | (_, Kind::Nil | Kind::T)
+                        | (Kind::Integer(_), Kind::Symbol(_))
+                        | (Kind::Symbol(_), Kind::Integer(_)) => false,
                         // GNU 30.2 fns.c implements assq/rassq
                         // with EQ, whose lisp.h contract unwraps
                         // symbol-with-position objects while the
                         // dynamic mode is enabled.  Keep ordinary
                         // scalar keys on the fast path above.
-                        (a, b) => values_eq_in_env(interp, a, b, env),
+                        (a, b) => values_eq_in_env(interp, &a.value(), &b.value(), env),
                     }
                 }
                 _ => false,
@@ -2545,14 +2547,14 @@ pub(super) fn direct_assq_family(
             return Ok(*cell.car.borrow());
         }
         let tail = cell.cdr.borrow();
-        let next = match &*tail {
-            Value::Nil => return Ok(Value::Nil),
-            Value::Cons(next) => *next,
+        let next = match (*tail).kind() {
+            Kind::Nil => return Ok(Value::Nil),
+            Kind::Cons(next) => next,
             other => {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("wrong-type-argument".into()),
                     Value::Symbol("listp".into()),
-                    *other,
+                    other.value(),
                 ])));
             }
         };

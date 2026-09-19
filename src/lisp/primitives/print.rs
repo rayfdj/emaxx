@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -> String {
     let escape_multibyte = interp
@@ -221,26 +222,26 @@ pub(crate) fn print_ref_key(
     value: &Value,
     options: PrintOptions,
 ) -> Option<PrintRefKey> {
-    match value {
-        Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
-            cell,
+    match value.kind() {
+        Kind::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
+            &cell,
         ))),
-        Value::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
+        Kind::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
-        Value::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
-        Value::Lambda(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
-        Value::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
-        Value::Symbol(symbol)
-            if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
+        Kind::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
+        Kind::Lambda(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
+        Kind::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
+        Kind::Symbol(symbol)
+            if options.gensym && crate::lisp::types::is_uninterned_symbol(&symbol) =>
         {
             Some(PrintRefKey::Symbol(symbol.to_string()))
         }
         // print.c:1299 `PRINT_CIRCLE_CANDIDATE_P' counts hash tables, so a
         // table that contains itself is labelled (or truncated) rather than
         // printed forever.
-        Value::Record(id)
+        Kind::Record(id)
             if record_prin1_fields(interp, id.id).is_some()
                 || json::is_hash_table(interp, value) =>
         {
@@ -317,7 +318,7 @@ pub(crate) fn sync_print_number_table(
     overrides: Option<&Value>,
     source_env: &Env,
 ) {
-    if !matches!(overrides, None | Some(Value::Nil)) {
+    if !matches!(overrides.map(|v| v.kind()), None | Some(Kind::Nil)) {
         return;
     }
     let Some(value) = crate::lisp::types::current_environment(source_env)
@@ -395,19 +396,19 @@ fn walk_print_graph(
             continue;
         }
 
-        match &value {
-            Value::Vector(_) | Value::Cons(_) if is_vector_value(&value) => {
+        match value.kind() {
+            Kind::Vector(_) | Kind::Cons(_) if is_vector_value(&value) => {
                 let items = vector_items(&value)?;
                 pending.extend(items.into_iter().rev());
             }
-            Value::Cons(_) => {
+            Kind::Cons(_) => {
                 let Some((car, cdr)) = value.cons_values() else {
                     continue;
                 };
                 pending.push(cdr);
                 pending.push(car);
             }
-            Value::StringObject(state) => {
+            Kind::StringObject(state) => {
                 let props = state.borrow().props.clone();
                 for span in props.into_iter().rev() {
                     pending.extend(
@@ -418,7 +419,7 @@ fn walk_print_graph(
                     );
                 }
             }
-            Value::Record(id) => {
+            Kind::Record(id) => {
                 if let Some(fields) = record_prin1_fields(interp, id.id) {
                     pending.extend(fields.into_iter().rev());
                 } else if let Some((_, entries)) = json::hash_table_entries(interp, &value) {
@@ -428,8 +429,8 @@ fn walk_print_graph(
                     }
                 }
             }
-            Value::Lambda(lambda) => {
-                pending.extend(interp.interpreted_closure_slots(lambda).into_iter().rev());
+            Kind::Lambda(lambda) => {
+                pending.extend(interp.interpreted_closure_slots(&lambda).into_iter().rev());
             }
             _ => {}
         }
@@ -477,13 +478,13 @@ pub(crate) fn print_preprocess(
     walk_print_graph(interp, value, options, |key, object| {
         let continuous_gensym = options.continuous_numbering
             && matches!(
-                object,
-                Value::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(symbol)
+                object.kind(),
+                Kind::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(&symbol)
             );
         if let Some(index) = positions.get(&key).copied() {
             let state = &entries[index].1;
             if state.is_truthy() || continuous_gensym {
-                if matches!(state, Value::Nil | Value::T | Value::Symbol(_)) {
+                if matches!(state.kind(), Kind::Nil | Kind::T | Kind::Symbol(_)) {
                     number_index = number_index.saturating_add(1);
                     entries[index].1 = Value::Integer(-number_index);
                 }
@@ -548,9 +549,9 @@ pub(crate) fn render_prin1_list(
             let tail_rendered = render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
             return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
         }
-        match tail {
-            Value::Nil => return Ok(format!("({})", rendered.join(" "))),
-            Value::Cons(_) => {
+        match tail.kind() {
+            Kind::Nil => return Ok(format!("({})", rendered.join(" "))),
+            Kind::Cons(_) => {
                 if context
                     .options
                     .length
@@ -591,7 +592,7 @@ pub(crate) fn render_prin1_list(
             }
             other => {
                 let tail_rendered =
-                    render_prin1_with_context(interp, &other, env, context, depth + 1)?;
+                    render_prin1_with_context(interp, &other.value(), env, context, depth + 1)?;
                 return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
             }
         }
@@ -599,10 +600,10 @@ pub(crate) fn render_prin1_list(
 }
 
 fn same_cons_cell(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Cons(left), Value::Cons(right)) => {
-            crate::lisp::types::ConsCell::identity(left)
-                == crate::lisp::types::ConsCell::identity(right)
+    match (left.kind(), right.kind()) {
+        (Kind::Cons(left), Kind::Cons(right)) => {
+            crate::lisp::types::ConsCell::identity(&left)
+                == crate::lisp::types::ConsCell::identity(&right)
         }
         _ => false,
     }
@@ -620,7 +621,7 @@ pub(crate) fn should_label_value(value: &Value, key: &PrintRefKey, context: &Pri
     }
     context.options.continuous_numbering
         && context.options.gensym
-        && matches!(value, Value::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(symbol))
+        && matches!(value.kind(), Kind::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(&symbol))
 }
 
 pub(crate) fn render_prin1_with_context(
@@ -719,9 +720,9 @@ pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
 }
 
 fn render_integer_as_character(value: &Value, escape: bool) -> Option<String> {
-    let code = match value {
-        Value::Integer(value) => *value,
-        Value::BigInteger(value) => value.to_i64()?,
+    let code = match value.kind() {
+        Kind::Integer(value) => value,
+        Kind::BigInteger(value) => value.to_i64()?,
         _ => return None,
     };
     let codepoint = u32::try_from(code).ok()?;
@@ -817,7 +818,7 @@ pub(crate) fn charset_text_properties_print(
     if setting.is_nil() {
         return false;
     }
-    if matches!(&setting, Value::T) {
+    if matches!(setting.kind(), Kind::T) {
         return true;
     }
     let ordered = interp.charset_priority_list();
@@ -874,7 +875,7 @@ pub(crate) fn render_hash_table_prin1(
         .unwrap_or_default();
 
     let mut rendered = String::from("#s(hash-table");
-    if !matches!(&test, Value::Symbol(name) if name == "eql") {
+    if !matches!(test.kind(), Kind::Symbol(name) if name == "eql") {
         rendered.push_str(" test ");
         rendered.push_str(&render_prin1_with_context(
             interp,
@@ -1012,7 +1013,7 @@ pub(crate) fn render_prin1_body(
             return Ok(None);
         }
         let rendered = call_function_value(interp, &function, &[*value, Value::T], env)?;
-        if matches!(rendered, Value::T) {
+        if matches!(rendered.kind(), Kind::T) {
             return Ok(Some(String::new()));
         }
         if rendered.is_nil() {
@@ -1029,7 +1030,7 @@ pub(crate) fn render_prin1_body(
     // (`new_backquote_output'), and consumes one level of it.
     if context.options.quoted
         && let Some((head, rest)) = value.cons_values()
-        && let Value::Symbol(symbol) = &head
+        && let Kind::Symbol(symbol) = head.kind()
         && let Some((inner, tail)) = rest.cons_values()
         && tail.is_nil()
     {
@@ -1053,8 +1054,8 @@ pub(crate) fn render_prin1_body(
         }
     }
 
-    match value {
-        Value::Integer(_) | Value::BigInteger(_) if context.options.integers_as_characters => {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) if context.options.integers_as_characters => {
             let rendered = if context.options.escape {
                 render_prin1_integer_as_character(value)
             } else {
@@ -1062,10 +1063,10 @@ pub(crate) fn render_prin1_body(
             };
             Ok(rendered.unwrap_or_else(|| value.to_string()))
         }
-        Value::String(text) if !context.options.escape => Ok(text.to_string()),
-        Value::String(text) => Ok(render_prin1_string(interp, text, env)),
-        Value::StringObject(state) if !context.options.escape => Ok(state.borrow().text.clone()),
-        Value::StringObject(state) => {
+        Kind::String(text) if !context.options.escape => Ok(text.to_string()),
+        Kind::String(text) => Ok(render_prin1_string(interp, &text, env)),
+        Kind::StringObject(state) if !context.options.escape => Ok(state.borrow().text.clone()),
+        Kind::StringObject(state) => {
             let (text, props, multibyte) = {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone(), state.multibyte)
@@ -1112,11 +1113,11 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
-        Value::Symbol(symbol) if context.options.escape && symbol == "`" => Ok("\\`".into()),
-        Value::Symbol(symbol) if context.options.escape && symbol == "," => Ok("\\,".into()),
-        Value::Symbol(symbol) if context.options.escape && symbol == ",@" => Ok("\\,@".into()),
-        Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
-        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
+        Kind::Symbol(symbol) if context.options.escape && symbol == "`" => Ok("\\`".into()),
+        Kind::Symbol(symbol) if context.options.escape && symbol == "," => Ok("\\,".into()),
+        Kind::Symbol(symbol) if context.options.escape && symbol == ",@" => Ok("\\,@".into()),
+        Kind::Symbol(symbol) => Ok(render_prin1_symbol(&symbol, context.options)),
+        Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
@@ -1134,14 +1135,14 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("[{}]", rendered_items.join(" ")))
         }
-        Value::Cons(_) => render_prin1_list(interp, value, env, context, depth),
-        Value::Lambda(lambda_value) => {
+        Kind::Cons(_) => render_prin1_list(interp, value, env, context, depth),
+        Kind::Lambda(lambda_value) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
             // GNU print.c prints every stored closure slot. Capture filtering
             // belongs to cconv.el at construction, never to the printer.
-            let slots = interp.interpreted_closure_slots(lambda_value);
+            let slots = interp.interpreted_closure_slots(&lambda_value);
             let mut rendered_slots = Vec::new();
             for (index, slot) in slots.iter().enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {
@@ -1158,23 +1159,23 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#[{}]", rendered_slots.join(" ")))
         }
-        Value::BuiltinFunc(_)
-        | Value::Buffer(_)
-        | Value::Marker(_)
-        | Value::Overlay(_)
-        | Value::CharTable(_) => {
+        Kind::BuiltinFunc(_)
+        | Kind::Buffer(_)
+        | Kind::Marker(_)
+        | Kind::Overlay(_)
+        | Kind::CharTable(_) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
-            match value {
-                Value::BuiltinFunc(name) => Ok(format!("#<subr {name}>")),
-                Value::Buffer(buffer) => Ok(match interp.get_buffer_by_id(buffer.id) {
+            match value.kind() {
+                Kind::BuiltinFunc(name) => Ok(format!("#<subr {name}>")),
+                Kind::Buffer(buffer) => Ok(match interp.get_buffer_by_id(buffer.id) {
                     Some(live) if context.options.escape => format!("#<buffer {}>", live.name),
                     Some(live) => live.name.clone(),
                     None => "#<killed buffer>".into(),
                 }),
-                Value::Marker(id) => {
-                    if let Some(marker) = interp.find_marker(*id) {
+                Kind::Marker(id) => {
+                    if let Some(marker) = interp.find_marker(id) {
                         return Ok(match marker.buffer_id {
                             Some(buffer_id) => {
                                 let buffer_name = interp
@@ -1196,16 +1197,16 @@ pub(crate) fn render_prin1_body(
                 _ => Ok(value.to_string()),
             }
         }
-        Value::Frame(id) => {
+        Kind::Frame(id) => {
             let name = interp
-                .frame_state(*id)
+                .frame_state(id)
                 .map(|frame| string_text(&frame.name).unwrap_or_else(|_| format!("F{id}")))
                 .unwrap_or_else(|| format!("F{id}"));
             Ok(format!("#<frame {name} 0x{id:x}>"))
         }
-        Value::Terminal(id) => Ok(format!("#<terminal {id} on initial_terminal>")),
-        Value::Record(id) => {
-            if let Some(record) = interp.find_record(*id) {
+        Kind::Terminal(id) => Ok(format!("#<terminal {id} on initial_terminal>")),
+        Kind::Record(id) => {
+            if let Some(record) = interp.find_record(id) {
                 if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {
                     let Some((symbol, position)) = symbol_with_pos_parts(interp, value) else {
                         return Ok("#<symbol NOT A SYMBOL!! NOT A POSITION!!>".into());
@@ -1343,7 +1344,7 @@ pub(crate) fn finish_print_number_table(
     let mut entries = json::hash_table_entries(interp, &table)
         .map(|(_, entries)| entries)
         .unwrap_or_default();
-    entries.retain(|(_, state)| !matches!(state, Value::Integer(_)));
+    entries.retain(|(_, state)| !matches!(state.kind(), Kind::Integer(_)));
     let mut labels = context.labels.values().collect::<Vec<_>>();
     labels.sort_by_key(|label| label.number);
     entries.extend(labels.into_iter().map(|label| {
@@ -1414,10 +1415,14 @@ pub(crate) fn render_prin1_ephemeral(
 /// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
 /// loaded (`load-true-file-name' a string), else `(end-of-file)'.
 fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
-    match interp.lookup_var("load-true-file-name", env) {
-        Some(file @ Value::String(_)) => {
-            LispError::SignalValue(Value::list([Value::Symbol("end-of-file".into()), file]))
-        }
+    match interp
+        .lookup_var("load-true-file-name", env)
+        .map(|v| v.kind())
+    {
+        Some(file @ Kind::String(_)) => LispError::SignalValue(Value::list([
+            Value::Symbol("end-of-file".into()),
+            file.value(),
+        ])),
         _ => LispError::EndOfInput,
     }
 }
@@ -1466,8 +1471,8 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
     source: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    match source {
-        Value::Buffer(_) => {
+    match source.kind() {
+        Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let (start, end, text) = {
                 let buffer = interp
@@ -1494,9 +1499,9 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             }
             result.map(|(value, _)| value)
         }
-        Value::Marker(id) => {
+        Kind::Marker(id) => {
             let (buffer_id, start) = {
-                let marker = interp.find_marker(*id).ok_or_else(|| {
+                let marker = interp.find_marker(id).ok_or_else(|| {
                     LispError::TypeError("marker".into(), format!("marker<{id}>"))
                 })?;
                 let buffer_id = marker
@@ -1522,17 +1527,17 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 Err(LispError::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
-            interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
+            interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Value::BuiltinFunc(_) | Value::Lambda(_) => {
+        Kind::BuiltinFunc(_) | Kind::Lambda(_) => {
             // A function stream yields characters with no stable source
             // text, so GNU has no positions to attach either.
             let value = read_from_callable_source(interp, source, env)?;
             interp.intern_symbols_in_value(&value);
             Ok(value)
         }
-        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
+        Kind::Symbol(symbol) if interp.lookup_function(&symbol, env).is_ok() => {
             let value = read_from_callable_source(interp, source, env)?;
             interp.intern_symbols_in_value(&value);
             Ok(value)
@@ -1595,8 +1600,8 @@ fn materialize_positioned_symbols(
     value: Value,
     seen: &mut std::collections::HashSet<*const crate::lisp::types::ConsCell>,
 ) -> Value {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
                 let bare = match name.as_str() {
                     "t" => Value::T,
@@ -1629,7 +1634,7 @@ fn materialize_positioned_symbols(
             }
             _ => Value::ReaderForm(form),
         },
-        Value::Cons(cell) => {
+        Kind::Cons(cell) => {
             let pointer = cell.as_ptr();
             if seen.insert(pointer) {
                 let car = *cell.car.borrow();
@@ -1647,7 +1652,7 @@ fn materialize_positioned_symbols(
         // placeholder left here reached the byte compiler's constants
         // vector and was printed as `#<reader-form>' into every `.elc'
         // and `.eln' holding a key sequence such as `[mouse-1]'.
-        Value::Vector(vector) => {
+        Kind::Vector(vector) => {
             let pointer = vector.identity() as *const crate::lisp::types::ConsCell;
             if seen.insert(pointer) {
                 let slots = vector.slots().to_vec();
@@ -1657,12 +1662,12 @@ fn materialize_positioned_symbols(
             }
             Value::Vector(vector)
         }
-        other => other,
+        other => other.value(),
     }
 }
 
 pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
-    let Value::ReaderForm(form) = value else {
+    let Kind::ReaderForm(form) = value.kind() else {
         return None;
     };
     let crate::lisp::types::ReaderForm::Record { slots } = form.as_ref() else {
@@ -1677,10 +1682,15 @@ pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
 
 pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
     if let Ok(items) = value.to_vec()
-        && let [Value::Symbol(symbol), inner] = items.as_slice()
+        && let [Kind::Symbol(symbol), inner] = items
+            .as_slice()
+            .iter()
+            .map(|v| v.kind())
+            .collect::<Vec<_>>()
+            .as_slice()
         && symbol == "quote"
     {
-        return *inner;
+        return inner.value();
     }
     *value
 }
@@ -1711,11 +1721,14 @@ pub(crate) fn read_from_callable_source(
     let mut text = String::new();
     loop {
         let next = interp.call_function_value(callable, original_name, &[], env)?;
-        let Some(code) = (match next {
-            Value::Integer(code) => Some(code),
-            Value::Nil => None,
+        let Some(code) = (match next.kind() {
+            Kind::Integer(code) => Some(code),
+            Kind::Nil => None,
             other => {
-                return Err(LispError::WrongTypeArgument("integerp".into(), other));
+                return Err(LispError::WrongTypeArgument(
+                    "integerp".into(),
+                    other.value(),
+                ));
             }
         }) else {
             break;
@@ -1787,8 +1800,8 @@ pub(crate) fn materialize_read_char_table_literals(
 }
 
 fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             crate::lisp::types::ReaderForm::CharTable { fields } => Some(fields.clone()),
             _ => None,
         },
@@ -1797,8 +1810,8 @@ fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 }
 
 fn sub_char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             crate::lisp::types::ReaderForm::SubCharTable { fields } => Some(fields.clone()),
             _ => None,
         },
@@ -1815,7 +1828,7 @@ fn materialize_char_table_literals_inner(
     if let Some(fields) = char_table_literal_fields(value) {
         return char_table_from_literal_fields(interp, &fields, env, seen);
     }
-    if let Value::Vector(vector) = value {
+    if let Kind::Vector(vector) = value.kind() {
         if !seen.insert(vector.identity()) {
             return Ok(*value);
         }
@@ -1856,10 +1869,10 @@ fn char_table_from_literal_fields(
 
     let default = materialize_literal_value(interp, &fields[0], env, seen)?;
     let parent = materialize_literal_value(interp, &fields[1], env, seen)?;
-    let subtype = match &fields[2] {
-        Value::Nil => None,
-        Value::T => Some("t".into()),
-        Value::Symbol(symbol) => Some(symbol.to_string()),
+    let subtype = match fields[2].kind() {
+        Kind::Nil => None,
+        Kind::T => Some("t".into()),
+        Kind::Symbol(symbol) => Some(symbol.to_string()),
         _ => None,
     };
     let uncompress_property_values = subtype.as_deref() == Some("char-code-property-table");
@@ -1870,7 +1883,7 @@ fn char_table_from_literal_fields(
         .and_then(|_| fields.get(CHAR_TABLE_STANDARD_SLOTS + 4))
         .and_then(literal_vector_values);
     let table = interp.make_char_table(subtype, default);
-    let Value::CharTable(id) = table else {
+    let Kind::CharTable(id) = table.kind() else {
         unreachable!("make_char_table always returns a character table")
     };
 
@@ -1906,8 +1919,8 @@ fn char_table_from_literal_fields(
     let state = interp
         .find_char_table_mut(id)
         .expect("new character table must exist");
-    state.parent = match parent {
-        Value::CharTable(parent_id) => Some(parent_id),
+    state.parent = match parent.kind() {
+        Kind::CharTable(parent_id) => Some(parent_id),
         _ => None,
     };
     state.replace_entries(entries);
@@ -1934,11 +1947,12 @@ fn flatten_char_table_value(
         return Ok(());
     }
     if let Some(fields) = sub_char_table_literal_fields(value) {
+        let kinds = fields.iter().map(|v| v.kind()).collect::<Vec<_>>();
         let [
-            Value::Integer(depth @ 1..=3),
-            Value::Integer(min_char),
+            Kind::Integer(depth @ 1..=3),
+            Kind::Integer(min_char),
             contents @ ..,
-        ] = fields.as_slice()
+        ] = kinds.as_slice()
         else {
             return Err(invalid_char_table_literal("invalid sub-char-table header"));
         };
@@ -1959,7 +1973,7 @@ fn flatten_char_table_value(
             let end = start.saturating_add(width - 1).min(MAX_CHAR);
             flatten_char_table_value(
                 interp,
-                content,
+                &content.value(),
                 start.max(allowed_start),
                 end.min(allowed_end),
                 env,
@@ -1998,10 +2012,8 @@ fn flatten_char_table_value(
 
 fn literal_vector_values(value: &Value) -> Option<Vec<Value>> {
     let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(marker), values)) if marker == "vector-literal" => {
-            Some(values.to_vec())
-        }
+    match items.split_first().map(|(a0, a1)| (a0.kind(), a1)) {
+        Some((Kind::Symbol(marker), values)) if marker == "vector-literal" => Some(values.to_vec()),
         _ => Some(items),
     }
 }
@@ -2010,8 +2022,8 @@ fn uncompress_char_property_values(
     value: &Value,
     decomposition_words: Option<&[Value]>,
 ) -> Result<Option<Vec<Option<Value>>>, LispError> {
-    let text = match value {
-        Value::String(_) | Value::StringObject(_) => string_text(value)?,
+    let text = match value.kind() {
+        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
         _ => return Ok(None),
     };
     let mut chars = text.chars().map(u32::from).peekable();
@@ -2152,31 +2164,32 @@ fn append_char_table_range(
 }
 
 fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::T, Value::T) | (Value::Nil, Value::Nil) | (Value::Unbound, Value::Unbound) => true,
-        (Value::Integer(left), Value::Integer(right)) => left == right,
-        (Value::Symbol(left), Value::Symbol(right)) => left == right,
-        (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
-        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
-        (Value::Marker(left), Value::Marker(right))
-        | (Value::Overlay(left), Value::Overlay(right))
-        | (Value::CharTable(left), Value::CharTable(right))
-        | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
-        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
+    match (left.kind(), right.kind()) {
+        (Kind::T, Kind::T) | (Kind::Nil, Kind::Nil) | (Kind::Unbound, Kind::Unbound) => true,
+        (Kind::Integer(left), Kind::Integer(right)) => left == right,
+        (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
+        (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Marker(left), Kind::Marker(right))
+        | (Kind::Overlay(left), Kind::Overlay(right))
+        | (Kind::CharTable(left), Kind::CharTable(right))
+        | (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
+        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
 
 fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
     let items = value.to_vec().ok()?;
-    let [Value::Symbol(head), literal] = items.as_slice() else {
+    let kinds = items.iter().map(|v| v.kind()).collect::<Vec<_>>();
+    let [Kind::Symbol(head), literal] = kinds.as_slice() else {
         return None;
     };
     if head != "quote" {
         return None;
     }
-    match literal {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match *literal {
+        Kind::ReaderForm(form) => match form.as_ref() {
             crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
             _ => None,
         },
@@ -2185,8 +2198,8 @@ fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 }
 
 fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
             _ => None,
         },
@@ -2206,7 +2219,7 @@ fn materialize_hash_table_literals_inner(
     if let Some(fields) = bare_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, env, seen);
     }
-    if let Value::Vector(vector) = value {
+    if let Kind::Vector(vector) = value.kind() {
         if !seen.insert(vector.identity()) {
             return Ok(*value);
         }
@@ -2278,8 +2291,8 @@ fn hash_table_from_literal_fields(
     let capacity = entries.len();
     let table =
         crate::lisp::json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
-    if let Value::Record(id) = &table
-        && let Some(record) = interp.find_record_mut(*id)
+    if let Kind::Record(id) = table.kind()
+        && let Some(record) = interp.find_record_mut(id)
     {
         if record.slots.len() < 7 {
             record.slots.resize(7, Value::Nil);
@@ -2288,7 +2301,7 @@ fn hash_table_from_literal_fields(
         record.slots[5] = weakness;
         record.slots[6] = purecopy;
     }
-    let Value::Record(id) = table else {
+    let Kind::Record(id) = table.kind() else {
         unreachable!("make_hash_table_with_capacity returns a hash-table record")
     };
     for (key, value) in entries {
@@ -2316,8 +2329,8 @@ fn read_from_lisp_source_raw(
     source: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    match source {
-        Value::Buffer(_) => {
+    match source.kind() {
+        Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let (start, end, text) = {
                 let buffer = interp
@@ -2344,9 +2357,9 @@ fn read_from_lisp_source_raw(
             }
             result.map(|(value, _)| value)
         }
-        Value::Marker(id) => {
+        Kind::Marker(id) => {
             let (buffer_id, start) = {
-                let marker = interp.find_marker(*id).ok_or_else(|| {
+                let marker = interp.find_marker(id).ok_or_else(|| {
                     LispError::TypeError("marker".into(), format!("marker<{id}>"))
                 })?;
                 let buffer_id = marker
@@ -2372,11 +2385,11 @@ fn read_from_lisp_source_raw(
                 Err(LispError::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
-            interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
+            interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Value::BuiltinFunc(_) | Value::Lambda(_) => read_from_callable_source(interp, source, env),
-        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
+        Kind::BuiltinFunc(_) | Kind::Lambda(_) => read_from_callable_source(interp, source, env),
+        Kind::Symbol(symbol) if interp.lookup_function(&symbol, env).is_ok() => {
             read_from_callable_source(interp, source, env)
         }
         _ => {
@@ -2415,7 +2428,7 @@ pub(crate) fn md5_source_bytes(
             ])))
         }
     };
-    let buffer_source = matches!(source, Value::Buffer(_));
+    let buffer_source = matches!(source.kind(), Kind::Buffer(_));
     let object = if buffer_source {
         let id = interp.resolve_buffer_id(source)?;
         let saved = interp.current_buffer_id();
@@ -2527,8 +2540,8 @@ pub(crate) fn md5_source_bytes(
         }
         coding = validate(interp, coding)?;
         *source
-    } else if matches!(source, Value::Symbol(name) if name == "iv-auto") {
-        if !matches!(start, Value::Integer(number) if *number >= 0) {
+    } else if matches!(source.kind(), Kind::Symbol(name) if name == "iv-auto") {
+        if !matches!(start.kind(), Kind::Integer(number) if number >= 0) {
             return Err(LispError::Signal(
                 "Without a length, `iv-auto' can't be used; see ELisp manual".into(),
             ));
@@ -2577,12 +2590,12 @@ pub(crate) fn md5_source_bytes(
         return Ok(bytes);
     }
     let endpoint = |value: &Value, default: i64| -> Result<i64, LispError> {
-        match value {
-            Value::Nil => Ok(default),
-            Value::Integer(index) => Ok(if *index < 0 {
-                *index + bytes.len() as i64
+        match value.kind() {
+            Kind::Nil => Ok(default),
+            Kind::Integer(index) => Ok(if index < 0 {
+                index + bytes.len() as i64
             } else {
-                *index
+                index
             }),
             _ => Err(LispError::WrongTypeArgument("integerp".into(), *value)),
         }

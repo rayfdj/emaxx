@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 use std::path::{Path, PathBuf};
 
 fn treesit_signal(kind: &str, data: impl IntoIterator<Item = Value>) -> LispError {
@@ -259,7 +260,7 @@ impl Interpreter {
     }
 
     pub(crate) fn treesit_parser_state(&self, value: &Value) -> Option<&TreeSitterParserState> {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             return None;
         };
         self.treesit_parsers
@@ -268,7 +269,7 @@ impl Interpreter {
     }
 
     fn treesit_parser_index(&self, value: &Value) -> Result<usize, LispError> {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             return Err(LispError::TypeError(
                 "treesit-parser-p".into(),
                 value.type_name(),
@@ -324,7 +325,7 @@ impl Interpreter {
         })?;
         let value =
             self.create_pseudovector(RecordKind::TreeSitterParser, "treesit-parser", Vec::new());
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             unreachable!("Tree-sitter parsers use opaque record identities");
         };
         self.treesit_parsers.push(TreeSitterParserState {
@@ -461,7 +462,7 @@ impl Interpreter {
 
     fn create_treesit_node(&mut self, parser_id: u64, node_id: usize, generation: u64) -> Value {
         let node = self.create_pseudovector(RecordKind::TreeSitterNode, "treesit-node", Vec::new());
-        let Value::Record(record_id) = node else {
+        let Kind::Record(record_id) = node.kind() else {
             unreachable!("Tree-sitter nodes use opaque record identities");
         };
         self.treesit_nodes.push(TreeSitterNodeState {
@@ -474,7 +475,7 @@ impl Interpreter {
     }
 
     pub(crate) fn treesit_node_state(&self, value: &Value) -> Option<&TreeSitterNodeState> {
-        let Value::Record(record_id) = value else {
+        let Kind::Record(record_id) = value.kind() else {
             return None;
         };
         self.treesit_nodes

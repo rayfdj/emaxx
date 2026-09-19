@@ -16,7 +16,7 @@ use crate::lisp::eval::{Interpreter, RecordKind};
 use crate::lisp::primitives::{
     decode_utf8_bytes, is_vector_value, read_one_form_in_env, string_like, values_equal,
 };
-use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, Value};
 use libloading::Library;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -120,13 +120,13 @@ fn native_arity(
 ) -> Result<(usize, NativeCallingConvention, Option<usize>), LispError> {
     let min_args = usize::try_from(min_args)
         .map_err(|_| super::lisp::native_ice("negative native minimum arity"))?;
-    let (convention, max_args) = match max_value {
-        Value::Integer(maximum) => {
-            let maximum = usize::try_from(*maximum)
+    let (convention, max_args) = match max_value.kind() {
+        Kind::Integer(maximum) => {
+            let maximum = usize::try_from(maximum)
                 .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;
             native_function_signature(dynamic, maximum)
         }
-        Value::Symbol(name) if name == "many" => (
+        Kind::Symbol(name) if name == "many" => (
             if dynamic {
                 NativeCallingConvention::Fixed
             } else {
@@ -137,7 +137,7 @@ fn native_arity(
         other => {
             return Err(crate::lisp::primitives::wrong_type_argument(
                 "integer-or-many-p",
-                *other,
+                other.value(),
             ));
         }
     };
@@ -562,11 +562,11 @@ fn comp_unit_relocations_match(
         if actual.as_symbol().ok() == Some("lambda-fixup") {
             return false;
         }
-        let native_function = matches!(actual, Value::Record(id)
+        let native_function = matches!(actual.kind(), Kind::Record(id)
             if interpreter.find_record(id).is_some_and(|record|
                 record.kind == RecordKind::NativeCompiledFunction));
         if native_function {
-            let Value::Record(guard_id) = guard else {
+            let Kind::Record(guard_id) = guard.kind() else {
                 return false;
             };
             if interpreter
@@ -654,7 +654,7 @@ pub(super) fn load(
         // relocations may be live in running frames and are never touched
         // again; only the top-level code runs.
         let unit = runtime.decode_relocation(saved_word)?;
-        let Value::Record(record_id) = unit else {
+        let Kind::Record(record_id) = unit.kind() else {
             return Err(inconsistent(filename));
         };
         let loaded = registry
@@ -783,10 +783,9 @@ fn first_load(
         candidate_unit,
         late,
     } = input;
-    let Value::Record(record_id) = candidate_unit else {
+    let Kind::Record(record_id) = candidate_unit.kind() else {
         unreachable!("native load candidate is a native compilation unit")
     };
-    let record_id = *record_id;
     debug_assert!(
         interpreter
             .find_record(record_id)
@@ -1075,7 +1074,7 @@ pub(super) fn register_with_state(
     let c_name = string_like(&arguments[1])
         .map(|string| string.text)
         .ok_or_else(|| crate::lisp::primitives::wrong_type_argument("stringp", arguments[1]))?;
-    let dynamic = matches!(arguments[2], Value::Cons(_));
+    let dynamic = matches!(arguments[2].kind(), Kind::Cons(_));
     let (min_args, max_value, lambda_list) = if dynamic {
         (
             arguments[2].car()?.as_integer()?,
@@ -1086,7 +1085,7 @@ pub(super) fn register_with_state(
         (arguments[2].as_integer()?, arguments[3], Value::Nil)
     };
     let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
-    let Value::Record(unit_record_id) = arguments[6] else {
+    let Kind::Record(unit_record_id) = arguments[6].kind() else {
         return Err(crate::lisp::primitives::wrong_type_argument(
             "native-comp-unit-p",
             arguments[6],
@@ -1127,7 +1126,7 @@ pub(super) fn register_with_state(
                 if dynamic { Value::T } else { Value::Nil },
             ],
         );
-        let Value::Record(function_record_id) = function else {
+        let Kind::Record(function_record_id) = function.kind() else {
             unreachable!("native function is a pseudovector")
         };
         registry.functions.insert(
@@ -1526,7 +1525,7 @@ pub(super) fn load_dumped_unit(
             "trying to load incoherent dumped eln file {text}"
         )));
     }
-    let Value::Cons(_) = file else {
+    let Kind::Cons(_) = file.kind() else {
         return Err(dump_load_error(
             "incoherent compilation unit for dump was dumped".into(),
         ));
@@ -1704,7 +1703,7 @@ fn fixup_eln_load_path(
         .unwrap_or(Value::Nil);
     let mut last_cell = Value::Nil;
     let mut tail = load_path;
-    while let Value::Cons(_) = tail {
+    while let Kind::Cons(_) = tail.kind() {
         last_cell = tail;
         tail = tail.cdr()?;
     }
@@ -1733,7 +1732,7 @@ fn fixup_eln_load_path(
         )?;
         eln_cache_sys = directory(interpreter, environment, &shorter)?;
     }
-    if let Value::Cons(_) = last_cell {
+    if let Kind::Cons(_) = last_cell.kind() {
         last_cell.set_car(eln_cache_sys)?;
     }
     Ok(())
@@ -1764,8 +1763,8 @@ pub(super) fn resolve_dumped_function(
             .find_record(record_id)
             .filter(|record| record.kind == RecordKind::NativeCompiledFunction)
             .ok_or_else(|| dump_load_error("dumped native function record is missing".into()))?;
-        let unit_record_id = match record.slots.get(8) {
-            Some(Value::Record(id)) => *id,
+        let unit_record_id = match record.slots.get(8).map(|v| v.kind()) {
+            Some(Kind::Record(id)) => id,
             _ => {
                 return Err(dump_load_error(
                     "dumped native function has no compilation unit".into(),

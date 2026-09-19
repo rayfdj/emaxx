@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::Kind;
 
 pub(crate) fn internal_text_bytes(text: &str, multibyte: bool) -> Result<Vec<u8>, LispError> {
     if multibyte {
@@ -32,7 +33,7 @@ pub(crate) fn secure_hash_source_bytes(
     start: Option<&Value>,
     end: Option<&Value>,
 ) -> Result<Vec<u8>, LispError> {
-    if let Value::Symbol(symbol) = source
+    if let Kind::Symbol(symbol) = source.kind()
         && symbol == "iv-auto"
     {
         let length = start
@@ -44,8 +45,8 @@ pub(crate) fn secure_hash_source_bytes(
         return Ok(bytes);
     }
 
-    match source {
-        Value::Buffer(_) => {
+    match source.kind() {
+        Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
@@ -272,12 +273,12 @@ pub(crate) fn buffer_line_statistics_value(
 }
 
 pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
-    let n = match arg {
-        Value::Integer(n) => *n,
-        Value::BigInteger(n) => n
+    let n = match arg.kind() {
+        Kind::Integer(n) => n,
+        Kind::BigInteger(n) => n
             .to_i64()
             .ok_or_else(|| LispError::WrongTypeArgument("characterp".into(), *arg))?,
-        Value::Float(_) => {
+        Kind::Float(_) => {
             return Err(LispError::TypeError("integer".into(), "float".into()));
         }
         _ => {
@@ -348,11 +349,11 @@ pub(crate) fn integer_for_format(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<(Option<i64>, BigInt), LispError> {
-    match value {
-        Value::Integer(n) => Ok((Some(*n), BigInt::from(*n))),
-        Value::BigInteger(n) => Ok((None, (*n).into())),
-        Value::Float(f) => Ok((None, bigint_from_truncated_float(f.get())?)),
-        Value::Marker(_) => {
+    match value.kind() {
+        Kind::Integer(n) => Ok((Some(n), BigInt::from(n))),
+        Kind::BigInteger(n) => Ok((None, (n).into())),
+        Kind::Float(f) => Ok((None, bigint_from_truncated_float(f.get())?)),
+        Kind::Marker(_) => {
             let n = integer_like_i64(interp, value)?;
             Ok((Some(n), BigInt::from(n)))
         }

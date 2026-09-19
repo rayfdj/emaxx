@@ -1,5 +1,5 @@
 use super::types::{
-    LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
+    Kind, LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
     make_uninterned_symbol_name,
 };
 use num_bigint::BigInt;
@@ -13,8 +13,8 @@ const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             ReaderForm::CircularLabel { id, payload } => Some((*id, *payload)),
             _ => None,
         },
@@ -23,8 +23,8 @@ fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
 }
 
 fn circular_read_ref_form(value: &Value) -> Option<u32> {
-    match value {
-        Value::ReaderForm(form) => match form.as_ref() {
+    match value.kind() {
+        Kind::ReaderForm(form) => match form.as_ref() {
             ReaderForm::CircularReference(id) => Some(*id),
             _ => None,
         },
@@ -42,7 +42,7 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     // Before Emacs 30, lazily loaded BYTECODE could occupy this slot as a
     // (FILE . OFFSET) pair.  It is still bytecode, whereas an interpreted
     // closure's code slot is a (proper) list of body forms.
-    !matches!(&*cdr.borrow(), Value::Integer(_))
+    !matches!((*cdr.borrow()).kind(), Kind::Integer(_))
 }
 
 fn invalid_circular_read_syntax() -> LispError {
@@ -61,8 +61,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
         if circular_read_ref_form(&value).is_some() || circular_read_label_form(&value).is_some() {
             return true;
         }
-        match value {
-            Value::Cons(_) => {
+        match value.kind() {
+            Kind::Cons(_) => {
                 let Some((car, cdr)) = value.cons_cells() else {
                     continue;
                 };
@@ -71,12 +71,12 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                     pending.push(*car.borrow());
                 }
             }
-            Value::Vector(vector) => {
+            Kind::Vector(vector) => {
                 if seen_vectors.insert(vector.identity()) {
                     pending.extend(vector.slots().iter().cloned());
                 }
             }
-            Value::ReaderForm(form) => match form.as_ref() {
+            Kind::ReaderForm(form) => match form.as_ref() {
                 ReaderForm::HashTable { fields }
                 | ReaderForm::CharTable { fields }
                 | ReaderForm::SubCharTable { fields } => {
@@ -100,7 +100,7 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
 
 fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
     let (car, cdr) = value.cons_values()?;
-    if !matches!(car, Value::Symbol(ref symbol) if symbol == "quote") {
+    if !matches!(car.kind(), Kind::Symbol(ref symbol) if symbol == "quote") {
         return None;
     }
     let (literal, rest) = cdr.cons_values()?;
@@ -108,8 +108,8 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
         return None;
     }
     matches!(
-        &literal,
-        Value::ReaderForm(form) if matches!(form.as_ref(), ReaderForm::HashTable { .. })
+        literal.kind(),
+        Kind::ReaderForm(form) if matches!(form.as_ref(), ReaderForm::HashTable { .. })
     )
     .then_some(literal)
 }
@@ -118,11 +118,11 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
 /// ...)' list, or a vector itself, whose `to_vec' also leads with that
 /// head.  A list is examined by its car alone, never converted.
 fn vector_literal_items(value: &Value) -> Option<Vec<Value>> {
-    match value {
-        Value::Vector(_) => value.to_vec().ok(),
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Vector(_) => value.to_vec().ok(),
+        Kind::Cons(_) => {
             let (car, _) = value.cons_values()?;
-            if !matches!(car, Value::Symbol(ref symbol) if symbol == "vector-literal") {
+            if !matches!(car.kind(), Kind::Symbol(ref symbol) if symbol == "vector-literal") {
                 return None;
             }
             value.to_vec().ok()
@@ -141,7 +141,7 @@ fn fill_circular_label_value(
     labels: &mut HashMap<u32, Value>,
 ) -> Result<(), LispError> {
     if let Some(items) = vector_literal_items(template) {
-        let Value::Vector(vector) = target else {
+        let Kind::Vector(vector) = target.kind() else {
             return Err(invalid_circular_read_syntax());
         };
         if vector.slots().len() != items.len().saturating_sub(1) {
@@ -200,7 +200,7 @@ fn resolve_changed(
 
         let placeholder = if let Some(items) = vector_literal_items(&template) {
             circular_vector_skeleton(items.len().saturating_sub(1))
-        } else if matches!(template, Value::Cons(_)) {
+        } else if matches!(template.kind(), Kind::Cons(_)) {
             Value::cons(Value::Nil, Value::Nil)
         } else {
             let resolved = resolve_circular_read_syntax_inner(&template, labels)?;
@@ -232,15 +232,15 @@ fn resolve_changed(
         if !changed {
             return Ok(None);
         }
-        return Ok(Some(if matches!(value, Value::Vector(_)) {
+        return Ok(Some(if matches!(value.kind(), Kind::Vector(_)) {
             Value::vector(resolved)
         } else {
             Value::list(std::iter::once(Value::symbol("vector-literal")).chain(resolved))
         }));
     }
 
-    match value {
-        Value::Cons(_) => {
+    match value.kind() {
+        Kind::Cons(_) => {
             // Walk the spine iteratively, each element's car first and the
             // final cdr last, as the recursive descent did; a long list
             // must not recurse once per element.  Every tail is examined
@@ -265,7 +265,7 @@ fn resolve_changed(
                     None => items.push(car),
                 }
                 cursor = cdr;
-                if !matches!(cursor, Value::Cons(_)) {
+                if !matches!(cursor.kind(), Kind::Cons(_)) {
                     break;
                 }
                 if circular_read_ref_form(&cursor).is_some()
@@ -294,7 +294,7 @@ fn resolve_changed(
         // Propertized string literals carry arbitrary values in their
         // property plists; `#N=' labels and `#N#' references may appear
         // there (print-circle output shares prop values).
-        Value::StringObject(state) => {
+        Kind::StringObject(state) => {
             let spans = state.borrow().props.clone();
             let mut changed = false;
             let mut resolved_spans = Vec::with_capacity(spans.len());
@@ -321,7 +321,7 @@ fn resolve_changed(
             state.borrow_mut().props = resolved_spans;
             Ok(Some(*value))
         }
-        Value::ReaderForm(form) => {
+        Kind::ReaderForm(form) => {
             let resolve_fields = |fields: &[Value], labels: &mut HashMap<u32, Value>| {
                 fields
                     .iter()
@@ -375,24 +375,24 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut seen_vectors = std::collections::HashSet::new();
     let mut stack = vec![*value];
     while let Some(current) = stack.pop() {
-        match &current {
-            Value::ReaderForm(_) => return true,
-            Value::Cons(cons_cell) => {
+        match current.kind() {
+            Kind::ReaderForm(_) => return true,
+            Kind::Cons(cons_cell) => {
                 let car_cell = &cons_cell.car;
                 let cdr_cell = &cons_cell.cdr;
-                let ptr = crate::lisp::types::ConsCell::identity(cons_cell);
+                let ptr = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if !seen.insert(ptr) {
                     continue;
                 }
                 stack.push(*car_cell.borrow());
                 stack.push(*cdr_cell.borrow());
             }
-            Value::Vector(vector) => {
+            Kind::Vector(vector) => {
                 if seen_vectors.insert(vector.identity()) {
                     stack.extend(vector.slots().iter().cloned());
                 }
             }
-            Value::StringObject(state) => {
+            Kind::StringObject(state) => {
                 for span in &state.borrow().props {
                     for (_, prop_value) in &span.props {
                         stack.push(*prop_value);
@@ -580,7 +580,7 @@ impl<'a> Reader<'a> {
         let value = self.read_datum()?;
         // Every placeholder is the value of some `read' call, nested ones
         // included (lists, vectors and quotes read their elements here).
-        if matches!(value, Some(Value::ReaderForm(_))) {
+        if matches!(value.map(|v| v.kind()), Some(Kind::ReaderForm(_))) {
             self.emitted_reader_forms = true;
         }
         Ok(value)
@@ -1465,18 +1465,22 @@ impl<'a> Reader<'a> {
                         return Err(LispError::ReadError("invalid size char-table".into()));
                     }
                 } else {
-                    let Some(Value::Integer(depth @ 1..=3)) = fields.first() else {
+                    let Some(Kind::Integer(depth @ 1..=3)) = fields.first().map(|v| v.kind())
+                    else {
                         return Err(LispError::ReadError(
                             "invalid depth in sub-char-table".into(),
                         ));
                     };
-                    let expected_contents = [0usize, 16, 32, 128][*depth as usize];
+                    let expected_contents = [0usize, 16, 32, 128][depth as usize];
                     if fields.len() != expected_contents + 2 {
                         return Err(LispError::ReadError(
                             "invalid size in sub-char-table".into(),
                         ));
                     }
-                    if !matches!(fields.get(1), Some(Value::Integer(0..=0x3f_ffff))) {
+                    if !matches!(
+                        fields.get(1).map(|v| v.kind()),
+                        Some(Kind::Integer(0..=0x3f_ffff))
+                    ) {
                         return Err(LispError::ReadError(
                             "invalid minimum character in sub-char-table".into(),
                         ));
@@ -1552,13 +1556,13 @@ impl<'a> Reader<'a> {
                 if self.pos == len_start {
                     return Err(LispError::ReadError("missing bool vector length".into()));
                 }
-                let bytes = match self.read()?.ok_or(LispError::EndOfInput)? {
-                    Value::String(text) => text,
-                    Value::StringObject(state) => state.borrow().text.clone().into(),
+                let bytes = match (self.read()?.ok_or(LispError::EndOfInput)?).kind() {
+                    Kind::String(text) => text,
+                    Kind::StringObject(state) => state.borrow().text.clone().into(),
                     other => {
                         return Err(LispError::ReadError(format!(
                             "invalid bool vector literal bytes: expected string, got {}",
-                            other.type_name()
+                            other.value().type_name()
                         )));
                     }
                 };
@@ -1592,7 +1596,7 @@ impl<'a> Reader<'a> {
             Some(b':') => {
                 self.advance();
                 let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput)?;
-                let Value::Symbol(base) = symbol else {
+                let Kind::Symbol(base) = symbol.kind() else {
                     return Err(LispError::ReadError(
                         "invalid uninterned symbol syntax".into(),
                     ));
@@ -1797,7 +1801,7 @@ impl<'a> Reader<'a> {
                 })();
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
-                if matches!(&kind, Value::Symbol(kind_name) if kind_name == "hash-table") {
+                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name == "hash-table") {
                     Ok(Some(Value::ReaderForm(
                         crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::HashTable {
                             fields,
@@ -1842,9 +1846,9 @@ impl<'a> Reader<'a> {
         let Some(first) = items.first() else {
             return Ok(None);
         };
-        let (text, mut props, multibyte, extended_chars) = match first {
-            Value::String(text) => (text.to_string(), Vec::new(), false, Vec::new()),
-            Value::StringObject(state) => {
+        let (text, mut props, multibyte, extended_chars) = match first.kind() {
+            Kind::String(text) => (text.to_string(), Vec::new(), false, Vec::new()),
+            Kind::StringObject(state) => {
                 let state = state.borrow();
                 (
                     state.text.clone(),
@@ -2216,7 +2220,7 @@ mod tests {
     #[test]
     fn uninterned_symbols() {
         let value = read_one("#:a");
-        let Value::Symbol(symbol) = value else {
+        let Kind::Symbol(symbol) = value.kind() else {
             panic!("expected symbol");
         };
         assert_eq!(crate::lisp::types::visible_symbol_name(&symbol), "a");
@@ -2229,7 +2233,7 @@ mod tests {
         let ordinary = read_one(r#""hello""#);
         assert_eq!(ordinary, Value::String("hello".into()));
         assert!(
-            matches!(ordinary, Value::StringObject(_)),
+            matches!(ordinary.kind(), Kind::StringObject(_)),
             "source string literals must retain Lisp object identity"
         );
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
@@ -2322,7 +2326,7 @@ mod tests {
     #[test]
     fn reads_three_field_interpreted_closure_syntax() {
         let value = read_one("#[(_tag &rest _) ('(t)) (dynamic-name t)]");
-        let Value::ReaderForm(form) = value else {
+        let Kind::ReaderForm(form) = value.kind() else {
             panic!("closure syntax must remain typed until materialization");
         };
         let ReaderForm::Closure { kind, slots } = form.as_ref() else {
@@ -2331,7 +2335,7 @@ mod tests {
         assert_eq!(*kind, ReaderClosureKind::Interpreted);
         assert!(slots.first().is_some_and(|params| {
             params.to_vec().ok().is_some_and(
-                |params| matches!(params.first(), Some(Value::Symbol(name)) if name == "_tag"),
+                |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "_tag"),
             )
         }));
     }
@@ -2391,7 +2395,7 @@ mod tests {
 
     #[test]
     fn reads_named_unicode_string_escapes() {
-        let Value::StringObject(state) = read_one(r#""\N{SNOWFLAKE}""#) else {
+        let Kind::StringObject(state) = read_one(r#""\N{SNOWFLAKE}""#).kind() else {
             panic!("expected a string object");
         };
         let state = state.borrow();
@@ -2507,7 +2511,7 @@ mod tests {
 
     #[test]
     fn reads_strings_with_text_properties_from_hash_syntax() {
-        let Value::StringObject(state) = read_one(r#"#("abc" 0 1 (face bold))"#) else {
+        let Kind::StringObject(state) = read_one(r#"#("abc" 0 1 (face bold))"#).kind() else {
             panic!("expected a string object");
         };
         let state = state.borrow();
@@ -2556,7 +2560,7 @@ mod tests {
 
     #[test]
     fn reads_bool_vector_literals() {
-        let Value::ReaderForm(form) = read_one(r#"#&8"\1""#) else {
+        let Kind::ReaderForm(form) = read_one(r#"#&8"\1""#).kind() else {
             panic!("bool vector literal should read as a reader form");
         };
         assert_eq!(
@@ -2576,7 +2580,7 @@ mod tests {
         let literal = read_one(&format!(
             "#^[fallback nil purpose #^^[3 0 {ascii}] {roots}]"
         ));
-        let Value::ReaderForm(form) = literal else {
+        let Kind::ReaderForm(form) = literal.kind() else {
             panic!("character-table syntax must remain typed until materialization");
         };
         let ReaderForm::CharTable { fields } = form.as_ref() else {
@@ -2584,12 +2588,12 @@ mod tests {
         };
         assert_eq!(fields.len(), 68);
         assert!(matches!(
-            &fields[3],
-            Value::ReaderForm(form)
+            fields[3].kind(),
+            Kind::ReaderForm(form)
                 if matches!(
                     form.as_ref(),
                     ReaderForm::SubCharTable { fields }
-                        if matches!(fields.as_slice(), [Value::Integer(3), Value::Integer(0), ..])
+                        if matches!(crate::lisp::types::kinds(fields).as_slice(), [Kind::Integer(3), Kind::Integer(0), ..])
                 )
         ));
 
@@ -2608,8 +2612,8 @@ mod tests {
         let value = read_one("'#1=((a . 1) . #1#)");
         let items = value.to_vec().expect("quote form");
         assert!(matches!(
-            items.first(),
-            Some(Value::Symbol(symbol)) if symbol == "quote"
+            items.first().map(|v| v.kind()),
+            Some(Kind::Symbol(symbol)) if symbol == "quote"
         ));
         assert!(circular_read_label_form(&items[1]).is_some());
     }
@@ -2629,7 +2633,7 @@ mod tests {
 
         for (object, expected_head) in objects.iter().zip(["a", "b"]) {
             let (head, tail) = object.cons_values().expect("circular list head");
-            assert!(matches!(head, Value::Symbol(symbol) if symbol == expected_head));
+            assert!(matches!(head.kind(), Kind::Symbol(symbol) if symbol == expected_head));
             let (recursive, end) = tail.cons_values().expect("circular list tail");
             assert_eq!(end, Value::Nil);
             assert_eq!(
@@ -2660,7 +2664,8 @@ mod tests {
 
     #[test]
     fn reads_hash_table_structure_syntax_as_self_evaluating_literal() {
-        let Value::ReaderForm(form) = read_one("#s(hash-table test equal data (\"bla\" \"ble\"))")
+        let Kind::ReaderForm(form) =
+            read_one("#s(hash-table test equal data (\"bla\" \"ble\"))").kind()
         else {
             panic!("hash-table syntax must remain typed until materialization");
         };
@@ -2680,21 +2685,21 @@ mod tests {
 
     #[test]
     fn reads_record_structure_syntax_as_record_literal_form() {
-        let Value::ReaderForm(form) = read_one("#s(a b #s(c d) [e])") else {
+        let Kind::ReaderForm(form) = read_one("#s(a b #s(c d) [e])").kind() else {
             panic!("record syntax must remain typed until materialization");
         };
         let ReaderForm::Record { slots } = form.as_ref() else {
             panic!("expected a record reader form");
         };
         assert!(matches!(
-            slots.as_slice(),
-            [Value::Symbol(kind), Value::Symbol(field), Value::ReaderForm(nested), vector]
+            slots.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
+            [Kind::Symbol(kind), Kind::Symbol(field), Kind::ReaderForm(nested), vector]
                 if kind == "a"
                     && field == "b"
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
-                    && vector.to_vec().ok().is_some_and(|items| matches!(
-                        items.as_slice(),
-                        [Value::Symbol(name), Value::Symbol(item)]
+                    && vector.value().to_vec().ok().is_some_and(|items| matches!(
+                        crate::lisp::types::kinds(&items).as_slice(),
+                        [Kind::Symbol(name), Kind::Symbol(item)]
                             if name == "vector-literal" && item == "e"
                     ))
         ));
@@ -2740,7 +2745,7 @@ mod tests {
 
     #[test]
     fn reads_long_hex_string_escapes() {
-        let Value::StringObject(state) = read_one(r#""\x110000""#) else {
+        let Kind::StringObject(state) = read_one(r#""\x110000""#).kind() else {
             panic!("expected a string object");
         };
         assert_eq!(state.borrow().text, INVALID_UNICODE_SENTINEL.to_string());
