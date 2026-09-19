@@ -8,6 +8,7 @@ use super::{
     SavedRestriction, SavedRestrictionBounds, SpecialBindingRestore, Value,
     WindowConfigurationSnapshot,
 };
+use crate::lisp::types::LispErrorKind;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -71,24 +72,24 @@ impl TraceLispRoots for Env {
 
 impl TraceLispRoots for LispError {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
-        match self {
-            Self::WrongTypeArgument(_, value) | Self::SignalValue(value) => {
+        match self.kind() {
+            LispErrorKind::WrongTypeArgument(_, value) | LispErrorKind::SignalValue(value) => {
                 marker.value(value);
             }
-            Self::Throw(tag, value) => {
+            LispErrorKind::Throw(tag, value) => {
                 marker.value(tag);
                 marker.value(value);
             }
-            Self::TypeError(..)
-            | Self::Void(_)
-            | Self::VoidFunction(_)
-            | Self::WrongNumberOfArgs(..)
-            | Self::Signal(_)
-            | Self::ErtTestFailed(_)
-            | Self::Terminate(_)
-            | Self::TestSkipped(_)
-            | Self::EndOfInput
-            | Self::ReadError(_) => {}
+            LispErrorKind::TypeError(..)
+            | LispErrorKind::Void(_)
+            | LispErrorKind::VoidFunction(_)
+            | LispErrorKind::WrongNumberOfArgs(..)
+            | LispErrorKind::Signal(_)
+            | LispErrorKind::ErtTestFailed(_)
+            | LispErrorKind::Terminate(_)
+            | LispErrorKind::TestSkipped(_)
+            | LispErrorKind::EndOfInput
+            | LispErrorKind::ReadError(_) => {}
         }
     }
 }

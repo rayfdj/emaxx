@@ -9,7 +9,7 @@ use super::{RootSource, write_image};
 use crate::buffer::TextPropertySpan;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
-use crate::lisp::types::{Kind, SymbolName, Value};
+use crate::lisp::types::{Kind, LispErrorKind, SymbolName, Value};
 use std::collections::HashMap;
 
 fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
@@ -839,7 +839,12 @@ fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
         RootSource::Explicit(vec![(RootSlot::LoadPath, table)]),
     );
     match result {
-        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+        Err(super::context::DumpError::Lisp(error))
+            if matches!(error.kind(), LispErrorKind::Signal(_)) =>
+        {
+            let LispErrorKind::Signal(message) = error.kind() else {
+                unreachable!()
+            };
             assert_eq!(message, "cannot dump hash tables with user-defined tests");
         }
         Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
@@ -1186,7 +1191,12 @@ fn image_refuses_buffers_with_overlays_as_gnu_does() {
         RootSource::Explicit(vec![(RootSlot::LoadPath, buffer)]),
     );
     match result {
-        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+        Err(super::context::DumpError::Lisp(error))
+            if matches!(error.kind(), LispErrorKind::Signal(_)) =>
+        {
+            let LispErrorKind::Signal(message) = error.kind() else {
+                unreachable!()
+            };
             assert_eq!(message, "dumping overlays is not yet implemented");
         }
         Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
@@ -1366,7 +1376,12 @@ fn image_refuses_pending_transient_state_it_cannot_carry() {
     interp.pending_thread_events.push(Value::symbol("zz-event"));
     let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
     match write_image(&mut ctx, &interp, RootSource::Interpreter) {
-        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+        Err(super::context::DumpError::Lisp(error))
+            if matches!(error.kind(), LispErrorKind::Signal(_)) =>
+        {
+            let LispErrorKind::Signal(message) = error.kind() else {
+                unreachable!()
+            };
             assert_eq!(
                 message,
                 "cannot dump with 1 entries of pending_thread_events pending"

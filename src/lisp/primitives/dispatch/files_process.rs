@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 #[cfg(unix)]
 static ACCOUNT_DATABASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1691,9 +1692,11 @@ define_dispatch!(
                     "file-name-all-completions",
                     &[args[0], args[1]],
                     env,
-                ) {
+                )
+                .map_err(LispError::into_kind)
+                {
                     Ok(names) => names,
-                    Err(LispError::SignalValue(condition))
+                    Err(LispErrorKind::SignalValue(condition))
                         if condition
                             .to_vec()
                             .ok()
@@ -1704,7 +1707,7 @@ define_dispatch!(
                     {
                         return Ok(Value::Nil);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(LispError::from(error)),
                 };
                 // GNU dired.c specbinds DIRECTORY while its optional predicate
                 // examines each relative candidate.  Reuse the ordinary

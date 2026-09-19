@@ -3,6 +3,7 @@ use super::symbol_cells::{
 };
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
 #[derive(Default)]
@@ -2787,7 +2788,10 @@ impl Interpreter {
     }
 
     pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
-        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
+        if matches!(
+            error.kind(),
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+        ) {
             return;
         }
         let frames = self.backtrace_frames_snapshot();
@@ -3004,7 +3008,10 @@ impl Interpreter {
     /// absorb is invisible in GNU, so the trace must stay silent for it
     /// too and speak only for errors that will reach the toplevel report.
     pub(crate) fn some_active_handler_matches(&mut self, error: &LispError) -> bool {
-        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
+        if matches!(
+            error.kind(),
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+        ) {
             return true;
         }
         let error_type = error.condition_type();
@@ -3025,7 +3032,10 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if matches!(error, LispError::Terminate(_) | LispError::Throw(_, _)) {
+        if matches!(
+            error.kind(),
+            LispErrorKind::Terminate(_) | LispErrorKind::Throw(_, _)
+        ) {
             return Err(error);
         }
         if self.handler_dispatch_depth > 0 {
@@ -3037,7 +3047,7 @@ impl Interpreter {
         // that object) passes outward untouched.  A fresh `signal' of the
         // same symbol and data is a new object and runs them again, as in
         // GNU.
-        if let LispError::SignalValue(value) = &error
+        if let LispErrorKind::SignalValue(value) = error.kind()
             && self.dispatched_signal.as_ref().is_some_and(|seen| {
                 crate::lisp::primitives::values_eq_in_env(self, seen, value, env)
             })
@@ -3088,7 +3098,10 @@ impl Interpreter {
                         Err(next) => {
                             self.handler_dispatch_depth =
                                 self.handler_dispatch_depth.saturating_sub(1);
-                            if !matches!(next, LispError::Throw(_, _) | LispError::Terminate(_)) {
+                            if !matches!(
+                                next.kind(),
+                                LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+                            ) {
                                 // An error signaled by the handler propagates
                                 // from the `handler-bind' frame outward, so
                                 // every `condition-case' inside it must let

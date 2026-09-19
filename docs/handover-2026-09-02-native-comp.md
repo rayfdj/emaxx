@@ -1045,6 +1045,16 @@ temporaries.  Next: the 16-byte cons (D2),
 then markers, overlays, char-tables, frames, terminals and finalizers
 as objects, and the symbol's cells in the symbol.
 
+Checkpoint 20o (2026-09-19): the register-sized result: `LispError'
+is one word (a Box of `LispErrorKind'), `Result<Value, LispError>'
+two words in registers as `eval_sub''s `Lisp_Object'; the constructors
+keep the variants' names, `kind'/`into_kind' read the kind.  Measured
+against 20n in one run: the lexical loop 2.17 to 2.03 s (GNU 0.89),
+`mapcar' 0.80 to 0.71 (0.18), six million conses 3.82 to 3.56 (1.50).
+One of 20n's three ignored contracts is back; two stay ignored (the
+native heap's own conservative word scan retains the bytecode one).
+Next: the 16-byte cons (D2), then the id-addressed kinds as objects.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

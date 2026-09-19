@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 /// (host, service, remote-peer, is-server) for `process-contact'.
 pub(crate) type ProcessContactInfo = (Option<String>, Option<i64>, Option<String>, bool);
@@ -3115,11 +3116,11 @@ impl Interpreter {
                 env,
             );
             self.end_timer_callback();
-            match outcome {
+            match outcome.map_err(LispError::into_kind) {
                 Ok(_) => {}
-                Err(error @ LispError::Throw(_, _)) => {
+                Err(error @ LispErrorKind::Throw(_, _)) => {
                     self.restore_unfired_timer_batch(pending);
-                    return Err(error);
+                    return Err(LispError::from(error));
                 }
                 Err(error) => {
                     // `timer-event-handler' demotes timer errors to a message
@@ -3129,7 +3130,7 @@ impl Interpreter {
                         .is_some_and(|value| value.is_truthy())
                     {
                         self.restore_unfired_timer_batch(pending);
-                        return Err(error);
+                        return Err(LispError::from(error));
                     }
                     let label = timer
                         .original_name
@@ -3140,7 +3141,7 @@ impl Interpreter {
                         "message",
                         &[
                             Value::String(format!("Error running timer{label}: %S").into()),
-                            super::error_condition_value(&error),
+                            super::error_condition_value(&LispError::from(error.clone())),
                         ],
                         env,
                     );
@@ -4011,9 +4012,9 @@ impl Interpreter {
         };
         match completion {
             Ok(Ok(value)) => self.finish_thread_success(record_id, value),
-            Ok(Err(LispError::Terminate(termination))) => {
+            Ok(Err(error)) if matches!(error.kind(), LispErrorKind::Terminate(_)) => {
                 self.finish_thread_success(record_id, Value::Nil);
-                return Err(LispError::Terminate(termination));
+                return Err(error);
             }
             Ok(Err(error)) => {
                 self.finish_thread_with_signal(record_id, error_condition_value(&error));

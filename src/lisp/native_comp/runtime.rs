@@ -18,7 +18,7 @@ use super::abi::{
 use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
 use crate::lisp::primitives::{symbol_with_pos_parts, wrong_type_argument};
 use crate::lisp::types::{
-    ConsCell, ConsMutationQueue, ConsWords, IdentityBuildHasher, Kind,
+    ConsCell, ConsMutationQueue, ConsWords, IdentityBuildHasher, Kind, LispErrorKind,
     NativeConsMutationRegistration, SharedCons, SymbolName, Value,
 };
 use crate::lisp::{
@@ -1382,14 +1382,15 @@ impl NativeRuntime {
         environment: &Env,
         error: &LispError,
     ) -> Option<usize> {
-        let is_throw = matches!(error, LispError::Throw(_, _));
-        let (condition, conditions) = if is_throw || matches!(error, LispError::Terminate(_)) {
-            (String::new(), Vec::new())
-        } else {
-            let condition = error.condition_type();
-            let conditions = interpreter.error_condition_names(&condition);
-            (condition, conditions)
-        };
+        let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
+        let (condition, conditions) =
+            if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
+                (String::new(), Vec::new())
+            } else {
+                let condition = error.condition_type();
+                let conditions = interpreter.error_condition_names(&condition);
+                (condition, conditions)
+            };
         let handler_depth = self
             .calls
             .last()
@@ -1398,8 +1399,8 @@ impl NativeRuntime {
         self.handlers[handler_depth..]
             .iter()
             .rposition(|handler| match handler.kind {
-                0 => match error {
-                    LispError::Throw(tag, _) => crate::lisp::primitives::values_eq_in_env(
+                0 => match error.kind() {
+                    LispErrorKind::Throw(tag, _) => crate::lisp::primitives::values_eq_in_env(
                         interpreter,
                         &handler.match_value,
                         tag,
@@ -1407,7 +1408,7 @@ impl NativeRuntime {
                     ),
                     _ => false,
                 },
-                1 if !is_throw && !matches!(error, LispError::Terminate(_)) => {
+                1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
                     Interpreter::clause_head_matches(&handler.match_value, &condition, &conditions)
                 }
                 _ => false,
@@ -1485,12 +1486,12 @@ impl NativeRuntime {
                 self.remember_error(error);
                 return escape_buffer;
             };
-            let value = match &error {
-                LispError::Throw(_, value) => *value,
-                LispError::Terminate(_) => unreachable!("termination cannot match a handler"),
-                _ => crate::lisp::eval::error_condition_value(&error),
+            let value = match error.kind() {
+                LispErrorKind::Throw(_, value) => value,
+                LispErrorKind::Terminate(_) => unreachable!("termination cannot match a handler"),
+                _ => &crate::lisp::eval::error_condition_value(&error),
             };
-            let encoded = match self.heap.encode(&value) {
+            let encoded = match self.heap.encode(value) {
                 Ok(encoded) => encoded,
                 Err(encode_error) => {
                     self.remember_error(super::lisp::native_ice(&encode_error));
@@ -2328,7 +2329,7 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
             // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
             unsafe { emaxx_native_gc_trampoline() };
             let result = target.invoke(active, call_arguments);
-            let result = match result {
+            let result = match result.map_err(LispError::into_kind) {
                 Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
                     // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
                     // dropping its backtrace record when backtrace-debug marked the
@@ -2351,8 +2352,12 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
                     })
                 }
                 Ok(word) => Ok(word),
-                Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-                Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
+                Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                    Err(LispError::from(error))
+                }
+                Err(error) => match interpreter
+                    .dispatch_handler_bindings(LispError::from(error), environment)
+                {
                     Ok(value) => runtime
                         .heap
                         .encode(&value)
@@ -2769,10 +2774,10 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
         Some(symbol) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
         None => unsafe { &*active.interpreter }.symbol_value_cell(name),
     };
-    let value = value.map_err(|error| match error {
+    let value = value.map_err(|error| match error.into_kind() {
         // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
         // not the name of the final cell reached through a variable alias.
-        LispError::Void(_) => LispError::SignalValue(Value::list([
+        LispErrorKind::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
             match &symbol_state {
                 Some(symbol) => Value::Symbol(*symbol),
@@ -2780,7 +2785,7 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
                 None => Value::T,
             },
         ])),
-        error => error,
+        error => LispError::from(error),
     });
     Some(
         match value.and_then(|value| {
@@ -5594,13 +5599,13 @@ mod tests {
                 )
             }
             .expect_err("fns.c:Fstring_bytes requires a string, not a shaped vector");
-            let LispError::WrongTypeArgument(predicate, original) = error else {
+            let LispErrorKind::WrongTypeArgument(predicate, original) = error.kind() else {
                 panic!("CHECK_STRING must preserve its original argument: {error:?}")
             };
             assert_eq!(predicate, "stringp");
             assert!(crate::lisp::primitives::values_eq_in_env(
                 &interpreter,
-                &original,
+                original,
                 &vector,
                 &environment,
             ));
@@ -5948,14 +5953,17 @@ mod tests {
         let mut runtime = NativeRuntime::default();
 
         interpreter.set_symbol_value_cell("quit-flag", Value::T);
-        match runtime.invoke(
-            &mut interpreter,
-            &mut environment,
-            call_maybe_quit as *const c_void,
-            NativeCallingConvention::Fixed,
-            &[],
-        ) {
-            Err(LispError::SignalValue(value)) => {
+        match runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_maybe_quit as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[],
+            )
+            .map_err(LispError::into_kind)
+        {
+            Err(LispErrorKind::SignalValue(value)) => {
                 assert_eq!(value, Value::list([Value::symbol("quit")]))
             }
             other => panic!("ordinary quit must signal (quit), got {other:?}"),
@@ -5992,14 +6000,17 @@ mod tests {
         interpreter.set_symbol_value_cell("inhibit-quit", Value::Nil);
         interpreter.set_symbol_value_cell("throw-on-input", tag);
         interpreter.set_symbol_value_cell("quit-flag", tag);
-        match runtime.invoke(
-            &mut interpreter,
-            &mut environment,
-            call_maybe_quit as *const c_void,
-            NativeCallingConvention::Fixed,
-            &[],
-        ) {
-            Err(LispError::Throw(actual_tag, value)) => {
+        match runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_maybe_quit as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[],
+            )
+            .map_err(LispError::into_kind)
+        {
+            Err(LispErrorKind::Throw(actual_tag, value)) => {
                 assert_eq!(actual_tag, tag);
                 assert_eq!(value, Value::T);
             }
@@ -6558,7 +6569,7 @@ mod tests {
             )
             .expect_err("native helper error should return through the call boundary");
         assert_eq!(error.condition_type(), "wrong-type-argument");
-        let LispError::SignalValue(data) = error else {
+        let LispErrorKind::SignalValue(data) = error.kind() else {
             panic!("wrong-type-argument lost its Lisp condition data");
         };
         assert_eq!(
@@ -7017,11 +7028,11 @@ mod tests {
                 &[Value::symbol("not-a-list"), improper],
             )
             .expect_err("GNU memq rejects an improper list without testing its final atom");
-        let LispError::SignalValue(data) = error else {
+        let LispErrorKind::SignalValue(data) = error.kind() else {
             panic!("memq returned the wrong error: {error:?}");
         };
         assert_eq!(
-            data,
+            *data,
             Value::list([
                 Value::symbol("wrong-type-argument"),
                 Value::symbol("listp"),

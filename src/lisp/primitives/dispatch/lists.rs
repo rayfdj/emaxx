@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
@@ -105,10 +106,10 @@ fn execute_kbd_macro(
         // signal_or_quit does.
         let handler_start =
             interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
-        let iteration = match run_kbd_macro_events(interp, env) {
+        let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
             // GNU's outermost command loop catches `top-level`, terminating
             // the keyboard macro without propagating an error.
-            Err(LispError::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
+            Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
                 Ok(())
             }
             other => other,
@@ -116,7 +117,7 @@ fn execute_kbd_macro(
         interp.pop_handler_bindings(handler_start);
         interp.kbd_macro_executions.pop();
         if let Err(error) = iteration {
-            result = Err(error);
+            result = Err(LispError::from(error));
             break;
         }
 
@@ -449,9 +450,9 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
             interp.push_catch_tag(Value::Symbol("exit".into()));
             let dispatch = execute_kbd_macro_command(interp, &binding, &pending_events, env);
             interp.pop_catch_tag();
-            match dispatch {
+            match dispatch.map_err(LispError::into_kind) {
                 Ok(()) => {}
-                Err(LispError::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
+                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
                 {
                     // The exiting command leaves the recursive loop before
                     // its post-command phase.  The prompting command
@@ -460,7 +461,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
                     sync_kbd_macro_execution(interp, env)?;
                     return active_minibuffer_text(interp, env).map(Some);
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(LispError::from(error)),
             }
             sync_kbd_macro_execution(interp, env)?;
             pending_keys.clear();
@@ -930,8 +931,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()));
     interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
-    match result {
-        Err(LispError::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
+    match result.map_err(LispError::into_kind) {
+        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
             if value.is_truthy() {
                 Err(LispError::SignalValue(Value::list([Value::Symbol(
                     "quit".into(),
@@ -940,7 +941,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
                 Ok(Value::Nil)
             }
         }
-        Err(error) => Err(error),
+        Err(error) => Err(LispError::from(error)),
         Ok(()) => Ok(Value::Nil),
     }
 }
@@ -958,11 +959,15 @@ fn run_recursive_kbd_command_loop(
     env: &mut Env,
 ) -> Result<(), LispError> {
     loop {
-        match run_kbd_macro_events(interp, env) {
+        match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
             Ok(()) => return Ok(()),
-            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
-            Err(error) if error_matches_condition(interp, &error, "error") => {
-                report_kbd_command_error(interp, &error, env)?;
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                return Err(LispError::from(error));
+            }
+            Err(error)
+                if error_matches_condition(interp, &LispError::from(error.clone()), "error") =>
+            {
+                report_kbd_command_error(interp, &LispError::from(error.clone()), env)?;
                 safe_run_named_hooks(
                     interp,
                     "post-command-hook",
@@ -976,7 +981,7 @@ fn run_recursive_kbd_command_loop(
                     return Ok(());
                 }
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(LispError::from(error)),
         }
     }
 }
@@ -1038,8 +1043,10 @@ fn execute_kbd_macro_command(
         // `minibuffer-quit' as its sole condition handler.  A customized
         // reporter changes how that one condition is displayed; it does not
         // turn the command loop into a catch-all for ordinary command errors.
-        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_))
-            || !error_matches_condition(interp, &error, "minibuffer-quit")
+        if matches!(
+            error.kind(),
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+        ) || !error_matches_condition(interp, &error, "minibuffer-quit")
         {
             return Err(error);
         }
@@ -2193,7 +2200,7 @@ define_dispatch!(
                         env,
                     )
                     .or_else(|error| {
-                        if matches!(error, LispError::VoidFunction(_)) {
+                        if matches!(error.kind(), LispErrorKind::VoidFunction(_)) {
                             Ok(Value::String(
                                 format!(
                                     "{stem} (default {}): ",

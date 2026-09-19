@@ -2,6 +2,7 @@ use super::core::{list_cdr, list_forms, list_next};
 use super::*;
 use crate::lisp::reader;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 impl Interpreter {
     pub(super) fn sf_quote(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         let Some((template, _)) = list_next(args) else {
@@ -128,14 +129,14 @@ impl Interpreter {
         if env.len() > depth {
             env.truncate(depth);
         }
-        match result {
+        match result.map_err(LispError::into_kind) {
             Ok(value) => Ok(value),
-            Err(LispError::Throw(thrown_tag, value))
+            Err(LispErrorKind::Throw(thrown_tag, value))
                 if crate::lisp::primitives::values_eq_in_env(self, &thrown_tag, &tag, env) =>
             {
                 Ok(value)
             }
-            Err(error) => Err(error),
+            Err(error) => Err(LispError::from(error)),
         }
     }
 

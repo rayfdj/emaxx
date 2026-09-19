@@ -1,3 +1,4 @@
+use crate::lisp::types::LispErrorKind;
 use std::fs;
 use std::path::Path;
 
@@ -955,8 +956,8 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     );
     assert!(
         matches!(
-            bare.lookup_function("read-key", &Env::new()),
-            Err(LispError::VoidFunction(ref missing)) if missing == "read-key"
+            bare.lookup_function("read-key", &Env::new()).map_err(LispError::into_kind),
+            Err(LispErrorKind::VoidFunction(ref missing)) if missing == "read-key"
         ),
         "bare runtime unexpectedly owned GNU subr.el function `read-key`"
     );
@@ -1062,7 +1063,7 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
             .expect("ownership probe contains one form");
         let result = Interpreter::new().eval(&form, &mut Env::new());
         assert!(
-            matches!(result, Err(LispError::VoidFunction(ref missing)) if missing == name),
+            matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::VoidFunction(missing)) if missing == name),
             "bare runtime unexpectedly owned GNU Elisp form `{name}`: {result:?}"
         );
     }

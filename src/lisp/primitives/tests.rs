@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::reader::Reader;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use std::io::{Read, Write};
 
 fn upstream_emacs_repo() -> PathBuf {
@@ -249,8 +250,10 @@ fn apply_follows_eval_c_proper_list_contract() {
         "apply",
         &[Value::symbol("list"), vector],
         &mut env,
-    ) {
-        Err(LispError::WrongTypeArgument(predicate, value)) => {
+    )
+    .map_err(LispError::into_kind)
+    {
+        Err(LispErrorKind::WrongTypeArgument(predicate, value)) => {
             assert_eq!(predicate, "listp");
             assert_eq!(value, vector);
         }
@@ -1481,8 +1484,8 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect_err("kill-emacs must not return into Lisp");
     assert!(matches!(
-        error,
-        LispError::Terminate(EmacsTermination {
+        error.kind(),
+        LispErrorKind::Terminate(EmacsTermination {
             exit_code: 7,
             restart: false
         })
@@ -1512,8 +1515,9 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
             &mut crate::lisp::types::Env::new(),
         )
         .expect_err("native kill-emacs must request process termination")
+        .into_kind()
         {
-            LispError::Terminate(termination) => termination,
+            LispErrorKind::Terminate(termination) => termination,
             other => panic!("unexpected kill-emacs outcome: {other}"),
         }
     };
@@ -2268,7 +2272,6 @@ fn oracle_only_forwarded_c_variables_are_bound_as_the_oracle_binds_them() {
 }
 
 #[test]
-#[ignore = "layout-dependent: a dead slot of a frame above the collection's stack top keeps the object under the conservative scan (checkpoint 20n); the register-sized result removes the temporaries, next"]
 fn uninterned_symbols_are_reached_by_object_not_by_name() {
     // alloc.c marks the symbol object: of two uninterned symbols with one
     // name, the unreferenced one is collected while the other, referenced,
@@ -4335,8 +4338,8 @@ fn native_dispatch_fails_closed_at_the_gnu_c_boundary() {
         );
         assert!(
             matches!(
-                call(&mut interp, name, &[], &mut env),
-                Err(LispError::Signal(message)) if message == format!("Unknown function: {name}")
+                call(&mut interp, name, &[], &mut env).map_err(LispError::into_kind),
+                Err(LispErrorKind::Signal(message)) if message == format!("Unknown function: {name}")
             ),
             "direct dispatch bypassed the GNU C ownership boundary for {name}"
         );
@@ -4633,8 +4636,8 @@ fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
     }
     for character in [Value::Integer(-1), Value::Integer(0x400000), Value::Nil] {
         assert!(matches!(
-            call(&mut interp, "internal-char-font", &[Value::Nil, character], &mut env),
-            Err(LispError::WrongTypeArgument(predicate, value))
+            call(&mut interp, "internal-char-font", &[Value::Nil, character], &mut env).map_err(LispError::into_kind),
+            Err(LispErrorKind::WrongTypeArgument(predicate, value))
                 if predicate == "characterp" && value == character
         ));
     }
@@ -4650,8 +4653,8 @@ fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
         Value::Nil,
     );
     assert!(matches!(
-        call(&mut interp, "internal-char-font", &[Value::Integer(1), Value::Integer(-1)], &mut env),
-        Err(LispError::WrongTypeArgument(predicate, value))
+        call(&mut interp, "internal-char-font", &[Value::Integer(1), Value::Integer(-1)], &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::WrongTypeArgument(predicate, value))
             if predicate == "wholenump" && value == Value::Integer(-1)
     ));
     let error = call(
@@ -4661,7 +4664,7 @@ fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
         &mut env,
     )
     .expect_err("check position before the optional character");
-    assert!(matches!(error, LispError::SignalValue(value)
+    assert!(matches!(error.kind(), LispErrorKind::SignalValue(value)
         if value.car().is_ok_and(|head| head == Value::symbol("args-out-of-range"))));
 }
 
@@ -7746,11 +7749,11 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
         drop(error);
         return;
     }
-    let LispError::SignalValue(condition) = error else {
+    let LispErrorKind::SignalValue(condition) = error.kind() else {
         panic!("expected a structured file-missing condition");
     };
     assert_eq!(
-        condition,
+        *condition,
         Value::list([
             Value::Symbol("file-missing".into()),
             Value::String("Removing old name".into()),
@@ -8944,22 +8947,24 @@ fn make_network_process_requires_the_gnu_name_contract() {
         Value::Nil
     );
 
-    let Err(LispError::Signal(missing)) = call(
+    let Err(LispErrorKind::Signal(missing)) = call(
         &mut interp,
         "make-network-process",
         &[Value::Symbol(":server".into()), Value::T],
         &mut env,
-    ) else {
+    )
+    .map_err(LispError::into_kind) else {
         panic!("a nonempty argument list without :name must fail");
     };
     assert_eq!(missing, "Missing :name keyword parameter");
 
-    let Err(LispError::Signal(not_string)) = call(
+    let Err(LispErrorKind::Signal(not_string)) = call(
         &mut interp,
         "make-network-process",
         &[Value::Symbol(":name".into()), Value::Nil],
         &mut env,
-    ) else {
+    )
+    .map_err(LispError::into_kind) else {
         panic!("a non-string :name must fail");
     };
     assert_eq!(not_string, ":name value not a string");
@@ -9401,8 +9406,8 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
     interp.set_variable("buffer-read-only", Value::T, &mut env);
 
     assert!(matches!(
-        call(&mut interp, "insert", &[Value::String("x".into())], &mut env),
-        Err(LispError::SignalValue(value))
+        call(&mut interp, "insert", &[Value::String("x".into())], &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
                 Kind::Symbol(name),
                 Kind::Buffer(_),
@@ -16039,11 +16044,11 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         &mut env,
     )
     .expect_err("CHECK_OBARRAY precedes CHECK_STRING");
-    let LispError::SignalValue(condition) = error else {
+    let LispErrorKind::SignalValue(condition) = error.kind() else {
         panic!("CHECK_OBARRAY must signal wrong-type-argument, got {error:?}")
     };
     assert_eq!(
-        condition,
+        *condition,
         Value::list([
             Value::symbol("wrong-type-argument"),
             Value::symbol("obarrayp"),
@@ -16051,8 +16056,8 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
         ]),
     );
     assert!(matches!(
-        call(&mut interp, "intern", &[bad_name, table], &mut env),
-        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "stringp"
+        call(&mut interp, "intern", &[bad_name, table], &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::WrongTypeArgument(predicate, _)) if predicate == "stringp"
     ));
 
     interp.define_special_variable("purify-flag", Value::T);
@@ -21295,10 +21300,10 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     set_tty_event_reader(Some(Box::new(|| None)));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
-    let Err(LispError::SignalValue(data)) = event else {
+    let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the tty reader must signal, got {event:?}");
     };
-    assert_eq!(data, Value::Symbol("quit".into()));
+    assert_eq!(*data, Value::Symbol("quit".into()));
 }
 
 #[test]
@@ -21848,10 +21853,10 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
         &mut env,
     );
     set_tty_event_reader(None);
-    let Err(LispError::SignalValue(data)) = result else {
+    let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
-    assert_eq!(data, Value::Symbol("quit".into()));
+    assert_eq!(*data, Value::Symbol("quit".into()));
 }
 
 #[test]
@@ -24321,7 +24326,7 @@ fn terminal_frames_isolate_faces_keyboards_and_saved_configurations() {
 }
 
 #[test]
-#[ignore = "layout-dependent: a dead slot of a frame above the collection's stack top keeps the object under the conservative scan (checkpoint 20n); the register-sized result removes the temporaries, next"]
+#[ignore = "layout-dependent: passes alone and fails in the full run; a stale word in a frame above the collection's stack top keeps the key under the conservative scans (checkpoint 20o); the register-sized result restored the uninterned-symbol contract"]
 fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
     // GNU marks all live thread stacks, including an interpreted caller's
     // lexical cells which its independently scoped callee cannot access.
@@ -24362,7 +24367,7 @@ fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
 }
 
 #[test]
-#[ignore = "layout-dependent: a dead slot of a frame above the collection's stack top keeps the object under the conservative scan (checkpoint 20n); the register-sized result removes the temporaries, next"]
+#[ignore = "layout-dependent: the native heap's conservative word scan finds a stale interior pointer in a frame above the collection's stack top and marks the mirrored cons (checkpoint 20o); the register-sized result restored the other two"]
 fn suspended_bytecode_retains_operand_and_unwind_roots() {
     // GNU bytecode.c:mark_bytecode marks the live operand stack, and the
     // specpdl marks pending cleanup functions. The keys are allocated at
@@ -24651,11 +24656,11 @@ fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
             ],
             &mut env,
         );
-        let Err(LispError::SignalValue(data)) = result else {
+        let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
             panic!("a creation under a missing directory signals: {result:?}");
         };
         assert_eq!(
-            data,
+            *data,
             Value::list([
                 Value::symbol("file-missing"),
                 Value::String(message.into()),

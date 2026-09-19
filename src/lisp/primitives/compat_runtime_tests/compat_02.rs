@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 // `coding-system-get' is mule.el Lisp; the bare host reads the C-owned
 // coding-system plist directly (mule.el's accessor is plist-get over it).
@@ -1197,7 +1198,7 @@ fn write_region_reports_output_errors_as_file_error() {
         &mut env,
     )
     .expect_err("writing to a directory should signal file-error");
-    let LispError::SignalValue(value) = error else {
+    let LispErrorKind::SignalValue(value) = error.into_kind() else {
         panic!("expected signal value");
     };
     let items = value.to_vec().expect("file error list");
@@ -1821,8 +1822,8 @@ fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
 
     let is_type_mismatch = |result: &Result<Value, LispError>| {
         matches!(
-            result,
-            Err(LispError::SignalValue(signal))
+            result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::SignalValue(signal))
                 if signal
                     .car()
                     .ok()

@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, ReaderClosureKind,
-    ReaderForm, SymbolName, Value, WeakConsSlot,
+    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, LispErrorKind,
+    ReaderClosureKind, ReaderForm, SymbolName, Value, WeakConsSlot,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -8059,8 +8059,8 @@ fn quoted_literal(value: &Value) -> Value {
 }
 
 pub(crate) fn error_condition_value(error: &LispError) -> Value {
-    match error {
-        LispError::TypeError(expected, got) => Value::list([
+    match error.kind() {
+        LispErrorKind::TypeError(expected, got) => Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol(expected.clone().into()),
             match got.as_str() {
@@ -8069,49 +8069,49 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             },
         ]),
         // GNU's datum: the predicate symbol and the offending value itself.
-        LispError::WrongTypeArgument(predicate, value) => Value::list([
+        LispErrorKind::WrongTypeArgument(predicate, value) => Value::list([
             Value::Symbol("wrong-type-argument".into()),
             Value::Symbol(predicate.clone().into()),
             *value,
         ]),
-        LispError::Void(symbol) => Value::list([
+        LispErrorKind::Void(symbol) => Value::list([
             Value::Symbol("void-variable".into()),
             Value::Symbol(symbol.clone().into()),
         ]),
-        LispError::VoidFunction(symbol) => Value::list([
+        LispErrorKind::VoidFunction(symbol) => Value::list([
             Value::Symbol("void-function".into()),
             Value::Symbol(symbol.clone().into()),
         ]),
-        LispError::WrongNumberOfArgs(name, count) => Value::list([
+        LispErrorKind::WrongNumberOfArgs(name, count) => Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             Value::Symbol(name.clone().into()),
             Value::Integer(*count as i64),
         ]),
         // lread.c:end_of_file_error outside a load: no data.
-        LispError::EndOfInput => Value::list([Value::Symbol("end-of-file".into())]),
-        LispError::TestSkipped(message) => Value::list([
+        LispErrorKind::EndOfInput => Value::list([Value::Symbol("end-of-file".into())]),
+        LispErrorKind::TestSkipped(message) => Value::list([
             Value::Symbol("ert-test-skipped".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::ErtTestFailed(message) => Value::list([
+        LispErrorKind::ErtTestFailed(message) => Value::list([
             Value::Symbol("ert-test-failed".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::ReadError(message) => Value::list([
+        LispErrorKind::ReadError(message) => Value::list([
             Value::Symbol("invalid-read-syntax".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::Signal(message) => Value::list([
+        LispErrorKind::Signal(message) => Value::list([
             Value::Symbol("error".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::Throw(tag, value) => {
+        LispErrorKind::Throw(tag, value) => {
             Value::list([Value::Symbol("no-catch".into()), *tag, *value])
         }
-        LispError::Terminate(_) => {
+        LispErrorKind::Terminate(_) => {
             unreachable!("process termination cannot be converted to a Lisp condition")
         }
-        LispError::SignalValue(value) => *value,
+        LispErrorKind::SignalValue(value) => *value,
     }
 }
 

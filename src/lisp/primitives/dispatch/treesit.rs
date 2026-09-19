@@ -2,11 +2,12 @@ use super::*;
 use crate::lisp::eval::TreeSitterParserState;
 use crate::lisp::primitives::{self, print, regexp};
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use std::rc::Rc;
 use tree_sitter::{QueryPredicateArg, StreamingIterator};
 
 fn load_error_data(error: LispError) -> Result<Value, LispError> {
-    if let LispError::SignalValue(signal) = &error
+    if let LispErrorKind::SignalValue(signal) = error.kind()
         && signal.car()? == Value::symbol("treesit-load-language-error")
     {
         return signal.cdr();

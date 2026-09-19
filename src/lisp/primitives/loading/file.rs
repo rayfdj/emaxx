@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::LispErrorKind;
 
 struct LoadRequest {
     file: Value,
@@ -59,11 +60,15 @@ pub(crate) fn load_file(
         "substitute-in-file-name",
         std::slice::from_ref(&request.file),
         env,
-    ) {
+    )
+    .map_err(LispError::into_kind)
+    {
         Ok(file) => file,
-        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
+        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+            return Err(LispError::from(error));
+        }
         Err(_) if request.noerror.is_truthy() => return Ok((Value::Nil, Value::Nil)),
-        Err(error) => return Err(error),
+        Err(error) => return Err(LispError::from(error)),
     };
     let requested = string_text(&request.file)?;
     let (found, errno) = find_load_file(

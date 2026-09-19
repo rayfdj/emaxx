@@ -1169,8 +1169,8 @@ fn eval_arithmetic() {
         let mut env = crate::lisp::types::Env::new();
         let form = Reader::new("(/ 0)").read().unwrap().unwrap();
         assert!(matches!(
-            interp.eval(&form, &mut env),
-            Err(LispError::SignalValue(value))
+            interp.eval(&form, &mut env).map_err(LispError::into_kind),
+            Err(LispErrorKind::SignalValue(value))
                 if value == Value::list([Value::Symbol("arith-error".into())])
         ));
     }

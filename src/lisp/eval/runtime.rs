@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::RecordRef;
 
 /// What names a record to `find_record': the object, or an id in this
@@ -1399,14 +1400,15 @@ impl Interpreter {
             self.finalizers_run += 1;
             let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
             let result = self.call_function_value(function, None, &[], env);
-            match result {
+            match result.map_err(LispError::into_kind) {
                 Ok(_) => {}
-                Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
+                Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
                     self.restore_special_dynamic(restore, env)?;
-                    return Err(error);
+                    return Err(LispError::from(error));
                 }
                 Err(error) => {
-                    let condition = crate::lisp::eval::error_condition_value(&error);
+                    let condition =
+                        crate::lisp::eval::error_condition_value(&LispError::from(error.clone()));
                     if let Ok(message) = crate::lisp::primitives::call(
                         self,
                         "format-message",
@@ -3228,8 +3230,10 @@ impl Interpreter {
         let result = self.call_function_value(function, None, args, env);
         self.pop_handler_bindings(handlers);
         env.truncate(depth);
-        let result = match result {
-            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+        let result = match result.map_err(LispError::into_kind) {
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                Err(LispError::from(error))
+            }
             Err(error) => {
                 self.clear_batch_error_backtrace();
                 let message = primitives::call(
@@ -3238,7 +3242,7 @@ impl Interpreter {
                     &[
                         Value::string("Error muted by safe_call: %S signaled %S"),
                         Value::list(std::iter::once(function).chain(args.iter().cloned())),
-                        super::error_condition_value(&error),
+                        super::error_condition_value(&LispError::from(error.clone())),
                     ],
                     env,
                 );
@@ -3249,7 +3253,7 @@ impl Interpreter {
                     Value::Nil
                 })
             }
-            value => value,
+            Ok(value) => Ok(value),
         };
         self.restore_special_dynamic(restore, env)?;
         result

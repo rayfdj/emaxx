@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 #[test]
 fn buffer_positions_accept_integer_values_independent_of_internal_width() {
@@ -216,8 +217,8 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
             "line-number-at-pos",
             &[Value::Integer(-1)],
             &mut env,
-        ),
-        Err(LispError::SignalValue(value))
+        ).map_err(LispError::into_kind),
+        Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
                 Kind::Symbol(name),
                 Kind::Integer(-1),
@@ -231,8 +232,8 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
             "line-number-at-pos",
             &[Value::Integer(100)],
             &mut env,
-        ),
-        Err(LispError::SignalValue(value))
+        ).map_err(LispError::into_kind),
+        Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
                 Kind::Symbol(name),
                 Kind::Integer(100),
@@ -684,14 +685,14 @@ fn random_matches_emacs_limit_and_seed_behavior() {
     let mut env = crate::lisp::types::Env::new();
 
     assert!(matches!(
-        call(&mut interp, "random", &[Value::Integer(0)], &mut env),
-        Err(LispError::SignalValue(value))
+        call(&mut interp, "random", &[Value::Integer(0)], &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
                 Some([Kind::Symbol(name), Kind::Integer(0)]) if name == "args-out-of-range")
     ));
     assert!(matches!(
-        call(&mut interp, "random", &[Value::Integer(-1)], &mut env),
-        Err(LispError::SignalValue(value))
+        call(&mut interp, "random", &[Value::Integer(-1)], &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
                 Some([Kind::Symbol(name), Kind::Integer(-1)]) if name == "args-out-of-range")
     ));

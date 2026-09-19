@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list_value()
@@ -1403,11 +1404,11 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     if !matches!(value.kind(), Kind::Cons(_)) || is_vector_value(value) {
         return None;
     }
-    match value.to_vec() {
+    match value.to_vec().map_err(LispError::into_kind) {
         Ok(items) => Some(items.len()),
-        Err(LispError::TypeError(expected, _)) if expected == "list" => None,
-        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "listp" => None,
-        Err(LispError::SignalValue(signal)) if circular_list_signal_p(&signal) => None,
+        Err(LispErrorKind::TypeError(expected, _)) if expected == "list" => None,
+        Err(LispErrorKind::WrongTypeArgument(predicate, _)) if predicate == "listp" => None,
+        Err(LispErrorKind::SignalValue(signal)) if circular_list_signal_p(&signal) => None,
         Err(_) => None,
     }
 }

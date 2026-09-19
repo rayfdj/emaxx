@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::SymbolName;
 
@@ -521,13 +522,13 @@ impl Interpreter {
                 if name == "nil" {
                     return Ok(Value::Nil);
                 }
-                match self.lookup(name, env) {
+                match self.lookup(name, env).map_err(LispError::into_kind) {
                     Ok(value) => Ok(value),
-                    Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+                    Err(LispErrorKind::Void(_)) => Err(LispError::SignalValue(Value::list([
                         Value::Symbol("void-variable".into()),
                         *expr,
                     ]))),
-                    Err(error) => Err(error),
+                    Err(error) => Err(LispError::from(error)),
                 }
             }
 
@@ -1212,8 +1213,8 @@ impl Interpreter {
     // reports the source callee instead. Translate before signaling to
     // handler-bind, while the callee's backtrace frame is still live.
     fn builtin_call_error(name: &str, nargs: usize, funcall: bool, error: LispError) -> LispError {
-        match error {
-            LispError::WrongNumberOfArgs(ref failed_name, count)
+        match error.into_kind() {
+            LispErrorKind::WrongNumberOfArgs(ref failed_name, count)
                 if funcall
                     && failed_name == name
                     && count == nargs
@@ -1231,7 +1232,7 @@ impl Interpreter {
                     Value::Integer(count as i64),
                 ]))
             }
-            error => error,
+            error => LispError::from(error),
         }
     }
 
@@ -1267,9 +1268,11 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match error {
-            error @ (LispError::Throw(_, _) | LispError::Terminate(_)) => Err(error),
-            error => self.dispatch_handler_bindings(error, env),
+        let result = match error.into_kind() {
+            error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)) => {
+                Err(LispError::from(error))
+            }
+            error => self.dispatch_handler_bindings(LispError::from(error), env),
         };
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);
@@ -2159,8 +2162,11 @@ mod eval_value_buffer_tests {
         interpreter.set_symbol_value_cell("quit-flag", Value::T);
         let form = Value::list([Value::symbol("quote"), Value::symbol("unreached")]);
 
-        match interpreter.eval(&form, &mut environment) {
-            Err(LispError::SignalValue(value)) => {
+        match interpreter
+            .eval(&form, &mut environment)
+            .map_err(LispError::into_kind)
+        {
+            Err(LispErrorKind::SignalValue(value)) => {
                 assert_eq!(value, Value::list([Value::symbol("quit")]))
             }
             other => panic!("eval_sub must process the pending quit first, got {other:?}"),
@@ -2381,8 +2387,11 @@ mod eval_value_buffer_tests {
             )
             .expect("store plain value");
         }
-        match interpreter.maybe_quit(&mut env) {
-            Err(LispError::SignalValue(value)) => {
+        match interpreter
+            .maybe_quit(&mut env)
+            .map_err(LispError::into_kind)
+        {
+            Err(LispErrorKind::SignalValue(value)) => {
                 assert_eq!(value, Value::list([Value::symbol("quit")]));
             }
             other => panic!("process_quit_flag must consume the C flag: {other:?}"),

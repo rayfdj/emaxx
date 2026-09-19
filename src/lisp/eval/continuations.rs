@@ -239,6 +239,7 @@ pub(crate) fn current_stack_base() -> Option<*const usize> {
 mod tests {
     use super::*;
     use crate::lisp::types::Kind;
+    use crate::lisp::types::LispErrorKind;
 
     #[test]
     fn alternate_stack_bounds_restore_after_nested_resume_and_panic() {
@@ -319,7 +320,10 @@ mod tests {
                 } else {
                     suspend(interpreter).map(|()| Value::Nil)
                 };
-                if matches!(result, Err(LispError::Terminate(_))) {
+                if matches!(
+                    result.as_ref().map_err(LispError::kind),
+                    Err(LispErrorKind::Terminate(_))
+                ) {
                     terminated.set(terminated.get() + 1);
                 }
                 result

@@ -44,8 +44,8 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
 }
 
 fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
-    let rendered_error = match &error {
-        LispError::SignalValue(value) => crate::lisp::primitives::render_prin1_ephemeral(
+    let rendered_error = match error.kind() {
+        LispErrorKind::SignalValue(value) => crate::lisp::primitives::render_prin1_ephemeral(
             interp,
             value,
             &crate::lisp::types::Env::new(),

@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub(crate) fn format_source_props(
     value: &Value,
@@ -395,8 +396,8 @@ pub(crate) fn file_locked_p(
 
 pub(crate) fn is_circular_list_value(value: &Value) -> bool {
     matches!(
-        value.to_vec(),
-        Err(LispError::SignalValue(signal)) if circular_list_signal_p(&signal)
+        value.to_vec().as_ref().map_err(LispError::kind),
+        Err(LispErrorKind::SignalValue(signal)) if circular_list_signal_p(signal)
     )
 }
 

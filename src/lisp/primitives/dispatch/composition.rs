@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(items))
@@ -533,9 +534,9 @@ fn autocmp_chars_inner(
         ],
         env,
     );
-    match call {
+    match call.map_err(LispError::into_kind) {
         Ok(value) => Ok(value),
-        Err(error @ LispError::Throw(..)) => Err(error),
+        Err(error @ LispErrorKind::Throw(..)) => Err(LispError::from(error)),
         // safe_calln: a signaled condition absorbs into a failed
         // composition attempt.
         Err(_) => Ok(Value::Nil),

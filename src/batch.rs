@@ -6,7 +6,7 @@ use crate::compat::{self, BatchReport, FileStatus, TestStatus};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
-use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, Value};
+use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, LispErrorKind, Value};
 use crate::perf::{self, PERF_RESULT_FILE_ENV, PerfRunReport};
 
 #[derive(Clone, Debug, Default)]
@@ -167,8 +167,8 @@ fn run_initialized_batch(
             BatchAction::Load(target) => {
                 let resolved = PathBuf::from(target);
                 if let Err(error) = interpreter.load_target_with_env(target, &eval_env) {
-                    if let LispError::Terminate(termination) = error {
-                        return Ok(termination.into());
+                    if let LispErrorKind::Terminate(termination) = error.kind() {
+                        return Ok(termination.clone().into());
                     }
                     let mut error_text = error.to_string();
                     let backtrace = format_backtrace_summary(interpreter);
@@ -229,13 +229,16 @@ fn run_initialized_batch(
                     // answered nil where GNU answers foo -- for ordinary
                     // symbols as well as keywords.
                     interpreter.intern_symbols_in_value(&form);
-                    match interpreter.eval(&form, &mut eval_env) {
+                    match interpreter
+                        .eval(&form, &mut eval_env)
+                        .map_err(LispError::into_kind)
+                    {
                         Ok(_) => {}
-                        Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+                        Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
                             emit_unhandled_batch_error(
                                 interpreter,
-                                &error,
+                                &LispError::from(error.clone()),
                                 &command_line_bottom_frames(actions, None),
                             );
                             return Ok(BatchRunOutcome::Exit(255));
@@ -248,13 +251,16 @@ fn run_initialized_batch(
             }
             BatchAction::Funcall(function) => {
                 let form = Value::list([Value::Symbol(function.clone().into())]);
-                match interpreter.eval(&form, &mut eval_env) {
+                match interpreter
+                    .eval(&form, &mut eval_env)
+                    .map_err(LispError::into_kind)
+                {
                     Ok(_) => {}
-                    Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+                    Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
                         emit_unhandled_batch_error(
                             interpreter,
-                            &error,
+                            &LispError::from(error.clone()),
                             &command_line_bottom_frames(actions, None),
                         );
                         return Ok(BatchRunOutcome::Exit(255));
@@ -346,9 +352,9 @@ fn run_batch_through_normal_top_level(
     interpreter: &mut Interpreter,
     command_line_args: &[String],
 ) -> Result<BatchRunOutcome, String> {
-    match run_startup_top_level(interpreter, command_line_args) {
+    match run_startup_top_level(interpreter, command_line_args).map_err(LispError::into_kind) {
         Ok(_) => {}
-        Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+        Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
         Err(error) => {
             // keyboard.c top_level_1 -> cmd_error -> cmd_error_internal: in
             // batch, print_error_message to stderr and kill-emacs -1.  The
@@ -356,7 +362,7 @@ fn run_batch_through_normal_top_level(
             // `debug-early--handler' that top_level_2 bound around the
             // form (run_batch_toplevel_form), when
             // `backtrace-on-error-noninteractive' asked for it.
-            emit_batch_error_message(interpreter, &error);
+            emit_batch_error_message(interpreter, &LispError::from(error.clone()));
             return Ok(BatchRunOutcome::Exit(255));
         }
     }
@@ -899,9 +905,11 @@ fn initialize_interpreter_attempt(
     // not, before the top level. The interactive caller does this after
     // establishing terminal input and display, just as init_display does.
     if noninteractive {
-        match safe_run_hooks(&mut interpreter, "after-pdump-load-hook") {
+        match safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
+            .map_err(LispError::into_kind)
+        {
             Ok(()) => {}
-            Err(LispError::Terminate(termination)) => {
+            Err(LispErrorKind::Terminate(termination)) => {
                 interpreter.request_termination(termination);
                 return Ok(BootAttempt::Ready(Box::new(interpreter)));
             }
@@ -1070,13 +1078,15 @@ fn call_safe_hook_function(
         let result = interpreter.call_function_value(*function, None, &[], env);
         interpreter.pop_handler_bindings(handlers);
         env.truncate(depth);
-        let error = match result {
+        let error = match result.map_err(LispError::into_kind) {
             Ok(_) => return Ok(()),
-            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                return Err(LispError::from(error));
+            }
             Err(error) => error,
         };
         interpreter.clear_batch_error_backtrace();
-        let condition = lisp::eval::error_condition_value(&error);
+        let condition = lisp::eval::error_condition_value(&LispError::from(error.clone()));
         lisp::primitives::call(
             interpreter,
             "message",
@@ -1342,8 +1352,8 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         |_| false,
         |error| {
             matches!(
-                error,
-                LispError::Signal(message)
+                error.kind(),
+                LispErrorKind::Signal(message)
                     if message == crate::lisp::primitives::PORTABLE_DUMPER_UNAVAILABLE
             )
         },
@@ -1669,8 +1679,8 @@ mod tests {
         interpreter.push_catch_tag(Value::symbol("stop"));
         let result = super::safe_run_hooks(&mut interpreter, "zz-hook");
         interpreter.pop_catch_tag();
-        assert!(matches!(result,
-            Err(LispError::Throw(tag, value)) if value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
+        assert!(matches!(result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::Throw(tag, value)) if *value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
         assert_eq!(
             interpreter.lookup_var("inhibit-quit", &env),
             Some(Value::Nil)
@@ -1681,8 +1691,10 @@ mod tests {
             "(setq zz-hook (list #'(lambda () (kill-emacs 7))))",
         )
         .expect("a terminating hook");
-        assert!(matches!(super::safe_run_hooks(&mut interpreter, "zz-hook"),
-            Err(LispError::Terminate(termination)) if termination.exit_code == 7));
+        assert!(
+            matches!(super::safe_run_hooks(&mut interpreter, "zz-hook").map_err(LispError::into_kind),
+            Err(LispErrorKind::Terminate(termination)) if termination.exit_code == 7)
+        );
         assert_eq!(
             interpreter.lookup_var("inhibit-quit", &env),
             Some(Value::Nil)

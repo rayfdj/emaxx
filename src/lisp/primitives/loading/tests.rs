@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::LispErrorKind;
 
 pub(super) fn gnu_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,8 +75,8 @@ fn eval_buffer_checks_a_non_nil_history_filename_even_for_an_empty_buffer() {
     );
     assert!(
         matches!(
-            result,
-            Err(LispError::WrongTypeArgument(predicate, value)) if predicate == "stringp" && value == Value::Integer(42)
+            result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::WrongTypeArgument(predicate, value)) if predicate == "stringp" && *value == Value::Integer(42)
         ),
         "readevalloop checks a non-nil source name before reading any forms"
     );
@@ -274,7 +275,7 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
     );
     interp.pop_active_catch_tag();
     assert!(
-        matches!(result, Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(23))
+        matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(23))
     );
     assert_eq!(interp.lookup_var("lexical-binding", &env), Some(Value::T));
     assert!(interp.loads_in_progress.is_nil());
@@ -332,7 +333,8 @@ fn load_recursion_limit_counts_only_the_same_file_and_restores_the_stack() {
                 "GNU permits three previous occurrences: {result:?}"
             );
         } else {
-            let Err(LispError::SignalValue(error)) = result else {
+            let Err(LispErrorKind::SignalValue(error)) = result.map_err(LispError::into_kind)
+            else {
                 panic!("four previous occurrences must signal even with NOERROR");
             };
             assert_eq!(
@@ -514,8 +516,9 @@ fn openp_validates_all_suffix_cars_but_does_not_require_a_proper_list() {
             &suffixes,
             &Value::Nil,
             &mut env
-        ),
-        Err(LispError::WrongTypeArgument(_, _)) | Err(LispError::TypeError(_, _))
+        )
+        .map_err(LispError::into_kind),
+        Err(LispErrorKind::WrongTypeArgument(_, _)) | Err(LispErrorKind::TypeError(_, _))
     ));
     let suffixes = Value::cons(Value::string(""), Value::Integer(7));
     assert_eq!(

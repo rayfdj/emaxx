@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 #[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
@@ -1451,8 +1452,8 @@ pub(crate) fn command_error_echo_text(
     env: &mut Env,
     error: &LispError,
 ) -> String {
-    let text = match error {
-        LispError::SignalValue(data) => {
+    let text = match error.kind() {
+        LispErrorKind::SignalValue(data) => {
             let data = if matches!(data.kind(), Kind::Symbol(_)) {
                 Value::list([*data])
             } else {
@@ -1471,7 +1472,7 @@ pub(crate) fn command_error_echo_text(
             })
             .unwrap_or_else(|| format!("{data}"))
         }
-        LispError::Signal(text) => text.clone(),
+        LispErrorKind::Signal(text) => text.clone(),
         other => format!("{other:?}"),
     };
     text.replace(['\n', '\r'], " ").chars().take(200).collect()

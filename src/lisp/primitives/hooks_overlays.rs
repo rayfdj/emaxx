@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub(crate) fn call_function_value(
     interp: &mut Interpreter,
@@ -251,9 +252,11 @@ pub(crate) fn safe_run_named_hooks(
     buffer_id: Option<u64>,
 ) -> Result<(), LispError> {
     for hook in hook_values(interp, hook_name, env, buffer_id) {
-        match call_function_value(interp, &hook, &[], env) {
+        match call_function_value(interp, &hook, &[], env).map_err(LispError::into_kind) {
             Ok(_) => {}
-            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                return Err(LispError::from(error));
+            }
             Err(error) => {
                 // GNU keyboard.c:safe_run_hooks_error — message with prin1
                 // renderings, then remove the failing function from the
@@ -263,7 +266,8 @@ pub(crate) fn safe_run_named_hooks(
                 // CALLN (Fmessage, "Error in %s (%S): %S", hook, fun, error),
                 // so the data is formatted BY `message' and a `%' inside a
                 // printed object cannot be reinterpreted as a directive.
-                let condition = crate::lisp::eval::error_condition_value(&error);
+                let condition =
+                    crate::lisp::eval::error_condition_value(&LispError::from(error.clone()));
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "message",

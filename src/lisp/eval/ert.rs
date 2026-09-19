@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 impl Interpreter {
     // ── ERT support ──
@@ -203,7 +204,10 @@ impl Interpreter {
             // into a failed test and never runs its ordinary per-test unwind
             // cleanup.  The process-owning batch boundary consumes the
             // pending request after this runner returns.
-            if matches!(result, Err(LispError::Terminate(_))) {
+            if matches!(
+                result.as_ref().map_err(LispError::kind),
+                Err(LispErrorKind::Terminate(_))
+            ) {
                 return summary;
             }
             if let Ok(restore) = lexical_restore
@@ -241,7 +245,7 @@ impl Interpreter {
             self.current_ert_test_name = previous_name;
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
             // terminates the test successfully by throwing to that tag.
-            if let Err(LispError::Throw(tag, _)) = &result
+            if let Err(LispErrorKind::Throw(tag, _)) = result.as_ref().map_err(LispError::kind)
                 && matches!(tag.kind(), Kind::Symbol(name) if name == "ert--pass")
             {
                 result = Ok(Value::Nil);
@@ -267,9 +271,9 @@ impl Interpreter {
                 }
                 Err(e) => {
                     // `ert-skip' signals ert-test-skipped directly.
-                    let status = match &e {
-                        LispError::TestSkipped(_) => TestStatus::Skipped,
-                        LispError::SignalValue(condition)
+                    let status = match e.kind() {
+                        LispErrorKind::TestSkipped(_) => TestStatus::Skipped,
+                        LispErrorKind::SignalValue(condition)
                             if matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
                                 if kind == "ert-test-skipped") =>
                         {

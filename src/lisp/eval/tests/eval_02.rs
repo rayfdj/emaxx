@@ -8180,7 +8180,7 @@ fn cl_assert_signals_condition_with_asserted_form() {
     let error = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .unwrap_err();
-    let LispError::SignalValue(value) = error else {
+    let LispErrorKind::SignalValue(value) = error.into_kind() else {
         panic!("expected cl assertion signal");
     };
     assert_eq!(

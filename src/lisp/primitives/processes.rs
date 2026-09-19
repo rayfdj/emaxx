@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 /// Child-side setup shared by every Lisp-visible subprocess, mirroring GNU's
 /// `emacs_spawn' (callproc.c:1441) -- the single choke point both
@@ -1497,22 +1498,22 @@ pub(crate) fn delete_process_notifying(
     if !notify_sentinel {
         return Ok(());
     }
-    match run_process_sentinel(interp, process_id, event, env) {
+    match run_process_sentinel(interp, process_id, event, env).map_err(LispError::into_kind) {
         Ok(()) => Ok(()),
-        Err(error @ LispError::Throw(_, _)) => Err(error),
+        Err(error @ LispErrorKind::Throw(_, _)) => Err(LispError::from(error)),
         Err(error) => {
             if interp
                 .lookup_var("debug-on-error", env)
                 .is_some_and(|value| value.is_truthy())
             {
-                return Err(error);
+                return Err(LispError::from(error));
             }
             let _ = crate::lisp::primitives::call(
                 interp,
                 "message",
                 &[
                     Value::String("error in process sentinel: %S".into()),
-                    crate::lisp::eval::error_condition_value(&error),
+                    crate::lisp::eval::error_condition_value(&LispError::from(error.clone())),
                 ],
                 env,
             );

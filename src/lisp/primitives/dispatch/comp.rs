@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::eval::RecordKind;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 fn string_argument(value: &Value) -> Result<String, LispError> {
     string_like(value)
@@ -167,9 +168,12 @@ fn try_make_directory(
     env: &mut Env,
     directory: &Value,
 ) -> Result<bool, LispError> {
-    match lisp(interp, env, "make-directory", &[*directory, Value::T]) {
+    match lisp(interp, env, "make-directory", &[*directory, Value::T]).map_err(LispError::into_kind)
+    {
         Ok(_) => Ok(true),
-        Err(error @ (LispError::Throw(..) | LispError::Terminate(..))) => Err(error),
+        Err(error @ (LispErrorKind::Throw(..) | LispErrorKind::Terminate(..))) => {
+            Err(LispError::from(error))
+        }
         Err(_) => Ok(false),
     }
 }

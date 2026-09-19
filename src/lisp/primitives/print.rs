@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -> String {
     let escape_multibyte = interp
@@ -1423,7 +1424,7 @@ fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
             Value::Symbol("end-of-file".into()),
             file.value(),
         ])),
-        _ => LispError::EndOfInput,
+        _ => LispError::EndOfInput(),
     }
 }
 
@@ -1489,9 +1490,9 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 )
             };
             let result = read_one_positioned_form(interp, env, &text, start as i64);
-            let consumed = match &result {
+            let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
@@ -1522,9 +1523,9 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             let result = read_one_positioned_form(interp, env, &text, start as i64);
-            let consumed = match &result {
+            let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
@@ -2347,9 +2348,9 @@ fn read_from_lisp_source_raw(
                 )
             };
             let result = read_one_form_in_env(interp, &text, env);
-            let consumed = match &result {
+            let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
@@ -2380,9 +2381,9 @@ fn read_from_lisp_source_raw(
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             let result = read_one_form_in_env(interp, &text, env);
-            let consumed = match &result {
+            let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;

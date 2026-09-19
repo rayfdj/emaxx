@@ -23,7 +23,7 @@ use crate::lisp::primitives::{
     InvisibilitySpec, invisible_class_at, invisible_run_at, resolve_buffer_invisibility,
     visual_line_first_line,
 };
-use crate::lisp::types::{Env, Kind, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -380,10 +380,11 @@ pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Re
     // therefore inspect the real terminal or read events before top-level.
     let startup = batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
         .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
-    let termination = match startup {
-        Err(LispError::Terminate(termination)) => Some(termination),
+    let termination = match startup.map_err(LispError::into_kind) {
+        Err(LispErrorKind::Terminate(termination)) => Some(termination),
         Err(error) => {
-            let text = command_error_text(&mut interpreter, &mut env, &error);
+            let text =
+                command_error_text(&mut interpreter, &mut env, &LispError::from(error.clone()));
             crate::lisp::primitives::set_echo_area_message(Some(text));
             interpreter.take_pending_termination()
         }
@@ -896,17 +897,21 @@ fn command_loop(
                 crate::lisp::primitives::tty_note_idle_start(interpreter, env);
             }
             idle_since.get_or_insert_with(std::time::Instant::now);
-            match interpreter.service_async_runtime_events(env, true, None) {
+            match interpreter
+                .service_async_runtime_events(env, true, None)
+                .map_err(LispError::into_kind)
+            {
                 Ok(true) => {
                     let mut state = shared_state.borrow_mut();
                     let _ = redraw(interpreter, env, &mut state);
                 }
                 Ok(false) => {}
-                Err(LispError::Terminate(termination)) => {
+                Err(LispErrorKind::Terminate(termination)) => {
                     return Ok(termination.exit_code);
                 }
                 Err(error) => {
-                    let text = command_error_text(interpreter, env, &error);
+                    let text =
+                        command_error_text(interpreter, env, &LispError::from(error.clone()));
                     crate::lisp::primitives::set_echo_area_message(Some(text));
                     let mut state = shared_state.borrow_mut();
                     let _ = redraw(interpreter, env, &mut state);
@@ -918,13 +923,13 @@ fn command_loop(
             // loop waits for a key, and a delivery repaints the glass,
             // process.c's redisplay_preserve_echo_area.  Process output
             // does not end the idle period; only keyboard input does.
-            match pump_processes_during_wait(interpreter, env) {
+            match pump_processes_during_wait(interpreter, env).map_err(LispError::into_kind) {
                 Ok(true) => {
                     let mut state = shared_state.borrow_mut();
                     let _ = redraw(interpreter, env, &mut state);
                 }
                 Ok(false) => {}
-                Err(LispError::Terminate(termination)) => {
+                Err(LispErrorKind::Terminate(termination)) => {
                     return Ok(termination.exit_code);
                 }
                 Err(_) => {}
@@ -982,11 +987,13 @@ fn command_loop(
             interpreter,
             env,
             &mut pending_snapshot,
-        ) {
+        )
+        .map_err(LispError::into_kind)
+        {
             Ok(resolution) => resolution,
-            Err(LispError::Terminate(termination)) => return Ok(termination.exit_code),
+            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
             Err(error) => {
-                let text = command_error_text(interpreter, env, &error);
+                let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
                 crate::lisp::primitives::set_echo_area_message(Some(text));
                 shared_state.borrow_mut().pending.clear();
                 continue;
@@ -1042,9 +1049,11 @@ fn command_loop(
             continue;
         };
         let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-        let command_error = match execute_binding(interpreter, env, binding, &keys, last_event) {
+        let command_error = match execute_binding(interpreter, env, binding, &keys, last_event)
+            .map_err(LispError::into_kind)
+        {
             Ok(()) => None,
-            Err(LispError::Terminate(termination)) => {
+            Err(LispErrorKind::Terminate(termination)) => {
                 return Ok(termination.exit_code);
             }
             Err(error) => {
@@ -1056,7 +1065,11 @@ fn command_loop(
                         debug_log(&format!("  frame: {function} nargs={}", args.len()));
                     }
                 }
-                Some(command_error_text(interpreter, env, &error))
+                Some(command_error_text(
+                    interpreter,
+                    env,
+                    &LispError::from(error.clone()),
+                ))
             }
         };
         if let Some(termination) = interpreter.take_pending_termination() {
@@ -1145,11 +1158,11 @@ fn pump_processes_during_wait(
         crate::lisp::primitives::pump_external_process_output(interpreter, env),
         crate::lisp::primitives::pump_connection_processes(interpreter, env),
     ] {
-        match outcome {
+        match outcome.map_err(LispError::into_kind) {
             Ok(pumped) => progressed |= pumped,
-            Err(error @ LispError::Terminate(_)) => return Err(error),
+            Err(error @ LispErrorKind::Terminate(_)) => return Err(LispError::from(error)),
             Err(error) => {
-                let text = command_error_text(interpreter, env, &error);
+                let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
                 crate::lisp::primitives::set_echo_area_message(Some(text));
                 progressed = true;
             }

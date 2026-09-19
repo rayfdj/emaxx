@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
@@ -173,8 +174,10 @@ fn redisplay_safe_call(
     let result = interp.call_function_value(function, None, args, env);
     interp.pop_handler_bindings(handler_start);
     env.truncate(depth);
-    let result = match result {
-        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+    let result = match result.map_err(LispError::into_kind) {
+        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+            Err(LispError::from(error))
+        }
         Err(error) => {
             // dsafe_eval_handler -> add_to_log -> Fformat_message and
             // message_dolog. Calling Fmessage here would run message hooks
@@ -186,7 +189,7 @@ fn redisplay_safe_call(
                 &[
                     Value::String("Error during redisplay: %S signaled %S".into()),
                     Value::list(std::iter::once(function).chain(args.iter().cloned())),
-                    crate::lisp::eval::error_condition_value(&error),
+                    crate::lisp::eval::error_condition_value(&LispError::from(error.clone())),
                 ],
                 env,
             )
@@ -196,7 +199,7 @@ fn redisplay_safe_call(
                 Ok(Value::Nil)
             })
         }
-        result => result,
+        Ok(value) => Ok(value),
     };
     interp.restore_special_dynamic(restore, env)?;
     result
@@ -2560,7 +2563,8 @@ define_dispatch!(
             }
             "error-message-string" => {
                 need_args(name, args, 1)?;
-                if let Err(LispError::SignalValue(signal)) = args[0].to_vec()
+                if let Err(LispErrorKind::SignalValue(signal)) =
+                    args[0].to_vec().map_err(LispError::into_kind)
                     && circular_list_signal_p(&signal)
                 {
                     return Err(LispError::SignalValue(signal));
@@ -6183,8 +6187,8 @@ mod tests {
         let result = clear_message(&mut interp, &mut env, true, true);
         interp.pop_active_catch_tag();
         assert!(matches!(
-            result,
-            Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(7)
+            result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)
         ));
         assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
         assert_eq!(
@@ -6264,8 +6268,8 @@ mod tests {
         );
         interp.pop_active_catch_tag();
         assert!(matches!(
-            result,
-            Err(LispError::Throw(actual, value)) if values_eql(&actual, &tag) && value == Value::Integer(7)
+            result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)
         ));
         assert_eq!(interp.current_buffer_id(), saved_buffer);
         assert_eq!(interp.selected_window_id(), saved_window);

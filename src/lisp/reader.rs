@@ -645,7 +645,7 @@ impl<'a> Reader<'a> {
         loop {
             self.skip_whitespace_and_comments();
             match self.peek() {
-                None => return Err(LispError::EndOfInput),
+                None => return Err(LispError::EndOfInput()),
                 Some(b')') => {
                     self.advance();
                     break;
@@ -658,7 +658,7 @@ impl<'a> Reader<'a> {
                         // Only a dot if followed by whitespace or paren
                         match self.peek_char() {
                             Some(ch) if ch.is_whitespace() || ch == ')' => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
                                 if self.peek() == Some(b')') {
@@ -670,7 +670,7 @@ impl<'a> Reader<'a> {
                                 ));
                             }
                             Some(',') if self.backquote_depth > 0 => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
                                 if self.peek() == Some(b')') {
@@ -684,12 +684,12 @@ impl<'a> Reader<'a> {
                             _ => {
                                 // Not a dot separator, it's an atom starting with '.'
                                 self.pos = saved;
-                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
                                 items.push(val);
                             }
                         }
                     } else {
-                        let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                        let val = self.read()?.ok_or(LispError::EndOfInput())?;
                         items.push(val);
                     }
                 }
@@ -710,13 +710,13 @@ impl<'a> Reader<'a> {
         loop {
             self.skip_whitespace_and_comments();
             match self.peek() {
-                None => return Err(LispError::EndOfInput),
+                None => return Err(LispError::EndOfInput()),
                 Some(b']') => {
                     self.advance();
                     break;
                 }
                 _ => {
-                    let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                    let val = self.read()?.ok_or(LispError::EndOfInput())?;
                     items.push(val);
                 }
             }
@@ -733,7 +733,7 @@ impl<'a> Reader<'a> {
         let mut has_invalid_unicode = false;
         loop {
             match self.peek() {
-                None => return Err(LispError::EndOfInput),
+                None => return Err(LispError::EndOfInput()),
                 Some(b'"') => {
                     self.advance();
                     // alloc.c canonicalizes every zero-length unibyte string
@@ -781,7 +781,7 @@ impl<'a> Reader<'a> {
                         continue;
                     }
                     match self.advance() {
-                        None => return Err(LispError::EndOfInput),
+                        None => return Err(LispError::EndOfInput()),
                         Some(b'n') => s.push('\n'),
                         Some(b't') => s.push('\t'),
                         Some(b'r') => s.push('\r'),
@@ -947,7 +947,7 @@ impl<'a> Reader<'a> {
 
     fn read_string_control_escape(&mut self) -> Result<u32, LispError> {
         let Some(ch) = self.advance() else {
-            return Err(LispError::EndOfInput);
+            return Err(LispError::EndOfInput());
         };
         Ok(match ch {
             b'?' => 0x7F,
@@ -1113,11 +1113,11 @@ impl<'a> Reader<'a> {
             self.backquote_depth += 1;
             let result = self
                 .read()
-                .and_then(|value| value.ok_or(LispError::EndOfInput));
+                .and_then(|value| value.ok_or(LispError::EndOfInput()));
             self.backquote_depth = self.backquote_depth.saturating_sub(1);
             result?
         } else {
-            self.read()?.ok_or(LispError::EndOfInput)?
+            self.read()?.ok_or(LispError::EndOfInput())?
         };
         // lread.c: the heads are the symbols named "`", "," and ",@".
         let symbol = match name {
@@ -1132,7 +1132,7 @@ impl<'a> Reader<'a> {
     fn read_character(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '?'
         match self.peek() {
-            None => Err(LispError::EndOfInput),
+            None => Err(LispError::EndOfInput()),
             Some(b'\\') => {
                 const ALT_BIT: i64 = 1 << 22;
                 const SUPER_BIT: i64 = 1 << 23;
@@ -1237,7 +1237,7 @@ impl<'a> Reader<'a> {
 
     fn read_literal_character_code(&mut self) -> Result<i64, LispError> {
         match self.peek() {
-            None => Err(LispError::EndOfInput),
+            None => Err(LispError::EndOfInput()),
             Some(ch) if ch < 0x80 => {
                 self.advance();
                 Ok(ch as i64)
@@ -1246,7 +1246,7 @@ impl<'a> Reader<'a> {
                 if let Some(c) = self.read_utf8_char() {
                     Ok(raw_byte_from_source_char(c).map_or(c as i64, i64::from))
                 } else {
-                    let byte = self.advance().ok_or(LispError::EndOfInput)?;
+                    let byte = self.advance().ok_or(LispError::EndOfInput())?;
                     Ok(byte as i64)
                 }
             }
@@ -1284,7 +1284,7 @@ impl<'a> Reader<'a> {
             );
         }
         match self.advance() {
-            None => Err(LispError::EndOfInput),
+            None => Err(LispError::EndOfInput()),
             Some(b'\n') | Some(b'\r') => Err(LispError::ReadError(
                 "invalid escaped line feed in character literal".into(),
             )),
@@ -1382,7 +1382,7 @@ impl<'a> Reader<'a> {
             }
             self.advance();
         }
-        Err(LispError::EndOfInput)
+        Err(LispError::EndOfInput())
     }
 
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
@@ -1418,7 +1418,7 @@ impl<'a> Reader<'a> {
             Some(b'\'') => {
                 // #'symbol — function quote, treat as (function sym)
                 self.advance();
-                let inner = self.read()?.ok_or(LispError::EndOfInput)?;
+                let inner = self.read()?.ok_or(LispError::EndOfInput())?;
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
             }
             Some(b'<') => {
@@ -1504,13 +1504,13 @@ impl<'a> Reader<'a> {
                     loop {
                         self.skip_whitespace_and_comments();
                         match self.peek() {
-                            None => return Err(LispError::EndOfInput),
+                            None => return Err(LispError::EndOfInput()),
                             Some(b']') => {
                                 self.advance();
                                 break;
                             }
                             _ => {
-                                let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let value = self.read()?.ok_or(LispError::EndOfInput())?;
                                 fields.push(value);
                             }
                         }
@@ -1556,7 +1556,7 @@ impl<'a> Reader<'a> {
                 if self.pos == len_start {
                     return Err(LispError::ReadError("missing bool vector length".into()));
                 }
-                let bytes = match (self.read()?.ok_or(LispError::EndOfInput)?).kind() {
+                let bytes = match (self.read()?.ok_or(LispError::EndOfInput())?).kind() {
                     Kind::String(text) => text,
                     Kind::StringObject(state) => state.borrow().text.clone().into(),
                     other => {
@@ -1595,7 +1595,7 @@ impl<'a> Reader<'a> {
             }
             Some(b':') => {
                 self.advance();
-                let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput)?;
+                let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput())?;
                 let Kind::Symbol(base) = symbol.kind() else {
                     return Err(LispError::ReadError(
                         "invalid uninterned symbol syntax".into(),
@@ -1618,13 +1618,13 @@ impl<'a> Reader<'a> {
                     loop {
                         self.skip_whitespace_and_comments();
                         match self.peek() {
-                            None => return Err(LispError::EndOfInput),
+                            None => return Err(LispError::EndOfInput()),
                             Some(b')') => {
                                 self.advance();
                                 break;
                             }
                             _ => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
                                 items.push(val);
                             }
                         }
@@ -1650,7 +1650,7 @@ impl<'a> Reader<'a> {
                     }
                     Some(b'=') => {
                         self.advance();
-                        let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                        let value = self.read()?.ok_or(LispError::EndOfInput())?;
                         return Ok(Some(Value::ReaderForm(
                             crate::lisp::alloc::VectorlikeRef::allocate(
                                 ReaderForm::CircularLabel {
@@ -1780,19 +1780,19 @@ impl<'a> Reader<'a> {
                 self.locate_symbols = false;
                 let result = (|| {
                     let Some(kind) = self.read()? else {
-                        return Err(LispError::EndOfInput);
+                        return Err(LispError::EndOfInput());
                     };
                     let mut fields = Vec::new();
                     loop {
                         self.skip_whitespace_and_comments();
                         match self.peek() {
-                            None => return Err(LispError::EndOfInput),
+                            None => return Err(LispError::EndOfInput()),
                             Some(b')') => {
                                 self.advance();
                                 break;
                             }
                             _ => {
-                                let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                                let value = self.read()?.ok_or(LispError::EndOfInput())?;
                                 fields.push(value);
                             }
                         }
@@ -1829,12 +1829,12 @@ impl<'a> Reader<'a> {
         loop {
             self.skip_whitespace_and_comments();
             match self.peek() {
-                None => return Err(LispError::EndOfInput),
+                None => return Err(LispError::EndOfInput()),
                 Some(b']') => {
                     self.advance();
                     return Ok(fields);
                 }
-                _ => fields.push(self.read()?.ok_or(LispError::EndOfInput)?),
+                _ => fields.push(self.read()?.ok_or(LispError::EndOfInput())?),
             }
         }
     }
@@ -1955,7 +1955,7 @@ impl<'a> Reader<'a> {
                 saw_escape = true;
                 self.advance();
                 match self.peek() {
-                    None => return Err(LispError::EndOfInput),
+                    None => return Err(LispError::EndOfInput()),
                     Some(next) if next < 0x80 => {
                         self.advance();
                         token.push(next as char);
@@ -1983,7 +1983,7 @@ impl<'a> Reader<'a> {
         }
 
         if token.is_empty() {
-            return Err(LispError::EndOfInput);
+            return Err(LispError::EndOfInput());
         }
 
         if saw_escape {
@@ -2181,6 +2181,7 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::lisp::types::LispErrorKind;
 
     fn read_one(s: &str) -> Value {
         Reader::new(s).read().unwrap().unwrap()
@@ -2414,8 +2415,8 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                Reader::new(source).read(),
-                Err(LispError::ReadError(message)) if message == expected
+                Reader::new(source).read().as_ref().map_err(LispError::kind),
+                Err(LispErrorKind::ReadError(message)) if message == expected
             ));
         }
     }
@@ -2541,8 +2542,8 @@ mod tests {
             ("#24r", "integer, radix 24"),
         ] {
             assert!(matches!(
-                Reader::new(source).read(),
-                Err(LispError::ReadError(message)) if message == expected
+                Reader::new(source).read().as_ref().map_err(LispError::kind),
+                Err(LispErrorKind::ReadError(message)) if message == expected
             ));
         }
     }
@@ -2598,12 +2599,12 @@ mod tests {
         ));
 
         assert!(matches!(
-            Reader::new("#^[nil]").read(),
-            Err(LispError::ReadError(message)) if message == "invalid size char-table"
+            Reader::new("#^[nil]").read().as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::ReadError(message)) if message == "invalid size char-table"
         ));
         assert!(matches!(
-            Reader::new("#^^[2 0 nil]").read(),
-            Err(LispError::ReadError(message)) if message == "invalid size in sub-char-table"
+            Reader::new("#^^[2 0 nil]").read().as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::ReadError(message)) if message == "invalid size in sub-char-table"
         ));
     }
 

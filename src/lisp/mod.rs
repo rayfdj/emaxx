@@ -451,6 +451,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::compat::TestStatus;
+use crate::lisp::types::LispError;
 
 /// One test's outcome: name, passed, optional error message.
 pub type TestResult = (String, bool, Option<String>);
@@ -1076,9 +1077,12 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
         }
 
         let candidate = value.as_ref().expect("file-local value was initialized");
-        match reader::Reader::new(candidate).read() {
+        match reader::Reader::new(candidate)
+            .read()
+            .map_err(LispError::into_kind)
+        {
             Ok(Some(_)) => return value,
-            Err(types::LispError::EndOfInput) | Ok(None) => {}
+            Err(types::LispErrorKind::EndOfInput) | Ok(None) => {}
             Err(_) => return value,
         }
     }

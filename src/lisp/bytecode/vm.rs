@@ -13,6 +13,7 @@ use super::super::primitives;
 use super::super::types::{Env, LispError, Value, VectorRef};
 use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 use std::rc::Rc;
 
 /// bytecode.c's per-thread bytecode stack (`bc_thread_state'): one
@@ -1331,15 +1332,18 @@ fn run_frames(
                     // Fsymbol_value's CHECK_SYMBOL path.
                     let name = program.constant(index);
                     let value = match name.kind() {
-                        Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
+                        Kind::Symbol(symbol) => match interp
+                            .symbol_value_cell_symbol(&symbol)
+                            .map_err(LispError::into_kind)
+                        {
                             Ok(value) => value,
-                            Err(LispError::Void(_)) => {
+                            Err(LispErrorKind::Void(_)) => {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::symbol("void-variable"),
                                     name,
                                 ])));
                             }
-                            Err(error) => return Err(error),
+                            Err(error) => return Err(LispError::from(error)),
                         },
                         _ => prim(interp, "symbol-value", &[name], env)?,
                     };
@@ -1459,12 +1463,15 @@ fn run_frames(
                     let value =
                         interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
                             match interp.eval(&body, env) {
-                                Err(LispError::Throw(thrown, thrown_value))
-                                    if prim(interp, "eq", &[tag, thrown], env)?.is_truthy() =>
-                                {
-                                    Ok(thrown_value)
-                                }
-                                other => other,
+                                Err(error) => match error.into_kind() {
+                                    LispErrorKind::Throw(thrown, thrown_value)
+                                        if prim(interp, "eq", &[tag, thrown], env)?.is_truthy() =>
+                                    {
+                                        Ok(thrown_value)
+                                    }
+                                    other => Err(LispError::from(other)),
+                                },
+                                ok => ok,
                             }
                         })?;
                     push!(value);
@@ -1744,7 +1751,7 @@ fn run_frames(
                             // routinely caught by compiled Lisp.  Logging
                             // every one makes a real VM dispatch failure
                             // disappear in megabytes of noise.
-                            if matches!(&error, LispError::WrongNumberOfArgs(_, _))
+                            if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _))
                                 && let Some(func) = trace_call
                             {
                                 eprintln!(
@@ -1985,8 +1992,8 @@ fn run_frames(
                             // exactly nth/elt/aref/setcar/setcdr here.
                             if matches!(op, Op::Nth | Op::Elt | Op::Aref | Op::Setcar | Op::Setcdr)
                                 && !matches!(
-                                    error,
-                                    LispError::Throw(_, _) | LispError::Terminate(_)
+                                    error.kind(),
+                                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
                                 )
                             {
                                 interp.push_backtrace_frame_with_evald(
@@ -2026,8 +2033,8 @@ fn run_frames(
                                     // itself as a frame so handlers see
                                     // e.g. `(car a)' innermost.
                                     if !matches!(
-                                        error,
-                                        LispError::Throw(_, _) | LispError::Terminate(_)
+                                        error.kind(),
+                                        LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
                                     ) {
                                         interp.push_backtrace_frame_with_evald(
                                             Value::Symbol(name.into()),
@@ -2121,8 +2128,8 @@ fn run_frames(
                         Err(error) => {
                             if matches!(op, Op::Aset)
                                 && !matches!(
-                                    error,
-                                    LispError::Throw(_, _) | LispError::Terminate(_)
+                                    error.kind(),
+                                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
                                 )
                             {
                                 interp.push_backtrace_frame_with_evald(
@@ -2173,13 +2180,13 @@ fn run_frames(
                         if let Some(start) = handler.registry_start {
                             interp.pop_handler_bindings(start);
                         }
-                        let matched_value = match (&handler.kind, &error) {
-                            (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
+                        let matched_value = match (&handler.kind, error.kind()) {
+                            (HandlerKind::Catch(tag), LispErrorKind::Throw(thrown, value)) => {
                                 let same = prim(interp, "eq", &[*tag, *thrown], env)?;
                                 if same.is_truthy() { Some(*value) } else { None }
                             }
-                            (HandlerKind::ConditionCase(_), LispError::Throw(_, _))
-                            | (HandlerKind::ConditionCase(_), LispError::Terminate(_))
+                            (HandlerKind::ConditionCase(_), LispErrorKind::Throw(_, _))
+                            | (HandlerKind::ConditionCase(_), LispErrorKind::Terminate(_))
                             | (HandlerKind::Catch(_), _) => None,
                             (HandlerKind::ConditionCase(clause), error) => {
                                 let condition = error.condition_type();
@@ -2189,7 +2196,9 @@ fn run_frames(
                                     &condition,
                                     &condition_list,
                                 ) {
-                                    Some(super::super::eval::error_condition_value(error))
+                                    Some(super::super::eval::error_condition_value(
+                                        &LispError::from(error.clone()),
+                                    ))
                                 } else {
                                     None
                                 }
@@ -2272,7 +2281,7 @@ fn run_frames(
                     // every boot; a child process spawned by a test must
                     // not leak that into its measured stderr).
                     if trace_errors
-                        && !matches!(error, LispError::Throw(_, _))
+                        && !matches!(error.kind(), LispErrorKind::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
                         && let Some(instr) = program.decoded.instrs.get(pc.wrapping_sub(1))
                     {
@@ -2310,10 +2319,12 @@ fn run_frames(
     // the subject started executing GNU's compiled Lisp.  A condition-case
     // inside this frame has already had its chance above, so anything still
     // propagating belongs to an outer handler.
-    match result {
-        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-        Err(error) => interp.dispatch_handler_bindings(error, env),
-        ok => ok,
+    match result.map_err(LispError::into_kind) {
+        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+            Err(LispError::from(error))
+        }
+        Err(error) => interp.dispatch_handler_bindings(LispError::from(error), env),
+        Ok(value) => Ok(value),
     }
 }
 

@@ -3258,9 +3258,12 @@ pub struct EmacsTermination {
     pub restart: bool,
 }
 
-/// Lisp errors and non-local evaluator control flow.
+/// Lisp errors and non-local evaluator control flow: the kind, boxed in
+/// `LispError' so that `Result<Value, LispError>' is two words and comes
+/// back in registers (eval_sub returns a `Lisp_Object'; a signal is a
+/// non-local exit whose data is off the fast path).
 #[derive(Clone, Debug)]
-pub enum LispError {
+pub enum LispErrorKind {
     /// Type mismatch: expected, got
     TypeError(String, String),
     /// GNU's `(wrong-type-argument PREDICATE VALUE)': the predicate symbol
@@ -3294,57 +3297,57 @@ pub enum LispError {
     ReadError(String),
 }
 
-impl LispError {
+impl LispErrorKind {
     pub fn condition_type(&self) -> String {
         match self {
-            LispError::TypeError(_, _) => "wrong-type-argument".into(),
-            LispError::WrongTypeArgument(_, _) => "wrong-type-argument".into(),
-            LispError::Void(_) => "void-variable".into(),
-            LispError::VoidFunction(_) => "void-function".into(),
-            LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
-            LispError::Signal(_) => "error".into(),
-            LispError::SignalValue(value) => match value.car().map(|v| v.kind()) {
+            LispErrorKind::TypeError(_, _) => "wrong-type-argument".into(),
+            LispErrorKind::WrongTypeArgument(_, _) => "wrong-type-argument".into(),
+            LispErrorKind::Void(_) => "void-variable".into(),
+            LispErrorKind::VoidFunction(_) => "void-function".into(),
+            LispErrorKind::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
+            LispErrorKind::Signal(_) => "error".into(),
+            LispErrorKind::SignalValue(value) => match value.car().map(|v| v.kind()) {
                 Ok(Kind::Symbol(symbol)) => symbol.to_string(),
                 _ => "error".into(),
             },
-            LispError::ErtTestFailed(_) => "ert-test-failed".into(),
-            LispError::Throw(_, _) => "no-catch".into(),
-            LispError::Terminate(_) => {
+            LispErrorKind::ErtTestFailed(_) => "ert-test-failed".into(),
+            LispErrorKind::Throw(_, _) => "no-catch".into(),
+            LispErrorKind::Terminate(_) => {
                 unreachable!("process termination is non-catchable evaluator control flow")
             }
-            LispError::TestSkipped(_) => "ert-test-skipped".into(),
-            LispError::EndOfInput => "end-of-file".into(),
-            LispError::ReadError(_) => "invalid-read-syntax".into(),
+            LispErrorKind::TestSkipped(_) => "ert-test-skipped".into(),
+            LispErrorKind::EndOfInput => "end-of-file".into(),
+            LispErrorKind::ReadError(_) => "invalid-read-syntax".into(),
         }
     }
 }
 
-impl fmt::Display for LispError {
+impl fmt::Display for LispErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LispError::TypeError(expected, got) => {
+            LispErrorKind::TypeError(expected, got) => {
                 write!(f, "Wrong type argument: {}, {}", expected, got)
             }
-            LispError::WrongTypeArgument(predicate, value) => {
+            LispErrorKind::WrongTypeArgument(predicate, value) => {
                 write!(f, "Wrong type argument: {}, {}", predicate, value)
             }
-            LispError::Void(name) => write!(
+            LispErrorKind::Void(name) => write!(
                 f,
                 "Symbol's value as variable is void: {}",
                 render_error_symbol_name(name)
             ),
-            LispError::VoidFunction(name) => {
+            LispErrorKind::VoidFunction(name) => {
                 write!(
                     f,
                     "Symbol's function definition is void: {}",
                     render_error_symbol_name(name)
                 )
             }
-            LispError::WrongNumberOfArgs(name, n) => {
+            LispErrorKind::WrongNumberOfArgs(name, n) => {
                 write!(f, "Wrong number of arguments: {}, {}", name, n)
             }
-            LispError::Signal(msg) => write!(f, "{}", msg),
-            LispError::SignalValue(value) => match value.to_vec() {
+            LispErrorKind::Signal(msg) => write!(f, "{}", msg),
+            LispErrorKind::SignalValue(value) => match value.to_vec() {
                 Ok(items)
                     if items.len() == 2
                         && matches!(items[0].kind(), Kind::Symbol(kind) if kind == "void-variable") =>
@@ -3392,9 +3395,9 @@ impl fmt::Display for LispError {
                 },
                 _ => write!(f, "{}", value),
             },
-            LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
-            LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
-            LispError::Terminate(termination) => {
+            LispErrorKind::ErtTestFailed(msg) => write!(f, "{}", msg),
+            LispErrorKind::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
+            LispErrorKind::Terminate(termination) => {
                 if termination.restart {
                     write!(
                         f,
@@ -3409,10 +3412,109 @@ impl fmt::Display for LispError {
                     )
                 }
             }
-            LispError::TestSkipped(msg) => write!(f, "{}", msg),
-            LispError::EndOfInput => write!(f, "End of file during parsing"),
-            LispError::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),
+            LispErrorKind::TestSkipped(msg) => write!(f, "{}", msg),
+            LispErrorKind::EndOfInput => write!(f, "End of file during parsing"),
+            LispErrorKind::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),
         }
+    }
+}
+
+/// A Lisp error: one word (the boxed kind), so that a `Result<Value,
+/// LispError>' is two words and comes back in registers, as `eval_sub''s
+/// `Lisp_Object' does.  The constructors keep the variants' names; a
+/// site that reads the kind asks `kind' (a reference) or `into_kind'.
+#[derive(Clone)]
+pub struct LispError(Box<LispErrorKind>);
+
+#[allow(non_snake_case)]
+impl LispError {
+    #[inline]
+    pub fn kind(&self) -> &LispErrorKind {
+        &self.0
+    }
+
+    #[inline]
+    pub fn kind_mut(&mut self) -> &mut LispErrorKind {
+        &mut self.0
+    }
+
+    #[inline]
+    pub fn into_kind(self) -> LispErrorKind {
+        *self.0
+    }
+
+    pub fn condition_type(&self) -> String {
+        self.0.condition_type()
+    }
+
+    pub fn TypeError(a0: String, a1: String) -> Self {
+        Self(Box::new(LispErrorKind::TypeError(a0, a1)))
+    }
+
+    pub fn WrongTypeArgument(a0: String, a1: Value) -> Self {
+        Self(Box::new(LispErrorKind::WrongTypeArgument(a0, a1)))
+    }
+
+    pub fn Void(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::Void(a0)))
+    }
+
+    pub fn VoidFunction(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::VoidFunction(a0)))
+    }
+
+    pub fn WrongNumberOfArgs(a0: String, a1: usize) -> Self {
+        Self(Box::new(LispErrorKind::WrongNumberOfArgs(a0, a1)))
+    }
+
+    pub fn Signal(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::Signal(a0)))
+    }
+
+    pub fn SignalValue(a0: Value) -> Self {
+        Self(Box::new(LispErrorKind::SignalValue(a0)))
+    }
+
+    pub fn ErtTestFailed(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::ErtTestFailed(a0)))
+    }
+
+    pub fn Throw(a0: Value, a1: Value) -> Self {
+        Self(Box::new(LispErrorKind::Throw(a0, a1)))
+    }
+
+    pub fn Terminate(a0: EmacsTermination) -> Self {
+        Self(Box::new(LispErrorKind::Terminate(a0)))
+    }
+
+    pub fn TestSkipped(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::TestSkipped(a0)))
+    }
+
+    pub fn EndOfInput() -> Self {
+        Self(Box::new(LispErrorKind::EndOfInput))
+    }
+
+    pub fn ReadError(a0: String) -> Self {
+        Self(Box::new(LispErrorKind::ReadError(a0)))
+    }
+}
+
+impl From<LispErrorKind> for LispError {
+    fn from(kind: LispErrorKind) -> Self {
+        Self(Box::new(kind))
+    }
+}
+
+impl fmt::Debug for LispError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, f)
+    }
+}
+
+impl fmt::Display for LispError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&*self.0, f)
     }
 }
 
@@ -3502,15 +3604,15 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
             }
         }
     }
-    match error {
-        LispError::Signal(message) => format!("Signal({message:?})"),
-        LispError::SignalValue(value) => {
+    match error.kind() {
+        LispErrorKind::Signal(message) => format!("Signal({message:?})"),
+        LispErrorKind::SignalValue(value) => {
             let mut out = String::from("SignalValue(");
             render(value, 6, &mut out);
             out.push(')');
             out
         }
-        LispError::Throw(tag, value) => {
+        LispErrorKind::Throw(tag, value) => {
             let mut out = String::from("Throw(");
             render(tag, 3, &mut out);
             out.push_str(", ");
@@ -3518,7 +3620,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
             out.push(')');
             out
         }
-        LispError::WrongTypeArgument(predicate, value) => {
+        LispErrorKind::WrongTypeArgument(predicate, value) => {
             let mut out = format!("WrongTypeArgument({predicate}, ");
             render(value, 4, &mut out);
             out.push(')');
@@ -3543,6 +3645,15 @@ mod tests {
         make_uninterned_symbol_name,
     };
     use std::rc::Rc;
+
+    #[test]
+    fn result_of_value_is_two_machine_words() {
+        assert_eq!(
+            std::mem::size_of::<Result<Value, LispError>>(),
+            2 * std::mem::size_of::<usize>(),
+            "eval_sub's result comes back in registers: the word, and the boxed signal",
+        );
+    }
 
     #[test]
     fn value_is_one_machine_word() {

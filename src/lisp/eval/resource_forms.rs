@@ -1,6 +1,7 @@
 use super::core::{list_car, list_cdr, list_cons_count, list_forms, list_next, list_nth};
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 impl Interpreter {
     pub(crate) fn save_excursion_state(&mut self) -> SavedExcursion {
@@ -116,7 +117,10 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("unwind-protect".into(), 0));
         };
         let result = self.eval(&body_form, env);
-        if matches!(result, Err(LispError::Terminate(_))) {
+        if matches!(
+            result.as_ref().map_err(LispError::kind),
+            Err(LispErrorKind::Terminate(_))
+        ) {
             return result;
         }
         // Always run cleanup forms.  If a cleanup itself exits nonlocally,
@@ -188,7 +192,10 @@ impl Interpreter {
                 }
                 // `throw' passes through `condition-case' untouched; only
                 // signals are eligible for the handlers.
-                if matches!(e, LispError::Throw(_, _) | LispError::Terminate(_)) {
+                if matches!(
+                    e.kind(),
+                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+                ) {
                     return Err(e);
                 }
                 let condition = e.condition_type();

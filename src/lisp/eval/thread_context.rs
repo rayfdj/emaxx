@@ -4,6 +4,7 @@
 
 use super::roots::{LispRootMarker, TraceLispRoots};
 use super::*;
+use crate::lisp::types::LispErrorKind;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ThreadExecutionContext {
@@ -180,8 +181,11 @@ impl Interpreter {
             });
         }
         while let Some(thread_id) = self.continuations.threads.keys().next().copied() {
-            match self.step_thread(thread_id, &mut Env::new()) {
-                Ok(()) | Err(LispError::Terminate(_)) => {}
+            match self
+                .step_thread(thread_id, &mut Env::new())
+                .map_err(LispError::into_kind)
+            {
+                Ok(()) | Err(LispErrorKind::Terminate(_)) => {}
                 Err(error) => panic!("Unable to unwind suspended Lisp thread: {error}"),
             }
         }

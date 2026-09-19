@@ -5725,8 +5725,8 @@ fn cached_source_forms_observe_mutation_and_recover_after_errors() {
     // GNU: (wrong-type-argument listp DATUM) -- predicate symbol plus the
     // offending value itself (finding 57).
     assert!(matches!(
-        interp.eval(&improper, &mut env),
-        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "listp"
+        interp.eval(&improper, &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::WrongTypeArgument(predicate, _)) if predicate == "listp"
     ));
     assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(6));
 }
@@ -5757,8 +5757,8 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
         .expect("literal should parse")
         .expect("literal should exist");
     assert!(matches!(
-        interp.eval(&literal, &mut env),
-        Err(LispError::VoidFunction(name)) if name == "vector-literal"
+        interp.eval(&literal, &mut env).map_err(LispError::into_kind),
+        Err(LispErrorKind::VoidFunction(name)) if name == "vector-literal"
     ));
     literal
         .set_car(Value::symbol("quote"))

@@ -11,7 +11,7 @@ mod tests;
 
 use super::eval::{Interpreter, MarkedIds, RecordKind};
 use super::primitives;
-use super::types::{Env, LispError, Value};
+use super::types::{Env, LispError, LispErrorKind, Value};
 use abi::*;
 use callbacks::*;
 use libloading::Library;
@@ -244,8 +244,8 @@ impl Context<'_> {
         if self.pending.borrow().is_some() {
             return;
         }
-        let (symbol, data) = match &error {
-            LispError::Throw(tag, value) => (*tag, *value),
+        let (symbol, data) = match error.kind() {
+            LispErrorKind::Throw(tag, value) => (*tag, *value),
             _ => {
                 let condition = super::eval::error_condition_value(&error);
                 (
@@ -260,9 +260,9 @@ impl Context<'_> {
     }
 
     fn exit_kind(&self) -> c_int {
-        match *self.pending.borrow() {
+        match self.pending.borrow().as_ref().map(LispError::kind) {
             None => 0,
-            Some(LispError::Throw(_, _)) => 2,
+            Some(LispErrorKind::Throw(_, _)) => 2,
             Some(_) => 1,
         }
     }
@@ -278,8 +278,8 @@ impl Context<'_> {
 
     fn propagate_exit(&mut self) -> Result<(), LispError> {
         let pending = self.pending.borrow_mut().take();
-        match pending {
-            Some(LispError::Throw(tag, value)) => {
+        match pending.map(LispError::into_kind) {
+            Some(LispErrorKind::Throw(tag, value)) => {
                 // GNU rethrows through Fthrow after leaving the foreign
                 // callback's catch-all boundary, including no-catch checking.
                 unsafe {
@@ -287,7 +287,7 @@ impl Context<'_> {
                 }
                 Ok(())
             }
-            Some(error) => Err(error),
+            Some(error) => Err(LispError::from(error)),
             None => Ok(()),
         }
     }

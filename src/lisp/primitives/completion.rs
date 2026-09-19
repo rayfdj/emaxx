@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 
@@ -635,7 +636,7 @@ pub(crate) fn completion_candidates(
             .map(Ok)
             .collect();
     }
-    match obarray_symbols(interp, collection) {
+    match obarray_symbols(interp, collection).map_err(LispError::into_kind) {
         Ok(symbols) => {
             return symbols
                 .into_iter()
@@ -649,9 +650,9 @@ pub(crate) fn completion_candidates(
                 })
                 .collect();
         }
-        Err(LispError::TypeError(expected, _)) if expected == "obarray" => {}
-        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "obarrayp" => {}
-        Err(error) => return Err(error),
+        Err(LispErrorKind::TypeError(expected, _)) if expected == "obarray" => {}
+        Err(LispErrorKind::WrongTypeArgument(predicate, _)) if predicate == "obarrayp" => {}
+        Err(error) => return Err(LispError::from(error)),
     }
     completion_list_candidates(collection)
 }
@@ -2068,26 +2069,30 @@ pub(crate) fn interactive_minibuffer_command_loop(
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                     match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, binding, &keys, last_event,
-                    ) {
+                    )
+                    .map_err(LispError::into_kind)
+                    {
                         Ok(()) => {}
-                        Err(LispError::Throw(tag, _value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
+                        Err(LispErrorKind::Throw(tag, _value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
                         {
                             return Ok(());
                         }
-                        Err(LispError::Terminate(termination)) => {
+                        Err(LispErrorKind::Terminate(termination)) => {
                             return Err(LispError::Terminate(termination));
                         }
-                        Err(error @ LispError::Throw(..)) => {
+                        Err(error @ LispErrorKind::Throw(..)) => {
                             // A throw bound for an outer catch unwinds the
                             // whole read, GNU's non-local exit.
-                            return Err(error);
+                            return Err(LispError::from(error));
                         }
                         Err(error) => {
                             // GNU prints the error in the echo area and
                             // keeps reading; any input restores the
                             // minibuffer display.
                             let text = crate::lisp::primitives::command_error_echo_text(
-                                interp, env, &error,
+                                interp,
+                                env,
+                                &LispError::from(error.clone()),
                             );
                             super::set_echo_area_message(Some(text));
                             hold_echo = true;

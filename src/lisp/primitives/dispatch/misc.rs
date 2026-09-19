@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
     interp
@@ -563,7 +564,8 @@ define_dispatch!(
                 // GNU's NOERROR only suppresses failure to locate/open the file;
                 // errors raised after a file was found still propagate.
                 if noerror
-                    && let Err(LispError::SignalValue(condition)) = &result
+                    && let Err(LispErrorKind::SignalValue(condition)) =
+                        result.as_ref().map_err(LispError::kind)
                     && matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
                     if kind == "file-missing" || kind == "file-error")
                 {
@@ -1185,8 +1187,11 @@ define_dispatch!(
                 }
                 // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
                 let alias_value = interp.symbol_value_cell(&alias).ok();
-                match interp.symbol_value_cell(&base) {
-                    Err(LispError::Void(_)) => {
+                match interp
+                    .symbol_value_cell(&base)
+                    .map_err(LispError::into_kind)
+                {
+                    Err(LispErrorKind::Void(_)) => {
                         if let Some(value) = alias_value {
                             // set_internal (base, value, Qnil, SET_INTERNAL_BIND)
                             if !interp.variable_watchers(&base).is_empty() {
@@ -1195,7 +1200,7 @@ define_dispatch!(
                             interp.set_symbol_value_cell(&base, value);
                         }
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(LispError::from(error)),
                     Ok(base_value) => {
                         if let Some(alias_value) = alias_value.as_ref()
                             && !values_eq_in_env(interp, alias_value, &base_value, env)
@@ -2319,14 +2324,18 @@ pub(super) fn direct_symbol_value(
     // GNU 30.2 data.c:Fsymbol_value reaches
     // find_symbol_value's CHECK_SYMBOL.
     let symbol = checked_symbol_name(interp, &args[0], env)?;
-    match interp.symbol_value_cell(&symbol) {
+    match interp
+        .symbol_value_cell(&symbol)
+        .map_err(LispError::into_kind)
+    {
         // Fsymbol_value signals with its original argument,
         // even after find_symbol_value follows an alias or
         // XSYMBOL unwraps a symbol-with-position.
-        Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+        Err(LispErrorKind::Void(_)) => Err(LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
             args[0],
         ]))),
-        result => result,
+        Err(other) => Err(LispError::from(other)),
+        Ok(value) => Ok(value),
     }
 }

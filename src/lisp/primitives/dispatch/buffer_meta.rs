@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
@@ -794,7 +795,10 @@ define_dispatch!(
                         ])));
                     }
                     seen.push(symbol);
-                    match interp.lookup_function(&symbol, env) {
+                    match interp
+                        .lookup_function(&symbol, env)
+                        .map_err(LispError::into_kind)
+                    {
                         Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_)) => {
                             current = resolved;
                         }
@@ -803,8 +807,8 @@ define_dispatch!(
                         // represented as nil and indirect-function returns
                         // that nil.  Calling the result is where a
                         // void-function condition belongs.
-                        Err(LispError::VoidFunction(_)) => return Ok(Value::Nil),
-                        Err(error) => return Err(error),
+                        Err(LispErrorKind::VoidFunction(_)) => return Ok(Value::Nil),
+                        Err(error) => return Err(LispError::from(error)),
                     }
                 }
             }
