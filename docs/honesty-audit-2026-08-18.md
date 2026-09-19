@@ -12902,4 +12902,13 @@ clones of the now-Copy symbol handle into copies across 22 files).
 The controls print their expected output from the release build; the
 corpus rows above all pass.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  Grouped gate run-1789825352363777065-22781 on the tree as
+committed (f805cd75; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx', launched without `nohup':
+the ten library groups (batch 50, compat_runtime 84, eval_01 374,
+eval_02 285, eval_03 320, eval_04 254, eval_05 351, lightweight 444,
+primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
+and 1 in 23 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
+in 284 s), 2,717 scheduled and observed; fmt and strict clippy exit 0
+before and after.  First run, nothing else on the machine but a
+read-only review.
