@@ -638,14 +638,14 @@ const DECODED_CODE_CACHE_LIMIT: usize = 8192;
 
 type DecodedCodeTable = std::collections::HashMap<
     (usize, usize),
-    (crate::lisp::types::SharedText, Rc<DecodedCode>),
+    (u64, Rc<DecodedCode>),
     crate::lisp::primitives::FnvBuildHasher,
 >;
 
 thread_local! {
     /// By the code string's identity and the constants vector's length
-    /// (the decoder checks constant indices against it); the text is
-    /// held so the identity stays this text's.
+    /// (the decoder checks constant indices against it); the string's
+    /// serial is kept so a reused address is not taken for this text.
     static DECODED_CODE: std::cell::RefCell<DecodedCodeTable> =
         std::cell::RefCell::new(std::collections::HashMap::default());
 }
@@ -662,10 +662,11 @@ fn decoded_code(
         return Ok(Rc::new(DecodedCode::new(code, constants_len)?));
     };
     let key = (text.identity_ptr(), constants_len);
+    let serial = text.serial();
     if let Some(decoded) = DECODED_CODE.with_borrow(|cache| {
         cache
             .get(&key)
-            .filter(|(held, _)| held.ptr_eq(text))
+            .filter(|(held, _)| *held == serial)
             .map(|(_, decoded)| Rc::clone(decoded))
     }) {
         return Ok(decoded);
@@ -675,7 +676,7 @@ fn decoded_code(
         if cache.len() >= DECODED_CODE_CACHE_LIMIT {
             cache.clear();
         }
-        cache.insert(key, (text.clone(), Rc::clone(&decoded)));
+        cache.insert(key, (serial, Rc::clone(&decoded)));
     });
     Ok(decoded)
 }

@@ -2507,7 +2507,7 @@ pub(crate) fn numeric_result_value(
     match value {
         Value::Integer(number) => Ok(Value::Integer(*number)),
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone().into())),
-        Value::Float(number) => Ok(Value::Float(number.clone())),
+        Value::Float(number) => Ok(Value::Float(*number)),
         Value::Marker(id) => Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
             LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
         })? as i64)),

@@ -328,12 +328,21 @@ mod tests {
         };
         interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
 
-        let rooted_key = Value::string("rooted key");
-        let unrooted_key = Value::string("unrooted key");
-        assert!(interp.equal_hash_put(id, rooted_key.clone(), Value::Integer(1), &env,));
-        assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), &env));
+        // The unrooted key is consed in a frame of its own and the stack
+        // under the test cleared: a string's address in a local of a
+        // scanned frame keeps it (a C local's object).
+        #[inline(never)]
+        fn insert_keys(interp: &mut Interpreter, id: u64, env: &Env) -> Value {
+            let rooted_key = Value::string("rooted key");
+            let unrooted_key = Value::string("unrooted key");
+            assert!(interp.equal_hash_put(id, rooted_key.clone(), Value::Integer(1), env));
+            assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env));
+            interp.set_global_binding("weak-key-root", Value::cons(rooted_key.clone(), Value::Nil));
+            rooted_key
+        }
+        let rooted_key = insert_keys(&mut interp, id, &env);
         interp.set_global_binding("weak-table-root", table);
-        interp.set_global_binding("weak-key-root", Value::cons(rooted_key.clone(), Value::Nil));
+        crate::lisp::alloc::clobber_stack();
 
         crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
             .expect("collect weak table through the ordinary C-owned entry point");

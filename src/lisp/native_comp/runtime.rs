@@ -1020,7 +1020,13 @@ impl NativeRuntime {
             crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
             // alloc.c:gc_sweep, after the weak entries are gone; the
             // heap's views of the cells it took go with them.
+            // gc_sweep's order has the strings first; here they go last:
+            // a swept cons drops its fields, and the destructor of a kind
+            // still reference counted (a symbol's registry entry keyed
+            // by its name) reads strings, which must still be there.
             crate::lisp::alloc::sweep_conses(epoch);
+            crate::lisp::alloc::sweep_floats(epoch);
+            crate::lisp::alloc::sweep_strings(epoch);
             self.heap.forget_swept_conses();
             return;
         }
@@ -4448,7 +4454,10 @@ impl NativeHeap {
         // alloc.c:gc_sweep, after the weak entries are gone.  A view of a
         // cell the sweep took is gone with it; the views of the cells the
         // mark reached from Lisp alone are cut back next.
+        // The strings last (see the other path).
         crate::lisp::alloc::sweep_conses(epoch);
+        crate::lisp::alloc::sweep_floats(epoch);
+        crate::lisp::alloc::sweep_strings(epoch);
         self.forget_swept_conses();
 
         let mut unreachable = Vec::new();
@@ -9537,19 +9546,25 @@ mod tests {
 
     #[test]
     fn native_gc_sweeps_unreachable_reference_counted_handles() {
+        // The string and its word live in a frame of their own (a
+        // string's address in a local of a scanned frame keeps it).
+        #[inline(never)]
+        fn encode_temporary(heap: &mut NativeHeapOwner) -> usize {
+            let value = Value::string("temporary native string");
+            heap.encode(&value).expect("encode native string handle") ^ HIDE
+        }
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
         let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let value = Value::string("temporary native string");
-        let word = heap.encode(&value).expect("encode native string handle");
-        drop(value);
+        let hidden = encode_temporary(&mut heap);
         for index in 0..5_000 {
             let value = (index << FIXNUM_BITS) + TAG_FIXNUM_LOW;
             std::hint::black_box(heap.cons(value, 0));
         }
+        crate::lisp::alloc::clobber_stack();
 
         heap.collect(
             std::ptr::from_ref(&stack_marker),
@@ -9559,7 +9574,7 @@ mod tests {
         );
 
         assert!(heap.handles.iter().all(Option::is_none));
-        assert!(heap.decode(word).is_err());
+        assert!(heap.decode(hidden ^ HIDE).is_err());
     }
 
     #[test]

@@ -3297,7 +3297,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
     big_integers: MarkedAddresses,
-    floats: MarkedAddresses,
     string_objects: MarkedAddresses,
     lambdas: MarkedAddresses,
     buffers: MarkedAddresses,
@@ -3340,7 +3339,6 @@ impl LispReachability<'_, '_> {
             retaining: false,
             epoch: 0,
             big_integers: MarkedAddresses::default(),
-            floats: MarkedAddresses::default(),
             string_objects: MarkedAddresses::default(),
             lambdas: MarkedAddresses::default(),
             buffers: MarkedAddresses::default(),
@@ -3398,7 +3396,7 @@ impl LispReachability<'_, '_> {
                 true
             }
             Value::BigInteger(value) => self.big_integers.contains(&value.identity_ptr()),
-            Value::Float(value) => self.floats.contains(&value.identity_ptr()),
+            Value::Float(value) => value.mark_bit().is_marked(self.epoch),
             Value::String(value) => value.mark_bit().is_marked(self.epoch),
             Value::StringObject(value) => {
                 self.string_objects.contains(&(Rc::as_ptr(value) as usize))
@@ -3485,6 +3483,7 @@ impl LispReachability<'_, '_> {
             Value::Vector(vector) => &vector.mark,
             Value::String(text) => text.mark_bit(),
             Value::Symbol(symbol) => symbol.mark_bit(),
+            Value::Float(value) => value.mark_bit(),
             _ => return,
         };
         prefetch_for_write(mark as *const u8);
@@ -3514,7 +3513,7 @@ impl LispReachability<'_, '_> {
                 false
             }
             Value::BigInteger(value) => self.big_integers.insert(value.identity_ptr()),
-            Value::Float(value) => self.floats.insert(value.identity_ptr()),
+            Value::Float(value) => value.mark_bit().mark(self.epoch),
             Value::String(value) => value.mark_bit().mark(self.epoch),
             Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
             Value::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
@@ -3552,7 +3551,9 @@ impl LispReachability<'_, '_> {
 
         match value {
             Value::Symbol(symbol) => {
-                // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
+                // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
+                // the host-side key text is the symbol's too.
+                symbol.internal_text().mark_bit().mark(self.epoch);
                 self.enqueue(symbol.lisp_name_ref());
             }
             Value::Finalizer(id) => {
@@ -4191,8 +4192,8 @@ impl Interpreter {
         // stacks with it.
         crate::lisp::alloc::mark_all_stacks(
             continuations::current_stack_base().map(|base| base as usize),
-            |cell| {
-                marked.mark(self, &Value::Cons(cell));
+            |value| {
+                marked.mark(self, &value);
             },
         );
         // The other interpreter states alive in the process (a test's
@@ -4334,6 +4335,12 @@ impl Interpreter {
         };
         for (_, value) in self.globals.iter() {
             mark(value);
+        }
+        // Every symbol a table of this state keys by (the obarray's
+        // entries in C): the symbol object and its name strings stay,
+        // whether or not any object names the symbol.
+        for symbol in self.known_symbols_shared().iter() {
+            mark(&Value::Symbol(symbol.clone()));
         }
         // lread.c:defvar_lisp static-protects the C slot, independently of
         // the symbol's current redirect or plain value after makunbound.

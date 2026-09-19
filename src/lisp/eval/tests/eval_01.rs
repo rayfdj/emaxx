@@ -72,7 +72,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
     fn build_chain() -> (usize, u64) {
         let mut chain = Value::Nil;
         for index in 0..100_000 {
-            chain = Value::cons(Value::Integer(index), chain);
+            chain = Value::cons(Value::float(index as f64), chain);
         }
         let Value::Cons(cell) = &chain else {
             unreachable!("constructed cons");
@@ -85,8 +85,10 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
     let kept = Value::cons(Value::Integer(37), Value::Nil);
     interp.set_variable("emaxx-gc-test-kept", kept.clone(), &mut env);
     let before = crate::lisp::types::census_live_conses();
+    let floats_before = crate::lisp::types::census_live_floats();
     let (hidden, serial) = build_chain();
     assert!(crate::lisp::types::census_live_conses() >= before + 100_000);
+    assert!(crate::lisp::types::census_live_floats() >= floats_before + 100_000);
     crate::lisp::alloc::clobber_stack();
     crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
     let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
@@ -94,6 +96,10 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
     assert!(
         crate::lisp::types::census_live_conses() < before + 10_000,
         "the sweep returned the chain to the free list"
+    );
+    assert!(
+        crate::lisp::types::census_live_floats() < floats_before + 10_000,
+        "the sweep returned the chain's floats to the float free list"
     );
     assert!(matches!(
         interp.lookup_var("emaxx-gc-test-kept", &env),

@@ -12478,3 +12478,121 @@ side: GNU's own child was still alive five seconds after its exit,
 because the gate had been launched under `nohup', whose ignored
 SIGHUP every descendant inherits, the child included; launched
 without it, the run above.  Three runs of the test alone passed.
+
+## 2026-09-19 Checkpoint 20h: floats and strings in alloc.c's blocks (the representation, phase B, steps 1 and 2)
+
+*What prompted it.*  Checkpoint 20g's measurement of the collection
+of the booted heap (16 ms against GNU's 5.7) and its reading of why
+the loops got slower under the tracing collector: the threshold rule
+cannot be C's until the collection is C's cost, and every kind still
+reference counted is marked through a hash set or dropped through
+`Rc' glue.  Phase B takes the kinds into alloc.c's blocks one at a
+time; this checkpoint takes the two with no fields of their own to
+trace: the floats (alloc.c's `float_block') and the strings
+(`string_block'), 304 thousand of the latter in the booted heap.
+
+*Done.*  (1) The block registry carries a kind (alloc.c's `mem_type':
+cons, float, string) and `mem_find' answers the cell by kind, so the
+conservative scan marks a float or a string it names as it marks a
+cons.  (2) A float is a 16-byte cell (`struct Lisp_Float' with the
+mark word in the cell instead of the block's bitmap) in a float
+block; `Value::Float' is the cell's address, copied without a count
+(`FloatRef'); `sweep_floats' rebuilds the free list and gives back
+an empty block as `sweep_conses' does; the census counts come from
+the sweep.  (3) A string is a 48-byte cell (`struct Lisp_String':
+the text's bytes on the Rust heap as a large string's are
+`allocate_string_data''s in C -- there is no sblock and no
+`compact_small_strings' -- plus `size_byte', the mark word and a
+serial) in a string block; `Value::String' is the cell's address
+(`TextRef'), the `Rc' and its drop are gone, `sweep_strings' drops
+the text of an unmarked cell and frees the cell; alloc.c's
+`empty_unibyte_string' is one leaked cell outside every block, so
+`(eq "" "")' holds as before.  (4) The mark of a float or a string
+is its epoch (no hash set); a symbol's host-side key text is marked
+with the symbol; the obarray is a root (every interned symbol and
+its name strings, alloc.c's staticpro of `Vobarray'), and every
+symbol a table of the state keys by is marked, since a table's key
+is a `SymbolName' the mark did not otherwise reach.  (5) The obarray
+is the process's, as `Vobarray' is: it was the thread's, and a
+collection on one thread swept the name strings of the symbols only
+another thread's table held (a template interpreter built on one
+thread, used from another).  (6) The byte-code decode cache keys the
+code string by its address and validates the entry by the cell's
+serial, instead of holding the string.  (7) The sweeps run conses,
+floats, strings: gc_sweep's order has the strings first, but a swept
+cons drops its fields, and the destructor of a kind still reference
+counted (a symbol's registry entry keyed by its name) reads strings,
+which must still be there; the order goes back to C's when the last
+`Rc' kind is in a block.  (8) A float's or a string's handle in the
+native heap lives while the mark reaches the cell, from Lisp or from
+generated code (its owner count decided before).
+
+*Measured.*  The same machine, GNU 30.2 built here (`src'), checkpoint 20g
+(`w20') and this checkpoint (`w21'), three rounds each, the median
+and the minimum:
+
+| probe | GNU (min / median) | 20g (min / median) | 20h (min / median) |
+|---|---|---|---|
+| interp lexical loop, 2M iterations | 0.866 / 0.873 s | 1.728 / 1.730 s | 1.753 / 1.778 s |
+| interp dynamic loop | 0.386 / 0.391 s | 1.363 / 1.371 s | 1.416 / 1.420 s |
+| call of an interpreted defun | 0.593 / 0.600 s | 0.819 / 0.841 s | 0.802 / 0.806 s |
+| byte-code call loop, 10M | 0.178 / 0.181 s | 0.784 / 0.785 s | 0.749 / 0.758 s |
+| 300k conses (the sweep part) | 0.075 / 0.077 s (0.009) | 0.242 / 0.265 s (0.049) | 0.244 / 0.245 s (0.047) |
+| ten collections of the idle booted heap | 0.051 / 0.055 s | 0.172 / 0.184 s | 0.181 / 0.181 s |
+| mapcar over 2M | 0.164 / 0.177 s | 0.531 / 0.539 s | 0.520 / 0.535 s |
+
+Callgrind, instructions an iteration: the dynamic loop 8,618 (20g) to
+8,615, the lexical loop 9,640 to 9,618, the byte-code call loop 1,344
+to 1,345.  The corpus rows (two rounds, the minimum): ucs-names GNU
+1.84 s, 20g 8.05, 20h 8.17; fns-tests-sort 1.10, 3.70, 3.88;
+pcase-tests-macro 0.08, 0.36, 0.38; undo-test4 0.79, 2.92, 3.05.
+The booted heap's census (`memory-use-counts'): 143,813 conses,
+318,316 strings with 4,658,717 bytes of text, 128 floats.  The full
+library suite's peak resident size rose from 1.2 GB (20g) to 1.72 GB.
+
+*What did not move, and what was learned.*  Nothing moved that the eye can see, and the rows are 3--4
+percent slower: this checkpoint is the representation and not a
+speed step, and it says so.  The loops allocate no float and no
+string, so their instruction counts are 20g's; the sweep of 300k
+conses is the same because the conses were already in blocks.  What
+the strings cost: `sweep_strings' walks every string block of the
+booted heap (318 thousand cells, alloc.c walks the same) on every
+collection, so a collection of the idle heap stays at 18 ms against
+GNU's 5.5 -- the mark phase is still the larger part (the vectors,
+symbols and records are still traced through the `Rc' walk and the
+hash set), and that is phase B's remaining steps, not this one.  The
+peak resident size grew because a string cell is 48 bytes beside its
+text where the `Rc' box was 40 with the text inline, a freed
+string's block is given back only when every cell in it is free, and
+the suite's 2,700 tests keep the process's blocks: a real cost, to be
+weighed again when the sblock (the small strings' bytes in blocks of
+their own, alloc.c's `compact_small_strings') comes.  The lesson of
+the checkpoint is the obarray: a per-thread obarray was a
+correctness fault under a tracing collector (a symbol's name string
+reachable only from another thread's table was swept), and C's one
+`Vobarray' is a root; the fix was to be C.
+
+*Which of these mirror C, and which do not.*  The float block, the
+string block, the mark by epoch, the sweep's free-list rebuild and
+block release, the obarray as a root and as one table, the empty
+string: alloc.c's.  Not C, each to go with its phase: the mark word
+in the cell (the bitmap comes with the 16-byte cons); the string's
+bytes on the Rust heap with no small-string compaction; the serial in
+the string cell (for the decode cache and the weak views, as the
+cons's serial); the sweep order; bignums still reference counted
+(a pseudovector in C, phase B's next step with the vectors).
+
+*Verified.*  `cargo test --lib' at the gate profile with the image
+template, one test thread: 2,712 passed, the three tests that need an
+unwritable directory failing under root as before, 508 s; the
+stress hour (`EMAXX_GC_STRESS=1', a collection at every allocation,
+over `eval_01' until the hour's cap) fails the
+`accept_process_output' timing test as at 20g and, in this run, the
+c-mode defaults test, being rerun alone under stress (its message was
+not captured by the pipeline) -- see the Gate paragraph for the
+outcome; `cargo clippy --all-targets -- -D warnings' and `cargo fmt
+--check' exit 0.  The controls (checkpoints 19z3, 20a, 20e) print
+their expected output from the release build; the stress boot
+(`EMAXX_GC_STRESS=1' with 2,000 forced collections) boots.
+
+*Gate.*  GATE-PLACEHOLDER

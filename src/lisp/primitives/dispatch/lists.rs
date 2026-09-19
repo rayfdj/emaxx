@@ -2168,7 +2168,7 @@ define_dispatch!(
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
                 let default = match args.get(1).cloned().unwrap_or(Value::Nil) {
-                    Value::Buffer(buffer) => Value::String(buffer.name.clone()),
+                    Value::Buffer(buffer) => Value::String(buffer.name),
                     other => other,
                 };
                 if let Some(function) = interp
@@ -2226,7 +2226,7 @@ define_dispatch!(
                     .into_iter()
                     .filter_map(|buffer| match buffer {
                         Value::Buffer(handle) => Some(Value::cons(
-                            Value::String(handle.name.clone()),
+                            Value::String(handle.name),
                             Value::Buffer(handle),
                         )),
                         _ => None,

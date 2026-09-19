@@ -461,6 +461,7 @@ pub(crate) fn call_with_facts(
 /// staticpro'd echo area; the include-tag cache): roots of every
 /// collection.
 pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
+    crate::lisp::types::mark_interned_symbol_roots(mark);
     display::mark_echo_area_roots(mark);
     misc_keymaps::mark_semantic_cache_roots(mark);
 }

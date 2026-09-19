@@ -19,7 +19,7 @@
 //! -- that no other OS thread holds Lisp objects in registers or on its
 //! stack while it runs.
 
-use super::types::{ConsCell, MarkBit};
+use super::types::{ConsCell, MarkBit, Value};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -39,8 +39,17 @@ const BLOCK_ALIGN: usize = 4096;
 /// collection's epoch, which `begin_mark_epoch' never makes this).
 pub(crate) const FREE_MARK: u32 = u32::MAX;
 
-/// The blocks, by start address, for `mem_find'.
-static BLOCKS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// alloc.c's `mem_type' of a block: what its cells are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BlockKind {
+    Cons,
+    Float,
+    String,
+}
+
+/// The blocks, by start address, with their kinds, for `mem_find'
+/// (alloc.c's mem tree).
+static BLOCKS: Mutex<Vec<(usize, BlockKind)>> = Mutex::new(Vec::new());
 /// gcstat's `total_conses' and `total_free_conses': raised by allocation
 /// on any thread, set by the sweep (the heap is the process's).
 static LIVE_CONSES: AtomicUsize = AtomicUsize::new(0);
@@ -55,6 +64,438 @@ static BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
 static BUMP_END: AtomicUsize = AtomicUsize::new(0);
 /// The allocation count, a serial for `WeakConsRef'.
 static SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// alloc.c's `float_block', `float_free_list' and `float_block_index'.
+static FLOAT_FREE_LIST: AtomicPtr<FloatCell> = AtomicPtr::new(std::ptr::null_mut());
+static FLOAT_BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
+static FLOAT_BUMP_END: AtomicUsize = AtomicUsize::new(0);
+/// gcstat's `total_floats' and `total_free_floats'.
+static LIVE_FLOATS: AtomicUsize = AtomicUsize::new(0);
+static FREE_FLOATS: AtomicUsize = AtomicUsize::new(0);
+const FLOAT_CELL_SIZE: usize = std::mem::size_of::<FloatCell>();
+pub(crate) const FLOATS_PER_BLOCK: usize = CONS_BLOCK_BYTES / FLOAT_CELL_SIZE;
+
+/// alloc.c's `struct Lisp_Float': the double, and (here, in the cell
+/// rather than in the block's bitmap) the mark word.
+#[repr(C)]
+pub struct FloatCell {
+    value: f64,
+    mark: MarkBit,
+}
+
+/// `Lisp_Object' for a float: the cell's address, copied freely, valid
+/// while the collector can reach the cell.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct FloatRef(NonNull<FloatCell>);
+
+impl FloatRef {
+    fn cell(&self) -> &FloatCell {
+        // SAFETY: a `FloatRef' names an allocated cell (see `ConsRef').
+        let cell = unsafe { self.0.as_ref() };
+        debug_assert!(
+            cell.mark.raw() != FREE_MARK,
+            "use of a float the collector freed"
+        );
+        cell
+    }
+
+    pub fn get(&self) -> f64 {
+        self.cell().value
+    }
+
+    pub(crate) fn identity_ptr(&self) -> usize {
+        self.0.as_ptr() as usize
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    pub(crate) fn mark_bit(&self) -> &MarkBit {
+        &self.cell().mark
+    }
+}
+
+impl std::ops::Deref for FloatRef {
+    type Target = f64;
+    fn deref(&self) -> &f64 {
+        &self.cell().value
+    }
+}
+
+impl PartialEq for FloatRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.get().to_bits() == other.get().to_bits()
+    }
+}
+
+impl std::fmt::Debug for FloatRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.get(), f)
+    }
+}
+
+impl std::fmt::Display for FloatRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.get(), f)
+    }
+}
+
+impl From<f64> for FloatRef {
+    fn from(value: f64) -> Self {
+        crate::lisp::native_comp::note_lisp_allocation(8);
+        allocate_float(value)
+    }
+}
+
+struct FreeFloat {
+    next: *mut FloatCell,
+}
+
+/// alloc.c:make_float: the free list's head, else the next cell of the
+/// newest float block.
+#[inline]
+pub(crate) fn allocate_float(value: f64) -> FloatRef {
+    let head = FLOAT_FREE_LIST.load(Ordering::Relaxed);
+    let slot = if head.is_null() {
+        bump_float()
+    } else {
+        // SAFETY: a free cell's first word is the free-list link.
+        let next = unsafe { (*head.cast::<FreeFloat>()).next };
+        FLOAT_FREE_LIST.store(next, Ordering::Relaxed);
+        FREE_FLOATS.store(
+            FREE_FLOATS.load(Ordering::Relaxed).saturating_sub(1),
+            Ordering::Relaxed,
+        );
+        head
+    };
+    LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    // SAFETY: SLOT is a free cell of a float block; both words are
+    // written before a handle is made (the epoch as for a cons).
+    unsafe {
+        std::ptr::write(
+            slot,
+            FloatCell {
+                value,
+                mark: MarkBit::default(),
+            },
+        );
+        (*slot).mark.set_raw(super::types::current_mark_epoch());
+        FloatRef(NonNull::new_unchecked(slot))
+    }
+}
+
+fn bump_float() -> *mut FloatCell {
+    let next = FLOAT_BUMP_NEXT.load(Ordering::Relaxed);
+    let end = FLOAT_BUMP_END.load(Ordering::Relaxed);
+    if next < end {
+        FLOAT_BUMP_NEXT.store(next + FLOAT_CELL_SIZE, Ordering::Relaxed);
+        return next as *mut FloatCell;
+    }
+    let block = new_block(BlockKind::Float);
+    FLOAT_BUMP_NEXT.store(block + FLOAT_CELL_SIZE, Ordering::Relaxed);
+    FLOAT_BUMP_END.store(
+        block + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE,
+        Ordering::Relaxed,
+    );
+    block as *mut FloatCell
+}
+
+/// alloc.c:sweep_floats, as `sweep_conses' below.
+pub(crate) fn sweep_floats(epoch: u32) -> usize {
+    let bump_next = FLOAT_BUMP_NEXT.load(Ordering::Relaxed);
+    let bump_end = FLOAT_BUMP_END.load(Ordering::Relaxed);
+    let mut free_list: *mut FloatCell = std::ptr::null_mut();
+    let mut num_free = 0usize;
+    let mut num_used = 0usize;
+    let mut released = Vec::new();
+    for start in blocks_of(BlockKind::Float) {
+        let lim = if bump_end == start + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE {
+            (bump_next - start) / FLOAT_CELL_SIZE
+        } else {
+            FLOATS_PER_BLOCK
+        };
+        let chain_before = free_list;
+        let mut this_free = 0usize;
+        for index in 0..lim {
+            let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+            // SAFETY: inside a registered float block.
+            let mark = unsafe { (*cell).mark.raw() };
+            if mark == epoch {
+                num_used += 1;
+                continue;
+            }
+            // SAFETY: an unmarked cell holds no owned storage; it becomes
+            // free (the free mark, the link in its first word).
+            unsafe {
+                (*cell).mark.set_raw(FREE_MARK);
+                (*cell.cast::<FreeFloat>()).next = free_list;
+            }
+            this_free += 1;
+            free_list = cell;
+        }
+        if this_free == FLOATS_PER_BLOCK && num_free > FLOATS_PER_BLOCK {
+            free_list = chain_before;
+            released.push(start);
+        } else {
+            num_free += this_free;
+        }
+    }
+    FLOAT_FREE_LIST.store(free_list, Ordering::Relaxed);
+    for start in released {
+        release_block(start);
+    }
+    LIVE_FLOATS.store(num_used, Ordering::Relaxed);
+    FREE_FLOATS.store(num_free, Ordering::Relaxed);
+    num_used
+}
+
+pub(crate) fn live_floats() -> usize {
+    LIVE_FLOATS.load(Ordering::Relaxed)
+}
+
+/// A word the conservative scan resolved: the cell it names, by kind.
+pub(crate) enum Found {
+    Cons(*mut ConsCell),
+    Float(*mut FloatCell),
+    String(*mut StringCell),
+}
+
+/// alloc.c's `string_block', `string_free_list' and the index into the
+/// newest block; gcstat's `total_strings' and `total_string_bytes'.
+static STRING_FREE_LIST: AtomicPtr<StringCell> = AtomicPtr::new(std::ptr::null_mut());
+static STRING_BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
+static STRING_BUMP_END: AtomicUsize = AtomicUsize::new(0);
+static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
+static LIVE_STRING_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FREE_STRINGS: AtomicUsize = AtomicUsize::new(0);
+const STRING_CELL_SIZE: usize = std::mem::size_of::<StringCell>();
+pub(crate) const STRINGS_PER_BLOCK: usize = CONS_BLOCK_BYTES / STRING_CELL_SIZE;
+
+/// The storage size of a text that is not a Lisp string allocation at
+/// all (a symbol's host-side key): counted nowhere.
+pub(crate) const UNTRACKED_TEXT: usize = usize::MAX;
+
+/// alloc.c's `struct Lisp_String': the text (its bytes on the Rust heap,
+/// as a large string's are malloc'd in C; there is no sblock and no
+/// compaction), `size_byte' as the storage size the census reads, the
+/// mark word, and a serial for a holder that keeps the address without
+/// keeping the string.
+#[repr(C)]
+pub struct StringCell {
+    text: String,
+    storage_bytes: usize,
+    mark: MarkBit,
+    serial: u64,
+}
+
+/// `Lisp_Object' for a string: the cell's address, copied freely, valid
+/// while the collector can reach the cell.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct TextRef(NonNull<StringCell>);
+
+impl TextRef {
+    #[inline]
+    fn cell(&self) -> &StringCell {
+        // SAFETY: a `TextRef' names an allocated cell (see `ConsRef').
+        let cell = unsafe { self.0.as_ref() };
+        debug_assert!(
+            cell.mark.raw() != FREE_MARK,
+            "use of a string the collector freed"
+        );
+        cell
+    }
+
+    /// The text, as the `String' the cell owns.
+    #[inline]
+    pub(crate) fn text(&self) -> &String {
+        &self.cell().text
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.cell().text.as_str()
+    }
+
+    pub(crate) fn identity_ptr(&self) -> usize {
+        self.0.as_ptr() as usize
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    pub(crate) fn mark_bit(&self) -> &MarkBit {
+        &self.cell().mark
+    }
+
+    pub(crate) fn serial(&self) -> u64 {
+        self.cell().serial
+    }
+
+    /// The text copied out (the cell keeps its own until the sweep).
+    pub fn into_string(self) -> String {
+        self.cell().text.clone()
+    }
+}
+
+struct FreeString {
+    next: *mut StringCell,
+}
+
+/// alloc.c's `empty_unibyte_string': one permanently rooted empty string,
+/// outside every block (no sweep reaches it), returned by every
+/// zero-length allocation so that `(eq "" "")' holds.
+pub(crate) fn empty_text() -> TextRef {
+    static EMPTY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let address = *EMPTY.get_or_init(|| {
+        Box::leak(Box::new(StringCell {
+            text: String::new(),
+            storage_bytes: UNTRACKED_TEXT,
+            mark: MarkBit::default(),
+            serial: 0,
+        })) as *mut StringCell as usize
+    });
+    // SAFETY: a leaked cell: always allocated.
+    TextRef(unsafe { NonNull::new_unchecked(address as *mut StringCell) })
+}
+
+/// alloc.c:allocate_string: the free list's head, else the next cell of
+/// the newest string block; the text's bytes stay where the `String'
+/// keeps them (allocate_string_data's large-string case).
+pub(crate) fn allocate_string(text: String, storage_bytes: usize) -> TextRef {
+    let head = STRING_FREE_LIST.load(Ordering::Relaxed);
+    let slot = if head.is_null() {
+        bump_string()
+    } else {
+        // SAFETY: a free cell's first word is the free-list link.
+        let next = unsafe { (*head.cast::<FreeString>()).next };
+        STRING_FREE_LIST.store(next, Ordering::Relaxed);
+        FREE_STRINGS.store(
+            FREE_STRINGS.load(Ordering::Relaxed).saturating_sub(1),
+            Ordering::Relaxed,
+        );
+        head
+    };
+    let serial = SERIAL.load(Ordering::Relaxed) + 1;
+    SERIAL.store(serial, Ordering::Relaxed);
+    if storage_bytes != UNTRACKED_TEXT {
+        LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        LIVE_STRING_BYTES.store(
+            LIVE_STRING_BYTES.load(Ordering::Relaxed) + storage_bytes,
+            Ordering::Relaxed,
+        );
+    }
+    // SAFETY: SLOT is a free cell of a string block; every field is
+    // written before a handle is made (the epoch as for a cons).
+    unsafe {
+        std::ptr::write(
+            slot,
+            StringCell {
+                text,
+                storage_bytes,
+                mark: MarkBit::default(),
+                serial,
+            },
+        );
+        (*slot).mark.set_raw(super::types::current_mark_epoch());
+        TextRef(NonNull::new_unchecked(slot))
+    }
+}
+
+fn bump_string() -> *mut StringCell {
+    let next = STRING_BUMP_NEXT.load(Ordering::Relaxed);
+    let end = STRING_BUMP_END.load(Ordering::Relaxed);
+    if next < end {
+        STRING_BUMP_NEXT.store(next + STRING_CELL_SIZE, Ordering::Relaxed);
+        return next as *mut StringCell;
+    }
+    let block = new_block(BlockKind::String);
+    STRING_BUMP_NEXT.store(block + STRING_CELL_SIZE, Ordering::Relaxed);
+    STRING_BUMP_END.store(
+        block + STRINGS_PER_BLOCK * STRING_CELL_SIZE,
+        Ordering::Relaxed,
+    );
+    block as *mut StringCell
+}
+
+/// alloc.c:sweep_strings, as `sweep_conses': an unmarked cell's text is
+/// dropped (its bytes freed) and the cell goes back on the free list.
+pub(crate) fn sweep_strings(epoch: u32) -> (usize, usize) {
+    let bump_next = STRING_BUMP_NEXT.load(Ordering::Relaxed);
+    let bump_end = STRING_BUMP_END.load(Ordering::Relaxed);
+    let mut free_list: *mut StringCell = std::ptr::null_mut();
+    let mut num_free = 0usize;
+    let mut num_used = 0usize;
+    let mut used_bytes = 0usize;
+    let mut released = Vec::new();
+    for start in blocks_of(BlockKind::String) {
+        let lim = if bump_end == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
+            (bump_next - start) / STRING_CELL_SIZE
+        } else {
+            STRINGS_PER_BLOCK
+        };
+        let chain_before = free_list;
+        let mut this_free = 0usize;
+        for index in 0..lim {
+            let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
+            // SAFETY: inside a registered string block.
+            let mark = unsafe { (*cell).mark.raw() };
+            if mark == epoch {
+                num_used += 1;
+                // SAFETY: a marked, allocated cell.
+                let bytes = unsafe { (*cell).storage_bytes };
+                if bytes != UNTRACKED_TEXT {
+                    used_bytes += bytes;
+                }
+                continue;
+            }
+            if mark != FREE_MARK {
+                // SAFETY: an allocated, unmarked cell: nothing reaches
+                // it, so its text is dropped and the slot becomes free.
+                unsafe {
+                    std::ptr::drop_in_place(std::ptr::addr_of_mut!((*cell).text));
+                    if cfg!(debug_assertions) {
+                        std::ptr::write_bytes(
+                            cell.cast::<u8>().add(std::mem::size_of::<FreeString>()),
+                            0xA5,
+                            STRING_CELL_SIZE - std::mem::size_of::<FreeString>(),
+                        );
+                    }
+                    (*cell).mark.set_raw(FREE_MARK);
+                }
+            }
+            this_free += 1;
+            // SAFETY: a free cell's first word is the free-list link.
+            unsafe { (*cell.cast::<FreeString>()).next = free_list };
+            free_list = cell;
+        }
+        if this_free == STRINGS_PER_BLOCK && num_free > STRINGS_PER_BLOCK {
+            free_list = chain_before;
+            released.push(start);
+        } else {
+            num_free += this_free;
+        }
+    }
+    STRING_FREE_LIST.store(free_list, Ordering::Relaxed);
+    for start in released {
+        release_block(start);
+    }
+    LIVE_STRINGS.store(num_used, Ordering::Relaxed);
+    LIVE_STRING_BYTES.store(used_bytes, Ordering::Relaxed);
+    FREE_STRINGS.store(num_free, Ordering::Relaxed);
+    (num_used, used_bytes)
+}
+
+pub(crate) fn live_strings() -> usize {
+    LIVE_STRINGS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn live_string_bytes() -> usize {
+    LIVE_STRING_BYTES.load(Ordering::Relaxed)
+}
 
 thread_local! {
     /// The OS stack region of this thread below the coroutine trampoline
@@ -497,7 +938,7 @@ pub(crate) fn os_stack_base() -> Option<usize> {
 /// region below the trampoline, the parked coroutines' stacks and the
 /// regions of the stacks waiting on a resumed coroutine.
 #[inline(never)]
-pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(ConsRef)) {
+pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(Value)) {
     let base = current_base.or_else(os_stack_base);
     mark_stack(base, &mut mark);
     let parked = PARKED_STACKS.with_borrow(Clone::clone);
@@ -638,7 +1079,7 @@ impl WeakConsRef {
         let address = self.cell.as_ptr() as usize;
         // SAFETY: the address was a cell's; `mem_find' checks it still
         // names an allocated cell before anything reads it.
-        let live = unsafe { mem_find(address) }?;
+        let live = unsafe { mem_find_cons(address) }?;
         if live as usize != address {
             return None;
         }
@@ -694,20 +1135,20 @@ fn bump_cell() -> *mut ConsCell {
         BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
         return next as *mut ConsCell;
     }
-    let block = new_block();
+    let block = new_block(BlockKind::Cons);
     BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
     BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
     block as *mut ConsCell
 }
 
-/// alloc.c's `lisp_align_free' of a cons block every cell of which is
-/// free (the sweep found nothing live in it).
+/// alloc.c's `lisp_align_free' of a block every cell of which is free
+/// (the sweep found nothing live in it).
 fn release_block(start: usize) {
     let mut blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&existing| existing < start);
-    debug_assert_eq!(blocks.get(position), Some(&start));
+    let position = blocks.partition_point(|&(existing, _)| existing < start);
+    debug_assert_eq!(blocks.get(position).map(|entry| entry.0), Some(start));
     blocks.remove(position);
     drop(blocks);
     let layout = std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN)
@@ -717,25 +1158,52 @@ fn release_block(start: usize) {
     unsafe { std::alloc::dealloc(start as *mut u8, layout) };
 }
 
-/// alloc.c's `lisp_align_malloc' of a cons block: every cell free.
-fn new_block() -> usize {
-    let layout = std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN)
-        .expect("cons block layout");
+/// alloc.c's `lisp_align_malloc' of a block of KIND: every cell free.
+fn new_block(kind: BlockKind) -> usize {
+    let layout =
+        std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN).expect("block layout");
     // SAFETY: a non-zero layout.
     let block = unsafe { std::alloc::alloc(layout) };
-    assert!(!block.is_null(), "out of memory for a cons block");
+    assert!(!block.is_null(), "out of memory for a block");
     let start = block as usize;
-    for index in 0..CELLS_PER_BLOCK {
-        let cell = (start + index * CELL_SIZE) as *mut ConsCell;
-        // SAFETY: inside the block just allocated; only the mark word is
-        // written, at its field offset.
-        unsafe { mark_of(cell).set_raw(FREE_MARK) };
+    match kind {
+        BlockKind::Cons => {
+            for index in 0..CELLS_PER_BLOCK {
+                let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+                // SAFETY: inside the block just allocated; only the mark
+                // word is written, at its field offset.
+                unsafe { mark_of(cell).set_raw(FREE_MARK) };
+            }
+        }
+        BlockKind::Float => {
+            for index in 0..FLOATS_PER_BLOCK {
+                let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+                // SAFETY: inside the block just allocated; the mark word
+                // is written as a plain word.
+                unsafe {
+                    std::ptr::addr_of_mut!((*cell).mark)
+                        .cast::<u32>()
+                        .write(FREE_MARK)
+                };
+            }
+        }
+        BlockKind::String => {
+            for index in 0..STRINGS_PER_BLOCK {
+                let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
+                // SAFETY: as for a float block.
+                unsafe {
+                    std::ptr::addr_of_mut!((*cell).mark)
+                        .cast::<u32>()
+                        .write(FREE_MARK)
+                };
+            }
+        }
     }
     let mut blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&existing| existing < start);
-    blocks.insert(position, start);
+    let position = blocks.partition_point(|&(existing, _)| existing < start);
+    blocks.insert(position, (start, kind));
     start
 }
 
@@ -760,27 +1228,59 @@ unsafe fn mark_of<'a>(cell: *mut ConsCell) -> &'a MarkBit {
 /// # Safety
 /// The blocks registry is read under its lock; the cell's mark word is
 /// readable in every state.
-pub(crate) unsafe fn mem_find(address: usize) -> Option<*mut ConsCell> {
+pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
     let blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&start| start <= address);
-    let start = *blocks.get(position.checked_sub(1)?)?;
+    let position = blocks.partition_point(|&(start, _)| start <= address);
+    let (start, kind) = *blocks.get(position.checked_sub(1)?)?;
     drop(blocks);
     let offset = address.checked_sub(start)?;
-    let index = offset / CELL_SIZE;
-    if index >= CELLS_PER_BLOCK {
-        return None;
+    match kind {
+        BlockKind::Cons => {
+            let index = offset / CELL_SIZE;
+            if index >= CELLS_PER_BLOCK {
+                return None;
+            }
+            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+            // SAFETY: inside a registered block.
+            let mark = unsafe { mark_of(cell) }.raw();
+            // A cell the bump pointer has not reached is free too (its
+            // mark is FREE_MARK from the block's birth).
+            (mark != FREE_MARK).then_some(Found::Cons(cell))
+        }
+        BlockKind::Float => {
+            let index = offset / FLOAT_CELL_SIZE;
+            if index >= FLOATS_PER_BLOCK {
+                return None;
+            }
+            let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+            // SAFETY: inside a registered float block.
+            let mark = unsafe { (*cell).mark.raw() };
+            (mark != FREE_MARK).then_some(Found::Float(cell))
+        }
+        BlockKind::String => {
+            let index = offset / STRING_CELL_SIZE;
+            if index >= STRINGS_PER_BLOCK {
+                return None;
+            }
+            let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
+            // SAFETY: inside a registered string block.
+            let mark = unsafe { (*cell).mark.raw() };
+            (mark != FREE_MARK).then_some(Found::String(cell))
+        }
     }
-    let cell = (start + index * CELL_SIZE) as *mut ConsCell;
-    // SAFETY: inside a registered block.
-    let mark = unsafe { mark_of(cell) }.raw();
-    if mark == FREE_MARK {
-        return None;
+}
+
+/// `mem_find' for a cons cell's address (a weak reference, a native view).
+///
+/// # Safety
+/// As `mem_find'.
+pub(crate) unsafe fn mem_find_cons(address: usize) -> Option<*mut ConsCell> {
+    match unsafe { mem_find(address) } {
+        Some(Found::Cons(cell)) => Some(cell),
+        _ => None,
     }
-    // A cell the bump pointer has not reached is free too (its mark is
-    // FREE_MARK from the block's birth), so nothing more to check.
-    Some(cell)
 }
 
 /// The serial of the allocated cell at ADDRESS (a cell's address), or
@@ -790,15 +1290,23 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<*mut ConsCell> {
 pub(crate) fn allocated_serial(address: usize) -> Option<u64> {
     // SAFETY: `mem_find' answers an allocated cell, whose serial is
     // readable.
-    unsafe { mem_find(address).map(|cell| (*cell).serial) }
+    unsafe { mem_find_cons(address).map(|cell| (*cell).serial) }
 }
 
-/// The blocks, for the sweep.
-fn all_blocks() -> Vec<usize> {
+/// The blocks of KIND, for a sweep.
+fn blocks_of(kind: BlockKind) -> Vec<usize> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+        .iter()
+        .filter(|entry| entry.1 == kind)
+        .map(|entry| entry.0)
+        .collect()
+}
+
+/// The cons blocks, for the sweep and the checks.
+fn all_blocks() -> Vec<usize> {
+    blocks_of(BlockKind::Cons)
 }
 
 /// alloc.c:sweep_conses: every cell not marked in EPOCH is dropped and
@@ -1102,7 +1610,7 @@ pub(crate) fn stack_top() -> usize {
 /// below the trampoline) that names an allocated cell marks it.  MARK is
 /// called with each such cell.
 #[inline(never)]
-pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(ConsRef)) {
+pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(Value)) {
     // alloc.c:mark_c_stack from the thread's `stack_top' (the collection's
     // entry, registers spilled there); a census outside a collection
     // starts at this frame, with the registers spilled here
@@ -1134,7 +1642,7 @@ pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(ConsRef)) {
 ///
 /// # Safety
 /// [LOW, HIGH) must be readable memory.
-pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(ConsRef)) {
+pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(Value)) {
     let low = low & !(std::mem::size_of::<usize>() - 1);
     let mut address = low;
     while address + std::mem::size_of::<usize>() <= high {
@@ -1150,9 +1658,16 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(C
             continue;
         }
         // SAFETY: `mem_find' validates the word before any cell is read.
-        if let Some(cell) = unsafe { mem_find(word) } {
-            // SAFETY: an allocated cell.
-            mark(unsafe { ConsRef::from_raw(cell) });
+        match unsafe { mem_find(word) } {
+            // SAFETY: allocated cells.
+            Some(Found::Cons(cell)) => mark(Value::Cons(unsafe { ConsRef::from_raw(cell) })),
+            Some(Found::Float(cell)) => mark(Value::Float(FloatRef(unsafe {
+                NonNull::new_unchecked(cell)
+            }))),
+            Some(Found::String(cell)) => mark(Value::String(TextRef(unsafe {
+                NonNull::new_unchecked(cell)
+            }))),
+            None => {}
         }
     }
 }

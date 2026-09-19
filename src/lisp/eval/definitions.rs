@@ -13,7 +13,7 @@ impl Interpreter {
             return Ok((None, Vec::new()));
         };
         let documentation = match first {
-            Value::String(text) if forms.len() > 1 => Some(Value::String(text.clone())),
+            Value::String(text) if forms.len() > 1 => Some(Value::String(*text)),
             Value::StringObject(state) if forms.len() > 1 => {
                 Some(Value::String(state.borrow().text.clone().into()))
             }

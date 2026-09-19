@@ -449,10 +449,6 @@ impl ConsMutationSnapshot {
     }
 }
 
-/// The storage size of a Lisp string that is not a Lisp allocation at all
-/// (a host-side key): counted nowhere.
-const UNTRACKED_TEXT: usize = usize::MAX;
-
 /// The current collection's number; see `MarkBit'.  The process's, as
 /// the mark bits and `gc_in_progress' are alloc.c's globals: the objects
 /// carry it, whichever thread marked them.
@@ -515,43 +511,9 @@ impl MarkBit {
     }
 }
 
-/// One immutable Lisp string: the text and, as `struct Lisp_String' keeps
-/// `size_byte', the storage size alloc.c's sweep would read.  The live
-/// totals (gcstat's total_strings and total_string_bytes) are counters
-/// that allocation raises and the release by Rust ownership lowers, so a
-/// collection reads them instead of walking a register of every string.
-pub struct LispText {
-    text: String,
-    storage_bytes: usize,
-    mark: MarkBit,
-}
-
-impl Drop for LispText {
-    fn drop(&mut self) {
-        if self.storage_bytes == UNTRACKED_TEXT {
-            return;
-        }
-        // A thread's locals may already be gone when its last texts go.
-        LIVE_TEXTS.sub(1);
-        LIVE_TEXT_BYTES.sub(self.storage_bytes);
-    }
-}
-
-fn tracked_text(text: String, storage_bytes: usize) -> Rc<LispText> {
-    note_string_allocation(storage_bytes);
-    LIVE_TEXTS.add(1);
-    LIVE_TEXT_BYTES.add(storage_bytes);
-    Rc::new(LispText {
-        text,
-        storage_bytes,
-        mark: MarkBit::default(),
-    })
-}
-
-/// Immutable shared text stored inside compact Lisp values.
-#[repr(transparent)]
-#[derive(Clone)]
-pub struct SharedText(Rc<LispText>);
+/// One Lisp string: alloc.c's `struct Lisp_String' in a string block,
+/// named by its address (`TextRef'); the text's bytes on the Rust heap.
+pub type SharedText = crate::lisp::alloc::TextRef;
 
 impl Eq for SharedText {}
 
@@ -567,42 +529,28 @@ impl Ord for SharedText {
     }
 }
 
-thread_local! {
-    // alloc.c returns its permanently rooted empty string from every zero-
-    // length allocation.  Besides making `(eq "" "")' true, that identity
-    // is observable through print-circle when compiler constants repeat it.
-    static EMPTY_SHARED_TEXT: SharedText = SharedText(Rc::new(LispText {
-        text: String::new(),
-        storage_bytes: UNTRACKED_TEXT,
-        mark: MarkBit::default(),
-    }));
-}
-
 impl PartialEq for SharedText {
     fn eq(&self, other: &Self) -> bool {
         // Interned symbol names share one allocation, so the common case
         // (`eq'-style symbol comparison) never reaches the byte compare.
-        Rc::ptr_eq(&self.0, &other.0) || self.0.text == other.0.text
+        self.ptr_eq(other) || self.text() == other.text()
     }
 }
 
 impl std::hash::Hash for SharedText {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.0.text, state);
+        std::hash::Hash::hash(self.text(), state);
     }
 }
 
 impl SharedText {
-    pub(crate) fn identity_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
-    }
-
     pub fn new(text: String) -> Self {
         if text.is_empty() {
-            return EMPTY_SHARED_TEXT.with(Clone::clone);
+            return crate::lisp::alloc::empty_text();
         }
         let storage_bytes = crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
-        Self(tracked_text(text, storage_bytes))
+        note_string_allocation(storage_bytes);
+        crate::lisp::alloc::allocate_string(text, storage_bytes)
     }
 
     /// A string whose storage size the image records (`size_byte' of the
@@ -610,43 +558,20 @@ impl SharedText {
     /// scans nothing, so neither does the loader.
     pub(crate) fn with_storage_bytes(text: String, storage_bytes: usize) -> Self {
         if text.is_empty() {
-            return EMPTY_SHARED_TEXT.with(Clone::clone);
+            return crate::lisp::alloc::empty_text();
         }
-        Self(tracked_text(text, storage_bytes))
+        note_string_allocation(storage_bytes);
+        crate::lisp::alloc::allocate_string(text, storage_bytes)
     }
 
     /// Host-only text which is not a Lisp string allocation.  Uninterned
     /// symbols need an identity-bearing lookup key in Emaxx, but GNU stores
     /// that identity in the symbol object rather than appending bytes to its
     /// Lisp-visible name string.  Keep the encoded key out of both allocation
-    /// and live-string accounting.
+    /// and live-string accounting (it lives in a string block all the same,
+    /// marked with its symbol).
     fn new_untracked(text: String) -> Self {
-        Self(Rc::new(LispText {
-            text,
-            storage_bytes: UNTRACKED_TEXT,
-            mark: MarkBit::default(),
-        }))
-    }
-
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.0.mark
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.text.as_str()
-    }
-
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub fn into_string(self) -> String {
-        match Rc::try_unwrap(self.0) {
-            // The object goes away with its counters either way; the text
-            // moves out first.
-            Ok(mut owned) => std::mem::take(&mut owned.text),
-            Err(shared) => shared.text.clone(),
-        }
+        crate::lisp::alloc::allocate_string(text, crate::lisp::alloc::UNTRACKED_TEXT)
     }
 }
 
@@ -654,7 +579,7 @@ impl Deref for SharedText {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.text
+        self.text()
     }
 }
 
@@ -678,13 +603,13 @@ impl Borrow<str> for SharedText {
 
 impl fmt::Debug for SharedText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.text.fmt(f)
+        self.text().fmt(f)
     }
 }
 
 impl fmt::Display for SharedText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.text.fmt(f)
+        self.text().fmt(f)
     }
 }
 
@@ -798,17 +723,55 @@ struct SymbolNameState {
     /// permanent, an uninterned text's id lives as long as a state with
     /// that text does.
     id: u32,
+    /// An uninterned state's own copy of its key text, for the release of
+    /// its id when the state drops: the drop may run after a collection
+    /// swept the string cell `internal' names (a state nothing reached
+    /// but a Rust owner still held), so it reads nothing of the heap.
+    key: Option<Box<str>>,
 }
 
 #[repr(transparent)]
 #[derive(Clone)]
 pub struct SymbolName(Rc<SymbolNameState>);
 
+/// A table of the process's, read and written without a lock by the one
+/// Lisp thread that runs (alloc.c's `Vobarray' is a plain global under
+/// the global lock; a template interpreter built on one thread is used
+/// from another, one at a time).
+struct ProcessTable<T>(std::cell::UnsafeCell<Option<T>>);
+
+// SAFETY: one Lisp OS thread at a time, by construction (see above).
+unsafe impl<T> Sync for ProcessTable<T> {}
+
+impl<T: Default> ProcessTable<T> {
+    const fn new() -> Self {
+        Self(std::cell::UnsafeCell::new(None))
+    }
+
+    fn with_borrow<R>(&self, body: impl FnOnce(&T) -> R) -> R {
+        // SAFETY: the one running Lisp thread's access.
+        let table = unsafe { &mut *self.0.get() };
+        body(table.get_or_insert_with(T::default))
+    }
+
+    fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
+        // SAFETY: as above.
+        let table = unsafe { &mut *self.0.get() };
+        body(table.get_or_insert_with(T::default))
+    }
+}
+
+/// The obarray: every interned symbol, keyed by its text; FNV, as the
+/// interpreter's other name-keyed tables, since every name-to-id
+/// resolution hashes here (SipHash was a tenth of a tight interpreted
+/// loop).  The process's, as `Vobarray' is (it was the thread's, and a
+/// collection on another thread swept the name strings of the symbols
+/// only this table held).
+static INTERNED_SYMBOL_NAMES: ProcessTable<
+    HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
+> = ProcessTable::new();
+
 thread_local! {
-    /// Keyed by the symbol's text; FNV, as the interpreter's other
-    /// name-keyed tables, since every name-to-id resolution hashes here
-    /// (SipHash was a tenth of a tight interpreted loop).
-    static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>> = RefCell::new(HashSet::default());
     /// Live uninterned states by their private internal text.  Two
     /// `SymbolName's with equal internal text compare equal, so a text
     /// that names a live uninterned symbol must resolve to that very
@@ -874,23 +837,19 @@ impl Drop for SymbolNameState {
         // Only uninterned states ever drop (the interned table owns its
         // entries for the thread's lifetime); release the text's id when the
         // last state with that text is gone.
-        if !self
-            .internal
-            .as_str()
-            .contains(UNINTERNED_SYMBOL_MARKER_CHAR)
-        {
+        let Some(key) = self.key.take() else {
             return;
-        }
+        };
         let mut registry = SYMBOL_IDS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(registry) = registry.as_mut() else {
             return;
         };
-        if let Some((_, states)) = registry.get_mut(self.internal.as_str()) {
+        if let Some((_, states)) = registry.get_mut(&*key) {
             *states = states.saturating_sub(1);
             if *states == 0 {
-                registry.remove(self.internal.as_str());
+                registry.remove(&*key);
             }
         }
     }
@@ -930,7 +889,7 @@ impl SymbolName {
                 Value::String(if private {
                     SharedText::from(visible_symbol_name(&text))
                 } else {
-                    text.clone()
+                    text
                 })
             });
             let id = symbol_id_for(text.as_str(), false);
@@ -940,6 +899,7 @@ impl SymbolName {
                 mark: MarkBit::default(),
                 native_word: Cell::new(0),
                 id,
+                key: None,
             }));
             names.insert(name.clone());
             name
@@ -1039,12 +999,17 @@ impl SymbolName {
     fn new_uninterned(lisp_name: Value, internal: SharedText) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
         let id = symbol_id_for(internal.as_str(), true);
+        let key = internal
+            .as_str()
+            .contains(UNINTERNED_SYMBOL_MARKER_CHAR)
+            .then(|| Box::<str>::from(internal.as_str()));
         let state = Rc::new(SymbolNameState {
             internal,
             lisp_name,
             mark: MarkBit::default(),
             native_word: Cell::new(0),
             id,
+            key,
         });
         UNINTERNED_SYMBOL_BOOK.with(|book| {
             book.borrow_mut()
@@ -1089,6 +1054,22 @@ impl SymbolName {
     pub(crate) fn lisp_name_ref(&self) -> &Value {
         &self.0.lisp_name
     }
+
+    /// The host-side key text (a string cell the symbol keeps alive).
+    pub(crate) fn internal_text(&self) -> &SharedText {
+        &self.0.internal
+    }
+}
+
+/// The obarray as a root (alloc.c staticpro's `Vobarray'): every
+/// interned symbol, with its name strings, whether or not any object
+/// names it.
+pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
+    INTERNED_SYMBOL_NAMES.with_borrow(|names| {
+        for name in names {
+            mark(&Value::Symbol(name.clone()));
+        }
+    });
 }
 
 pub(crate) fn census_live_uninterned_symbols() -> usize {
@@ -1142,7 +1123,7 @@ impl Deref for SymbolName {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.internal
+        self.0.internal.text()
     }
 }
 
@@ -1208,7 +1189,7 @@ impl From<SharedText> for SymbolName {
 
 impl From<SymbolName> for SharedText {
     fn from(name: SymbolName) -> Self {
-        name.0.internal.clone()
+        name.0.internal
     }
 }
 
@@ -1315,66 +1296,9 @@ impl fmt::Display for SharedBigInt {
     }
 }
 
-/// One allocated Lisp floating-point object.
-///
-/// GNU stores every float in a `struct Lisp_Float`; copying a `Lisp_Object`
-/// copies its pointer, not the double.  Keeping the payload behind `Rc`
-/// preserves that object identity while Rust ownership manages the storage.
-#[repr(transparent)]
-#[derive(Clone, Debug)]
-pub struct SharedFloat(Rc<LispFloat>);
-
-/// One allocated `struct Lisp_Float'; the live count is a counter.
-#[derive(Debug)]
-pub struct LispFloat(f64);
-
-impl Drop for LispFloat {
-    fn drop(&mut self) {
-        LIVE_FLOATS.sub(1);
-    }
-}
-
-impl SharedFloat {
-    pub(crate) fn identity_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
-    }
-
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub fn get(&self) -> f64 {
-        self.0.0
-    }
-}
-
-impl PartialEq for SharedFloat {
-    fn eq(&self, other: &Self) -> bool {
-        self.get().to_bits() == other.get().to_bits()
-    }
-}
-
-impl From<f64> for SharedFloat {
-    fn from(value: f64) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(8);
-        LIVE_FLOATS.add(1);
-        Self(Rc::new(LispFloat(value)))
-    }
-}
-
-impl Deref for SharedFloat {
-    type Target = f64;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0.0
-    }
-}
-
-impl fmt::Display for SharedFloat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.0.fmt(f)
-    }
-}
+/// One allocated Lisp floating-point object: alloc.c's `struct
+/// Lisp_Float' in a float block, named by its address (`FloatRef').
+pub type SharedFloat = crate::lisp::alloc::FloatRef;
 
 pub type SharedCons = crate::lisp::alloc::ConsRef;
 pub use crate::lisp::alloc::WeakConsRef;
@@ -1751,9 +1675,6 @@ impl LiveBook {
     }
 }
 
-static LIVE_TEXTS: LiveBook = LiveBook::new();
-static LIVE_TEXT_BYTES: LiveBook = LiveBook::new();
-static LIVE_FLOATS: LiveBook = LiveBook::new();
 static LIVE_BIGNUMS: LiveBook = LiveBook::new();
 static LIVE_VECTORS: LiveBook = LiveBook::new();
 static LIVE_VECTOR_SLOTS: LiveBook = LiveBook::new();
@@ -1834,8 +1755,8 @@ pub(crate) fn census_live_strings() -> StringCensus {
     // hundreds of thousands of texts) are still walked, for their
     // property spans as well.
     let mut census = StringCensus {
-        count: LIVE_TEXTS.get(),
-        bytes: LIVE_TEXT_BYTES.get(),
+        count: crate::lisp::alloc::live_strings(),
+        bytes: crate::lisp::alloc::live_string_bytes(),
         property_spans: 0,
     };
     STRING_OBJECT_BOOK.with(|book| {
@@ -1860,7 +1781,7 @@ pub(crate) fn census_live_strings() -> StringCensus {
 }
 
 pub(crate) fn census_live_floats() -> usize {
-    LIVE_FLOATS.get()
+    crate::lisp::alloc::live_floats()
 }
 
 pub(crate) fn census_live_vectors() -> VectorCensus {
@@ -2246,8 +2167,8 @@ impl Value {
             Value::T => Value::T,
             Value::Integer(value) => Value::Integer(*value),
             Value::BigInteger(value) => Value::BigInteger(value.clone()),
-            Value::Float(value) => Value::Float(value.clone()),
-            Value::String(value) => Value::String(value.clone()),
+            Value::Float(value) => Value::Float(*value),
+            Value::String(value) => Value::String(*value),
             Value::StringObject(value) => Value::StringObject(value.clone()),
             Value::Symbol(value) => Value::Symbol(value.clone()),
             Value::Cons(value) => Value::Cons(*value),
@@ -2626,8 +2547,12 @@ impl Value {
     pub(crate) fn native_handle_has_external_owner(&self) -> bool {
         match self {
             Value::BigInteger(value) => Rc::strong_count(&value.0) > 1,
-            Value::Float(value) => Rc::strong_count(&value.0) > 1,
-            Value::String(value) => Rc::strong_count(&value.0) > 1,
+            // A float has no count: its handle lives while the mark
+            // reaches the cell (from Lisp or from generated code).
+            Value::Float(_) => false,
+            // A string has no count: its handle lives while the mark
+            // reaches the cell.
+            Value::String(_) => false,
             Value::StringObject(value) => Rc::strong_count(value) > 1,
             // A cons has no count: the collector decides its life.
             Value::Cons(_) => true,
@@ -3526,7 +3451,7 @@ mod tests {
             unreachable!("constructed string values")
         };
 
-        assert!(Rc::ptr_eq(&text.0, &cloned_text.0));
+        assert!(text.ptr_eq(cloned_text));
     }
 
     #[test]
@@ -3596,7 +3521,9 @@ mod tests {
         drop(value);
         assert_eq!(census_live_floats(), before + 1);
         drop(clone);
-        assert_eq!(census_live_floats(), before);
+        // A float is freed by the sweep, not by the drop of a handle
+        // (`collection_frees_unreached_conses_and_expires_weak_slots').
+        assert_eq!(census_live_floats(), before + 1);
     }
 
     #[test]
@@ -3627,12 +3554,12 @@ mod tests {
         use std::hash::{Hash, Hasher};
 
         let shared = super::SharedText::from("same text");
-        let clone = shared.clone();
+        let clone = shared;
         let distinct = super::SharedText::from("same text");
         let different = super::SharedText::from("different text");
 
-        assert!(Rc::ptr_eq(&shared.0, &clone.0));
-        assert!(!Rc::ptr_eq(&shared.0, &distinct.0));
+        assert!(shared.ptr_eq(&clone));
+        assert!(!shared.ptr_eq(&distinct));
         assert_eq!(shared, clone);
         assert_eq!(shared, distinct);
         assert_ne!(shared, different);
@@ -3681,7 +3608,7 @@ mod tests {
         let Value::String(expected) = &name else {
             unreachable!("constructed string")
         };
-        let expected = expected.clone();
+        let expected = *expected;
         let symbol = SymbolName::make_uninterned(name, "temporary", 1);
         let Value::String(actual) = symbol.lisp_name() else {
             unreachable!("immutable supplied name")

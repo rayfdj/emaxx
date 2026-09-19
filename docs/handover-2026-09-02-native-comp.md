@@ -929,6 +929,22 @@ C's terms (a local keeps its object while its frame lives; a scope in
 a frame of its own, a hidden word, the stack cleared before the
 collection).
 
+Checkpoint 20h (2026-09-19, phase B, steps 1 and 2) put the floats and
+the strings in alloc.c's blocks: `float_block' and `string_block', the
+block registry by `mem_type' so the conservative scan marks a float or
+a string as it marks a cons, the marks by epoch, `sweep_floats' and
+`sweep_strings' as `sweep_conses', the empty string as
+`empty_unibyte_string', the obarray as one process-wide table and a
+root (it was the thread's, and a collection on one thread swept the
+name strings of symbols only another thread's table held); a
+`Value::Float' or `Value::String' is the cell's address without a
+count.  Measured: nothing visible moved, and the corpus rows are 3--4 percent slower (the loops allocate no float and no string; a collection of the idle heap stays at 18 ms against GNU's 5.5 because the mark of the kinds still reference counted is the larger part; the library suite's peak resident size rose from 1.2 GB to 1.72, a string cell beside its text and blocks kept until whole-free).  Still not C, each to go with
+its phase: the mark word in the cell, the string's bytes on the Rust
+heap without small-string compaction, a serial in the string cell,
+the sweeps' order (strings last while a reference-counted kind's
+destructor reads them), the bignums still counted (a pseudovector, with
+the vectors next).
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
