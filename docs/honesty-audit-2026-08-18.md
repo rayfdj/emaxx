@@ -13608,4 +13608,11 @@ three rounds interleaved with GNU and checkpoint 20m's binary; the
 two-test and one-test reproductions of each failure the suite found,
 before and after its fix.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  The full grouped gate on the committed tree (run
+1789849543875965166-19661, as user `emaxx'): fmt and clippy clean
+before and after; eval_01 375, eval_02 285, eval_03 320, eval_04 254,
+eval_05 351, primitives 494 with 3 ignored, tty 56 with 2 ignored,
+compat_runtime 84, batch 50, lightweight 444 -- 2,713 of the 2,718
+scheduled passing and 5 ignored (the two of before and the three of
+item 2), no failures; bins 57, 2, 0 and 1 passed; integration 23, 6,
+3, 1, 1 and 5 passed; GATE-EXIT=0.
