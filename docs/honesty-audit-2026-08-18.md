@@ -13092,4 +13092,12 @@ new tests; `cargo clippy --all-targets -- -D warnings' and `cargo fmt
 --check' clean; the nine probes above on the release build; the
 collection count on the six-million-cons loop 120 here and in GNU.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  Grouped gate run-1789829204052580391-18955 on the tree as
+committed (ff4f369c; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx', launched without `nohup':
+the ten library groups (batch 50, compat_runtime 84, eval_01 375,
+eval_02 285, eval_03 320, eval_04 254, eval_05 351, lightweight 444,
+primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
+and 1 in 27 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
+in 310 s), 2,718 scheduled and observed; fmt and strict clippy exit 0
+before and after.  First run, nothing else on the machine.
