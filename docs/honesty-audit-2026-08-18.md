@@ -12595,4 +12595,13 @@ outcome; `cargo clippy --all-targets -- -D warnings' and `cargo fmt
 their expected output from the release build; the stress boot
 (`EMAXX_GC_STRESS=1' with 2,000 forced collections) boots.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  Grouped gate run-1789797441843776757-11362 on the tree as
+committed (fd673ccc; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx', launched without `nohup'
+(checkpoint 20g's lesson): the ten library groups (batch 50,
+compat_runtime 84, eval_01 374, eval_02 285, eval_03 320, eval_04
+254, eval_05 351, lightweight 444, primitives 497, tty 56 with its 2
+ignored), the bins stage (57, 2, 0 and 1 in 17 s) and the six
+integration binaries (23, 6, 3, 1, 1 and 5 in 259 s), 2,717 scheduled
+and observed, on the first run; fmt and strict clippy exit 0 before
+and after.  The c-mode defaults test, rerun alone under `EMAXX_GC_STRESS=1' (a collection at every allocation), passed in 2,346 s; the stress hour's failure of it, after the tests before it in the same process, was not reproduced and its message was not captured, and stands unexplained.
