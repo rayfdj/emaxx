@@ -305,9 +305,9 @@ impl Interpreter {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
                     if self.binding_is_dynamic_symbol(name, env) {
-                        push_special(name.clone(), Value::Nil);
+                        push_special(*name, Value::Nil);
                     } else {
-                        lexenv = Self::cons_binding(name.clone(), Value::Nil, lexenv);
+                        lexenv = Self::cons_binding(*name, Value::Nil, lexenv);
                         lexical_bindings = true;
                     }
                 }
@@ -414,7 +414,7 @@ impl Interpreter {
                 let (name, value) = match &binding {
                     Value::Symbol(name) => {
                         Self::check_let_binding_name(name)?;
-                        (name.clone(), Value::Nil)
+                        (*name, Value::Nil)
                     }
                     Value::Record(_)
                         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)

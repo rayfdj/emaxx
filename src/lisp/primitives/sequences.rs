@@ -273,8 +273,7 @@ pub(crate) fn direct_sort_comparator(
             let items = compare_form.to_vec().ok()?;
             let (kind, left, right) = match items.as_slice() {
                 [Value::Symbol(op), left, right] => {
-                    let kind =
-                        resolve_direct_sort_kind(interp, &Value::Symbol(op.clone()), &closure_env)?;
+                    let kind = resolve_direct_sort_kind(interp, &Value::Symbol(*op), &closure_env)?;
                     (
                         kind,
                         parse_direct_sort_operand(interp, left, &lambda.params, &closure_env)?,

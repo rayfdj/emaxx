@@ -133,7 +133,7 @@ impl SymbolCells {
             &mut self.cells[index]
         };
         if cell.symbol.is_none() {
-            cell.symbol = Some(symbol.clone());
+            cell.symbol = Some(*symbol);
         }
         cell
     }
@@ -275,6 +275,16 @@ impl SymbolCells {
             })
     }
 
+    /// The uninterned symbols this table holds cells for (and the
+    /// symbols they alias): the cells live in the table, not in the
+    /// symbol (C's `Lisp_Symbol' holds its own), so the table keeps the
+    /// symbol as it kept it through the reference count before.
+    pub(crate) fn uninterned_symbols(&self) -> impl Iterator<Item = &SymbolName> {
+        self.uninterned
+            .values()
+            .flat_map(|cell| cell.symbol.iter().chain(cell.alias.iter()))
+    }
+
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
         self.cells
             .iter_mut()
@@ -411,7 +421,7 @@ impl SymbolCells {
         match self.cell(symbol.id()) {
             Some(cell) => SymbolCellSnapshot {
                 value: cell.value.clone(),
-                alias: cell.alias.clone(),
+                alias: cell.alias,
                 flags: cell.flags,
             },
             None => SymbolCellSnapshot {

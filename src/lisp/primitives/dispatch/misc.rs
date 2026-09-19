@@ -142,7 +142,7 @@ fn destroy_fringe_bitmap(
         return Ok(Value::Nil);
     };
     if interp.fringe_bitmap_states[index].standard {
-        drop(interp.fringe_bitmap_states[index].definition.take());
+        interp.fringe_bitmap_states[index].definition = None;
         interp.fringe_bitmap_states[index].face = Value::Nil;
     } else {
         interp.fringe_bitmap_states.remove(index);
@@ -169,7 +169,7 @@ pub(super) fn bare_symbol_identity(
     value: &Value,
 ) -> Option<crate::lisp::types::SymbolName> {
     match value {
-        Value::Symbol(symbol) => return Some(symbol.clone()),
+        Value::Symbol(symbol) => return Some(*symbol),
         Value::Nil => return Some("nil".into()),
         Value::T => return Some("t".into()),
         _ => {}
@@ -701,7 +701,7 @@ define_dispatch!(
                     Value::T => return Ok(Value::Nil),
                     Value::Symbol(symbol) if obarray.is_none() => {
                         return Ok(if interp.standard_obarray_contains_symbol(symbol) {
-                            Value::Symbol(symbol.clone())
+                            Value::Symbol(*symbol)
                         } else {
                             Value::Nil
                         });
@@ -715,14 +715,14 @@ define_dispatch!(
                         // and private-obarray names carry identity markers and
                         // must still miss here.
                         return Ok(if interp.standard_obarray_contains_symbol(symbol) {
-                            Value::Symbol(symbol.clone())
+                            Value::Symbol(*symbol)
                         } else {
                             Value::Nil
                         });
                     }
                     Value::Symbol(symbol) => {
                         let Some(obarray) = &obarray else {
-                            return Ok(Value::Symbol(symbol.clone()));
+                            return Ok(Value::Symbol(*symbol));
                         };
                         let interned = intern_soft_in_obarray(
                             interp,
@@ -1581,7 +1581,7 @@ define_dispatch!(
                         } else if id == t_id {
                             Value::T
                         } else {
-                            Value::Symbol(symbol.clone())
+                            Value::Symbol(*symbol)
                         };
                         call_function_value(interp, &args[0], &[symbol], env)?;
                     }

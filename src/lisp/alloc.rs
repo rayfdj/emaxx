@@ -25,8 +25,11 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+mod symbols;
 mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+pub use symbols::{SymbolCell, SymbolRef};
+pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
 pub use vectors::{VectorHeader, VectorRef, VectorlikeRef};
 pub(crate) use vectors::{live_string_object_census, live_vector_census, sweep_vectors};
 
@@ -54,6 +57,8 @@ pub(crate) enum BlockKind {
     VectorBlock,
     /// alloc.c's `MEM_TYPE_VECTORLIKE': one large vector on its own.
     LargeVector,
+    /// alloc.c's `MEM_TYPE_SYMBOL'.
+    Symbol,
 }
 
 /// The blocks, by start address, with their kinds, for `mem_find'
@@ -288,6 +293,7 @@ pub(crate) enum Found {
     Float(*mut FloatCell),
     String(*mut StringCell),
     Vectorlike(*mut VectorHeader),
+    Symbol(*mut SymbolCell),
 }
 
 /// alloc.c's `string_block', `string_free_list' and the index into the
@@ -1220,6 +1226,10 @@ fn new_block(kind: BlockKind) -> usize {
                 };
             }
         }
+        BlockKind::Symbol => {
+            // SAFETY: the block just allocated.
+            unsafe { symbols::init_block(start) };
+        }
         BlockKind::VectorBlock | BlockKind::LargeVector => {
             unreachable!("vectors have their own blocks (alloc/vectors.rs)")
         }
@@ -1294,6 +1304,10 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
         }
         BlockKind::LargeVector => {
             vectors::live_large_vector_holding(start, address).map(Found::Vectorlike)
+        }
+        // SAFETY: a registered symbol block.
+        BlockKind::Symbol => {
+            unsafe { symbols::live_symbol_holding(start, address) }.map(Found::Symbol)
         }
     }
 }
@@ -1742,6 +1756,12 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
             }))),
             // SAFETY: an allocated vector.
             Some(Found::Vectorlike(header)) => mark(unsafe { vectors::value_of(header) }),
+            // SAFETY: an allocated symbol cell.
+            Some(Found::Symbol(cell)) => {
+                mark(Value::Symbol(super::types::SymbolName::from_ref(unsafe {
+                    SymbolRef::from_raw(cell)
+                })))
+            }
             None => {}
         }
     }

@@ -53,17 +53,15 @@ impl<'a> CallName<'a> {
 
     fn symbol_value(self, resolved_name: &SymbolName) -> Value {
         match self {
-            Self::Symbol(name) => Value::Symbol(name.clone()),
-            Self::Text(name) if name == resolved_name.as_str() => {
-                Value::Symbol(resolved_name.clone())
-            }
+            Self::Symbol(name) => Value::Symbol(*name),
+            Self::Text(name) if name == resolved_name.as_str() => Value::Symbol(*resolved_name),
             Self::Text(name) => Value::Symbol(name.into()),
         }
     }
 
     fn original_symbol_value(self) -> Value {
         match self {
-            Self::Symbol(name) => Value::Symbol(name.clone()),
+            Self::Symbol(name) => Value::Symbol(*name),
             Self::Text(name) => Value::Symbol(name.into()),
         }
     }
@@ -379,7 +377,7 @@ impl Interpreter {
     /// ordinary evaluator dispatch rather than merely a predicate detail.
     fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
         if let Value::Symbol(name) = value {
-            return Some(name.clone());
+            return Some(*name);
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
             && let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, value)
@@ -553,7 +551,7 @@ impl Interpreter {
                 // when it is something else), XCDR (form) held by its
                 // cell, CHECK_LIST (original_args).
                 let (head_symbol, head_value) = match &*cell.car.borrow() {
-                    Value::Symbol(name) => (Some(name.clone()), None),
+                    Value::Symbol(name) => (Some(*name), None),
                     other => (None, Some(other.clone())),
                 };
                 let args_cell: Option<SharedCons> = match &*cell.cdr.borrow() {
@@ -857,7 +855,7 @@ impl Interpreter {
                 // now (set_backtrace_args), and the subr runs under that
                 // one frame -- a second frame was pushed and popped around
                 // every primitive call before.
-                self.set_backtrace_args(Value::Symbol(name.clone()), args);
+                self.set_backtrace_args(Value::Symbol(*name), args);
                 self.capture_current_backtrace_context(Some(name.as_str()), env, None);
                 let result = primitives::call_with_facts(self, name, facts, args, env)
                     .map_err(|error| Self::builtin_call_error(name, args.len(), false, error));
@@ -1185,7 +1183,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
             .map(|original| original.symbol_value(name))
-            .unwrap_or_else(|| Value::Symbol(name.clone()));
+            .unwrap_or_else(|| Value::Symbol(*name));
         self.with_backtrace_frame(backtrace_function, args, |interp| {
             interp.capture_current_backtrace_context(
                 Some(original_name.map_or(name.as_str(), CallName::as_str)),
@@ -1410,7 +1408,7 @@ impl Interpreter {
                         // itself (`foo(ARGS)') as its innermost frame.
                         let function = original_name
                             .map(|original| original.symbol_value(&name))
-                            .unwrap_or_else(|| Value::Symbol(name.clone()));
+                            .unwrap_or_else(|| Value::Symbol(name));
                         return self.with_backtrace_frame(function, args, |interp| {
                             interp.settle_frame_result(Err(error), env)
                         });
@@ -1432,7 +1430,7 @@ impl Interpreter {
                     }
                     FunctionResolution::Resolved(value) => {
                         if original_name.is_none() {
-                            owned_name = Some(name.clone());
+                            owned_name = Some(name);
                         }
                         value
                     }
@@ -1499,7 +1497,7 @@ impl Interpreter {
             Value::BuiltinFunc(ref name) => {
                 let backtrace_function = original_name
                     .map(|original| original.symbol_value(name))
-                    .unwrap_or_else(|| Value::Symbol(name.clone()));
+                    .unwrap_or_else(|| Value::Symbol(*name));
                 self.with_backtrace_frame(backtrace_function, args, |interp| {
                     interp.capture_current_backtrace_context(
                         original_name.map(CallName::as_str),
@@ -1662,7 +1660,7 @@ impl Interpreter {
                     }
                     if rest {
                         let rest_args: Vec<Value> = args.get(arg_idx..).unwrap_or(&[]).to_vec();
-                        frame.push((param.clone(), Self::stored_value(Value::list(rest_args))));
+                        frame.push((*param, Self::stored_value(Value::list(rest_args))));
                         break;
                     }
                     let consumed_arg = arg_idx < args.len();
@@ -1673,7 +1671,7 @@ impl Interpreter {
                     } else {
                         return Err(signal_arity(self, env));
                     };
-                    frame.push((param.clone(), Self::stored_value(val)));
+                    frame.push((*param, Self::stored_value(val)));
                     if consumed_arg {
                         arg_idx += 1;
                     }
@@ -1702,7 +1700,7 @@ impl Interpreter {
                         Some(closure_env) => {
                             let mut lexenv = closure_env.clone();
                             for (name, value) in &frame {
-                                lexenv = Self::cons_binding(name.clone(), value.clone(), lexenv);
+                                lexenv = Self::cons_binding(*name, value.clone(), lexenv);
                             }
                             env.push(EnvFrame::from_alist(lexenv));
                             Ok(())
@@ -2070,9 +2068,9 @@ mod eval_value_buffer_tests {
         let interpreter = Interpreter::new();
         let lisp_name = Value::string("binding");
         let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
-        let key = Value::Symbol(name.clone());
+        let key = Value::Symbol(name);
         let env = crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(
-            [(name.clone(), Value::Integer(7))],
+            [(name, Value::Integer(7))],
             &Value::Nil,
         )]);
         let mut marked = LispReachability::default();

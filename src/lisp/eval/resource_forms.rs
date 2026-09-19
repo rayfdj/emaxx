@@ -138,7 +138,7 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
         let var = match list_car(args) {
-            Value::Symbol(s) => Some(s.clone()),
+            Value::Symbol(s) => Some(s),
             Value::Nil => None,
             other => return Err(wrong_type_argument("symbolp", other.clone())),
         };
@@ -237,7 +237,7 @@ impl Interpreter {
             return self.sf_progn(body, env);
         };
         if self.interpreter_environment_is_lexical(env) {
-            Self::push_bindings(env, vec![(variable.clone(), value)]);
+            Self::push_bindings(env, vec![(*variable, value)]);
             let result = self.sf_progn(body, env);
             env.pop();
             return result;

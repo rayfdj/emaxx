@@ -970,6 +970,24 @@ reader form as kinds of this implementation's, the buffer object made
 on demand, the id-addressed kinds and the symbols still outside the
 blocks.
 
+Checkpoint 20j (2026-09-19, phase C, step 1) put the symbols in
+alloc.c's `symbol_block': `symbol_free_list', `symbol_block_index',
+`sweep_symbols', `live_symbol_holding' for the conservative scan;
+`SymbolName' is the cell's address copied without a count, the last
+reference-counted Lisp object gone.  The interned symbols are the
+obarray's (a root); an uninterned one lives while a value or an
+interpreter's value-cell table names it (the cells live outside the
+symbol, C's inside it), and the sweep releases its registries (the id
+count and the book of live uninterned symbols, from which a freed cell
+is removed).  Measured: the symbol's reference count was a fifth of every interpreted iteration and a quarter of the byte-code call -- the lexical loop 1.87 to 1.53 s, the dynamic 1.51 to 1.21, the byte-code call loop 0.79 to 0.58 (GNU 1.16, 0.45 and 0.21 on this session's slow host), the interpreted defun call at GNU's time; the idle collection unmoved.  Still not C: the key
+text and its registry copy in the cell (the uninterned symbols'
+identity by marker text), the value, function and property cells in
+the interpreter's tables rather than in the symbol (the next step,
+which needs one process-wide cell table swapped per interpreter, or
+one interpreter), the mark as an epoch word, the sweep order.  With
+every `Value' variant a cell address or an immediate, `Value: Copy'
+is the step after (phase B, step 4).
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

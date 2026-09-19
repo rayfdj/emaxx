@@ -447,7 +447,7 @@ mod tests {
         }
         #[inline(never)]
         fn insert_dead(interpreter: &mut Interpreter, table: &Value) {
-            drop(insert(interpreter, table, 3));
+            let _ = insert(interpreter, table, 3);
         }
         #[inline(never)]
         fn inner_scope(interpreter: &mut Interpreter, table: &Value) {

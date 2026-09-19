@@ -461,7 +461,7 @@ impl Loader<'_> {
                     let flags = self.reader.word(offset)?;
                     let name = self.value_at(offset + 8)?;
                     let symbol = self.symbol_of_record(offset, flags, name)?;
-                    self.objects.insert(offset, Value::Symbol(symbol.clone()));
+                    self.objects.insert(offset, Value::Symbol(symbol));
                     symbol_records.push((offset, symbol, flags));
                 }
                 DumpType::Cons => {

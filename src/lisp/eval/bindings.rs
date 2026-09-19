@@ -71,9 +71,7 @@ impl Interpreter {
         let resolved = if self.globals.alias(symbol).is_none() {
             symbol
         } else {
-            resolved_owned = self
-                .resolve_variable_symbol(symbol)
-                .unwrap_or_else(|_| symbol.clone());
+            resolved_owned = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
             &resolved_owned
         };
         self.lookup_var_with_resolved_name(symbol.as_str(), resolved.as_str(), env, Some(resolved))
@@ -766,7 +764,7 @@ impl Interpreter {
             .globals
             .facts_or(symbol, || primitives::name_facts_symbol(symbol));
         if facts.prefer_override {
-            return Some(Value::BuiltinFunc(symbol.clone()));
+            return Some(Value::BuiltinFunc(*symbol));
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         // The lexical environment is a value namespace (eval.c's Ffuncall
@@ -779,7 +777,7 @@ impl Interpreter {
         // indirection (indirect-function, fboundp, macrop) must resolve them
         // instead of signaling a void-function error.
         if name_is_builtin {
-            return Some(Value::BuiltinFunc(symbol.clone()));
+            return Some(Value::BuiltinFunc(*symbol));
         }
         None
     }
@@ -803,7 +801,7 @@ impl Interpreter {
             if seen.contains(&current.id()) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
-                    Value::Symbol(symbol.clone()),
+                    Value::Symbol(*symbol),
                 ])));
             }
             seen.push(current.id());
@@ -910,14 +908,6 @@ impl Interpreter {
             .is_some()
     }
 
-    /// `known_symbol_names' without materializing the names: the census
-    /// behind `garbage-collect' runs once per loaded file during the
-    /// loadup replay, and cloning ~40k Strings per call is pure waste.
-    /// The obarray's symbol count: the cached enumeration's length.
-    pub(crate) fn known_symbol_count(&self) -> usize {
-        self.known_symbols_shared().len()
-    }
-
     pub fn known_symbol_names(&self) -> Vec<String> {
         self.known_symbols_shared()
             .iter()
@@ -973,7 +963,7 @@ impl Interpreter {
                     }
                 };
                 for (symbol, _) in self.globals.iter().skip(old.globals) {
-                    admit(symbol.clone());
+                    admit(*symbol);
                 }
                 for (name, _) in &self.variable_aliases[old.variable_aliases..] {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
@@ -985,14 +975,14 @@ impl Interpreter {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
                 }
                 for symbol in &self.interned_symbols[old.interned_symbols..] {
-                    admit(symbol.clone());
+                    admit(*symbol);
                 }
                 cached.key = key;
                 return Rc::clone(&cached.symbols);
             }
         }
         let symbols = Rc::new(self.for_each_known_symbol(|source| match source {
-            KnownSymbolSource::Symbol(symbol) => symbol.clone(),
+            KnownSymbolSource::Symbol(symbol) => *symbol,
             KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
         }));
         let seen = symbols.iter().map(|symbol| symbol.id()).collect();

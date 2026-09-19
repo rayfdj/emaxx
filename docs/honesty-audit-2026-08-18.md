@@ -12789,3 +12789,117 @@ interior pointer of item 12, fixed) and
 `process_send_string_and_region_route_output_to_the_process_buffer',
 a process-output timing test that passed twice alone and passes in
 the run above (the load beside the gate, not the code).
+
+## 2026-09-19 Checkpoint 20j: symbols in alloc.c's symbol blocks (the representation, phase C, step 1)
+
+*What prompted it.*  After checkpoint 20i the symbol was the one Lisp
+object still reference counted: `Value::Symbol' held an `Rc' whose
+count every copy and drop touched, and an unreferenced uninterned
+symbol was freed by the drop, not by the collector.  Phase C's first
+step takes the symbol into alloc.c's `symbol_block', so that every
+`Value' variant names a cell the collector owns.
+
+*Done.*  (1) alloc.c's symbol storage: `symbol_block' (cells of 56
+bytes in the 128 KiB block the other kinds use), `symbol_free_list'
+through a free cell's first word, `symbol_block_index' as the bump
+pointer, `sweep_symbols' rebuilding the free list and giving back a
+block with nothing live in it, `live_symbol_holding' for the
+conservative scan (a word naming any byte of an allocated cell).  (2)
+`struct Lisp_Symbol' as this implementation keeps it: the host-side
+key text, `SYMBOL_NAME' (the Lisp-visible name object), the epoch
+mark, the id into the interpreter's cell table, the native word
+(comp.c passes a symbol by its address), and an uninterned symbol's
+own copy of its key text for the release of its registries.  (3)
+`SymbolName' is the cell's address, copied without a count; its
+string-like API (`as_str', the comparisons with text, the hash by
+name, the conversions) is unchanged, so its 2,700 uses are.  (4) The
+interned symbols are the obarray's, a root (checkpoint 20h); an
+uninterned one lives while something names it -- a `Value' the mark
+reaches, or a value-cell table of an interpreter, whose cells live
+outside the symbol (C's live in it) and which now marks the
+uninterned symbols it holds, as it kept them through the count.  (5)
+The sweep's cleanup releases what the reference count's drop
+released: the id registry's count for the key text, and the book of
+live uninterned symbols (text to symbol, the identity by text the
+ledger records), from which a freed cell is removed, so an entry is
+always live and the weak book with its pruning is gone.  (6) The
+census's `symbols' row is gcstat's `total_symbols': the cells the
+sweep counted, raised by allocation, the process's as C's are (it was
+this interpreter's enumeration plus the live uninterned book).  (7)
+The sweeps run conses, floats, vectors, symbols, strings: a symbol's
+name strings are marked with the symbol, and the strings go last as
+before.
+
+*Measured.*  The same machine, GNU 30.2 built here (`src'), checkpoint 20i
+(`w22') and this checkpoint (`w23'), three rounds each, the minimum
+and the median (the host as slow as at 20i: GNU's lexical loop 1.16 s
+against 0.87 two sessions ago):
+
+| probe | GNU (min / median) | 20i (min / median) | 20j (min / median) |
+|---|---|---|---|
+| interp lexical loop, 2M iterations | 1.155 / 1.165 s | 1.867 / 1.896 s | 1.530 / 1.561 s |
+| interp dynamic loop | 0.449 / 0.452 s | 1.507 / 1.537 s | 1.210 / 1.214 s |
+| call of an interpreted defun | 0.753 / 0.764 s | 0.930 / 0.962 s | 0.757 / 0.771 s |
+| byte-code call loop, 10M | 0.207 / 0.210 s | 0.792 / 0.794 s | 0.584 / 0.584 s |
+| 300k conses (the sweep part) | 0.095 / 0.099 s | 0.281 / 0.285 s | 0.235 / 0.244 s |
+| ten collections of the idle booted heap | 0.071 / 0.074 s | 0.303 / 0.307 s | 0.295 / 0.307 s |
+| mapcar over 2M | 0.231 / 0.235 s | 0.586 / 0.588 s | 0.512 / 0.521 s |
+
+Callgrind, instructions an iteration: the dynamic loop 8,622 (20i) to
+7,036, the lexical loop 9,594 to 8,000, the byte-code call loop 1,294
+to 953 (GNU: 3,234, 5,477 and 330).  The corpus rows (two rounds, the
+minimum): ucs-names GNU 2.21 s, 20i 8.94, 20j 7.71; fns-tests-sort
+1.50, 6.24, 6.12; pcase-tests-macro 0.10, 0.46, 0.42; undo-test4 1.01,
+3.68, 3.24.  The library suite's peak resident size: 1.68 GB (1.69 at
+20i).
+
+*What did not move, and what was learned.*  The symbol's reference count was a fifth of every
+interpreted iteration and a quarter of the byte-code call: each copy
+of a `Value::Symbol' -- the function cell's read, the frame's
+function word, the argument list's walk, the `let' binding, the
+`setq' -- touched the `Rc' count twice, and its drop went through the
+derived glue's jump table.  Gone, the interpreted defun call is at
+GNU's time (0.757 s against 0.753), the byte-code call loop is
+within a factor of 2.8 (3.8 before), and the interpreted loops are
+1.3 and 2.7 times GNU (1.6 and 3.4).  What did not move is the
+collection of the idle heap (30 ms against GNU's 7): the mark's walk
+over the booted heap is the same walk, and the symbol's cell added
+nothing to it; its cost is the number of objects and the size of the
+`Value' word, phase D's.  The step's own lesson was small: a table
+that holds a symbol's cells outside the symbol (the value tables by
+id, a per-interpreter deviation) must root the uninterned symbols it
+holds, as the count did for it; the interned ones were the obarray's
+already.  With every kind of `Value' now a cell address or an
+immediate, the type has no drop glue at all (clippy said so first:
+`drop' and `forget' of a `Value' are no-ops), and `Value: Copy' is
+the next step, one line of type and a mechanical pass over the
+clones.
+
+*Which of these mirror C, and which do not.*  The symbol block, the
+free list, the sweep, the live-symbol check, the obarray as the root
+of the interned symbols, the census as `total_symbols': alloc.c's.
+Not C, each to go with its phase: the cell's fields beyond
+`Lisp_Symbol''s (the key text and its registry copy: the uninterned
+symbols' identity by marker text, and the id into the interpreter's
+tables), the value, function and property cells in the interpreter's
+tables rather than in the symbol (phase C's next step, which needs one
+process-wide cell table swapped per interpreter, or one interpreter),
+the mark as an epoch word, the sweep order.
+
+*Verified.*  `cargo test --lib' at the gate profile with the image
+template, one test thread, on the tree before the clippy pass: 2,712
+passed, the three tests that need an unwritable directory failing
+under root as before, 645 s, peak resident size 1.68 GB; the focused
+groups (types, symbol cells, roots, collection, census, native gc,
+weak tables, the byte-code VM, the image, the suspended VM, the
+interned and uninterned symbol tests, let, sort: 207 tests) on the
+tree as committed; `EMAXX_GC_STRESS=1' over `eval_01' for the hour's
+cap fails only the `accept_process_output' timing test as at 20g, 20h
+and 20i, and over the primitives nothing within the hour (the fixture
+image built first); `cargo clippy --all-targets -- -D warnings' and
+`cargo fmt --check' exit 0 (clippy's mechanical pass turned the
+clones of the now-Copy symbol handle into copies across 22 files).
+The controls print their expected output from the release build; the
+corpus rows above all pass.
+
+*Gate.*  GATE-PLACEHOLDER

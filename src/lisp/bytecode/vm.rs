@@ -894,7 +894,7 @@ fn run_frames(
             let mut rest = false;
             for formal in &formals {
                 let name = match formal {
-                    Value::Symbol(name) => name.clone(),
+                    Value::Symbol(name) => *name,
                     other => {
                         let error = LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),

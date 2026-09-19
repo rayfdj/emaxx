@@ -1998,7 +1998,7 @@ pub(super) fn direct_symbol_name(
             return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
         }
         Value::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
-        Value::Symbol(symbol) => symbol.clone(),
+        Value::Symbol(symbol) => *symbol,
         _ if symbols_with_pos_enabled(interp, env) => {
             match symbol_with_pos_parts(interp, &args[0]) {
                 Some((Value::Nil, _)) => {

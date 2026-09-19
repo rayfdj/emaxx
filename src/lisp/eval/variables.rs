@@ -484,9 +484,7 @@ impl Interpreter {
         if !self.globals.has_aliases() {
             return false;
         }
-        let resolved = self
-            .resolve_variable_symbol(symbol)
-            .unwrap_or_else(|_| symbol.clone());
+        let resolved = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
         self.globals.has_flag(&resolved, SPECIAL)
             || self.builtin_var_value(resolved.as_str()).is_some()
     }
@@ -1141,19 +1139,19 @@ impl Interpreter {
         symbol: &SymbolName,
     ) -> Result<SymbolName, LispError> {
         let Some(first) = self.globals.alias(symbol) else {
-            return Ok(symbol.clone());
+            return Ok(*symbol);
         };
-        let mut seen = vec![symbol.clone(), first.clone()];
-        let mut current = first.clone();
+        let mut seen = vec![*symbol, *first];
+        let mut current = *first;
         while let Some(target) = self.globals.alias(&current) {
             if seen.contains(target) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-variable-indirection".into()),
-                    Value::Symbol(symbol.clone()),
+                    Value::Symbol(*symbol),
                 ])));
             }
-            seen.push(target.clone());
-            current = target.clone();
+            seen.push(*target);
+            current = *target;
         }
         Ok(current)
     }
@@ -2156,7 +2154,7 @@ impl Interpreter {
             }
             let restore = SpecialBindingRestore {
                 binding_id,
-                name: symbol.clone(),
+                name: *symbol,
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
@@ -2894,7 +2892,7 @@ impl Interpreter {
         for frame in frames.into_iter().skip(start + index) {
             for (name, value) in frame.locals() {
                 if !merged.iter().any(|(existing, _)| existing == name) {
-                    merged.push((name.clone(), value.clone()));
+                    merged.push((*name, value.clone()));
                 }
             }
         }

@@ -772,7 +772,7 @@ define_dispatch!(
                 let mut current = args[0].clone();
                 loop {
                     let symbol = match &current {
-                        Value::Symbol(symbol) => symbol.clone(),
+                        Value::Symbol(symbol) => *symbol,
                         _ if symbols_with_pos_enabled(interp, env) => {
                             let Some((Value::Symbol(symbol), _)) =
                                 symbol_with_pos_parts(interp, &current)
@@ -789,7 +789,7 @@ define_dispatch!(
                             Value::Symbol(symbol),
                         ])));
                     }
-                    seen.push(symbol.clone());
+                    seen.push(symbol);
                     match interp.lookup_function(&symbol, env) {
                         Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
                             current = resolved;

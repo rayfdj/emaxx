@@ -3573,7 +3573,7 @@ impl LispReachability<'_, '_> {
             }
             Value::Lambda(lambda) => {
                 for symbol in lambda.params.iter() {
-                    self.enqueue(&Value::Symbol(symbol.clone()));
+                    self.enqueue(&Value::Symbol(*symbol));
                 }
                 if let Some(value) = &lambda.public_parameters {
                     self.enqueue(value);
@@ -3896,7 +3896,7 @@ impl Interpreter {
             .map(|cells| {
                 cells
                     .iter()
-                    .map(|(symbol, value)| (symbol.clone(), value.clone()))
+                    .map(|(symbol, value)| (*symbol, value.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -4324,7 +4324,19 @@ impl Interpreter {
         // entries in C): the symbol object and its name strings stay,
         // whether or not any object names the symbol.
         for symbol in self.known_symbols_shared().iter() {
-            mark(&Value::Symbol(symbol.clone()));
+            mark(&Value::Symbol(*symbol));
+        }
+        // An uninterned symbol whose value cell this state holds (the
+        // cell lives in the table, not in the symbol as C's does): the
+        // table kept the symbol alive through the reference count, and
+        // keeps it so.
+        for symbol in self.globals.uninterned_symbols() {
+            mark(&Value::Symbol(*symbol));
+        }
+        for bindings in self.buffer_locals.values() {
+            for symbol in bindings.uninterned_symbols() {
+                mark(&Value::Symbol(*symbol));
+            }
         }
         // lread.c:defvar_lisp static-protects the C slot, independently of
         // the symbol's current redirect or plain value after makunbound.
@@ -4468,7 +4480,7 @@ impl Interpreter {
                 mark(&form);
             }
             for (symbol, value) in frame.locals() {
-                mark(&Value::Symbol(symbol.clone()));
+                mark(&Value::Symbol(*symbol));
                 mark(value);
             }
             if let Some(context) = frame.lexical_context() {
@@ -4633,9 +4645,9 @@ impl Interpreter {
     pub(crate) fn live_object_census(&self) -> LiveObjectCensus {
         let strings = crate::lisp::types::census_live_strings();
         let vectors = crate::lisp::types::census_live_vectors();
-        let symbols = self
-            .known_symbol_count()
-            .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
+        // gcstat's total_symbols: the symbol cells the sweep counted, raised
+        // by allocation (the process's, as C's are).
+        let symbols = crate::lisp::alloc::live_symbols();
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
         let live_buffers = 1 + self.inactive_buffers.len();
@@ -7858,12 +7870,7 @@ impl Interpreter {
         let environment = lambda.environment_value();
         let mut slots = vec![
             lambda.public_parameters.clone().unwrap_or_else(|| {
-                Value::list(
-                    lambda
-                        .params
-                        .iter()
-                        .map(|param| Value::Symbol(param.clone())),
-                )
+                Value::list(lambda.params.iter().map(|param| Value::Symbol(*param)))
             }),
             Value::list(lambda.body.as_ref().clone()),
             environment,

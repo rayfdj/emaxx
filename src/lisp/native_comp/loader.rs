@@ -720,7 +720,6 @@ pub(super) fn load(
             if let Some(ephemeral) = &ephemeral {
                 runtime.pop_ephemeral_root_range(ephemeral.len);
             }
-            drop(ephemeral);
             result
         }
         Err(error) => Err(error),

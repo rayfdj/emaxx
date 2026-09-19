@@ -89,8 +89,7 @@ fn values_equal_signaling_depth(
     let mut tortoise = left.clone();
     let mut steps = 0usize;
     let mut limit = 2usize;
-    loop {
-        let Value::Cons(lc) = l.clone() else { break };
+    while let Value::Cons(lc) = l.clone() {
         let Value::Cons(rc) = r.clone() else {
             return Ok(false);
         };

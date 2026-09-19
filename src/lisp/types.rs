@@ -704,35 +704,21 @@ impl PartialEq<SharedText> for SymbolName {
 /// Emaxx's single-threaded Lisp runtime.  Encoded
 /// `make-symbol` names bypass the table so transient uninterned symbols are
 /// still released when their last Lisp value dies.
-#[derive(Debug)]
-struct SymbolNameState {
-    internal: SharedText,
-    lisp_name: Value,
-    mark: MarkBit,
-    /// The native handle this symbol currently has, packed as the owning
-    /// native heap's id in the high 32 bits and the handle index plus one
-    /// in the low 32 bits; 0 when it has none.  comp.c passes a symbol to
-    /// generated code as the object's own address, so the word lives with
-    /// the symbol rather than in a lookup keyed by it (R02c).
-    native_word: Cell<u64>,
-    /// The symbol's index into an interpreter's `SymbolCells' (V02).  GNU
-    /// reads a symbol's value, redirect and `declared_special' from the
-    /// `Lisp_Symbol' object itself; Emaxx keeps those per interpreter, so
-    /// the object carries a dense id and each interpreter owns the cells.
-    /// Process-wide (see `symbol_id_for'): an interned name's id is
-    /// permanent, an uninterned text's id lives as long as a state with
-    /// that text does.
-    id: u32,
-    /// An uninterned state's own copy of its key text, for the release of
-    /// its id when the state drops: the drop may run after a collection
-    /// swept the string cell `internal' names (a state nothing reached
-    /// but a Rust owner still held), so it reads nothing of the heap.
-    key: Option<Box<str>>,
-}
-
+/// A symbol: alloc.c's `struct Lisp_Symbol' in a symbol block, named by
+/// its cell's address (`SymbolRef'), copied without a count.  The
+/// interned ones are the obarray's (a root); an uninterned one lives
+/// while something names it, and the sweep releases its registries.
 #[repr(transparent)]
-#[derive(Clone)]
-pub struct SymbolName(Rc<SymbolNameState>);
+#[derive(Clone, Copy)]
+pub struct SymbolName(crate::lisp::alloc::SymbolRef);
+
+impl SymbolName {
+    /// The handle for a cell the allocator handed out (the conservative
+    /// scan's).
+    pub(crate) fn from_ref(cell: crate::lisp::alloc::SymbolRef) -> Self {
+        Self(cell)
+    }
+}
 
 /// A table of the process's, read and written without a lock by the one
 /// Lisp thread that runs (alloc.c's `Vobarray' is a plain global under
@@ -777,8 +763,10 @@ thread_local! {
     /// that names a live uninterned symbol must resolve to that very
     /// state: otherwise a name-keyed caller (`set' through `&str') and the
     /// symbol object would disagree about which cell they address.
-    static UNINTERNED_SYMBOL_BOOK: RefCell<HashMap<String, Weak<SymbolNameState>>> = RefCell::new(HashMap::new());
-    static UNINTERNED_SYMBOL_BOOK_LIMIT: Cell<usize> = const { Cell::new(1 << 16) };
+    /// The live uninterned symbols by their key text (identity by text
+    /// is the pre-representation deviation the ledger records); the
+    /// sweep removes a freed cell's entry, so an entry is always live.
+    static UNINTERNED_SYMBOL_BOOK: RefCell<HashMap<String, SymbolName>> = RefCell::new(HashMap::new());
 }
 
 /// Symbol ids are process-wide: the same internal text carries the same id
@@ -832,27 +820,30 @@ fn registered_symbol_id(text: &str) -> Option<u32> {
     registry.as_ref()?.get(text).map(|(id, _)| *id)
 }
 
-impl Drop for SymbolNameState {
-    fn drop(&mut self) {
-        // Only uninterned states ever drop (the interned table owns its
-        // entries for the thread's lifetime); release the text's id when the
-        // last state with that text is gone.
-        let Some(key) = self.key.take() else {
+/// alloc.c's `sweep_symbols', with the registries an uninterned
+/// symbol's key names released as the cell goes: the id registry's
+/// count and the book of live uninterned symbols.
+pub(crate) fn sweep_symbol_cells(epoch: u32) {
+    crate::lisp::alloc::sweep_symbols(epoch, |cell| {
+        let Some(key) = cell.key.as_deref() else {
             return;
         };
+        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
+            book.remove(key);
+        });
         let mut registry = SYMBOL_IDS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(registry) = registry.as_mut() else {
             return;
         };
-        if let Some((_, states)) = registry.get_mut(&*key) {
+        if let Some((_, states)) = registry.get_mut(key) {
             *states = states.saturating_sub(1);
             if *states == 0 {
-                registry.remove(&*key);
+                registry.remove(key);
             }
         }
-    }
+    });
 }
 
 impl SymbolName {
@@ -876,7 +867,7 @@ impl SymbolName {
         }
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
             if let Some(name) = names.get(text.as_str()) {
-                return name.clone();
+                return *name;
             }
             crate::lisp::native_comp::note_lisp_allocation(48);
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
@@ -893,22 +884,24 @@ impl SymbolName {
                 })
             });
             let id = symbol_id_for(text.as_str(), false);
-            let name = Self(Rc::new(SymbolNameState {
-                internal: text,
-                lisp_name,
-                mark: MarkBit::default(),
-                native_word: Cell::new(0),
-                id,
-                key: None,
-            }));
-            names.insert(name.clone());
+            let name = Self(crate::lisp::alloc::allocate_symbol(
+                crate::lisp::alloc::SymbolCell {
+                    internal: text,
+                    lisp_name,
+                    mark: MarkBit::default(),
+                    id,
+                    native_word: Cell::new(0),
+                    key: None,
+                },
+            ));
+            names.insert(name);
             name
         })
     }
 
     /// alloc.c's mark bit on the symbol object.
     pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.0.mark
+        self.0.mark_bit()
     }
 
     /// Room for ADDITIONAL interned names (the image loader knows how many
@@ -980,13 +973,13 @@ impl SymbolName {
             if cache.len() >= 8192 {
                 cache.clear();
             }
-            cache.insert(key, symbol.clone());
+            cache.insert(key, symbol);
         });
         Some(symbol)
     }
 
     fn live_uninterned(text: &str) -> Option<Self> {
-        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).and_then(Weak::upgrade).map(Self))
+        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).copied())
     }
 
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
@@ -1003,20 +996,20 @@ impl SymbolName {
             .as_str()
             .contains(UNINTERNED_SYMBOL_MARKER_CHAR)
             .then(|| Box::<str>::from(internal.as_str()));
-        let state = Rc::new(SymbolNameState {
-            internal,
-            lisp_name,
-            mark: MarkBit::default(),
-            native_word: Cell::new(0),
-            id,
-            key,
+        let name = Self(crate::lisp::alloc::allocate_symbol(
+            crate::lisp::alloc::SymbolCell {
+                internal,
+                lisp_name,
+                mark: MarkBit::default(),
+                id,
+                native_word: Cell::new(0),
+                key,
+            },
+        ));
+        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
+            book.insert(name.0.internal.as_str().to_owned(), name);
         });
-        UNINTERNED_SYMBOL_BOOK.with(|book| {
-            book.borrow_mut()
-                .insert(state.internal.as_str().to_owned(), Rc::downgrade(&state));
-            UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| prune_uninterned_book(book, limit));
-        });
-        Self(state)
+        name
     }
 
     pub fn as_str(&self) -> &str {
@@ -1024,16 +1017,16 @@ impl SymbolName {
     }
 
     pub(crate) fn identity_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+        self.0.identity()
     }
 
-    /// The process-wide symbol id (see `SymbolNameState::id'); an
+    /// The process-wide symbol id (see `SymbolCell::id'); an
     /// uninterned symbol's id carries `UNINTERNED_SYMBOL_ID_BIT'.
     pub(crate) fn id(&self) -> u32 {
         self.0.id
     }
 
-    /// The packed native handle slot (see `SymbolNameState::native_word').
+    /// The packed native handle slot (see `SymbolCell::native_word').
     pub(crate) fn native_slot(&self) -> u64 {
         self.0.native_word.get()
     }
@@ -1048,6 +1041,11 @@ impl SymbolName {
 
     pub(crate) fn lisp_name(&self) -> Value {
         self.0.lisp_name.clone()
+    }
+
+    /// The symbol's cell (for the census and the dump).
+    pub(crate) fn cell(&self) -> &crate::lisp::alloc::SymbolCell {
+        &self.0
     }
 
     /// The name object in place, for a tracer.
@@ -1067,35 +1065,18 @@ impl SymbolName {
 pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
     INTERNED_SYMBOL_NAMES.with_borrow(|names| {
         for name in names {
-            mark(&Value::Symbol(name.clone()));
+            mark(&Value::Symbol(*name));
         }
     });
 }
 
 pub(crate) fn census_live_uninterned_symbols() -> usize {
-    UNINTERNED_SYMBOL_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|_, symbol| symbol.strong_count() != 0);
-        UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-        book.len()
-    })
-}
-
-fn prune_uninterned_book(
-    book: &RefCell<HashMap<String, Weak<SymbolNameState>>>,
-    limit: &Cell<usize>,
-) {
-    let mut book = book.borrow_mut();
-    if book.len() < limit.get() {
-        return;
-    }
-    book.retain(|_, weak| weak.strong_count() > 0);
-    limit.set((book.len() * 2).max(1 << 16));
+    UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.len())
 }
 
 impl PartialEq for SymbolName {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+        self.0.ptr_eq(&other.0) || self.as_str() == other.as_str()
     }
 }
 
@@ -2034,16 +2015,12 @@ impl Value {
         )
     }
 
-    /// Drop a value the VM is done with: nothing at all for an immediate
-    /// (the derived drop glue is an out-of-line call and a jump table),
-    /// the reference count for the rest.
+    /// Drop a value the VM is done with.  Every kind is a cell address or
+    /// an immediate now (nothing to drop); the method stays where the VM
+    /// says it is done with a value.
     #[inline(always)]
     pub(crate) fn discard(self) {
-        if self.is_immediate() {
-            std::mem::forget(self);
-        } else {
-            drop(self);
-        }
+        let _ = self;
     }
 
     #[inline(never)]
@@ -2056,10 +2033,10 @@ impl Value {
             Value::Float(value) => Value::Float(*value),
             Value::String(value) => Value::String(*value),
             Value::StringObject(value) => Value::StringObject(*value),
-            Value::Symbol(value) => Value::Symbol(value.clone()),
+            Value::Symbol(value) => Value::Symbol(*value),
             Value::Cons(value) => Value::Cons(*value),
             Value::Vector(value) => Value::Vector(*value),
-            Value::BuiltinFunc(value) => Value::BuiltinFunc(value.clone()),
+            Value::BuiltinFunc(value) => Value::BuiltinFunc(*value),
             Value::Lambda(value) => Value::Lambda(*value),
             Value::Buffer(value) => Value::Buffer(*value),
             Value::Marker(value) => Value::Marker(*value),
@@ -2089,7 +2066,7 @@ impl Clone for Value {
             // line, not through the general copy.
             Value::Cons(*cell)
         } else if let Value::Symbol(name) = self {
-            Value::Symbol(name.clone())
+            Value::Symbol(*name)
         } else {
             self.clone_shared()
         }
@@ -3303,10 +3280,7 @@ mod tests {
         let x: SymbolName = "cell".into();
         let outer = EnvFrame::lexical();
         let frame = EnvFrame::bindings(
-            [
-                (x.clone(), Value::Integer(1)),
-                (x.clone(), Value::Integer(2)),
-            ],
+            [(x, Value::Integer(1)), (x, Value::Integer(2))],
             outer.environment(),
         );
         assert_eq!(
@@ -3362,7 +3336,7 @@ mod tests {
                         };
                     }
                     assert!(census_live_conses() >= before + 100_000);
-                    drop(root);
+                    let _ = root;
                 }
             })
             .expect("small-stack worker")
@@ -3389,7 +3363,7 @@ mod tests {
             vectors_before.representation_conses
         );
 
-        drop(vector);
+        let _ = vector;
         // A vector is freed by the sweep, not by the drop of a handle.
         let vectors_after_drop = census_live_vectors();
         assert_eq!(vectors_after_drop.count, vectors_before.count + 1);
@@ -3406,9 +3380,9 @@ mod tests {
         let value = Value::float(1.5);
         let clone = value.clone();
         assert_eq!(census_live_floats(), before + 1);
-        drop(value);
+        let _ = value;
         assert_eq!(census_live_floats(), before + 1);
-        drop(clone);
+        let _ = clone;
         // A float is freed by the sweep, not by the drop of a handle
         // (`collection_frees_unreached_conses_and_expires_weak_slots').
         assert_eq!(census_live_floats(), before + 1);
@@ -3430,8 +3404,8 @@ mod tests {
         // has three visible slots plus its one-word vector header.
         assert_eq!(after.slots, before.slots + 3 + 4);
 
-        drop(integer);
-        drop(closure);
+        let _ = integer;
+        let _ = closure;
         // Both are freed by the sweep, not by the drop of a handle.
         let after_drop = census_live_vectors();
         assert_eq!(after_drop.count, before.count + 2);
@@ -3478,17 +3452,19 @@ mod tests {
         let first = SymbolName::from("emaxx-compact-symbol-test");
         let second = SymbolName::from("emaxx-compact-symbol-test");
 
-        assert!(Rc::ptr_eq(&first.0, &second.0));
+        assert!(first.0.ptr_eq(&second.0));
     }
 
     #[test]
     fn uninterned_symbol_names_remain_reclaimable() {
-        let weak = {
-            let name = SymbolName::from(make_uninterned_symbol_name("temporary", 1));
-            Rc::downgrade(&name.0)
-        };
-
-        assert!(weak.upgrade().is_none());
+        // An uninterned symbol nothing names is freed by the sweep (not by
+        // the drop of a handle), and its entry in the book goes with it
+        // (`collection_frees_unreached_conses_and_expires_weak_slots'
+        // covers the collection itself).
+        let text = make_uninterned_symbol_name("temporary", 1);
+        let name = SymbolName::from(text.clone());
+        assert!(SymbolName::intern_str(&text).0.ptr_eq(&name.0));
+        assert!(super::census_live_uninterned_symbols() >= 1);
     }
 
     #[test]

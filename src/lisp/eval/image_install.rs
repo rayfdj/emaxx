@@ -232,7 +232,7 @@ impl Interpreter {
             &symbol.symbol,
             SymbolCellSnapshot {
                 value: symbol.value.clone(),
-                alias: symbol.alias.clone(),
+                alias: symbol.alias,
                 flags,
             },
         );

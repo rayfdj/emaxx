@@ -117,7 +117,7 @@ impl Interpreter {
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.
             let symbol = match &sym {
-                Value::Symbol(symbol) => symbol.clone(),
+                Value::Symbol(symbol) => *symbol,
                 Value::Nil => SymbolName::intern_str("nil"),
                 Value::T => SymbolName::intern_str("t"),
                 other => {
@@ -253,7 +253,7 @@ impl Interpreter {
             return Ok(Value::Nil);
         };
         if let Value::Symbol(name) = &quoted {
-            return Ok(Value::Symbol(name.clone()));
+            return Ok(Value::Symbol(*name));
         }
         if let Ok(name) = super::function_name_from_binding_form(&quoted) {
             return Ok(Value::Symbol(name.into()));

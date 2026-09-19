@@ -1027,6 +1027,7 @@ impl NativeRuntime {
             crate::lisp::alloc::sweep_conses(epoch);
             crate::lisp::alloc::sweep_floats(epoch);
             crate::lisp::alloc::sweep_vectors(epoch);
+            crate::lisp::types::sweep_symbol_cells(epoch);
             crate::lisp::alloc::sweep_strings(epoch);
             self.heap.forget_swept_conses();
             return;
@@ -2766,7 +2767,7 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
         LispError::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
             match &symbol_state {
-                Some(symbol) => Value::Symbol(symbol.clone()),
+                Some(symbol) => Value::Symbol(*symbol),
                 None if word == 0 => Value::Nil,
                 None => Value::T,
             },
@@ -4459,6 +4460,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_conses(epoch);
         crate::lisp::alloc::sweep_floats(epoch);
         crate::lisp::alloc::sweep_vectors(epoch);
+        crate::lisp::types::sweep_symbol_cells(epoch);
         crate::lisp::alloc::sweep_strings(epoch);
         self.forget_swept_conses();
 
@@ -4597,7 +4599,7 @@ impl NativeHeap {
         let native = unsafe { self.live_handle(word)? };
         match &native.identity {
             NativeIdentity::Symbol(_) => match &native.value {
-                Value::Symbol(name) => Some(name.clone()),
+                Value::Symbol(name) => Some(*name),
                 _ => None,
             },
             _ => None,
@@ -6681,10 +6683,7 @@ mod tests {
         let symbols_before = crate::lisp::types::census_live_uninterned_symbols();
         // Flet's environment: the closure's slot two is this alist itself.
         let public = crate::lisp::types::EnvFrame::bindings(
-            [
-                (first.clone(), Value::Integer(7)),
-                (second.clone(), Value::Integer(8)),
-            ],
+            [(first, Value::Integer(7)), (second, Value::Integer(8))],
             &Value::Nil,
         )
         .environment()
@@ -6708,7 +6707,7 @@ mod tests {
                         &mut environment,
                         call_assq as *const c_void,
                         NativeCallingConvention::Fixed,
-                        &[Value::Symbol(symbol.clone()), alist.clone()],
+                        &[Value::Symbol(symbol), alist.clone()],
                     )
                     .expect("native assq on captured binding");
                 let (Value::Cons(result), Value::Cons(expected_entry)) = (result, &entry) else {
@@ -8937,7 +8936,7 @@ mod tests {
         let child = heap.cons((7 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
         let vector = Value::vector([heap.decode(child).expect("materialize native cons")]);
         let root = heap.encode(&vector).expect("encode vector root");
-        drop(vector);
+        let _ = vector;
         let unreachable = heap.cons(TAG_FIXNUM_LOW, 0);
 
         heap.collect(
@@ -9043,7 +9042,7 @@ mod tests {
         let inner = Value::vector([heap.decode(child).expect("native child")]);
         let root_value = Value::vector([inner]);
         let root = heap.encode(&root_value).expect("outer vector");
-        drop(root_value);
+        let _ = root_value;
         let native = child.wrapping_sub(TAG_CONS) as *const NativeCons;
         unsafe { (*native).set_cdr(root) };
         let unreachable = heap.cons(TAG_FIXNUM_LOW, 0);
@@ -9594,7 +9593,7 @@ mod tests {
     fn live_symbol_access_follows_xsymbol_without_reverse_lookup() {
         let mut heap = NativeHeapOwner::new();
         let symbol = SymbolName::from("direct-symbol-cell-access");
-        let value = Value::Symbol(symbol.clone());
+        let value = Value::Symbol(symbol);
         let word = heap.encode(&value).expect("encode native symbol handle");
         let address = word.wrapping_sub(TAG_SYMBOL);
         let index = heap
@@ -9624,7 +9623,7 @@ mod tests {
         assert!(occupied_buckets.len() > 2_000);
 
         let mut heap = NativeHeapOwner::new();
-        let symbol = Value::Symbol(name.clone());
+        let symbol = Value::Symbol(name);
         let builtin = Value::BuiltinFunc(name);
         let symbol_word = heap.encode(&symbol).expect("encode symbol identity");
         let builtin_word = heap.encode(&builtin).expect("encode builtin identity");

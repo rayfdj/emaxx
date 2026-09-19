@@ -18,6 +18,16 @@ pub(crate) struct LocalCells {
 }
 
 impl LocalCells {
+    /// The symbols this table holds cells for (see
+    /// `SymbolCells::uninterned_symbols'): an uninterned one lives while
+    /// its cell does.
+    pub(crate) fn uninterned_symbols(&self) -> impl Iterator<Item = &SymbolName> {
+        self.cells
+            .values()
+            .map(|(symbol, _)| symbol)
+            .filter(|symbol| crate::lisp::types::is_uninterned_symbol(symbol.as_str()))
+    }
+
     /// The binding for SYMBOL: `Some(None)' is a void local, `None' no local.
     pub(crate) fn binding(&self, symbol: &SymbolName) -> Option<Option<&Value>> {
         self.cells
@@ -37,7 +47,7 @@ impl LocalCells {
         match self.cells.get_mut(&symbol.id()) {
             Some((_, existing)) => *existing = value,
             None => {
-                self.cells.insert(symbol.id(), (symbol.clone(), value));
+                self.cells.insert(symbol.id(), (*symbol, value));
             }
         }
     }

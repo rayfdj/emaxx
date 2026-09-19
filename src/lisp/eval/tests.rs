@@ -25,7 +25,7 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
                 assert!(reached.contains(&leaf));
                 assert!(!reached.mark(&interp, &root));
                 assert!(reached.pending.is_empty());
-                drop(root);
+                let _ = root;
             }
             let cycle = Value::cons(Value::vector([leaf.clone()]), Value::Nil);
             let Value::Cons(cell) = &cycle else {

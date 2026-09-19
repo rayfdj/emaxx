@@ -1005,7 +1005,7 @@ pub(crate) fn printer_env_with_overrides(
                     let [Value::Symbol(name), value] = spec.as_slice() else {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     };
-                    (name.clone(), value.clone())
+                    (*name, value.clone())
                 } else if let Some((car, cdr)) = item.cons_values() {
                     let Value::Symbol(name) = car else {
                         return Err(LispError::Signal("invalid print overrides".into()));

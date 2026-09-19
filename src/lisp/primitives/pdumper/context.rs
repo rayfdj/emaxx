@@ -1197,7 +1197,7 @@ impl DumpContext {
         ];
         self.field_lv(start, &mut words, 1, &symbol.lisp_name(), WEIGHT_STRONG);
         let val = match &cell.alias {
-            Some(target) => Value::Symbol(target.clone()),
+            Some(target) => Value::Symbol(*target),
             None => cell.value.clone().unwrap_or(Value::Unbound),
         };
         self.field_lv(start, &mut words, 2, &val, WEIGHT_NORMAL);
@@ -1576,7 +1576,7 @@ impl DumpContext {
                 start,
                 &mut words,
                 index + 1,
-                &Value::Symbol(symbol.clone()),
+                &Value::Symbol(*symbol),
                 WEIGHT_STRONG,
             );
         }
@@ -1819,7 +1819,7 @@ impl DumpContext {
         }
         words.push(locals.len() as u64);
         for (symbol, value) in &locals {
-            fields.push((words.len(), Value::Symbol(symbol.clone()), WEIGHT_STRONG));
+            fields.push((words.len(), Value::Symbol(*symbol), WEIGHT_STRONG));
             words.push(0);
             fields.push((words.len(), value.clone(), WEIGHT_STRONG));
             words.push(0);

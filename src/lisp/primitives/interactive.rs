@@ -306,7 +306,7 @@ pub(crate) fn checked_symbol_identity(
     env: &Env,
 ) -> Result<crate::lisp::types::SymbolName, LispError> {
     match value {
-        Value::Symbol(symbol) => return Ok(symbol.clone()),
+        Value::Symbol(symbol) => return Ok(*symbol),
         Value::Nil => return Ok("nil".into()),
         Value::T => return Ok("t".into()),
         _ => {}
