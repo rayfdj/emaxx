@@ -17,7 +17,7 @@ fn prin1_to_string_roundtrips_upstream_symbol_cases() {
         "|", "}", "~", ":", "’", "’bar", "\t", "\n", " ", "\u{00A0}", "\u{200B}", "0",
     ];
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
 
     let roundtrip = |interp: &mut Interpreter, env: &mut Env, name: &str| {
         let rendered = primitives::call(
@@ -1099,7 +1099,7 @@ fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
     // closure: an assignment in the scope is a setcdr on the cons the
     // closure holds, and its slot two shows the new value.
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
     let captured = crate::lisp::types::current_environment_value(&env);
     let Value::Lambda(lambda) =
@@ -2280,7 +2280,7 @@ fn easy_menu_define_registers_a_placeholder_menu_symbol() {
 #[test]
 fn search_forward_missing_pattern_signals_search_failed() {
     let mut interp = gnu_early_lisp_interpreter();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let forms = Reader::new("(with-temp-buffer (insert \"abc\") (search-forward \"z\"))")
         .read_all()
         .unwrap();
@@ -4855,8 +4855,16 @@ fn align_c_function_declaration_matches_resource_output() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -4886,8 +4894,16 @@ fn align_c_variable_declaration_rule_is_runnable_and_valid() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -4929,8 +4945,16 @@ fn align_css_declaration_rule_matches_only_declarations() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -4959,8 +4983,16 @@ fn align_css_declaration_search_positions_match_buffer_lines() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -5008,8 +5040,16 @@ fn align_region_separator_finds_brace_line_between_css_blocks() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -5035,8 +5075,16 @@ fn align_region_separator_accepts_marker_bounds() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -5064,8 +5112,16 @@ fn align_css_resource_case_matches_output() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -5146,8 +5202,16 @@ fn allout_range_overlaps_keeps_prior_ranges_when_appending() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         let _ = interp.load_target("seq");
         load_gnu_batch_runtime(&mut interp);
@@ -7213,7 +7277,7 @@ fn builtin_alias_calls_invalidate_on_every_redefinition() {
 #[test]
 fn named_lisp_calls_share_immutable_function_code() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let definition =
         Reader::new("(defalias 'emaxx-test-shared-function-code #'(lambda (value) (+ value 1)))")
             .read()

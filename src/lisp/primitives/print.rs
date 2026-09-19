@@ -1632,7 +1632,7 @@ fn materialize_positioned_symbols(
             _ => Value::ReaderForm(form),
         },
         Value::Cons(cell) => {
-            let pointer = std::rc::Rc::as_ptr(&cell);
+            let pointer = cell.as_ptr();
             if seen.insert(pointer) {
                 let car = cell.car.borrow().clone();
                 let car = materialize_positioned_symbols(interp, car, seen);

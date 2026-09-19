@@ -2053,7 +2053,7 @@ pub(crate) fn value_is_unspecified(value: Option<&Value>) -> bool {
 /// old-style list for `current-time' and a nil `time-convert' FORM.
 fn current_time_list_is_set(interp: &Interpreter) -> bool {
     interp
-        .lookup_var("current-time-list", &Vec::new())
+        .lookup_var("current-time-list", &crate::lisp::types::Env::new())
         .is_none_or(|value| value.is_truthy())
 }
 

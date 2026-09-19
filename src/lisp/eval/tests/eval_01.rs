@@ -61,6 +61,48 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
 }
 
 #[test]
+fn collection_frees_unreached_conses_and_expires_weak_slots() {
+    // alloc.c's sweep: a chain no root reaches is returned to the free
+    // list by `garbage-collect', a weak observer of one of its cells
+    // answers nothing after, and a cell a root reaches survives.  The
+    // stack is scanned conservatively, so the chain is built out of this
+    // frame, its address kept hidden, and the frames below clobbered
+    // before the collection.
+    #[inline(never)]
+    fn build_chain() -> (usize, u64) {
+        let mut chain = Value::Nil;
+        for index in 0..100_000 {
+            chain = Value::cons(Value::Integer(index), chain);
+        }
+        let Value::Cons(cell) = &chain else {
+            unreachable!("constructed cons");
+        };
+        ((cell.as_ptr() as usize) ^ HIDE, cell.serial)
+    }
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let kept = Value::cons(Value::Integer(37), Value::Nil);
+    interp.set_variable("emaxx-gc-test-kept", kept.clone(), &mut env);
+    let before = crate::lisp::types::census_live_conses();
+    let (hidden, serial) = build_chain();
+    assert!(crate::lisp::types::census_live_conses() >= before + 100_000);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
+    let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
+    assert!(weak.upgrade().is_none(), "the unreached chain is swept");
+    assert!(
+        crate::lisp::types::census_live_conses() < before + 10_000,
+        "the sweep returned the chain to the free list"
+    );
+    assert!(matches!(
+        interp.lookup_var("emaxx-gc-test-kept", &env),
+        Some(Value::Cons(_))
+    ));
+    assert!(matches!(kept.car().expect("kept cell"), Value::Integer(37)));
+}
+
+#[test]
 fn eval_atoms() {
     assert_eq!(eval_str_bare("42"), Value::Integer(42));
     assert_eq!(eval_str_bare("\"hello\""), Value::String("hello".into()));
@@ -797,7 +839,7 @@ fn standard_obarray_unintern_detaches_membership_until_reinterned() {
 #[test]
 fn handler_bind_errors_skip_inner_condition_case() {
     let mut interp = gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (condition-case nil
@@ -820,7 +862,7 @@ fn handler_bind_errors_skip_inner_condition_case() {
 #[test]
 fn full_handler_bind_regression_sequence() {
     let mut interp = gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -854,7 +896,7 @@ fn full_handler_bind_regression_sequence() {
 #[test]
 fn handler_bind_preserves_error_object_identity_for_condition_case() {
     let mut interp = gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let* (inner-error
@@ -919,7 +961,7 @@ fn length_distinguishes_gnu_closure_slots_from_record_type_tags() {
 #[test]
 fn handler_bind_handlers_do_not_apply_inside_handlers() {
     let mut interp = gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (condition-case nil
@@ -979,7 +1021,7 @@ fn handler_bind_1_accepts_gnu_condition_lists_and_multiple_pairs() {
 #[test]
 fn lambda_without_body_still_reports_invalid_function_for_bad_args() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(r#"(funcall (function (lambda (&rest &optional))))"#)
         .read_all()
         .unwrap();
@@ -990,7 +1032,7 @@ fn lambda_without_body_still_reports_invalid_function_for_bad_args() {
 #[test]
 fn lambda_with_only_string_body_returns_that_string() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(r#"(funcall (function (lambda () "foo")))"#)
         .read()
         .unwrap()
@@ -1113,7 +1155,7 @@ fn eval_arithmetic() {
     assert_eq!(eval_str("(/ 2.0)"), Value::float(0.5));
     {
         let mut interp = Interpreter::new();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let form = Reader::new("(/ 0)").read().unwrap().unwrap();
         assert!(matches!(
             interp.eval(&form, &mut env),
@@ -3143,7 +3185,7 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
     interp.set_variable(
         "current-load-list",
         Value::list([Value::String(test_file.clone().into())]),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
@@ -3154,7 +3196,11 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
                 "#
         ),
     );
-    interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
+    interp.set_variable(
+        "current-load-list",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
     interp.set_current_load_file(None);
     assert_eq!(
         eval_str_with(
@@ -3201,7 +3247,7 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
     interp.set_variable(
         "current-load-list",
         Value::list([Value::String(test_file.into())]),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
@@ -3214,7 +3260,11 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
                 "#
         ),
     );
-    interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
+    interp.set_variable(
+        "current-load-list",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
     interp.set_current_load_file(None);
     assert_eq!(
         eval_str_with(
@@ -6375,7 +6425,9 @@ fn gnu_lread_c_variables_are_declared_special() {
             "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
         );
         assert!(
-            interp.lookup_var(name, &Vec::new()).is_some(),
+            interp
+                .lookup_var(name, &crate::lisp::types::Env::new())
+                .is_some(),
             "GNU lread.c DEFVAR `{name}` must have a startup value"
         );
     }
@@ -6446,7 +6498,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
             "GNU emacs.c locale DEFVAR `{name}` must remain dynamically scoped"
         );
         assert_eq!(
-            interp.lookup_var(name, &Vec::new()),
+            interp.lookup_var(name, &crate::lisp::types::Env::new()),
             Some(Value::Nil),
             "GNU emacs.c locale DEFVAR `{name}` must start bound to nil"
         );
@@ -6791,7 +6843,7 @@ fn setopt_runs_defcustom_setter() {
 fn customize_set_variable_runs_defcustom_setter() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         eval_str_with(
             &mut interp,
             "(defun sample-setter (symbol value)
@@ -7787,7 +7839,7 @@ fn tty_face_attrs_resolve_through_the_face_machinery() {
                   :inherit sample-parent-face))
              \"doc\"))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
         &mut interp,
         &mut env,
@@ -7818,7 +7870,7 @@ fn tty_face_attrs_apply_buffer_local_face_remapping() {
            (setq face-remapping-alist
                  '((sample-base-face sample-remapped-face sample-base-face))))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
         &mut interp,
         &mut env,
@@ -7870,7 +7922,7 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
              (overlay-put overlay 'face 'isearch)
              (overlay-put overlay 'priority 1001)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
     let spans =
         crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, true);
@@ -7904,7 +7956,7 @@ fn window_face_spans_resolve_faces_inherited_from_text_categories() {
            (put 'sample-button-category 'face 'link)
            (put-text-property 1 7 'category 'sample-button-category))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
     let spans =
         crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 12, true);
@@ -7926,7 +7978,7 @@ fn window_face_spans_resolve_faces_inherited_from_overlay_categories() {
            (let ((overlay (make-overlay 1 11)))
              (overlay-put overlay 'category 'sample-diagnostic-category)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
     let spans =
         crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 16, true);
@@ -7949,7 +8001,7 @@ fn window_face_spans_honor_font_lock_face_aliases_on_overlays() {
            (let ((overlay (make-overlay 1 8)))
              (overlay-put overlay 'font-lock-face 'highlight)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
     assert_eq!(
         crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 13, true,),
@@ -7966,7 +8018,7 @@ fn header_line_glass_honors_propertized_align_to_columns() {
            (list-buffers)
            (set-window-buffer (selected-window) \"*Buffer List*\"))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
     let text = crate::lisp::primitives::render_window_header_line(
         &mut interp,
@@ -7999,7 +8051,7 @@ fn header_line_glass_keeps_partial_sort_column_face() {
            (setq tabulated-list-sort-key '(\"Name\" . nil))
            (tabulated-list-init-header))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
     let (text, spans) = crate::lisp::primitives::render_window_header_line(
         &mut interp,
@@ -8040,7 +8092,7 @@ fn tab_line_glass_evaluates_per_buffer_format() {
                      '(:eval (propertize \" Group: M-1 flat\"
                                          'face 'bold)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
     let (text, spans) = crate::lisp::primitives::render_window_tab_line(
         &mut interp,
@@ -8117,7 +8169,7 @@ fn current_message_preserves_properties_when_a_temporary_message_restores_it() {
 #[test]
 fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let prompt = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -9346,7 +9398,7 @@ fn menu_bar_captions_follow_keymap_order_and_final_items() {
            (define-key (current-global-map) [menu-bar broken] 'undefined)
            (setq menu-bar-final-items '(help-menu)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let captions = crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env);
     assert_eq!(
         captions,
@@ -9372,7 +9424,7 @@ fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
            (define-key demo-menu [sep] '(\"--\"))
            (define-key demo-menu [swap] '(menu-item \"Swap\" transpose-chars)))",
     );
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let menu = eval_str_with(&mut interp, "demo-menu");
     let pane =
         crate::lisp::primitives::tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Demo");
@@ -9494,7 +9546,7 @@ fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
 #[test]
 fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let click = Value::list([
         Value::Symbol("C-down-mouse-3".into()),
         Value::list([
@@ -9516,7 +9568,7 @@ fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
 #[test]
 fn unread_command_events_pop_ahead_of_the_terminal() {
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     eval_str_with(
         &mut interp,
         "(setq unread-command-events (list 97 (cons t 98)))",

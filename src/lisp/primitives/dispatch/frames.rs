@@ -113,7 +113,7 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
             crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
             && let Some(form) = forms.first()
         {
-            let _ = interp.eval(form, &mut Vec::new());
+            let _ = interp.eval(form, &mut crate::lisp::types::Env::new());
         }
     }
     let menu_bar_lines_changed = matches!(parameter.as_str(), "menu-bar-lines" | "tab-bar-lines");

@@ -161,7 +161,7 @@ fn run_initialized_batch(
     // selector; mirror GNU's `emaxx-compat--selector' environment contract.
     let selector_string =
         env::var("EMAXX_COMPAT_SELECTOR").unwrap_or_else(|_| "(quote t)".to_string());
-    let mut eval_env: Env = Vec::new();
+    let mut eval_env: Env = crate::lisp::types::Env::new();
     for action in actions {
         match action {
             BatchAction::Load(target) => {
@@ -304,11 +304,11 @@ pub(crate) fn run_startup_top_level(
     // keyboard.c:top_level_2 evaluates the stored form, not a host-authored
     // call to a particular Lisp function. startup.el owns all startup policy.
     let form = interpreter
-        .forwarded_c_value("top-level", &Vec::new())
+        .forwarded_c_value("top-level", &crate::lisp::types::Env::new())
         .unwrap_or(Value::Nil);
     if form.is_nil() {
         let purify = interpreter
-            .forwarded_c_value("purify-flag", &Vec::new())
+            .forwarded_c_value("purify-flag", &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         return lisp::primitives::call(
             interpreter,
@@ -318,7 +318,7 @@ pub(crate) fn run_startup_top_level(
             } else {
                 "Bare impure Emacs (standard Lisp code not loaded)"
             })],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         );
     }
     let handler = interpreter
@@ -330,7 +330,12 @@ pub(crate) fn run_startup_top_level(
                 Value::symbol("debug-early--handler"),
             )])
         });
-    let result = lisp::primitives::call(interpreter, "eval", &[form, Value::T], &mut Vec::new());
+    let result = lisp::primitives::call(
+        interpreter,
+        "eval",
+        &[form, Value::T],
+        &mut crate::lisp::types::Env::new(),
+    );
     if let Some(handler) = handler {
         interpreter.pop_handler_bindings(handler);
     }
@@ -412,7 +417,7 @@ fn emit_batch_error_message(interpreter: &mut Interpreter, error: &LispError) {
         interpreter,
         "error-message-string",
         &[lisp::eval::error_condition_value(error)],
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     )
     .ok()
     .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
@@ -436,7 +441,7 @@ fn emit_unhandled_batch_error(
     // symbol and data under default print settings, then the frames under
     // debug-early-backtrace's binds (print-escape-newlines,
     // print-escape-control-characters, print-escape-nonascii all t).
-    let mut render_env: Env = Vec::new();
+    let mut render_env: Env = crate::lisp::types::Env::new();
     let prin1 = |interpreter: &mut Interpreter, env: &mut Env, value: &Value| {
         lisp::primitives::print::render_prin1(interpreter, value, env)
             .unwrap_or_else(|_| value.to_string())
@@ -537,7 +542,7 @@ pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
     let initialized =
         crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
             .is_some();
-    let env: Env = Vec::new();
+    let env: Env = crate::lisp::types::Env::new();
     let variable = |interpreter: &Interpreter, name: &str| {
         interpreter.lookup_var(name, &env).unwrap_or(Value::Nil)
     };
@@ -564,13 +569,18 @@ pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
         let rtime = variable(&interpreter, "emacs-build-time");
         if !rversion.is_nil() && !rbranch.is_nil() && !rtime.is_nil() {
             let text = |interpreter: &mut Interpreter, function: &str, args: &[Value]| {
-                lisp::primitives::call(interpreter, function, args, &mut Vec::new())
-                    .map_err(|error| error.to_string())
-                    .and_then(|value| {
-                        lisp::primitives::string_like(&value)
-                            .map(|string| string.text)
-                            .ok_or_else(|| format!("{function} did not return a string"))
-                    })
+                lisp::primitives::call(
+                    interpreter,
+                    function,
+                    args,
+                    &mut crate::lisp::types::Env::new(),
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    lisp::primitives::string_like(&value)
+                        .map(|string| string.text)
+                        .ok_or_else(|| format!("{function} did not return a string"))
+                })
             };
             let short = text(
                 &mut interpreter,
@@ -736,8 +746,16 @@ fn initialize_interpreter_attempt(
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
-    interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
-    interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
+    interpreter.set_variable(
+        "lexical-binding",
+        Value::T,
+        &mut crate::lisp::types::Env::new(),
+    );
+    interpreter.set_variable(
+        "noninteractive",
+        Value::T,
+        &mut crate::lisp::types::Env::new(),
+    );
     // emacs.c handles --batch before syms_of_undo: in an uninitialized
     // builder, syms_of_undo reinstalls 24000000 before loadup runs. Leave
     // that raw initializer intact here; a fresh batch session clears it below.
@@ -750,13 +768,17 @@ fn initialize_interpreter_attempt(
                 .cloned()
                 .map(|value| Value::String(value.into())),
         ),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
     // phase, where delayed Custom initializers accumulate until startup;
     // an image carries the accumulated list.
     if !initialized {
-        interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
+        interpreter.set_variable(
+            "custom-delayed-init-variables",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
     }
     configure_batch_source_provenance(&mut interpreter)?;
     // font.c:init_font runs after syms_of_font and before loadup.el.  Merely
@@ -769,7 +791,7 @@ fn initialize_interpreter_attempt(
         } else {
             Value::T
         },
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
 
     // The reconstruction below is GNU's pre-dump build phase.  Its Loading
@@ -778,10 +800,18 @@ fn initialize_interpreter_attempt(
     // buffer — a dumped GNU binary starts with an empty one (loaddefs.el's
     // own `(load "theme-loaddefs.el" t)' was leaking a Loading line there).
     let saved_message_log_max = interpreter
-        .lookup_var("message-log-max", &Vec::new())
+        .lookup_var("message-log-max", &crate::lisp::types::Env::new())
         .unwrap_or(Value::Nil);
-    interpreter.set_variable("message-log-max", Value::Nil, &mut Vec::new());
-    interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
+    interpreter.set_variable(
+        "message-log-max",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
+    interpreter.set_variable(
+        "inhibit-message",
+        Value::T,
+        &mut crate::lisp::types::Env::new(),
+    );
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
         // An initialized process has the dumped state already.
         if initialized {
@@ -809,8 +839,16 @@ fn initialize_interpreter_attempt(
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
     // session muted, or its own diagnostics would be swallowed too.
-    interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
-    interpreter.set_variable("message-log-max", saved_message_log_max, &mut Vec::new());
+    interpreter.set_variable(
+        "inhibit-message",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
+    interpreter.set_variable(
+        "message-log-max",
+        saved_message_log_max,
+        &mut crate::lisp::types::Env::new(),
+    );
     reconstruction?;
     // loadup.el's end: `(dump-emacs-portable "emacs.pdmp")' from the state
     // just built, for the processes and tests that follow.
@@ -824,19 +862,23 @@ fn initialize_interpreter_attempt(
     interpreter.set_variable(
         "noninteractive",
         if noninteractive { Value::T } else { Value::Nil },
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     interpreter.set_variable(
         "gc-cons-percentage",
         Value::float(if noninteractive { 1.0 } else { 0.1 }),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     // sysdep.c:init_system_name, from init_editfns in every process: this
     // host's name, or nil after `--no-build-details'; the image carries
     // the dumping host's.
     interpreter.set_global_binding("system-name", lisp::primitives::system_name_lisp_value());
     if noninteractive {
-        interpreter.set_variable("undo-outer-limit", Value::Nil, &mut Vec::new());
+        interpreter.set_variable(
+            "undo-outer-limit",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
     }
     let dump_path = Value::list(installation_load_path.iter().map(|path| {
         lisp::primitives::bytes_to_shared_unibyte_value(path.as_os_str().as_encoded_bytes())
@@ -899,7 +941,7 @@ fn configure_native_load_path_for_dump_reconstruction(
     // invocation-directory when a non-dumped Emacs is about to load Lisp.
     // For Emaxx this is the writable build-tree cache under target/.
     let load_path = interpreter
-        .lookup_var("native-comp-eln-load-path", &Vec::new())
+        .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
         .ok_or_else(|| "native-comp-eln-load-path is unbound during startup".to_string())?;
     let (initial_directory, _) = load_path
         .cons_values()
@@ -908,7 +950,7 @@ fn configure_native_load_path_for_dump_reconstruction(
         .ok_or_else(|| "native-comp-eln-load-path initial entry is not a string".to_string())?
         .text;
     let invocation_directory = interpreter
-        .lookup_var("invocation-directory", &Vec::new())
+        .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "invocation-directory is not a string during startup".to_string())?;
     let native_directory =
@@ -921,7 +963,7 @@ fn configure_native_load_path_for_dump_reconstruction(
     // the same native standard-library functions as the dumped GNU binary,
     // while newly compiled files continue to land in Emaxx's build tree.
     let source_directory = interpreter
-        .lookup_var("source-directory", &Vec::new())
+        .lookup_var("source-directory", &crate::lisp::types::Env::new())
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "source-directory is not a string during startup".to_string())?;
     let system_native_directory =
@@ -964,7 +1006,7 @@ fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<()
 /// demote signals to messages, and remove the failing function by identity.
 /// Throws and process termination still leave the hook.
 pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) -> Result<(), LispError> {
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let binding = interpreter.bind_special_dynamic("inhibit-quit", Value::T, &mut env)?;
     let result = {
         // GNU's Vrun_hooks is an internal initialization flag, not the
@@ -1090,7 +1132,10 @@ pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> R
     // loadup rather than fabricating `background-mode', `display-type', or
     // face objects in the Rust host.
     if interpreter
-        .lookup_function("tty-set-up-initial-frame-faces", &Vec::new())
+        .lookup_function(
+            "tty-set-up-initial-frame-faces",
+            &crate::lisp::types::Env::new(),
+        )
         .is_err()
     {
         return if has_configured_lisp_tree(interpreter) {
@@ -1104,7 +1149,7 @@ pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> R
             Value::symbol("tty-set-up-initial-frame-faces"),
             None,
             &[],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .map_err(|error| format!("initialize initial-frame faces: {error}"))?;
     Ok(())
@@ -1187,10 +1232,10 @@ impl FixtureImage {
         // tree, whose `native-lisp/' holds the preloaded units, for the
         // directory the installed `native-lisp/' would be under.
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &Vec::new())
+            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         let source_directory = interpreter
-            .lookup_var("source-directory", &Vec::new())
+            .lookup_var("source-directory", &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
         interpreter.set_global_binding("load--bin-dest-dir", invocation_directory);
         interpreter.set_global_binding("load--eln-dest-dir", source_directory);
@@ -1198,7 +1243,7 @@ impl FixtureImage {
             interpreter,
             "dump-emacs-portable",
             &[Value::String(temporary.display().to_string().into())],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .map_err(|error| format!("dump the fixture image: {error}"))?;
         fs::rename(&temporary, &self.path).map_err(|error| {
@@ -1243,7 +1288,7 @@ fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
 
 fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
     interpreter
-        .lookup_var("load-path", &Vec::new())
+        .lookup_var("load-path", &crate::lisp::types::Env::new())
         .and_then(|value| value.to_vec().ok())
         .is_some_and(|paths| !paths.is_empty())
 }
@@ -1580,7 +1625,7 @@ mod tests {
         // keyboard.c:safe_run_hooks specbinds inhibit-quit, and
         // eval.c:run_hook_with_args reads the default only on reaching t.
         let mut interpreter = Interpreter::new();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -1611,7 +1656,7 @@ mod tests {
     #[test]
     fn safe_startup_hooks_preserve_nonlocal_exits_and_restore_inhibit_quit() {
         let mut interpreter = Interpreter::new();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -1650,7 +1695,7 @@ mod tests {
         // reported with `message' and removed from the hook (the local
         // value first, then the global), the rest keep running.
         let mut interpreter = Interpreter::new();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let program = r#"(progn
              (fset 'zz-ok #'(lambda () (setq zz-ran t)))
              (fset 'zz-bad #'(lambda () (signal 'error '("boom"))))
@@ -1909,7 +1954,7 @@ mod tests {
         let options = BatchRunOptions::default();
         let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
         assert_eq!(
-            interpreter.lookup_var("command-line-args-left", &Vec::new()),
+            interpreter.lookup_var("command-line-args-left", &crate::lisp::types::Env::new()),
             Some(Value::Nil)
         );
     }
@@ -1918,14 +1963,14 @@ mod tests {
     fn dump_reconstruction_has_cache_then_gnu_system_native_paths() {
         let mut interpreter = Interpreter::new();
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &Vec::new())
+            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("invocation-directory string")
             .text;
         let expected_cache =
             lisp::primitives::expand_file_name("../native-lisp/", Some(&invocation_directory));
         let source_directory = interpreter
-            .lookup_var("source-directory", &Vec::new())
+            .lookup_var("source-directory", &crate::lisp::types::Env::new())
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("source-directory string")
             .text;
@@ -1934,7 +1979,7 @@ mod tests {
         configure_native_load_path_for_dump_reconstruction(&mut interpreter)
             .expect("configure native paths for GNU dump reconstruction");
         let load_path = interpreter
-            .lookup_var("native-comp-eln-load-path", &Vec::new())
+            .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
             .expect("native-comp-eln-load-path is C-initialized")
             .to_vec()
             .expect("native-comp-eln-load-path is a proper list");
@@ -1955,7 +2000,7 @@ mod tests {
 
         for name in ["before-init-time", "after-init-time"] {
             let value = interpreter
-                .lookup_var(name, &Vec::new())
+                .lookup_var(name, &crate::lisp::types::Env::new())
                 .unwrap_or_else(|| panic!("{name} is bound"));
             assert_eq!(value.to_vec().expect("old-style time list").len(), 4);
         }
@@ -1968,7 +2013,7 @@ mod tests {
             .expect("time ordering probe");
         assert_eq!(
             interpreter
-                .eval(&ordered, &mut Vec::new())
+                .eval(&ordered, &mut crate::lisp::types::Env::new())
                 .expect("compare startup times"),
             Value::T
         );
@@ -2029,13 +2074,13 @@ mod tests {
         .remove(0);
         assert_eq!(
             interpreter
-                .eval(&located, &mut Vec::new())
+                .eval(&located, &mut crate::lisp::types::Env::new())
                 .expect("locate standard Lisp fixture"),
             Value::String(runtime_lisp.display().to_string().into())
         );
 
         let history = interpreter
-            .lookup_var("load-history", &Vec::new())
+            .lookup_var("load-history", &crate::lisp::types::Env::new())
             .expect("load history")
             .to_vec()
             .expect("load history list");
@@ -2073,7 +2118,7 @@ mod tests {
 
         assert_eq!(
             interpreter
-                .eval(&form, &mut Vec::new())
+                .eval(&form, &mut crate::lisp::types::Env::new())
                 .expect("evaluate lexical startup probe"),
             Value::list([Value::T, Value::T, Value::Nil])
         );
@@ -2109,7 +2154,9 @@ mod tests {
         let interpreter = initialize_batch_interpreter(&options)
             .expect("a shadowing -L must not break the image");
         assert!(
-            interpreter.lookup_function("when", &Vec::new()).is_ok(),
+            interpreter
+                .lookup_function("when", &crate::lisp::types::Env::new())
+                .is_ok(),
             "the reconstructed image must be complete despite the shadowing -L"
         );
         assert_eq!(
@@ -2233,7 +2280,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate seq startup probe"),
                 Value::list([
                     Value::T,
@@ -2253,7 +2300,7 @@ mod tests {
             let root = compat::canonicalize_path(&compat::project_root().join("../emacs/lisp"))
                 .expect("GNU Lisp root");
             interpreter.set_load_path(vec![root.clone()]);
-            let mut env = Vec::new();
+            let mut env = crate::lisp::types::Env::new();
             interpreter.set_variable(
                 "default-directory",
                 Value::String(format!("{}/", root.display()).into()),
@@ -2332,7 +2379,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate programming-mode startup probe"),
                 Value::list([
                     Value::T,
@@ -2407,7 +2454,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate paragraphs startup probe"),
                 Value::list([
                     Value::list([Value::T, Value::T, Value::T, Value::Integer(6)]),
@@ -2481,7 +2528,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate Font Lock startup probe"),
                 Value::list([
                     Value::T,
@@ -2547,7 +2594,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate character category startup probe"),
                 Value::list([
                     Value::String("Latin".into()),
@@ -2584,7 +2631,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate Compile startup probe"),
                 Value::list([Value::T, Value::T, Value::T])
             );
@@ -2620,7 +2667,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate files.el startup probe"),
                 Value::list([
                     Value::T,
@@ -2674,7 +2721,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate custom Font Lock probe"),
                 Value::list([
                     Value::T,
@@ -2740,7 +2787,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate simple startup probe"),
                 Value::list([
                     Value::T,
@@ -2791,7 +2838,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate character-script startup probe"),
                 Value::list([
                     Value::Symbol("latin".into()),
@@ -2826,7 +2873,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate tabulated-list startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
             );
@@ -2868,7 +2915,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate minor-mode startup probe"),
                 Value::list([
                     Value::T,
@@ -2914,7 +2961,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate isearch startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T])
             );
@@ -2949,7 +2996,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate selection startup probe"),
                 Value::list([
                     Value::T,
@@ -2994,7 +3041,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate mouse startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
             );
@@ -3048,7 +3095,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("read the translated XTerm mouse event"),
                 Value::list([
                     Value::Symbol("S-mouse-2".into()),
@@ -3111,7 +3158,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate tty color probe"),
                 Value::list([
                     Value::Integer(8),
@@ -3161,7 +3208,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate tab-bar startup probe"),
                 Value::list([
                     Value::T,
@@ -3203,7 +3250,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate dumped register startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
             );
@@ -3235,7 +3282,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate complete subr startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
             );
@@ -3270,7 +3317,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate electric startup probe"),
                 Value::list([
                     Value::T,
@@ -3318,7 +3365,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("invoke inherited eieio--class setter"),
                 Value::list([
                     Value::Symbol("emaxx-inherited-setter-probe".into()),
@@ -3372,7 +3419,7 @@ mod tests {
                 .remove(0);
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate locale startup probe"),
                 expected
             );
@@ -3395,7 +3442,7 @@ mod tests {
                 Value::String(
                     lisp::primitives::path_to_directory_string(&emacs_repo.join("etc")).into(),
                 ),
-                &mut Vec::new(),
+                &mut crate::lisp::types::Env::new(),
             );
             let utf16_fixture = emacs_repo
                 .join("test/lisp/international/mule-util-resources/test.utf-16le")
@@ -3492,7 +3539,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate Mule/CCL startup probe"),
                 Value::list([
                     Value::T,
@@ -3569,7 +3616,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("evaluate compression-hook startup probe"),
                 Value::list([Value::T, Value::T, Value::T])
             );
@@ -3613,7 +3660,7 @@ mod tests {
             .expect("read Info search probe")
             .remove(0);
             let result = interpreter
-                .eval(&form, &mut Vec::new())
+                .eval(&form, &mut crate::lisp::types::Env::new())
                 .expect("evaluate Info search probe");
             assert!(
                 result.is_truthy(),
@@ -3628,7 +3675,7 @@ mod tests {
             .read_all()
             .expect("read Info mode probe")
             .remove(0);
-            let mode_result = interpreter.eval(&mode, &mut Vec::new());
+            let mode_result = interpreter.eval(&mode, &mut crate::lisp::types::Env::new());
             match mode_result {
                 Ok(value) => assert_eq!(value, Value::T),
                 Err(error) => panic!(
@@ -3646,7 +3693,7 @@ mod tests {
             .read_all()
             .expect("read Info node probe")
             .remove(0);
-            let goto_result = interpreter.eval(&goto, &mut Vec::new());
+            let goto_result = interpreter.eval(&goto, &mut crate::lisp::types::Env::new());
             match goto_result {
                 Ok(value) => assert_eq!(value, Value::T),
                 Err(error) => panic!(
@@ -3681,7 +3728,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("run Org autoloads"),
                 Value::list([Value::T, Value::T, Value::String("9.7.11".into()),])
             );
@@ -3710,7 +3757,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("inspect dumped symbol properties"),
                 Value::list([Value::symbol("rng-xsd-compile"), Value::T])
             );
@@ -3741,7 +3788,7 @@ mod tests {
 
             assert_eq!(
                 interpreter
-                    .eval(&form, &mut Vec::new())
+                    .eval(&form, &mut crate::lisp::types::Env::new())
                     .expect("inspect dumped package versions"),
                 Value::list([
                     Value::Integer(78),
@@ -3773,7 +3820,7 @@ mod tests {
 
             assert!(
                 interpreter
-                    .lookup_function("ert-test-erts-file", &Vec::new())
+                    .lookup_function("ert-test-erts-file", &crate::lisp::types::Env::new())
                     .is_ok()
             );
         });

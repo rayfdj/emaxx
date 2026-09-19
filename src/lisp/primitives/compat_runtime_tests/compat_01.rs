@@ -21,7 +21,7 @@ fn buffer_positions_accept_integer_values_independent_of_internal_width() {
 #[test]
 fn file_modes_reads_permissions_and_reports_arity() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "emaxx-file-modes-{}-{}",
         std::process::id(),
@@ -106,7 +106,7 @@ fn file_modes_reads_permissions_and_reports_arity() {
 #[test]
 fn directory_files_and_attributes_reports_entries_and_arity() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let directory = std::env::temp_dir().join(format!(
         "emaxx-directory-attributes-{}-{}",
         std::process::id(),
@@ -170,7 +170,7 @@ fn directory_files_and_attributes_reports_entries_and_arity() {
 #[test]
 fn forward_line_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb");
 
     assert_eq!(
@@ -183,7 +183,7 @@ fn forward_line_treats_nil_as_default_step() {
 #[test]
 fn forward_char_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*chars*", "ab");
 
     assert_eq!(
@@ -196,7 +196,7 @@ fn forward_char_treats_nil_as_default_step() {
 #[test]
 fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*lines*", "\n\n\n\n\n\n\n\n\n\n");
     {
         let buffer = &mut interp.buffer;
@@ -244,7 +244,7 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
 #[test]
 fn line_number_at_pos_counts_from_the_accessible_region_unless_absolute() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb\nc\nd\ne\nf");
     interp.buffer.narrow_to_region(3, 10);
 
@@ -291,7 +291,7 @@ fn line_number_at_pos_counts_from_the_accessible_region_unless_absolute() {
 #[test]
 fn concat_matches_upstream_sequence_and_multibyte_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -347,7 +347,7 @@ fn concat_matches_upstream_sequence_and_multibyte_cases() {
 #[test]
 fn vconcat_and_append_preserve_multibyte_raw_byte8_elements() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -375,7 +375,7 @@ fn vconcat_and_append_preserve_multibyte_raw_byte8_elements() {
 #[test]
 fn string_to_unibyte_roundtrips_raw_bytes_and_rejects_multibyte_chars() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -419,7 +419,7 @@ fn string_to_unibyte_roundtrips_raw_bytes_and_rejects_multibyte_chars() {
 #[test]
 fn take_and_ntake_match_upstream_edge_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -453,7 +453,7 @@ fn take_and_ntake_match_upstream_edge_cases() {
 #[test]
 fn nthcdr_handles_circular_lists_with_large_counts() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -485,7 +485,7 @@ fn nthcdr_handles_circular_lists_with_large_counts() {
 #[test]
 fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let ((map (make-keymap)))
@@ -558,7 +558,7 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
 #[test]
 fn plist_defaults_to_eq_and_honors_equal_test_functions() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -588,7 +588,7 @@ fn plist_defaults_to_eq_and_honors_equal_test_functions() {
 #[test]
 fn plist_member_preserves_tails_and_structural_errors() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
             (let ((cycle (list 'a 1 'b 2)))
@@ -623,7 +623,7 @@ fn plist_member_preserves_tails_and_structural_errors() {
 #[test]
 fn string_distance_matches_upstream_multibyte_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -650,7 +650,7 @@ fn string_distance_matches_upstream_multibyte_cases() {
 #[test]
 fn sxhash_equal_matches_structured_runtime_values() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -680,7 +680,7 @@ fn sxhash_equal_matches_structured_runtime_values() {
 #[test]
 fn random_matches_emacs_limit_and_seed_behavior() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert!(matches!(
         call(&mut interp, "random", &[Value::Integer(0)], &mut env),
@@ -720,7 +720,7 @@ fn random_matches_emacs_limit_and_seed_behavior() {
 #[test]
 fn random_accepts_bignum_limits() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let limit = BigInt::from(i64::MAX) + BigInt::from(1u8);
 
     let value = call(
@@ -738,7 +738,7 @@ fn random_accepts_bignum_limits() {
 #[test]
 fn length_equals_matches_sequence_lengths() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = interp.make_char_table(Some("fns-tests".into()), Value::Nil);
 
     assert_eq!(
@@ -791,7 +791,7 @@ fn length_equals_matches_sequence_lengths() {
 #[test]
 fn string_multibyte_conversion_helpers_match_fns_expectations() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let ascii = call(
         &mut interp,
@@ -860,7 +860,7 @@ fn string_multibyte_conversion_helpers_match_fns_expectations() {
 #[test]
 fn fillarray_mutates_supported_sequences() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let vector = Value::list([
         Value::symbol("vector-literal"),
@@ -944,7 +944,7 @@ fn fillarray_mutates_supported_sequences() {
 #[test]
 fn modify_syntax_entry_accepts_character_ranges() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
     let range = Value::cons(Value::Integer('A' as i64), Value::Integer('Z' as i64));
 
@@ -981,7 +981,7 @@ fn modify_syntax_entry_accepts_character_ranges() {
 #[test]
 fn syntax_table_aref_and_range_return_encoded_entries() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
 
     call(
@@ -1042,7 +1042,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
 #[test]
 fn libxml_available_p_tracks_builtin_xml_parser() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(&mut interp, "libxml-available-p", &[], &mut env)
@@ -1054,7 +1054,7 @@ fn libxml_available_p_tracks_builtin_xml_parser() {
 #[test]
 fn plist_put_appends_absent_property_in_place() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let plist = Value::list([
         Value::Symbol(":host".into()),
         Value::String("example".into()),
@@ -1087,7 +1087,7 @@ fn plist_put_appends_absent_property_in_place() {
 #[test]
 fn reverse_and_nreverse_preserve_vector_types() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let literal_vector = Value::list([
         Value::symbol("vector-literal"),
@@ -1130,7 +1130,7 @@ fn reverse_and_nreverse_preserve_vector_types() {
 #[test]
 fn reverse_and_vconcat_support_bool_vectors() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let bool_vector = call(
         &mut interp,
@@ -1185,7 +1185,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
 #[test]
 fn compare_strings_matches_fns_expectations() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(
@@ -1231,7 +1231,7 @@ fn compare_strings_matches_fns_expectations() {
 #[test]
 fn collation_functions_collate_through_the_libc_locale() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert!(
         call(
@@ -1284,7 +1284,7 @@ fn collation_functions_collate_through_the_libc_locale() {
 #[test]
 fn collation_functions_fall_back_to_lexicographic_comparison() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(
@@ -1319,7 +1319,7 @@ fn collation_functions_fall_back_to_lexicographic_comparison() {
 #[test]
 fn file_writable_p_is_true_for_creatable_missing_files() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir()
         .join(format!("emaxx-file-writable-{}", std::process::id()))
         .join("missing.txt");
@@ -1346,7 +1346,7 @@ fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
     use std::os::unix::fs::PermissionsExt;
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let dir = std::env::temp_dir().join(format!("emaxx-file-unwritable-{}", std::process::id()));
     let path = dir.join("missing.txt");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1373,7 +1373,7 @@ fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
 #[test]
 fn selected_window_is_a_record_and_tracks_window_start() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
     let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
     assert!(matches!(window, Value::Record(_)));
@@ -1412,7 +1412,7 @@ fn selected_window_is_a_record_and_tracks_window_start() {
 #[test]
 fn get_buffer_window_only_reports_selected_buffer() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*not-visible*");
     let other_buffer = Value::buffer(buffer_id, buffer_name);
 
@@ -1441,7 +1441,7 @@ fn get_buffer_window_only_reports_selected_buffer() {
 #[test]
 fn find_operation_coding_system_accepts_file_buffer_cons() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable(
         "file-coding-system-alist",
         Value::list([Value::cons(
@@ -1477,7 +1477,7 @@ fn find_operation_coding_system_accepts_file_buffer_cons() {
 #[test]
 fn file_system_info_reports_host_capacity_and_missing_paths() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let info = call(
         &mut interp,
         "file-system-info",
@@ -1515,7 +1515,7 @@ fn file_system_info_reports_host_capacity_and_missing_paths() {
 #[test]
 fn discard_input_clears_pending_events_and_keyboard_macro_definition() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(let ((unread-command-events '(97 98))
                (defining-kbd-macro t))
@@ -1557,7 +1557,7 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
     std::fs::write(&path, b"left\rmiddle\nnext\n").expect("write fixture");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // The fixture's startup leaves the *scratch* banner in the current
     // buffer, as GNU's does; the test is about the inserted bytes.
     call(&mut interp, "erase-buffer", &[], &mut env).expect("erase the scratch banner");
@@ -1581,7 +1581,7 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
 #[test]
 fn skeleton_insert_inserts_strings_and_places_point_at_the_interesting_spot() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
@@ -1600,7 +1600,7 @@ fn skeleton_insert_inserts_strings_and_places_point_at_the_interesting_spot() {
 #[test]
 fn special_mode_sets_major_mode_read_only_and_its_keymap() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
@@ -1622,7 +1622,7 @@ fn special_mode_sets_major_mode_read_only_and_its_keymap() {
 #[test]
 fn jka_compr_sniffs_compression_info_from_file_suffixes() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
@@ -1641,7 +1641,7 @@ fn jka_compr_sniffs_compression_info_from_file_suffixes() {
 #[test]
 fn display_buffer_honors_inhibit_same_window_and_action_function_returns() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,

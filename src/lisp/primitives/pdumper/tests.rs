@@ -17,7 +17,11 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
     let summary = match write_image(&mut ctx, interp, RootSource::Explicit(roots)) {
         Ok(summary) => summary,
         Err(super::context::DumpError::Unsupported(unsupported)) => {
-            ctx.print_paths_to_root(interp, &mut Vec::new(), &unsupported.object);
+            ctx.print_paths_to_root(
+                interp,
+                &mut crate::lisp::types::Env::new(),
+                &unsupported.object,
+            );
             panic!("unsupported object: {}", unsupported.message)
         }
         Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
@@ -267,7 +271,7 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
 #[test]
 fn image_records_symbol_cells_from_the_interpreter() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp
         .eval(
             &crate::lisp::reader::Reader::new(
@@ -404,7 +408,7 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
             Value::string("restored-process-test")
         );
         assert_eq!(
-            interpreter.lookup_var("default-directory", &Vec::new()),
+            interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
             Some(Value::string(&crate::lisp::primitives::default_directory()))
         );
         let environment = interpreter
@@ -525,7 +529,7 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
 #[test]
 fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (progn
           (put 'zz-purpose 'char-table-extra-slots 1)
@@ -578,7 +582,12 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(second.params[0].as_str(), "y");
     let call = |target: &mut Interpreter, function: &Value, args: &[Value]| {
         target
-            .call_function_value(function.clone(), None, args, &mut Vec::new())
+            .call_function_value(
+                function.clone(),
+                None,
+                args,
+                &mut crate::lisp::types::Env::new(),
+            )
             .expect("closure call")
     };
     assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(1));
@@ -659,11 +668,16 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
 #[test]
 fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     fn call_in(target: &mut Interpreter, name: &str, args: &[Value]) -> Value {
-        crate::lisp::native_comp::call_c_primitive(target, &mut Vec::new(), name, args)
-            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+        crate::lisp::native_comp::call_c_primitive(
+            target,
+            &mut crate::lisp::types::Env::new(),
+            name,
+            args,
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"))
     }
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (let ((eq-table (make-hash-table :test 'eq))
               (equal-table (make-hash-table :test 'equal :size 100))
@@ -823,7 +837,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
 #[test]
 fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (progn
           (define-hash-table-test 'zz-test 'equal 'sxhash-equal)
@@ -863,7 +877,7 @@ fn image_keeps_a_private_obarray_symbol_apart_from_its_namesake() {
     // loadup state has such a pair: lisp.el's functions were void after
     // a load until this).
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (let* ((ob (obarray-make))
                (sym (intern "car" ob))
@@ -913,11 +927,15 @@ fn image_keeps_a_private_obarray_symbol_apart_from_its_namesake() {
         .expect("probe parses")
         .expect("probe has a form");
     let value = target
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .unwrap_or_else(|error| panic!("probe: {error:?}"));
-    let printed =
-        crate::lisp::primitives::call(&mut target, "prin1-to-string", &[value], &mut Vec::new())
-            .expect("print");
+    let printed = crate::lisp::primitives::call(
+        &mut target,
+        "prin1-to-string",
+        &[value],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .expect("print");
     assert_eq!(
         string_like(&printed).expect("printed").text,
         "(7 cdr (zz yes) \"car\" nil t t nil t nil t p nil t 3)"
@@ -929,7 +947,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     fn printed(interp: &mut Interpreter, value: &Value) -> String {
         let value = crate::lisp::native_comp::call_c_primitive(
             interp,
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
             "prin1-to-string",
             std::slice::from_ref(value),
         )
@@ -937,7 +955,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         string_like(&value).expect("a string").text
     }
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // A buffer with text (an out-of-Unicode character in it), a text
     // property, a local variable, its own syntax table, a mark, a
     // narrowing, undo entries (an insertion, a deletion of propertized
@@ -1169,7 +1187,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
 #[test]
 fn image_refuses_buffers_with_overlays_as_gnu_does() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (let ((buf (get-buffer-create "zz-overlaid")))
           (set-buffer buf)
@@ -1204,7 +1222,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     fn printed(interp: &mut Interpreter, value: &Value) -> String {
         let value = crate::lisp::native_comp::call_c_primitive(
             interp,
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
             "prin1-to-string",
             std::slice::from_ref(value),
         )
@@ -1216,7 +1234,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     // charset with an alias, a timer, an ert test, a labeled restriction
     // in the current buffer, a fringe bitmap, a composition, a face.
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
         (progn
           (get-buffer-create "zz-second")
@@ -1274,7 +1292,11 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     let summary = match write_image(&mut ctx, &interp, RootSource::Interpreter) {
         Ok(summary) => summary,
         Err(super::context::DumpError::Unsupported(unsupported)) => {
-            ctx.print_paths_to_root(&mut interp, &mut Vec::new(), &unsupported.object);
+            ctx.print_paths_to_root(
+                &mut interp,
+                &mut crate::lisp::types::Env::new(),
+                &unsupported.object,
+            );
             panic!("unsupported object: {}", unsupported.message)
         }
         Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
@@ -1349,7 +1371,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
         .expect("probe parses")
         .expect("a form");
         let answer = target
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("probe evaluates");
         if printed(&mut target, &answer) == "(t car t ignore)" {
             resolved += 1;

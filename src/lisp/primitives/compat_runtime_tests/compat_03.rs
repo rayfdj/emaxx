@@ -3,13 +3,13 @@ use super::*;
 #[test]
 fn string_version_lessp_matches_upstream_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let string_version_lessp = |interp: &mut Interpreter, left: &str, right: &str| {
         call(
             interp,
             "string-version-lessp",
             &[Value::String(left.into()), Value::String(right.into())],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("string-version-lessp")
     };
@@ -84,7 +84,7 @@ fn string_version_lessp_matches_upstream_cases() {
 #[test]
 fn func_arity_matches_upstream_core_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(

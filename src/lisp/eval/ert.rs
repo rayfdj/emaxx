@@ -105,7 +105,7 @@ impl Interpreter {
         // GNU keeps the selector and per-run state dynamically visible while
         // each test runs.  Some upstream suites use that public ERT context to
         // decide whether optional expensive subcases were selected.
-        let mut stats_env = Vec::new();
+        let mut stats_env = crate::lisp::types::Env::new();
         let stats_tests = Value::list(
             tests
                 .iter()
@@ -129,7 +129,7 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
 
         for test in &tests {
-            let mut env: Env = Vec::new();
+            let mut env: Env = crate::lisp::types::Env::new();
             // GNU can deliver SIGCHLD-driven process state changes between
             // ERT tests.  Emaxx owns those transitions in its cooperative
             // event pump, so run one nonblocking cycle at the same safe

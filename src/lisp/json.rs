@@ -1035,7 +1035,7 @@ fn serialize_list_object(
             tortoise = tortoise.cdr().unwrap_or(Value::Nil);
         }
         if let (Value::Cons(current), Value::Cons(lagging)) = (&tail, &tortoise)
-            && std::rc::Rc::ptr_eq(current, lagging)
+            && crate::lisp::types::SharedCons::ptr_eq(current, lagging)
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
@@ -1167,7 +1167,7 @@ mod tests {
             .expect("JSON string")
             .value;
         let alias = string.clone();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         for (name, args) in [
             (
                 "put-text-property",

@@ -98,8 +98,12 @@ COMPAT_RUNTIME_GROUP = GroupSpec(
     "compat_runtime", COMPAT_RUNTIME_PREFIX, True, 1
 )
 TTY_GROUP = GroupSpec("tty", TTY_PREFIX, True, 1)
-BATCH_GROUP = GroupSpec("batch", BATCH_PREFIX, False, 2)
-LIGHTWEIGHT_GROUP = GroupSpec("lightweight", None, False, 2)
+# One test thread in every group: the Lisp allocator and collector are
+# the process's, as alloc.c's are, and presume one Lisp OS thread at a
+# time (a second interpreter running concurrently would allocate from
+# the same free list and have its cells swept from under it).
+BATCH_GROUP = GroupSpec("batch", BATCH_PREFIX, False, 1)
+LIGHTWEIGHT_GROUP = GroupSpec("lightweight", None, False, 1)
 
 EVAL_PHASES = (
     (EVAL_GROUPS[0], EVAL_GROUPS[1]),
@@ -256,7 +260,7 @@ def gate_environment(template: bool) -> dict[str, str]:
             "LANG": "C",
             "LC_ALL": "C",
             "RUST_MIN_STACK": "134217728",
-            "RUST_TEST_THREADS": "2",
+            "RUST_TEST_THREADS": "1",
         }
     )
     # The loadup image every process and test boots from (batch.rs's
@@ -671,7 +675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "LANG": "C",
             "LC_ALL": "C",
             "RUST_MIN_STACK": "134217728",
-            "RUST_TEST_THREADS": "2",
+            "RUST_TEST_THREADS": "1",
         },
         "runs": [],
         "cargo_stages": [],

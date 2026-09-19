@@ -623,8 +623,12 @@ impl<'a> Reader<'a> {
     }
 
     /// Read all expressions from the input.
-    pub fn read_all(&mut self) -> Result<Vec<Value>, LispError> {
-        let mut forms = Vec::new();
+    /// Every form of the text, in a vector the collector scans while it
+    /// lives: the forms read ahead of the evaluation of the first survive
+    /// the collections that evaluation runs (lread.c reads one form at a
+    /// time; a vector read ahead is rooted as SAFE_ALLOCA_LISP roots one).
+    pub fn read_all(&mut self) -> Result<crate::lisp::alloc::RootedVec<Value>, LispError> {
+        let mut forms = crate::lisp::alloc::RootedVec::new();
         while let Some(val) = self.read()? {
             forms.push(val);
         }

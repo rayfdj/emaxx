@@ -103,7 +103,7 @@ impl Interpreter {
         // read so far.
         let mut result = Value::Nil;
         let mut cur = match args {
-            Value::Cons(cell) => Some(Rc::clone(cell)),
+            Value::Cons(cell) => Some(*cell),
             _ => None,
         };
         let mut nargs = 0usize;

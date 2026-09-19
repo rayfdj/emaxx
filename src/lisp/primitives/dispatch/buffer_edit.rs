@@ -2271,7 +2271,7 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
         .buffer_local_value(buffer_id, "display-line-numbers")
-        .or_else(|| interp.lookup_var("display-line-numbers", &Vec::new()))
+        .or_else(|| interp.lookup_var("display-line-numbers", &crate::lisp::types::Env::new()))
         .unwrap_or(Value::Nil);
     if enabled.is_nil() {
         return 0;

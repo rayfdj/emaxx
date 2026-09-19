@@ -239,7 +239,7 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
 pub(crate) fn configure_embedded_native_compilation(interpreter: &mut Interpreter) {
     eval_lisp(
         interpreter,
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
         "(setq comp-no-spawn nil comp-running-batch-compilation t
                native-comp-jit-compilation nil)",
     )
@@ -282,7 +282,7 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
         if *library == "emacs-lisp/pcase" {
             eval_lisp(
                 &mut interpreter,
-                &mut Vec::new(),
+                &mut crate::lisp::types::Env::new(),
                 "(let ((macroexp--pending-eager-loads '(skip))) (load \"emacs-lisp/pcase\"))",
             )
             .unwrap_or_else(|error| panic!("load GNU library {library}: {error}"));

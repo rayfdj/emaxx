@@ -452,7 +452,7 @@ impl Interpreter {
     /// `EQ' of two environment heads: the same cons, or both nil.
     pub(crate) fn same_environment(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::Cons(a), Value::Cons(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Value::Cons(a), Value::Cons(b)) => crate::lisp::types::SharedCons::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
             _ => false,
         }

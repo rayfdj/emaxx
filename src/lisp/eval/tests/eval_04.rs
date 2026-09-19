@@ -678,7 +678,7 @@ fn ert_with_test_buffer_keeps_buffer_after_error() {
 #[test]
 fn require_uses_explicit_file_targets_in_file_missing_errors() {
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let form = Reader::new("(require 'mod-test \"/tmp/emaxx-missing-mod-test\")")
         .read_all()
         .expect("read require")
@@ -703,7 +703,7 @@ fn require_with_explicit_target_requires_provided_feature() {
     fs::write(&path, "(setq sample-require-side-effect t)\n").expect("write require target");
     let path_text = path.to_string_lossy();
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     // Pin the quoting style rather than inheriting the locale's: a nil
     // `text-quoting-style' means grave in a non-UTF-8 locale (which is how
     // the compatibility harness runs its children), so asserting curved
@@ -1286,7 +1286,7 @@ fn call_interactively_autoloads_commands_before_collecting_args() {
 #[test]
 fn keyboard_quit_signals_quit_condition() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let form = Reader::new("(keyboard-quit)").read_all().unwrap().remove(0);
     let error = interp.eval(&form, &mut env).unwrap_err();
     assert_eq!(error.condition_type(), "quit");
@@ -5495,7 +5495,7 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
         interp.intern_symbol_name(&format!("emaxx-indexed-obarray-{index}"));
     }
     let obarray = interp
-        .lookup_var("obarray", &Vec::new())
+        .lookup_var("obarray", &crate::lisp::types::Env::new())
         .expect("standard obarray");
     let started = std::time::Instant::now();
     for _ in 0..25 {
@@ -5684,7 +5684,7 @@ fn load_file_strict_interns_symbols_read_from_loaded_source() {
 #[test]
 fn inhibited_interaction_uses_expected_condition_type() {
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let form = Reader::new(r#"(let ((inhibit-interaction t)) (read-from-minibuffer "foo: "))"#)
         .read()
         .unwrap()
@@ -5709,7 +5709,9 @@ fn inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers() {
     .unwrap()
     .remove(0);
     assert_eq!(
-        interp.eval(&form, &mut Vec::new()).unwrap(),
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap(),
         Value::Symbol("inhibited-interaction".into())
     );
 }

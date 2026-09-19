@@ -146,7 +146,7 @@ fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
     }
     let map_name = string_text(&map).ok()?;
     let data_directory = interp
-        .lookup_var("data-directory", &Vec::new())
+        .lookup_var("data-directory", &crate::lisp::types::Env::new())
         .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
         .or_else(|| compat_data_directory().map(PathBuf::from))?;
     let path = data_directory
@@ -2457,7 +2457,8 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
     lengths[0x9C] = 4;
     lengths[0x9D] = 4;
     let mut charsets = vec![None; 256];
-    if let Some(table) = interp.lookup_var("emacs-mule-charset-table", &Vec::new())
+    if let Some(table) =
+        interp.lookup_var("emacs-mule-charset-table", &crate::lisp::types::Env::new())
         && let Ok(entries) = vector_items(&table)
     {
         for (id, entry) in entries.into_iter().take(256).enumerate() {
@@ -2687,7 +2688,13 @@ pub(crate) fn auto_detect_coding_for(
 }
 
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
-    auto_detect_coding_for(interp, bytes, None, "undecided", &Vec::new())
+    auto_detect_coding_for(
+        interp,
+        bytes,
+        None,
+        "undecided",
+        &crate::lisp::types::Env::new(),
+    )
 }
 
 pub(crate) fn text_from_region_or_string(

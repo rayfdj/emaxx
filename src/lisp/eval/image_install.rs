@@ -143,14 +143,14 @@ impl Interpreter {
             self,
             "find-file-name-handler",
             &[directory.clone(), Value::T],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )?;
         if handler.is_truthy() && primitives::string_text(&directory)? != "/" {
             directory = primitives::call(
                 self,
                 "concat",
                 &[Value::string("/:"), directory],
-                &mut Vec::new(),
+                &mut crate::lisp::types::Env::new(),
             )?;
         }
         self.set_buffer_local_value(scratch, "default-directory", directory.clone());
@@ -402,14 +402,14 @@ mod tests {
         }
         assert_eq!(interpreter.buffer.name, "*scratch*");
         assert_eq!(
-            interpreter.lookup_var("default-directory", &Vec::new()),
+            interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
             Some(Value::string(&primitives::default_directory()))
         );
         interpreter
             .set_current_buffer_id(other)
             .expect("select the retained buffer");
         assert_eq!(
-            interpreter.lookup_var("default-directory", &Vec::new()),
+            interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
             Some(Value::string("/saved/"))
         );
     }

@@ -1543,13 +1543,14 @@ fn genuine_bytecode_special_bindings_hide_caller_lexicals() {
                bytecode-special-scope-probe))
            (byte-compile 'bytecode-special-scope-probe-fn))",
     );
-    let mut caller_env = vec![crate::lisp::types::EnvFrame::bindings(
-        [(
-            "bytecode-special-scope-probe".into(),
-            Value::Symbol("stale-caller-lexical".into()),
-        )],
-        &Value::Nil,
-    )];
+    let mut caller_env =
+        crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
+            [(
+                "bytecode-special-scope-probe".into(),
+                Value::Symbol("stale-caller-lexical".into()),
+            )],
+            &Value::Nil,
+        )]);
 
     let actual = interp
         .call_function_value(
@@ -3995,7 +3996,7 @@ fn load_noerror_suppresses_missing_file_signal() {
 #[test]
 fn autoload_registers_a_lazy_function_stub() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new("(autoload 'sample-autoload \"sample-autoload\")")
         .read_all()
         .unwrap();
@@ -6438,8 +6439,16 @@ fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         load_gnu_batch_runtime(&mut interp);
         assert_eq!(
@@ -6817,7 +6826,7 @@ fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
         let mut interp = Interpreter::new();
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
-            interp.lookup_var("lexical-binding", &Vec::new()),
+            interp.lookup_var("lexical-binding", &crate::lisp::types::Env::new()),
             Some(Value::Nil)
         );
 
@@ -6928,12 +6937,12 @@ fn load_file_strict_prebinds_current_load_list() {
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_string_value(
             interp
-                .lookup_var("sample-current-load-entry", &Vec::new())
+                .lookup_var("sample-current-load-entry", &crate::lisp::types::Env::new())
                 .expect("sample-current-load-entry"),
             &path.display().to_string(),
         );
         assert_eq!(
-            interp.lookup_var("current-load-list", &Vec::new()),
+            interp.lookup_var("current-load-list", &crate::lisp::types::Env::new()),
             Some(Value::Nil)
         );
 
@@ -7171,11 +7180,14 @@ fn load_in_progress_is_truthy_while_loading_files() {
         let mut interp = Interpreter::new();
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
-            interp.lookup_var("sample-load-in-progress-seen", &Vec::new()),
+            interp.lookup_var(
+                "sample-load-in-progress-seen",
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::T)
         );
         assert_eq!(
-            interp.lookup_var("load-in-progress", &Vec::new()),
+            interp.lookup_var("load-in-progress", &crate::lisp::types::Env::new()),
             Some(Value::Nil)
         );
 
@@ -7951,8 +7963,16 @@ fn mouse_wheel_mode_binds_scroll_command() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "noninteractive",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
+        interp.set_variable(
+            "command-line-args-left",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let _ = interp.load_target("backquote");
         load_gnu_batch_runtime(&mut interp);
 
@@ -8149,8 +8169,14 @@ fn cl_assert_signals_condition_with_asserted_form() {
         .read()
         .unwrap()
         .unwrap();
-    interp.set_variable("lexical-binding", Value::Nil, &mut Vec::new());
-    let error = interp.eval(&form, &mut Vec::new()).unwrap_err();
+    interp.set_variable(
+        "lexical-binding",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
+    let error = interp
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .unwrap_err();
     let LispError::SignalValue(value) = error else {
         panic!("expected cl assertion signal");
     };
@@ -8247,7 +8273,11 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
         .unwrap();
 
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        interp.set_variable("lexical-binding", Value::Nil, &mut Vec::new());
+        interp.set_variable(
+            "lexical-binding",
+            Value::Nil,
+            &mut crate::lisp::types::Env::new(),
+        );
         let mut load_path = interp.configured_load_path().to_vec();
         load_path.insert(0, root.clone());
         interp.set_load_path(load_path);
@@ -8255,7 +8285,7 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
         let _ = std::fs::remove_dir_all(&root);
         result.unwrap();
         assert_eq!(
-            interp.lookup_var("lexical-binding", &Vec::new()),
+            interp.lookup_var("lexical-binding", &crate::lisp::types::Env::new()),
             Some(Value::Nil)
         );
     });
@@ -8267,7 +8297,11 @@ fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         eval_str_with(&mut interp, "(require 'cl-macs)");
         eval_str_with(&mut interp, "(require 'ert)");
-        interp.set_variable("lexical-binding", Value::T, &mut Vec::new());
+        interp.set_variable(
+            "lexical-binding",
+            Value::T,
+            &mut crate::lisp::types::Env::new(),
+        );
         eval_str_with(
             &mut interp,
             r#"(eval

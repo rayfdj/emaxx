@@ -387,7 +387,7 @@ define_dispatch!(
                 while let Value::Cons(cell) = tail {
                     *cell.car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
                     item_index += 1;
-                    previous = Some(Value::Cons(cell.clone()));
+                    previous = Some(Value::Cons(cell));
                     tail = cell.cdr.borrow().clone();
                 }
                 if item_index < items.len()

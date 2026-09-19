@@ -265,9 +265,10 @@ pub(crate) fn direct_sort_comparator(
             })
         }
         Value::Lambda(lambda) if lambda.params.len() == 2 && !lambda.body.is_empty() => {
-            let closure_env = vec![crate::lisp::types::EnvFrame::from_alist(
-                lambda.environment_value(),
-            )];
+            let closure_env =
+                crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::from_alist(
+                    lambda.environment_value(),
+                )]);
             let compare_form = lambda.body.last()?;
             let items = compare_form.to_vec().ok()?;
             let (kind, left, right) = match items.as_slice() {

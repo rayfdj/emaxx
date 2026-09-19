@@ -896,6 +896,39 @@ interpreted loop 9,662 to 8,973 (GNU 3,234), the lexical 11,246 to
 10,664 (GNU 5,477), the byte-code call 1,305 to 1,285 (GNU 330).
 What remains is the representation.
 
+Checkpoint 20g (2026-09-18, the representation's phase A) put the
+conses in alloc.c's blocks under a tracing collector: `src/lisp/alloc.rs'
+is cons_block, cons_free_list, cons_block_index, mem_find, sweep_conses
+(the free list rebuilt from every free cell, a block of nothing else
+given back), mark_stack from flush_stack_call_func's stack_top with the
+registers spilled there, the parked threads' stacks and the driving
+stacks, SAFE_ALLOCA_LISP as `RootedVec' (zero past its length); a
+`Value::Cons' is the cell's address without a count.  The allocator's
+state is the process's as alloc.c's globals are (per thread, a
+template built on one thread and used from another never reached its
+consing trigger: no collection ran in the library suite and it grew
+to 13 GB).  Measured: consing
+faster (300 k conses 0.44 to 0.25 s, the collection after them 69 to
+43 ms), the loops' instruction counts lower (dynamic 8,973 to 8,618,
+lexical 10,556 to 9,640; GNU 3,234 and 5,477), but the lexical loop's
+wall clock 1.77 to 2.34 s and the corpus rows a tenth to a fifth
+slower: the loop runs two collections per six million conses where
+GNU runs eighty, because emaxx's census counts the image's 19 MB as
+live and `gc-cons-percentage' puts the threshold there, so the cells
+come from cold pages instead of a refilled free list.  C's rule would
+cost more today (eighty collections of the booted heap at 16 ms
+against GNU's 5.7 ms), so phase B starts with the collection's cost.  What is still not C, each to
+go with its phase: the 112-byte cell (native words, borrow flags, a
+serial for the weak references), the 16-byte enum `Value' with every
+other kind reference-counted (phase B), the never-swept records
+retained after the fixed point, one Lisp OS thread at a time, the
+native heap's views cut back by the cell's serial, and the explicit
+stack-root scopes now redundant with the conservative scan.  Twelve
+tests that asserted the reference count's precision were restated in
+C's terms (a local keeps its object while its frame lives; a scope in
+a frame of its own, a hidden word, the stack cleared before the
+collection).
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

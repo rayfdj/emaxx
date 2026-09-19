@@ -12,7 +12,7 @@ pub(super) unsafe extern "C" fn make_global_ref(env: *mut ModuleEnv, value: Hand
                 a.interpreter(),
                 &a.interpreter().modules.values[key],
                 &value,
-                &Vec::new(),
+                &crate::lisp::types::Env::new(),
             )
         });
         let state = &mut a.interpreter_mut().modules;
@@ -43,7 +43,12 @@ pub(super) unsafe extern "C" fn free_global_ref(env: *mut ModuleEnv, handle: Han
         }
         // GNU accepts an eq local handle here when assertions are disabled.
         let key = state.globals.keys().copied().find(|key| {
-            primitives::values_eq_in_env(a.interpreter(), &state.values[key], &value, &Vec::new())
+            primitives::values_eq_in_env(
+                a.interpreter(),
+                &state.values[key],
+                &value,
+                &crate::lisp::types::Env::new(),
+            )
         });
         if let Some(key) = key {
             let state = &mut a.interpreter_mut().modules;
@@ -197,7 +202,7 @@ pub(super) unsafe extern "C" fn eq(env: *mut ModuleEnv, left: Handle, right: Han
             a.interpreter(),
             &a.value(left),
             &a.value(right),
-            &Vec::new(),
+            &crate::lisp::types::Env::new(),
         ))
     })
 }

@@ -708,7 +708,7 @@ impl Interpreter {
     }
 
     pub fn set_coding_system_priority(&mut self, names: &[String]) -> Result<(), LispError> {
-        self.set_coding_system_categories_priority(names, &mut Vec::new())?;
+        self.set_coding_system_categories_priority(names, &mut crate::lisp::types::Env::new())?;
         let mut reordered = Vec::new();
         for name in names {
             let canonical = self

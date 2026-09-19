@@ -205,9 +205,15 @@ pub(crate) fn eval_impl(
         // is the environment itself, its conses the bindings' storage.
         let _ = caller_env;
         let (capture_lexical, mut eval_env) = match lexical {
-            Value::Nil => (false, Vec::new()),
-            Value::Cons(_) => (true, vec![EnvFrame::from_alist(lexical.clone())]),
-            _ => (true, vec![EnvFrame::lexical()]),
+            Value::Nil => (false, crate::lisp::types::Env::new()),
+            Value::Cons(_) => (
+                true,
+                crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(lexical.clone())]),
+            ),
+            _ => (
+                true,
+                crate::lisp::types::Env::from_vec(vec![EnvFrame::lexical()]),
+            ),
         };
         interp.push_lambda_eval_context(capture_lexical);
         let result = interp.eval(&args[0], &mut eval_env);
@@ -221,7 +227,7 @@ pub(crate) fn eval_impl(
         // boundaries mask this context so their internal lambdas and lets
         // retain the function's definition-time semantics.
         interp.push_lambda_eval_context(false);
-        let result = interp.eval(&args[0], &mut Vec::new());
+        let result = interp.eval(&args[0], &mut crate::lisp::types::Env::new());
         interp.pop_lambda_capture_override();
         result
     }
@@ -578,9 +584,9 @@ fn with_fresh_eval_environment<T>(
     body: impl FnOnce(&mut Interpreter, &mut Env) -> T,
 ) -> T {
     let mut eval_env = if lexical {
-        vec![EnvFrame::lexical()]
+        crate::lisp::types::Env::from_vec(vec![EnvFrame::lexical()])
     } else {
-        Vec::new()
+        crate::lisp::types::Env::new()
     };
     interp.push_lambda_eval_context(lexical);
     let result = body(interp, &mut eval_env);

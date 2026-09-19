@@ -12249,3 +12249,212 @@ its 2 ignored), the bins stage (57, 2, 0 and 1 in 194 s) and the six
 integration binaries (23, 6, 3, 1, 1 and 5 in 483 s), 2,718 scheduled
 and observed, the three unwritable-directory tests among them; fmt
 and strict clippy exit 0 before and after.
+
+## 2026-09-18 Checkpoint 20g: conses in alloc.c's blocks under a tracing collector (the representation, phase A)
+
+*What prompted it.*  Checkpoint 20f's instruction profile of the
+interpreted loops: what remained was the reference count and drop
+glue on every copy of a value, the RefCell borrow flags on every car
+and cdr, the 16-byte value and the 100-byte cons -- the
+representation.  The direction given was to be faithful to C first:
+alloc.c's storage and collector, in C's structure, before any
+optimization of our own.  This is the first phase of that rewrite,
+the conses: the other kinds stay reference-counted for now (phase B),
+the symbols stay boxed (phase C), the tagged word and the 16-byte
+cons are phase D.
+
+*Done.*  (1) `src/lisp/alloc.rs' is alloc.c's cons storage: cells in
+128 KiB blocks (`cons_block'), a free list threaded through the free
+cells' first words (`cons_free_list', `u.s.u.chain'), a bump pointer
+into the newest block (`cons_block_index'), a registry of the blocks
+by address for `mem_find' / `live_cons_holding', and `sweep_conses'
+that rebuilds the free list from every free cell and gives back a
+block holding nothing else once more than a block's worth of free
+cells is at hand.  `Fcons' pops the free list, else takes the next
+cell of the newest block.  (2) `Value::Cons' holds a `ConsRef', the
+cell's address copied without a count (`Lisp_Object' for a cons); the
+cell's mark word is the collection's epoch (the mark bit), a free cell
+carries the free mark.  The cons's `Drop' is gone: the sweep drops the
+fields of an unmarked cell in place.  (3) `mark_stack': the running
+stack from the collector's own frame up to the thread's base after a
+register spill (alloc.c's `__builtin_unwind_init'), the OS stack region
+below the coroutine trampoline, the stacks of parked Lisp threads
+(`mark_threads') and the driving stacks waiting on a resumed
+coroutine, every word looked up in the block registry and marked
+when it names an allocated cell.  (4) The roots: the interpreter's
+static roots (`mark_static_roots_into', pdumper.c's `dump_roots'
+list read the other way), the byte-code stack, the specpdl and
+backtrace frames, the thread-local roots of the echo area and the
+semantic cache (`mark_thread_local_roots'), the other interpreter
+states alive in the process (a test's template), the doomed
+finalizers' functions marked after they are queued
+(`mark_finalizer_list(&doomed_finalizers)'), and lisp.h's
+SAFE_ALLOCA_LISP: a `RootedVec' is a heap buffer of values a Rust
+frame holds across a call into Lisp, registered for the conservative
+scan while it lives (the reader's list of forms, `mapcar''s results,
+the lexical environment vector).  (5) The allocator's state is the
+process's, as `cons_free_list', `cons_block', `consing_until_gc' and
+the mark state are alloc.c's globals: the free list, the bump pointer,
+the epoch, the consing counter and the rooted-buffer registry (they
+were the thread's first, and a test's template built on one thread
+and used from another never reached its counter's trigger: no
+collection ran in the library suite and it grew to 13 GB before the
+kernel killed it; the eval_02 group now peaks at 560 MB).  (6) The
+byte-code VM's call fast path copies the arguments into the callee's
+frame as bytecode.c's `setup_frame' does (`PUSH(*args++)') instead of
+consuming the caller's slots in place: the backtrace frame borrowed
+those slots, and a collection during the callee traced freed words
+(a latent fault of checkpoint 20e's fast path, found by
+`EMAXX_GC_STRESS').  (7) The counts of live texts, floats, bignums
+and vectors are process-wide books (`gcstat'); a new native runtime's
+consing counter starts where the process's stands, as a new process's
+`consing_until_gc' counts from its start.  (8) The native heap's
+views of Rust conses (a view is the cell itself: the ABI prefix at
+offset zero) and the cells generated code allocated are cut back
+after every sweep, on both collection paths, by the cell's serial: a
+view of a cell the sweep took is gone with it, never reconciled or
+detached (its words are the free list's); a cell generated code
+reached in the mark is a root for the Lisp mark whether or not a
+typed view was attached, since only the mark keeps a cell now.  (9)
+The retention of the never-swept records runs without the native
+marking hook: it keeps storage, it is not reachability, and a handle
+only the retention reaches is dead.  (10) alloc.c's `flush_stack_call_func': the
+collection's entry spills the callee-saved registers into its frame
+and records that frame as the thread's `stack_top'; the mark reads
+the stack from there up, never the collection's own frames below
+it (a second collection at the same depth found, in the marker's
+own unwritten slots, the keys the first had traced there).  (11)
+The words a conservative scan takes: a word naming a cell at a
+word-aligned offset (every reference a field can have); a word
+naming an odd byte inside a cell is a stale pointer a narrower store
+overwrote and is not taken (live_cons_holding takes any byte of a
+16-byte cons; the cell here is seven times as wide).  (12) A rooted
+buffer is zero past its length (lisp.h's SAFE_ALLOCA_LISP `memclear'
+and the specpdl marked to its pointer): what an earlier owner of the
+memory or a popped element left there is not a root.  (13) The
+primitive call facts a name's cache holds are built over zeroed
+memory: the words a `None' leaves unspecified carried, in one frame
+of every call, the key a collection had traced when the facts were
+first computed.  (14) Two switches for
+the search: `EMAXX_GC_STRESS' collects at every `maybe_gc'
+(alloc.c's `GC_CHECK_MARKED_OBJECTS' spirit), `EMAXX_GC_VERIFY' walks
+the heap before and after every sweep and names the first marked cell
+holding an unmarked one, or the first live cell holding a freed one.
+
+*Measured.*  Wall clock, three interleaved rounds, seconds (min /
+median), w18 is checkpoint 20f, w20 this one, GNU on the same
+machine; callgrind instructions per iteration (boot and collections
+differenced out, `tools/perf/callgrind-diff.sh'); and four rows of the
+ERT corpus, two rounds each (min / max).
+
+| probe | w18 | w20 | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 1.725 / 1.768 | 2.312 / 2.343 | 0.900 / 0.901 |
+| interpreted dynamic loop, 2 M | 1.501 / 1.509 | 1.429 / 1.443 | 0.390 / 0.399 |
+| 1 M interpreted defun calls | 0.780 / 0.804 | 0.837 / 0.841 | 0.621 / 0.624 |
+| byte-code call loop, 10 M | 0.696 / 0.710 | 0.762 / 0.772 | 0.182 / 0.183 |
+| 300 k conses pushed | 0.368 / 0.436 | 0.246 / 0.248 | 0.079 / 0.087 |
+| the collection after them | 0.065 / 0.069 | 0.042 / 0.043 | 0.009 / 0.010 |
+| ten collections of the booted heap | 0.144 / 0.152 | 0.162 / 0.163 | 0.057 / 0.058 |
+| mapcar over 100 k, twenty times | 0.451 / 0.452 | 0.505 / 0.857 | 0.174 / 0.186 |
+| instructions / iteration, dynamic loop | 8,973 | 8,618 | 3,234 |
+| instructions / iteration, lexical loop | 10,556 | 9,640 | 5,477 |
+| instructions / call, byte-code call loop | 1,285 | 1,344 | 330 |
+| ucs-names (s) | 8.27 / 8.31 | 9.06 / 9.38 | 1.90 / 3.15 |
+| fns-tests-sort (s) | 2.88 / 2.95 | 3.50 / 3.57 | 1.12 / 1.23 |
+| pcase-tests-macro (s) | 0.35 / 0.37 | 0.34 / 0.35 | 0.08 / 0.15 |
+| undo-test4 (s) | 2.96 / 2.99 | 3.42 / 3.76 | 0.81 / 1.15 |
+
+*What did not move, and what was learned.*  The instruction counts of the loops fell
+(the dynamic loop 8,973 to 8,618, the lexical 10,556 to 9,640: no
+count and no drop glue on a cons) and consing itself is faster (300 k
+conses 0.44 to 0.25 s, the collection after them 69 to 43 ms), yet
+the lexical loop's wall clock rose by a third and the corpus rows by
+a tenth to a fifth.  The reason is measured, not guessed: the lexical
+loop runs two collections on either binary where GNU runs eighty
+(`gcs-done': 80 in 0.45 s for GNU, 2 in 0.04 s for w18, 2 in 0.10 s
+for w20).  Between two collections the loop conses six million cells
+into fresh block memory (112 bytes each, 670 MB of pages faulted and
+never reused; the profile's kernel page-fault and page-clearing
+entries and the cold stores of `allocate_cons'), where the reference
+count freed each cell into a hot malloc bin at once, and where GNU
+refills its free list every fifty thousand conses.  GNU's collection
+count comes from alloc.c's threshold rule applied to gcstat, which
+does not count the dumped objects: `gc-cons-percentage' 1.0 of two
+megabytes is below the 800 KB floor.  Emaxx's census counts the
+image's objects as live (19 MB: 304 k strings, 144 k conses, 18 k
+symbols), so the same rule sets the threshold at 19 MB -- a deviation
+that predates this checkpoint and cost nothing under the reference
+count.  Applying C's rule today would run eighty collections of the
+booted heap at 16 ms each (GNU: 5.7 ms), 1.3 s against the 0.7 s the
+cold memory costs, so the tuning is left as it was and recorded here
+as phase B's first measurement: the collection of the booted heap
+must come down to GNU's cost (the strings, records and vectors are
+still marked through hash sets and reference counts) before the
+threshold can be C's, and with it the memory reuse that makes a
+tracing collector fast.  The byte-code call is 60 instructions
+dearer (`setup_frame''s argument copy, which the borrowed-slot fast
+path skipped unsafely).
+
+*Which of these mirror C, and which do not.*  The block, the free
+list, the bump index, `mem_find', the sweep's free-list rebuild and
+block release, the conservative stack scan with the register spill,
+the thread stacks, the doomed finalizers' marking, the global
+allocator state: alloc.c's, by name.  Not C, each to be removed with
+the phase that makes it unnecessary: (a) the cell is still 112 bytes
+(the native words, the RefCell borrow flags of the car and cdr, a
+serial for `WeakConsRef': the weak reference the native mirrors and
+the reader's `native_cells' keep, checked against the cell's serial
+on upgrade since an address can be reused); (b) `Value' is still the
+16-byte enum and every other kind is still reference-counted, so a
+cons's fields are dropped by the sweep (a vector held by a dead cons
+is released then, as in C, but by its count); (c) `RootedVec' and the
+explicit stack-root scopes (`with_lisp_stack_roots') are two ways of
+saying SAFE_ALLOCA_LISP: the second predates the conservative scan
+and is now redundant with it (a coroutine's parked stack is scanned),
+kept this checkpoint and removed with phase B; (d) the native
+runtime's `native_handle_has_external_owner' answers true for every
+cons (its mirrors were cut back by the count before; the mirrors of
+generated code now follow the sweep through the weak reference); (e)
+records are not swept: an unreached record's objects are retained by
+a pass after the fixed point (`retaining'), until phase B puts records
+in blocks; (f) the sweep presumes one Lisp OS thread at a time (C's
+global lock): the tests' template is built on one thread and used
+from another, one at a time, under a lock, and the other states'
+weak tables are held strongly during a collection (nothing sweeps
+them in it); (g) the collector's epoch replaces the mark bit's clear:
+no pass unmarks after the sweep.  Twelve tests that asserted the
+reference count's precision -- a key released the moment a Rust local
+went out of scope, a native cell's word in a local not keeping the
+cell -- now say what C's semantics say: an object a
+frame's local holds is reachable while the frame lives, so each such
+scope runs in a frame of its own, a word the test must compare later
+is kept hidden (xor-ed, as a collector's test in C hides a pointer),
+and the stack under the test is cleared (`clobber_stack') before the
+collection that expects the object gone.
+
+*Verified.*  The library suite, single-threaded under the gate's
+environment in the worktree, with the process's memory watched:
+2,712 passed, the three unwritable-directory tests failing under root
+as on every checkpoint, the peak resident size 1.2 GB over the 639 s
+run (the first run under the per-thread counters was killed by the
+kernel at 13 GB).  Under `EMAXX_GC_STRESS' (a collection at every
+`maybe_gc'): the batch boot from loadup and the boot from the image,
+the collection tests, and the first hour of the eval_01 group, with
+no use of a freed cons and no cell holding a freed one; the one test
+that failed in that hour, `accept_process_output_drains_the_gnu_post_delivery_readiness_window',
+measures a readiness window that a collection at every allocation
+stretches.  Under `EMAXX_GC_VERIFY' as well (the heap walked before
+and after every sweep) the collection tests and the boots, which is
+how the faults of the search were found: the reader's list of forms
+unrooted, a keymap record's slots freed, a stale environment frame,
+the template's weak-table entries freed, a doomed finalizer's
+function freed, the byte-code call path's borrowed arguments over
+drained slots.  The three controls
+(`ctl20e', `ctl20a', `ctl19z3') produce the oracle's output on the
+final build.  Strict clippy and fmt exit 0 (the measured
+binary was built before fifteen `clone' calls on the now-Copy
+`ConsRef' were removed for clippy and a root function moved above
+its file's test module: no change of code).
+
+*Gate.*  GATE-PLACEHOLDER

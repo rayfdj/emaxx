@@ -1095,8 +1095,8 @@ impl DumpContext {
     fn dump_cons(&mut self, cell: &crate::lisp::types::SharedCons) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = [0_u64; 2];
-        let car = Value::Cons(cell.clone()).car()?;
-        let cdr = Value::Cons(cell.clone()).cdr()?;
+        let car = Value::Cons(*cell).car()?;
+        let cdr = Value::Cons(*cell).cdr()?;
         self.field_lv(start, &mut words, 0, &car, WEIGHT_STRONG);
         self.field_lv(start, &mut words, 1, &cdr, WEIGHT_NORMAL);
         self.object_finish(&words)

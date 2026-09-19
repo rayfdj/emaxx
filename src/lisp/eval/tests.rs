@@ -45,10 +45,12 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
 
 fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
     let rendered_error = match &error {
-        LispError::SignalValue(value) => {
-            crate::lisp::primitives::render_prin1_ephemeral(interp, value, &Vec::new())
-                .unwrap_or_else(|_| error.to_string())
-        }
+        LispError::SignalValue(value) => crate::lisp::primitives::render_prin1_ephemeral(
+            interp,
+            value,
+            &crate::lisp::types::Env::new(),
+        )
+        .unwrap_or_else(|_| error.to_string()),
         _ => error.to_string(),
     };
     let backtrace = interp
@@ -91,7 +93,7 @@ fn bounded_lisp_display(value: &Value) -> String {
 
 fn eval_str_bare(src: &str) -> Value {
     let mut interp = Interpreter::new();
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let forms = Reader::new(src).read_all().unwrap();
     let mut result = Value::Nil;
     for form in &forms {
@@ -115,7 +117,7 @@ fn eval_str(src: &str) -> Value {
 }
 
 fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let forms = Reader::new(src).read_all().unwrap();
     let mut result = Value::Nil;
     for form in &forms {
@@ -255,7 +257,7 @@ fn gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary() {
     else {
         unreachable!("hash-table constructor must return a record")
     };
-    let env = Vec::new();
+    let env = crate::lisp::types::Env::new();
     assert_eq!(interp.gnu_hash_table_capacity(id), Some(0));
 
     for key in 0..6 {

@@ -203,7 +203,7 @@ define_native_forms! {
 #[inline]
 pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
     match &*cell.cdr.borrow() {
-        Value::Cons(next) => Some(Rc::clone(next)),
+        Value::Cons(next) => Some(*next),
         _ => None,
     }
 }
@@ -217,7 +217,7 @@ pub(super) struct ListForms(Option<SharedCons>);
 #[inline]
 pub(super) fn list_forms(list: &Value) -> ListForms {
     ListForms(match list {
-        Value::Cons(cell) => Some(Rc::clone(cell)),
+        Value::Cons(cell) => Some(*cell),
         _ => None,
     })
 }
@@ -290,7 +290,7 @@ pub(super) fn list_has_at_least(list: &Value, n: usize) -> bool {
     let Value::Cons(first) = list else {
         return false;
     };
-    let mut cur = Rc::clone(first);
+    let mut cur = *first;
     for _ in 1..n {
         match next_cons(&cur) {
             Some(next) => cur = next,
@@ -557,7 +557,7 @@ impl Interpreter {
                     other => (None, Some(other.clone())),
                 };
                 let args_cell: Option<SharedCons> = match &*cell.cdr.borrow() {
-                    Value::Cons(args) => Some(Rc::clone(args)),
+                    Value::Cons(args) => Some(*args),
                     Value::Nil => None,
                     other => {
                         return Err(LispError::WrongTypeArgument("listp".into(), other.clone()));
@@ -596,7 +596,7 @@ impl Interpreter {
                         });
                     if let Some(native_form) = effective_native_form {
                         let args_value = match &args_cell {
-                            Some(args) => Value::Cons(Rc::clone(args)),
+                            Some(args) => Value::Cons(*args),
                             None => Value::Nil,
                         };
                         let args = &args_value;
@@ -687,7 +687,7 @@ impl Interpreter {
                     ) {
                         // apply1's spread of the unevaluated forms.
                         let args_value = match &args_cell {
-                            Some(args) => Value::Cons(Rc::clone(args)),
+                            Some(args) => Value::Cons(*args),
                             None => Value::Nil,
                         };
                         let args = list_to_vector(&args_value)?;
@@ -1797,68 +1797,86 @@ mod eval_value_buffer_tests {
 
     #[test]
     fn load_path_forwarding_keeps_detached_c_roots_without_stale_snapshots() {
-        let mut interpreter = Interpreter::new();
-        let mut env = Env::new();
-        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
-        let original = interpreter
-            .symbol_value_cell("load-path")
-            .expect("load-path is bound");
-        let table = primitives::call(
-            &mut interpreter,
-            "make-hash-table",
-            &[
-                Value::symbol(":test"),
-                Value::symbol("eq"),
-                Value::symbol(":weakness"),
-                Value::symbol("key"),
-            ],
-            &mut env,
-        )
-        .expect("ordinary primitive succeeds");
-        interpreter.set_global_binding("weak-table-root", table.clone());
-        for key in [original.clone(), Value::cons(Value::Integer(7), Value::Nil)] {
-            primitives::call(
-                &mut interpreter,
-                "puthash",
-                &[key, Value::T, table.clone()],
+        // The old root is a Rust local of the frame that holds it (the
+        // conservative scan reads it as a C local): that frame is the
+        // helper's, dead and cleared before the census that expects the
+        // root released.
+        #[inline(never)]
+        fn before_replacement(interpreter: &mut Interpreter) -> (Value, Value) {
+            let mut env = Env::new();
+            let original = interpreter
+                .symbol_value_cell("load-path")
+                .expect("load-path is bound");
+            let table = primitives::call(
+                interpreter,
+                "make-hash-table",
+                &[
+                    Value::symbol(":test"),
+                    Value::symbol("eq"),
+                    Value::symbol(":weakness"),
+                    Value::symbol("key"),
+                ],
                 &mut env,
             )
             .expect("ordinary primitive succeeds");
+            interpreter.set_global_binding("weak-table-root", table.clone());
+            // The negative control is consed in a frame of its own and the
+            // stack under it cleared, or the conservative scan would read
+            // it (a C local's object).
+            #[inline(never)]
+            fn insert_keys(interpreter: &mut Interpreter, table: &Value, original: &Value) {
+                for key in [original.clone(), Value::cons(Value::Integer(7), Value::Nil)] {
+                    primitives::call(
+                        interpreter,
+                        "puthash",
+                        &[key, Value::T, table.clone()],
+                        &mut Env::new(),
+                    )
+                    .expect("ordinary primitive succeeds");
+                }
+            }
+            insert_keys(interpreter, &table, &original);
+            crate::lisp::alloc::clobber_stack();
+            primitives::call(
+                interpreter,
+                "makunbound",
+                &[Value::symbol("load-path")],
+                &mut env,
+            )
+            .expect("ordinary primitive succeeds");
+            assert!(interpreter.symbol_value_cell("load-path").is_err());
+            let plain = Value::list([Value::string("/plain")]);
+            interpreter.set_symbol_value_cell("load-path", plain.clone());
+            assert!(primitives::values_eq_in_env(
+                interpreter,
+                &interpreter.load_path,
+                &original,
+                &env
+            ));
+            let reachability = interpreter.weak_hash_reachability(&env, &[]);
+            let Value::Record(id) = table else {
+                panic!("hash table")
+            };
+            let (_, entries, retained) = reachability
+                .tables
+                .iter()
+                .find(|(key, _, _)| *key == id)
+                .expect("weak table participates in root traversal");
+            assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
+            assert_eq!(retained.len(), 2);
+            for ((key, _), retained) in entries.iter().zip(retained) {
+                assert_eq!(
+                    *retained,
+                    primitives::values_eq_in_env(interpreter, key, &original, &env)
+                );
+            }
+            (table, plain)
         }
-        primitives::call(
-            &mut interpreter,
-            "makunbound",
-            &[Value::symbol("load-path")],
-            &mut env,
-        )
-        .expect("ordinary primitive succeeds");
-        assert!(interpreter.symbol_value_cell("load-path").is_err());
-        let plain = Value::list([Value::string("/plain")]);
-        interpreter.set_symbol_value_cell("load-path", plain.clone());
-        assert!(primitives::values_eq_in_env(
-            &interpreter,
-            &interpreter.load_path,
-            &original,
-            &env
-        ));
-        let reachability = interpreter.weak_hash_reachability(&env, &[]);
-        let Value::Record(id) = table else {
-            panic!("hash table")
-        };
-        let (_, entries, retained) = reachability
-            .tables
-            .iter()
-            .find(|(key, _, _)| *key == id)
-            .expect("weak table participates in root traversal");
-        assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
-        assert_eq!(retained.len(), 2);
-        for ((key, _), retained) in entries.iter().zip(retained) {
-            assert_eq!(
-                *retained,
-                primitives::values_eq_in_env(&interpreter, key, &original, &env)
-            );
-        }
-
+        let mut interpreter = Interpreter::new();
+        let env = Env::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let (table, plain) = before_replacement(&mut interpreter);
+        crate::lisp::alloc::clobber_stack();
         interpreter.set_load_path(vec![PathBuf::from("/replacement")]);
         assert!(primitives::values_eq_in_env(
             &interpreter,
@@ -1869,6 +1887,9 @@ mod eval_value_buffer_tests {
             &env
         ));
         let reachability = interpreter.weak_hash_reachability(&env, &[]);
+        let Value::Record(id) = table else {
+            panic!("hash table")
+        };
         let (_, _, retained) = reachability
             .tables
             .iter()
@@ -1965,10 +1986,10 @@ mod eval_value_buffer_tests {
         let lisp_name = Value::string("binding");
         let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
         let key = Value::Symbol(name.clone());
-        let env = vec![EnvFrame::bindings(
+        let env = crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(
             [(name.clone(), Value::Integer(7))],
             &Value::Nil,
-        )];
+        )]);
         let mut marked = LispReachability::default();
         marked.mark_env(&interpreter, &env);
         assert!(

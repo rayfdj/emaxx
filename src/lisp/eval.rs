@@ -1770,12 +1770,11 @@ impl FrameFunction {
     fn value(&self) -> Value {
         match self {
             Self::Owned(value) => value.clone(),
-            // SAFETY: the pointer came from a live `Rc<ConsCell>' the
-            // evaluating caller still holds (see the type comment); the
-            // count is raised before a handle is made from it.
+            // SAFETY: the pointer came from a live cons the evaluating
+            // caller still holds (see the type comment); a cons handle
+            // carries no count.
             Self::Form(cell) => unsafe {
-                Rc::increment_strong_count(*cell);
-                Value::Cons(Rc::from_raw(*cell))
+                Value::Cons(crate::lisp::types::SharedCons::from_raw(*cell))
             },
         }
     }
@@ -1784,11 +1783,11 @@ impl FrameFunction {
     fn with_value<R>(&self, read: impl FnOnce(&Value) -> R) -> R {
         match self {
             Self::Owned(value) => read(value),
-            // SAFETY: as in `value'; the handle is never dropped, so the
-            // count is untouched.
+            // SAFETY: as in `value'.
             Self::Form(cell) => {
-                let value =
-                    std::mem::ManuallyDrop::new(unsafe { Value::Cons(Rc::from_raw(*cell)) });
+                let value = std::mem::ManuallyDrop::new(unsafe {
+                    Value::Cons(crate::lisp::types::SharedCons::from_raw(*cell))
+                });
                 read(&value)
             }
         }
@@ -3179,7 +3178,7 @@ impl ImageGraphCopier {
             }
             let placeholder = Value::cons(Value::Nil, Value::Nil);
             self.cons.insert(key, placeholder.clone());
-            spine.push((cell.clone(), placeholder.clone()));
+            spine.push((*cell, placeholder.clone()));
             let next = cell.cdr.borrow().clone();
             cursor = next;
         }
@@ -3280,7 +3279,7 @@ pub(crate) struct MarkSetSizes {
     records: usize,
 }
 
-struct LispReachability<'mark, 'heap> {
+pub(crate) struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
@@ -3293,6 +3292,10 @@ struct LispReachability<'mark, 'heap> {
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
     epoch: u32,
+    /// The retention pass after the live sets are taken: every slot of
+    /// every record is traced, a weak table's entry mirror included, so
+    /// the objects a never-swept record holds stay allocated.
+    retaining: bool,
     big_integers: MarkedAddresses,
     floats: MarkedAddresses,
     string_objects: MarkedAddresses,
@@ -3308,13 +3311,34 @@ struct LispReachability<'mark, 'heap> {
     reader_forms: MarkedAddresses,
 }
 
+impl LispReachability<'_, '_> {
+    /// A marker for another interpreter state in the same collection:
+    /// the same epoch on the objects (conses, vectors, strings, symbols
+    /// are the process's), its own sets for the kinds marked by id (a
+    /// record id names a different object in each state).
+    pub(crate) fn with_epoch(epoch: u32) -> Self {
+        let mut marker = Self::default_without_epoch();
+        marker.epoch = epoch;
+        marker
+    }
+}
+
 impl Default for LispReachability<'_, '_> {
     /// A fresh collection: its own epoch, so nothing is marked in it yet.
     fn default() -> Self {
+        let mut marker = Self::default_without_epoch();
+        marker.epoch = crate::lisp::types::begin_mark_epoch();
+        marker
+    }
+}
+
+impl LispReachability<'_, '_> {
+    fn default_without_epoch() -> Self {
         Self {
             native: None,
             pending: smallvec::SmallVec::new(),
-            epoch: crate::lisp::types::begin_mark_epoch(),
+            retaining: false,
+            epoch: 0,
             big_integers: MarkedAddresses::default(),
             floats: MarkedAddresses::default(),
             string_objects: MarkedAddresses::default(),
@@ -3350,6 +3374,9 @@ fn prefetch_for_write(address: *const u8) {
 }
 
 pub(crate) struct WeakHashReachability {
+    /// The collection's epoch: the mark every reached object carries,
+    /// which the sweep tests.
+    pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
     pub(crate) live_records: MarkedIds,
     /// Finalizer objects the mark phase reached (alloc.c marks a reached
@@ -3409,7 +3436,7 @@ impl LispReachability<'_, '_> {
     }
 
     /// Mark VALUE's graph; true when something not yet marked was reached.
-    fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+    pub(crate) fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
         self.enqueue(value);
         self.trace_pending(interp)
     }
@@ -3622,12 +3649,19 @@ impl LispReachability<'_, '_> {
                 // byte-code function is a record).
                 self.enqueue(&record.type_tag);
                 for (index, slot) in record.slots.iter().enumerate() {
-                    if record.kind == RecordKind::HashTable && index == 1 {
+                    // A weak table's entry mirror (slot 1) holds its keys
+                    // and values weakly: the fixed point below decides
+                    // them, and the weak sweep rewrites the mirror.
+                    if record.kind == RecordKind::HashTable
+                        && index == 1
+                        && weak_hash
+                        && !self.retaining
+                    {
                         continue;
                     }
                     self.enqueue(slot);
                 }
-                if record.kind == RecordKind::HashTable && !weak_hash {
+                if record.kind == RecordKind::HashTable && (!weak_hash || self.retaining) {
                     if let Some(entries) = interp.hash_table_runtime_entries(*id) {
                         for (key, value) in entries {
                             self.enqueue(key);
@@ -4152,6 +4186,44 @@ impl Interpreter {
             marked.mark(self, value);
         }
         self.stack_roots.mark(self, &mut marked);
+        // alloc.c:mark_stack: every word of the running stack (and the
+        // registers) that names a cons cell marks it; the parked threads'
+        // stacks with it.
+        crate::lisp::alloc::mark_all_stacks(
+            continuations::current_stack_base().map(|base| base as usize),
+            |cell| {
+                marked.mark(self, &Value::Cons(cell));
+            },
+        );
+        // The other interpreter states alive in the process (a test's
+        // template, a second interpreter of a test): their roots too, or a
+        // sweep here would free what they still hold.
+        let this_state = std::ptr::from_ref::<InterpreterState>(self) as usize;
+        for state in crate::lisp::alloc::live_states() {
+            if state == this_state {
+                continue;
+            }
+            // SAFETY: a registered state is a live boxed `InterpreterState'
+            // (registered when boxed, unregistered in its drop); the
+            // temporary shell only reads it and never drops the box.
+            let other = std::mem::ManuallyDrop::new(Interpreter {
+                state: Some(unsafe { Box::from_raw(state as *mut InterpreterState) }),
+                continuations: continuations::ThreadContinuations::default(),
+            });
+            // Its own marker for the kinds marked by id (a record id names
+            // a different object in each state), this collection's epoch
+            // on the objects; every record it keeps is retained as this
+            // state's are below.
+            // Nothing sweeps that state's weak tables in this collection,
+            // so their entries are held as strongly as the rest: retaining
+            // from the first root.
+            let mut other_marked = LispReachability::with_epoch(marked.epoch);
+            other_marked.retaining = true;
+            other.mark_static_roots_into(&mut other_marked);
+            for record in &other.records {
+                other_marked.mark(&other, &Value::Record(record.id));
+            }
+        }
         // The thread's bytecode stack and its activations' specpdl entries
         // (alloc.c marks them with the thread).
         for value in self.bc_stack.values() {
@@ -4169,6 +4241,94 @@ impl Interpreter {
             }
         }
 
+        self.mark_static_roots_into(&mut marked);
+
+        let weak_tables = self
+            .records
+            .iter()
+            .filter(|record| record.kind == RecordKind::HashTable)
+            .filter_map(|record| {
+                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
+                let entries =
+                    crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
+                Some((record.id, weakness, entries))
+            })
+            .collect::<Vec<_>>();
+
+        loop {
+            let mut changed = false;
+            for (id, weakness, entries) in &weak_tables {
+                if !marked.records.contains(id) {
+                    continue;
+                }
+                for (key, value) in entries {
+                    let strong_key = marked.contains(key);
+                    let strong_value = marked.contains(value);
+                    let keep = match weakness.as_str() {
+                        "key" => strong_key,
+                        "value" => strong_value,
+                        "key-and-value" => strong_key && strong_value,
+                        "key-or-value" => strong_key || strong_value,
+                        _ => true,
+                    };
+                    if keep {
+                        changed |= marked.mark(self, key);
+                        changed |= marked.mark(self, value);
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        self.gc_mark_set_sizes.set(MarkSetSizes {
+            string_objects: marked.string_objects.len(),
+            records: marked.records.len(),
+        });
+        let tables = weak_tables
+            .into_iter()
+            .map(|(id, _, entries)| {
+                let keep = if marked.records.contains(&id) {
+                    entries
+                        .iter()
+                        .map(|(key, value)| marked.contains(key) && marked.contains(value))
+                        .collect()
+                } else {
+                    vec![false; entries.len()]
+                };
+                (id, entries, keep)
+            })
+            .collect();
+        let reachability = WeakHashReachability {
+            epoch: marked.epoch,
+            tables,
+            live_records: std::mem::take(&mut marked.records),
+            live_finalizers: std::mem::take(&mut marked.finalizers),
+            live_markers: std::mem::take(&mut marked.markers),
+            live_overlays: std::mem::take(&mut marked.overlays),
+        };
+        // The records this interpreter keeps by id are never swept (the
+        // table is the pre-representation deviation the ledger records);
+        // a record the graph did not reach can still be read by its id, so
+        // the objects its slots hold stay allocated as long as it does.
+        // This retention runs after the live sets were taken, so the
+        // census, the weak tables and the finalizers see only the graph.
+        // It keeps storage; it is not reachability: the native heap's
+        // handles are not marked through it (a handle only the retention
+        // reaches is dead, and its record's storage stays anyway).
+        marked.native = None;
+        marked.retaining = true;
+        for record in &self.records {
+            marked.mark(self, &Value::Record(record.id));
+        }
+        reachability
+    }
+
+    /// The staticpro'd roots of this state (pdumper.c:dump_roots' slots,
+    /// eval.c's specpdl and the C-side object lists), marked into MARKED:
+    /// the mark phase's own, and any other state alive in the process.
+    pub(crate) fn mark_static_roots_into(&self, marked: &mut LispReachability<'_, '_>) {
         let mut mark = |value: &Value| {
             marked.mark(self, value);
         };
@@ -4431,6 +4591,9 @@ impl Interpreter {
         for id in [self.standard_obarray_id, self.selected_window_id] {
             mark(&Value::Record(id));
         }
+        // The thread's Lisp values outside any interpreter (xdisp.c's
+        // staticpro'd echo area; a tag cache).
+        crate::lisp::primitives::mark_thread_local_roots(&mut mark);
 
         for frame in self.frame_states.iter().filter(|frame| frame.live) {
             for id in [
@@ -4441,70 +4604,12 @@ impl Interpreter {
                 mark(&Value::Record(id));
             }
         }
-        let weak_tables = self
-            .records
-            .iter()
-            .filter(|record| record.kind == RecordKind::HashTable)
-            .filter_map(|record| {
-                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
-                let entries =
-                    crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
-                Some((record.id, weakness, entries))
-            })
-            .collect::<Vec<_>>();
+    }
 
-        loop {
-            let mut changed = false;
-            for (id, weakness, entries) in &weak_tables {
-                if !marked.records.contains(id) {
-                    continue;
-                }
-                for (key, value) in entries {
-                    let strong_key = marked.contains(key);
-                    let strong_value = marked.contains(value);
-                    let keep = match weakness.as_str() {
-                        "key" => strong_key,
-                        "value" => strong_value,
-                        "key-and-value" => strong_key && strong_value,
-                        "key-or-value" => strong_key || strong_value,
-                        _ => true,
-                    };
-                    if keep {
-                        changed |= marked.mark(self, key);
-                        changed |= marked.mark(self, value);
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-
-        self.gc_mark_set_sizes.set(MarkSetSizes {
-            string_objects: marked.string_objects.len(),
-            records: marked.records.len(),
-        });
-        let tables = weak_tables
-            .into_iter()
-            .map(|(id, _, entries)| {
-                let keep = if marked.records.contains(&id) {
-                    entries
-                        .iter()
-                        .map(|(key, value)| marked.contains(key) && marked.contains(value))
-                        .collect()
-                } else {
-                    vec![false; entries.len()]
-                };
-                (id, entries, keep)
-            })
-            .collect();
-        WeakHashReachability {
-            tables,
-            live_records: marked.records,
-            live_finalizers: marked.finalizers,
-            live_markers: marked.markers,
-            live_overlays: marked.overlays,
-        }
+    /// The boxed state is a root set for every collection in the process
+    /// while it lives (`alloc::LIVE_STATES').
+    pub(crate) fn register_state_as_root(&self) {
+        crate::lisp::alloc::register_state(std::ptr::from_ref::<InterpreterState>(self) as usize);
     }
 
     /// alloc.c:garbage_collect's tail: `Vgc_elapsed' accumulates the
@@ -5010,10 +5115,29 @@ impl Drop for ImageTemplateToken {
 /// Keeping the payload separate allows a suspension boundary to transfer its
 /// ownership to another shell without aliasing the parked shell's mutable
 /// references. A parked shell must not be dereferenced until its state returns.
-#[derive(Clone)]
 pub struct Interpreter {
     state: Option<Box<InterpreterState>>,
     continuations: continuations::ThreadContinuations,
+}
+
+impl Clone for Interpreter {
+    /// A copy's state is a root set of its own from the moment it exists.
+    fn clone(&self) -> Self {
+        let clone = Self {
+            state: self.state.clone(),
+            continuations: self.continuations.clone(),
+        };
+        if clone.state.is_some() {
+            clone.register_state_as_root();
+        }
+        clone
+    }
+}
+
+impl Drop for InterpreterState {
+    fn drop(&mut self) {
+        crate::lisp::alloc::unregister_state(std::ptr::from_mut::<InterpreterState>(self) as usize);
+    }
 }
 
 impl std::ops::Deref for Interpreter {
@@ -6387,6 +6511,7 @@ impl Interpreter {
             state: Some(Box::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
+        interp.register_state_as_root();
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         interp.symbol_properties_by_id.borrow_mut().clear();
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
@@ -6746,7 +6871,11 @@ impl Interpreter {
         // out set to `no-conversion'; `set-coding-system-priority' is what
         // assigns the prioritized coding systems.
         for name in coding::CODING_CATEGORY_NAMES {
-            interp.set_variable(name, Value::symbol("no-conversion"), &mut Vec::new());
+            interp.set_variable(
+                name,
+                Value::symbol("no-conversion"),
+                &mut crate::lisp::types::Env::new(),
+            );
         }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
@@ -6766,7 +6895,7 @@ impl Interpreter {
                 &mut interp,
                 "read-from-string",
                 &[Value::string(printed)],
-                &mut Vec::new(),
+                &mut crate::lisp::types::Env::new(),
             );
             let value = match read {
                 Ok(Value::Cons(cell)) => cell.car.borrow().clone(),
@@ -6854,7 +6983,9 @@ impl Interpreter {
         // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
         // the events the input reader executes itself (the oracle has no
         // D-Bus or NS, so their keys are absent there too).
-        if let Some(special_event_map) = interp.lookup_var("special-event-map", &Vec::new()) {
+        if let Some(special_event_map) =
+            interp.lookup_var("special-event-map", &crate::lisp::types::Env::new())
+        {
             for (event, command) in [
                 ("delete-frame", "handle-delete-frame"),
                 ("iconify-frame", "ignore"),
@@ -7662,7 +7793,7 @@ impl Interpreter {
     pub fn current_global_map_value(&self) -> Value {
         self.current_global_map
             .clone()
-            .or_else(|| self.lookup_var("global-map", &Vec::new()))
+            .or_else(|| self.lookup_var("global-map", &crate::lisp::types::Env::new()))
             .unwrap_or(Value::Nil)
     }
 

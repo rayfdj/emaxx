@@ -6,7 +6,7 @@ use crate::lisp::primitives;
 use crate::lisp::types::{LispError, Value};
 
 fn c(interpreter: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
-    primitives::call(interpreter, name, args, &mut Vec::new())
+    primitives::call(interpreter, name, args, &mut crate::lisp::types::Env::new())
 }
 
 /// emacs.c:decode_env_path. Empty components share the single dot object,
@@ -183,7 +183,11 @@ fn check_load_path(
             );
             eprint!("{text}");
             if initialized {
-                interpreter.append_message_capture(&text, false, &mut Vec::new());
+                interpreter.append_message_capture(
+                    &text,
+                    false,
+                    &mut crate::lisp::types::Env::new(),
+                );
             }
         }
     }
@@ -324,7 +328,7 @@ mod tests {
             &interpreter,
             &entries[0],
             &entries[2],
-            &Vec::new()
+            &crate::lisp::types::Env::new()
         ));
         let nils =
             decode_env_path(&mut interpreter, b":a::", true).expect("decode default insertions");
@@ -417,7 +421,12 @@ mod tests {
             [root_value.clone(), root_value.clone(), root_value]
         );
         assert!(
-            primitives::values_eq_in_env(&interpreter, &entries[0], &entries[2], &Vec::new()),
+            primitives::values_eq_in_env(
+                &interpreter,
+                &entries[0],
+                &entries[2],
+                &crate::lisp::types::Env::new()
+            ),
             "each default insertion retains the original directory string"
         );
         dumping.expect("initialize dump-build path");

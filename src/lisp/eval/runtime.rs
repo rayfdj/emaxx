@@ -1340,6 +1340,17 @@ impl Interpreter {
         self.doomed_finalizers.extend(doomed);
     }
 
+    /// alloc.c's `mark_finalizer_list (&doomed_finalizers)' after
+    /// queue_doomed_finalizers: the functions of the finalizers this
+    /// collection doomed were not reached by its mark phase, and they run
+    /// after the sweep, so they are marked in its epoch before it.
+    pub(crate) fn mark_doomed_finalizers(&self, epoch: u32) {
+        let mut marked = crate::lisp::eval::LispReachability::with_epoch(epoch);
+        for function in &self.doomed_finalizers {
+            marked.mark(self, function);
+        }
+    }
+
     /// alloc.c:run_finalizers once the collection is complete: each
     /// doomed function runs once, under `inhibit-quit' bound to t, with a
     /// signal caught and logged as "finalizer failed: %S"
@@ -2602,7 +2613,7 @@ impl Interpreter {
                 break;
             }
             owned_ids.push(cell_id);
-            watched_cells.push(cell.clone());
+            watched_cells.push(cell);
             self.keymap_public_cons_owners
                 .entry(cell_id)
                 .or_default()
@@ -2617,7 +2628,7 @@ impl Interpreter {
             {
                 let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
                 owned_ids.push(entry_id);
-                watched_cells.push(entry_cell.clone());
+                watched_cells.push(*entry_cell);
                 self.keymap_public_cons_owners
                     .entry(entry_id)
                     .or_default()

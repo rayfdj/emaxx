@@ -604,7 +604,7 @@ impl Interpreter {
         // walk three refcount round trips a pair) -- with
         // FOR_EACH_TAIL_SAFE's Brent cycle check on the cell identities.
         let mut cell = match &self.symbol_properties[index].1 {
-            Value::Cons(cell) => std::rc::Rc::clone(cell),
+            Value::Cons(cell) => *cell,
             _ => return None,
         };
         let mut tortoise = crate::lisp::types::ConsCell::identity(&cell);
@@ -626,7 +626,7 @@ impl Interpreter {
                 }
                 let after = value_cell.cdr.borrow();
                 match &*after {
-                    Value::Cons(next) => std::rc::Rc::clone(next),
+                    Value::Cons(next) => *next,
                     _ => return None,
                 }
             };
@@ -2673,7 +2673,7 @@ impl Interpreter {
         // as `bt.function' holds it; a non-cons form (evaluated through
         // a path that records it) is owned.
         let function = match source_form {
-            Value::Cons(cell) => FrameFunction::Form(Rc::as_ptr(cell)),
+            Value::Cons(cell) => FrameFunction::Form(cell.as_ptr()),
             other => FrameFunction::Owned(other.clone()),
         };
         Self::write_backtrace_frame(
@@ -2899,7 +2899,7 @@ impl Interpreter {
         // Innermost bindings first: Flet conses in order, so the outer
         // entries are consed first and the inner ones end up in front.
         merged.reverse();
-        vec![EnvFrame::bindings(merged, &Value::Nil)]
+        crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(merged, &Value::Nil)])
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {
@@ -3286,7 +3286,7 @@ impl Brent {
     fn cycle(&mut self, tail: &Value) -> bool {
         self.steps += 1;
         if let (Value::Cons(a), Value::Cons(b)) = (tail, &self.tortoise)
-            && std::rc::Rc::ptr_eq(a, b)
+            && crate::lisp::types::SharedCons::ptr_eq(a, b)
         {
             return true;
         }

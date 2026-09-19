@@ -5466,7 +5466,7 @@ fn cl_case_rejects_misplaced_otherwise() {
     let _permit = crate::test_support::acquire_host_test_permit();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     eval_str_with(&mut interp, "(require 'cl-macs)");
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     let form = Reader::new(
         // The flag binding pins the quoting style: nil means grave outside a
         // UTF-8 locale, so the assertion below would depend on LANG.
@@ -5711,7 +5711,7 @@ fn unevaluated_backtrace_frame_retains_the_live_source_form() {
 #[test]
 fn cached_source_forms_observe_mutation_and_recover_after_errors() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new("(+ 1 2)")
         .read()
         .expect("source form should parse")
@@ -5739,7 +5739,7 @@ fn cached_source_forms_observe_mutation_and_recover_after_errors() {
 #[test]
 fn cached_source_dispatch_analysis_observes_head_mutation() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let conditional = Reader::new("(if t 1 2)")
         .read()
@@ -5774,7 +5774,7 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
 #[test]
 fn cons_mutation_invalidates_all_source_derivations() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let definition = Reader::new("(defmacro mutation-probe (value) (list 'quote value))")
         .read()
         .expect("macro definition should parse")
@@ -6181,14 +6181,18 @@ fn gnu_batch_runtime_macroexp_file_name_does_not_leak_ert_source() {
     interp.set_variable(
         "current-load-list",
         Value::list([Value::String(test_file.into())]),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
         "(ert-deftest batch-runtime-does-not-leak-ert-source ()
            (should-not (macroexp-file-name)))",
     );
-    interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
+    interp.set_variable(
+        "current-load-list",
+        Value::Nil,
+        &mut crate::lisp::types::Env::new(),
+    );
     interp.set_current_load_file(None);
 
     assert_eq!(interp.run_ert_tests(), (1, 0, 1));
@@ -6554,7 +6558,7 @@ fn batch_startup_preloads_the_gnu_european_coding_owner() {
             crate::lisp::primitives::path_to_directory_string(&upstream_emacs_repo().join("etc"))
                 .into(),
         ),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
 
     assert_eq!(
@@ -6760,7 +6764,7 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
     // Match the compatibility runner's installation-directory boundary.
     // Source-aware upstream tests must not accidentally inspect the Emaxx
     // workspace just because this faster in-process harness started there.
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable(
         "source-directory",
         Value::String(crate::lisp::primitives::path_to_directory_string(&emacs_repo).into()),
@@ -7915,7 +7919,7 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     interp.set_variable(
         "eshell-test--max-wait-time",
         Value::Integer(300),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     // `with-temp-eshell' expands `ert-with-temp-directory', whose suffix
     // generator needs a source file name that string evaluation lacks
@@ -7924,7 +7928,7 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     interp.set_variable(
         "ert-temp-file-suffix",
         Value::String("-emaxx".into()),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     interp
 }
@@ -8082,7 +8086,7 @@ fn todo_month_edits_observe_dynamic_prefix_argument() {
     interp.set_variable(
         "current-load-list",
         Value::list([Value::String(test_file.into())]),
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     );
     let value = eval_str_with(
         &mut interp,

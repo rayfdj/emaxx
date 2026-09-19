@@ -268,45 +268,60 @@ fn compute_name_facts(name: &str) -> NameFacts {
     // a renamed function cell.
     let native_owner =
         crate::lisp::primitives::generated_gnu_c_primitive_available(name).unwrap_or(false);
-    NameFacts {
-        // A callable native route is the builtin contract.  Keeping a
-        // second list of the same names made every new primitive require
-        // two coordinated edits and allowed function lookup to drift from
-        // dispatch.
-        builtin: module != DispatchModule::None && native_owner,
-        special_form: crate::lisp::primitives::is_special_form_name(name),
-        prefer_override: native_owner && module.prefer_builtin(name),
-        file_name_handler: file_name_handler_operation(name),
-        module,
-        // Only a builtin the module owns is called through its pointer;
-        // an overriding Lisp definition or a non-native owner keeps the
-        // module's own routing.
-        //
-        // fileio.c's primitives look their handler up inside their own
-        // bodies; here the lookup runs in call_with_facts before the
-        // module's arm, so a name with a handler specification keeps
-        // that route instead of a lifted pointer that would skip it.
-        direct: if module != DispatchModule::None && native_owner {
-            direct_primitive(name).or_else(|| {
-                if file_name_handler_operation(name).is_some() {
-                    None
-                } else {
-                    module.lifted(name)
-                }
-            })
-        } else {
-            None
-        },
-        // The source-tree arity table is regenerated from the pinned Darwin
-        // oracle for its audit.  Dispatch ownership is host-specific, so use
-        // the selected host C contract for the runtime maximum as well; this
-        // supplies Linux-only primitives such as inotify without reviving
-        // Darwin-only kqueue cells.
-        max_args: crate::lisp::primitives::GNU_C_PRIMITIVES
-            .binary_search_by_key(&name, |contract| contract.name)
-            .ok()
-            .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity)
-            .and_then(|(_, maximum)| u16::try_from(maximum).ok()),
+    // A callable native route is the builtin contract.  Keeping a
+    // second list of the same names made every new primitive require
+    // two coordinated edits and allowed function lookup to drift from
+    // dispatch.
+    let builtin = module != DispatchModule::None && native_owner;
+    // Only a builtin the module owns is called through its pointer;
+    // an overriding Lisp definition or a non-native owner keeps the
+    // module's own routing.
+    //
+    // fileio.c's primitives look their handler up inside their own
+    // bodies; here the lookup runs in call_with_facts before the
+    // module's arm, so a name with a handler specification keeps
+    // that route instead of a lifted pointer that would skip it.
+    let direct = if builtin {
+        direct_primitive(name).or_else(|| {
+            if file_name_handler_operation(name).is_some() {
+                None
+            } else {
+                module.lifted(name)
+            }
+        })
+    } else {
+        None
+    };
+    // The source-tree arity table is regenerated from the pinned Darwin
+    // oracle for its audit.  Dispatch ownership is host-specific, so use
+    // the selected host C contract for the runtime maximum as well; this
+    // supplies Linux-only primitives such as inotify without reviving
+    // Darwin-only kqueue cells.
+    let max_args = crate::lisp::primitives::GNU_C_PRIMITIVES
+        .binary_search_by_key(&name, |contract| contract.name)
+        .ok()
+        .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity)
+        .and_then(|(_, maximum)| u16::try_from(maximum).ok());
+    // The facts are cached and copied into the frame of every call: the
+    // bytes no field's value covers (the padding, the words a `None'
+    // leaves unspecified) are zero, not what the frame that computed
+    // them held, since the collector reads every frame's words
+    // conservatively and would keep a cons whose address a stale byte
+    // pattern reproduced on every call.
+    let mut facts = std::mem::MaybeUninit::<NameFacts>::zeroed();
+    // SAFETY: every field is written before the value is read; the
+    // zeroed bytes outside the fields' values are never read as a field.
+    unsafe {
+        let facts_ptr = facts.as_mut_ptr();
+        (&raw mut (*facts_ptr).builtin).write(builtin);
+        (&raw mut (*facts_ptr).special_form)
+            .write(crate::lisp::primitives::is_special_form_name(name));
+        (&raw mut (*facts_ptr).prefer_override).write(native_owner && module.prefer_builtin(name));
+        (&raw mut (*facts_ptr).file_name_handler).write(file_name_handler_operation(name));
+        (&raw mut (*facts_ptr).module).write(module);
+        (&raw mut (*facts_ptr).direct).write(direct);
+        (&raw mut (*facts_ptr).max_args).write(max_args);
+        facts.assume_init()
     }
 }
 
@@ -440,4 +455,12 @@ pub(crate) fn call_with_facts(
     }
 
     facts.module.call(interp, name, args, env)
+}
+
+/// The thread's Lisp values held outside any interpreter (xdisp.c's
+/// staticpro'd echo area; the include-tag cache): roots of every
+/// collection.
+pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
+    display::mark_echo_area_roots(mark);
+    misc_keymaps::mark_semantic_cache_roots(mark);
 }

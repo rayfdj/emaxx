@@ -580,7 +580,10 @@ impl SyntaxScan {
         // syntax.c:253 (SETUP_SYNTAX_TABLE): the property machinery arms
         // only when `parse-sexp-lookup-properties' is non-nil.
         let use_properties = interp
-            .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), &Vec::new())
+            .lookup_var_key(
+                cached_symbol!("parse-sexp-lookup-properties"),
+                &crate::lisp::types::Env::new(),
+            )
             .is_some_and(|value| value.is_truthy());
         SyntaxScan {
             table_id,
@@ -666,7 +669,10 @@ fn syntax_entry_at_buffer_position(
     // One-shot form for cold callers -- no scan state, no memo array;
     // hot loops hold a SyntaxScan instead.
     if !interp
-        .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), &Vec::new())
+        .lookup_var_key(
+            cached_symbol!("parse-sexp-lookup-properties"),
+            &crate::lisp::types::Env::new(),
+        )
         .is_some_and(|value| value.is_truthy())
     {
         return syntax_entry_for_char(interp, table_id, ch);
@@ -1445,13 +1451,16 @@ fn gnu_comment_style(flags: &SyntaxEntry, other: Option<&SyntaxEntry>) -> u8 {
 
 fn comment_use_syntax_ppss_enabled(interp: &Interpreter) -> bool {
     interp
-        .lookup_var("comment-use-syntax-ppss", &Vec::new())
+        .lookup_var("comment-use-syntax-ppss", &crate::lisp::types::Env::new())
         .is_some_and(|value| value.is_truthy())
 }
 
 fn open_paren_defun_start_enabled(interp: &Interpreter) -> bool {
     interp
-        .lookup_var("open-paren-in-column-0-is-defun-start", &Vec::new())
+        .lookup_var(
+            "open-paren-in-column-0-is-defun-start",
+            &crate::lisp::types::Env::new(),
+        )
         .is_some_and(|value| value.is_truthy())
 }
 

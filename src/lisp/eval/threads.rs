@@ -1999,7 +1999,7 @@ impl Interpreter {
             .iter()
             .map(|timer| (timer.function.clone(), timer.args.clone()))
             .collect();
-        let empty_env = Vec::new();
+        let empty_env = crate::lisp::types::Env::new();
         if let Some(index) = candidates.iter().position(|(candidate, timer_args)| {
             crate::lisp::primitives::values_eq_in_env(self, candidate, function, &empty_env)
                 && timer_args.len() == args.len()

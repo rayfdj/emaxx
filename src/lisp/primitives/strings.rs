@@ -623,7 +623,11 @@ pub(crate) fn assoc_string_folded_text(
 ) -> Result<String, LispError> {
     // fns.c's assoc-string folds through the same casing machinery, so it uses
     // the same prepared context (GNU: `casify_object' with CASE_DOWN).
-    let context = case::CasingContext::prepare(interp, case::CaseAction::Down, &mut Vec::new());
+    let context = case::CasingContext::prepare(
+        interp,
+        case::CaseAction::Down,
+        &mut crate::lisp::types::Env::new(),
+    );
     let (down_table, _) = current_case_table_ids(interp)?;
     let mut folded = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -899,7 +903,7 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     loop {
         let cell = match &current {
             Value::Nil => return Ok(reversed),
-            Value::Cons(cell) => Rc::clone(cell),
+            Value::Cons(cell) => *cell,
             other => return Err(LispError::WrongTypeArgument("listp".into(), other.clone())),
         };
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {

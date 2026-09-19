@@ -1183,7 +1183,7 @@ define_dispatch!(
                     interp.set_variable(
                         "profiler-sampling-interval",
                         interval.clone(),
-                        &mut Vec::new(),
+                        &mut crate::lisp::types::Env::new(),
                     );
                 }
                 // profiler.c Fprofiler_cpu_start returns t.
@@ -2014,4 +2014,15 @@ pub(super) fn direct_symbol_name(
         _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
     };
     Ok(symbol_name.lisp_name())
+}
+
+/// The cached include tags, a root of every collection while cached.
+pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
+    SEMANTIC_CPP_INCLUDE_TAG_CACHE.with_borrow(|cache| {
+        for tags in cache.values() {
+            for tag in tags {
+                mark(tag);
+            }
+        }
+    });
 }

@@ -311,7 +311,7 @@ fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationW
 pub(crate) struct ConsMutationSnapshot {
     watch: Rc<ConsMutationWatch>,
     field_ids: Vec<usize>,
-    native_cells: Vec<Weak<ConsCell>>,
+    native_cells: Vec<WeakConsRef>,
 }
 
 impl ConsMutationSnapshot {
@@ -333,7 +333,7 @@ impl ConsMutationSnapshot {
             }
             field_ids.extend(ConsCell::mutation_field_ids(&cell));
             if cell.attached_native_address().is_some() {
-                native_cells.push(Rc::downgrade(&cell));
+                native_cells.push(cell.downgrade());
             }
             current = cell.cdr.borrow().clone();
         }
@@ -358,7 +358,7 @@ impl ConsMutationSnapshot {
         for cell in cells {
             field_ids.extend(ConsCell::mutation_field_ids(cell));
             if cell.attached_native_address().is_some() {
-                native_cells.push(Rc::downgrade(cell));
+                native_cells.push(cell.downgrade());
             }
         }
         let mut snapshot = Self::from_field_ids(field_ids);
@@ -422,7 +422,7 @@ impl ConsMutationSnapshot {
 
     fn track_native_cell(&mut self, cell: &SharedCons) {
         if cell.attached_native_address().is_some() {
-            self.native_cells.push(Rc::downgrade(cell));
+            self.native_cells.push(cell.downgrade());
         }
     }
 
@@ -453,15 +453,34 @@ impl ConsMutationSnapshot {
 /// (a host-side key): counted nowhere.
 const UNTRACKED_TEXT: usize = usize::MAX;
 
-thread_local! {
-    /// The current collection's number; see `MarkBit'.
-    static GC_MARK_EPOCH: Cell<u32> = const { Cell::new(0) };
+/// The current collection's number; see `MarkBit'.  The process's, as
+/// the mark bits and `gc_in_progress' are alloc.c's globals: the objects
+/// carry it, whichever thread marked them.
+static GC_MARK_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The current collection's epoch (the last one begun).
+#[inline]
+pub(crate) fn current_mark_epoch() -> u32 {
+    GC_MARK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Between a mark phase and its sweep (a checked build's guard: a second
+/// mark phase in between would give the cells born after it a newer
+/// epoch, and the sweep would free them).
+static GC_SWEEP_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_sweep_pending(pending: bool) {
+    GC_SWEEP_PENDING.store(pending, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Start a collection: the epoch every object marked in it will carry.
 pub(crate) fn begin_mark_epoch() -> u32 {
-    let epoch = GC_MARK_EPOCH.get().wrapping_add(1).max(1);
-    GC_MARK_EPOCH.set(epoch);
+    debug_assert!(
+        !GC_SWEEP_PENDING.load(std::sync::atomic::Ordering::Relaxed),
+        "a mark phase began while the previous one's sweep is pending"
+    );
+    let epoch = current_mark_epoch().wrapping_add(1).max(1);
+    GC_MARK_EPOCH.store(epoch, std::sync::atomic::Ordering::Relaxed);
     epoch
 }
 
@@ -485,6 +504,15 @@ impl MarkBit {
     pub(crate) fn is_marked(&self, epoch: u32) -> bool {
         self.0.get() == epoch
     }
+
+    /// The word itself (the allocator's free mark rides in it).
+    pub(crate) fn raw(&self) -> u32 {
+        self.0.get()
+    }
+
+    pub(crate) fn set_raw(&self, word: u32) {
+        self.0.set(word);
+    }
 }
 
 /// One immutable Lisp string: the text and, as `struct Lisp_String' keeps
@@ -504,16 +532,15 @@ impl Drop for LispText {
             return;
         }
         // A thread's locals may already be gone when its last texts go.
-        let _ = LIVE_TEXTS.try_with(|count| count.set(count.get().saturating_sub(1)));
-        let _ = LIVE_TEXT_BYTES
-            .try_with(|bytes| bytes.set(bytes.get().saturating_sub(self.storage_bytes)));
+        LIVE_TEXTS.sub(1);
+        LIVE_TEXT_BYTES.sub(self.storage_bytes);
     }
 }
 
 fn tracked_text(text: String, storage_bytes: usize) -> Rc<LispText> {
     note_string_allocation(storage_bytes);
-    LIVE_TEXTS.set(LIVE_TEXTS.get().saturating_add(1));
-    LIVE_TEXT_BYTES.set(LIVE_TEXT_BYTES.get().saturating_add(storage_bytes));
+    LIVE_TEXTS.add(1);
+    LIVE_TEXT_BYTES.add(storage_bytes);
     Rc::new(LispText {
         text,
         storage_bytes,
@@ -1231,7 +1258,7 @@ pub struct LispBignum(BigInt);
 
 impl Drop for LispBignum {
     fn drop(&mut self) {
-        let _ = LIVE_BIGNUMS.try_with(|count| count.set(count.get().saturating_sub(1)));
+        LIVE_BIGNUMS.sub(1);
     }
 }
 
@@ -1256,7 +1283,7 @@ impl Deref for SharedBigInt {
 impl From<BigInt> for SharedBigInt {
     fn from(value: BigInt) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(24);
-        LIVE_BIGNUMS.set(LIVE_BIGNUMS.get().saturating_add(1));
+        LIVE_BIGNUMS.add(1);
         Self(Rc::new(LispBignum(value)))
     }
 }
@@ -1303,7 +1330,7 @@ pub struct LispFloat(f64);
 
 impl Drop for LispFloat {
     fn drop(&mut self) {
-        let _ = LIVE_FLOATS.try_with(|count| count.set(count.get().saturating_sub(1)));
+        LIVE_FLOATS.sub(1);
     }
 }
 
@@ -1330,7 +1357,7 @@ impl PartialEq for SharedFloat {
 impl From<f64> for SharedFloat {
     fn from(value: f64) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(8);
-        LIVE_FLOATS.set(LIVE_FLOATS.get().saturating_add(1));
+        LIVE_FLOATS.add(1);
         Self(Rc::new(LispFloat(value)))
     }
 }
@@ -1349,7 +1376,8 @@ impl fmt::Display for SharedFloat {
     }
 }
 
-pub type SharedCons = Rc<ConsCell>;
+pub type SharedCons = crate::lisp::alloc::ConsRef;
+pub use crate::lisp::alloc::WeakConsRef;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedLambdaParams = Rc<Vec<SymbolName>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
@@ -1474,8 +1502,8 @@ impl VectorValue {
     fn allocated(slots: Vec<Value>) -> Rc<Self> {
         let accounted_slots = slots.len().saturating_add(1);
         crate::lisp::native_comp::note_lisp_allocation(accounted_slots.saturating_mul(8));
-        LIVE_VECTORS.set(LIVE_VECTORS.get().saturating_add(1));
-        LIVE_VECTOR_SLOTS.set(LIVE_VECTOR_SLOTS.get().saturating_add(accounted_slots));
+        LIVE_VECTORS.add(1);
+        LIVE_VECTOR_SLOTS.add(accounted_slots);
         Rc::new(Self {
             slots: RefCell::new(slots),
             accounted_slots,
@@ -1509,18 +1537,8 @@ impl Drop for VectorValue {
         if self.accounted_slots == 0 {
             return;
         }
-        LIVE_VECTORS.set(
-            LIVE_VECTORS
-                .get()
-                .checked_sub(1)
-                .expect("live GNU vector count is balanced"),
-        );
-        LIVE_VECTOR_SLOTS.set(
-            LIVE_VECTOR_SLOTS
-                .get()
-                .checked_sub(self.accounted_slots)
-                .expect("live GNU vector slot count is balanced"),
-        );
+        LIVE_VECTORS.sub(1);
+        LIVE_VECTOR_SLOTS.sub(self.accounted_slots);
     }
 }
 
@@ -1574,6 +1592,9 @@ pub struct ConsCell {
     pub(crate) car: ConsValueCell,
     pub(crate) cdr: ConsValueCell,
     pub(crate) mark: MarkBit,
+    /// The allocation's serial (`WeakConsRef' tells a later cell in the
+    /// same slot apart by it); written by the allocator.
+    pub(crate) serial: u64,
 }
 
 /// One tracked field of a cons cell.
@@ -1655,6 +1676,12 @@ impl ConsValueCell {
         self.value.borrow()
     }
 
+    /// The Rust field as stored, for the heap check: no native
+    /// synchronization, no mutation notice.
+    pub(crate) fn value_in_place(&self) -> Ref<'_, Value> {
+        self.value.borrow()
+    }
+
     /// The image loader's relocation store into a cell it created an
     /// instant ago: no watcher, generated code or native word has seen
     /// the cell, so there is no mutation to note (pdumper.c writes the
@@ -1684,22 +1711,52 @@ impl ConsValueCell {
 // handle and prunes the dead ones, which is the lazy equivalent of GNU's
 // sweep visiting every string block.
 thread_local! {
-    static LIVE_CONSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STRING_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<RefCell<SharedStringState>>>> =
         const { RefCell::new(Vec::new()) };
     static STRING_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    // gcstat's total_strings, total_string_bytes, total_floats and the
-    // bignums' share of total_vectors, as counters (see `LispText').
-    static LIVE_TEXTS: Cell<usize> = const { Cell::new(0) };
-    static LIVE_TEXT_BYTES: Cell<usize> = const { Cell::new(0) };
-    static LIVE_FLOATS: Cell<usize> = const { Cell::new(0) };
-    static LIVE_BIGNUMS: Cell<usize> = const { Cell::new(0) };
     static LAMBDA_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<LambdaValue>>> =
         const { RefCell::new(Vec::new()) };
     static LAMBDA_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static LIVE_VECTORS: Cell<usize> = const { Cell::new(0) };
-    static LIVE_VECTOR_SLOTS: Cell<usize> = const { Cell::new(0) };
 }
+
+/// gcstat's total_strings, total_string_bytes, total_floats, the bignums'
+/// share of total_vectors, total_vectors and total_vector_slots, as
+/// counters (see `LispText').  The heap is the process's (a template
+/// interpreter built on one thread is used from another, and the
+/// collector frees on the thread that collects), so the books are too.
+struct LiveBook(std::sync::atomic::AtomicUsize);
+
+impl LiveBook {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn get(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn add(&self, count: usize) {
+        self.0
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Never below zero: an object may be released on a thread other
+    /// than the one whose allocation raised the count.
+    fn sub(&self, count: usize) {
+        let _ = self.0.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| Some(current.saturating_sub(count)),
+        );
+    }
+}
+
+static LIVE_TEXTS: LiveBook = LiveBook::new();
+static LIVE_TEXT_BYTES: LiveBook = LiveBook::new();
+static LIVE_FLOATS: LiveBook = LiveBook::new();
+static LIVE_BIGNUMS: LiveBook = LiveBook::new();
+static LIVE_VECTORS: LiveBook = LiveBook::new();
+static LIVE_VECTOR_SLOTS: LiveBook = LiveBook::new();
 
 pub(crate) fn note_string_allocation(bytes: usize) {
     // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
@@ -1768,7 +1825,7 @@ pub(crate) struct VectorCensus {
 }
 
 pub(crate) fn census_live_conses() -> usize {
-    LIVE_CONSES.with(|count| count.get())
+    crate::lisp::alloc::live_conses()
 }
 
 pub(crate) fn census_live_strings() -> StringCensus {
@@ -1853,27 +1910,27 @@ impl ConsCell {
     }
 
     fn new_representation(car: Value, cdr: Value) -> Self {
-        LIVE_CONSES.with(|count| count.set(count.get() + 1));
         Self {
             words: ConsWords::new(0, 0),
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
             mark: MarkBit::default(),
+            serial: 0,
         }
     }
 
     pub(crate) fn from_native_words(car: usize, cdr: usize) -> SharedCons {
-        LIVE_CONSES.with(|count| count.set(count.get() + 1));
-        Rc::new(Self {
+        crate::lisp::alloc::allocate_cons(Self {
             words: ConsWords::new(car, cdr),
             car: ConsValueCell::new(Value::Nil),
             cdr: ConsValueCell::new(Value::Nil),
             mark: MarkBit::default(),
+            serial: 0,
         })
     }
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
-        Rc::as_ptr(cell) as usize
+        cell.as_ptr() as usize
     }
 
     pub(crate) fn native_words(cell: &SharedCons) -> *mut ConsWords {
@@ -1919,71 +1976,6 @@ impl ConsCell {
     }
 }
 
-impl Drop for ConsCell {
-    #[inline]
-    fn drop(&mut self) {
-        LIVE_CONSES.with(|count| count.set(count.get().saturating_sub(1)));
-        if matches!(self.car.value.get_mut(), Value::Cons(_))
-            || matches!(self.cdr.value.get_mut(), Value::Cons(_))
-        {
-            self.drop_cons_fields();
-        }
-    }
-}
-
-impl ConsCell {
-    fn take_owned_fields(&mut self) -> (Value, Value) {
-        (
-            std::mem::replace(self.car.value.get_mut(), Value::Nil),
-            std::mem::replace(self.cdr.value.get_mut(), Value::Nil),
-        )
-    }
-
-    /// Release uniquely owned cons trees iteratively. Shared/native owners
-    /// retain their cells, and weak observers do not keep dead cells alive.
-    fn drop_cons_fields(&mut self) {
-        let mut pending = smallvec::SmallVec::<[Value; 8]>::new();
-        let (mut next, cdr) = self.take_owned_fields();
-        if !cdr.is_nil() {
-            pending.push(cdr);
-        }
-        loop {
-            match next {
-                Value::Cons(mut owner) => {
-                    // The usual path leaves the cell in its allocation,
-                    // avoiding a move of the complete native/borrow metadata.
-                    let fields = if let Some(cell) = Rc::get_mut(&mut owner) {
-                        Some(cell.take_owned_fields())
-                    } else {
-                        // Weak observers preclude get_mut but not try_unwrap.
-                        // A genuinely shared cell is simply released unchanged.
-                        Rc::try_unwrap(owner)
-                            .ok()
-                            .map(|mut cell| cell.take_owned_fields())
-                    };
-                    if let Some((car, cdr)) = fields {
-                        next = car;
-                        if matches!(next, Value::Cons(_)) {
-                            if !cdr.is_nil() {
-                                pending.push(cdr);
-                            }
-                        } else {
-                            drop(next);
-                            next = cdr;
-                        }
-                        continue;
-                    }
-                }
-                other => drop(other),
-            }
-            let Some(value) = pending.pop() else {
-                break;
-            };
-            next = value;
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConsField {
     Car,
@@ -2004,14 +1996,14 @@ pub struct ConsSlot {
 impl ConsSlot {
     pub(crate) fn car(cell: &SharedCons) -> Self {
         Self {
-            cell: cell.clone(),
+            cell: *cell,
             field: ConsField::Car,
         }
     }
 
     pub(crate) fn cdr(cell: &SharedCons) -> Self {
         Self {
-            cell: cell.clone(),
+            cell: *cell,
             field: ConsField::Cdr,
         }
     }
@@ -2035,12 +2027,12 @@ impl ConsSlot {
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        self.field == other.field && Rc::ptr_eq(&self.cell, &other.cell)
+        self.field == other.field && SharedCons::ptr_eq(&self.cell, &other.cell)
     }
 
     pub fn downgrade(&self) -> WeakConsSlot {
         WeakConsSlot {
-            cell: Rc::downgrade(&self.cell),
+            cell: self.cell.downgrade(),
             field: self.field,
         }
     }
@@ -2048,7 +2040,7 @@ impl ConsSlot {
 
 #[derive(Clone, Debug)]
 pub struct WeakConsSlot {
-    cell: Weak<ConsCell>,
+    cell: WeakConsRef,
     field: ConsField,
 }
 
@@ -2258,7 +2250,7 @@ impl Value {
             Value::String(value) => Value::String(value.clone()),
             Value::StringObject(value) => Value::StringObject(value.clone()),
             Value::Symbol(value) => Value::Symbol(value.clone()),
-            Value::Cons(value) => Value::Cons(value.clone()),
+            Value::Cons(value) => Value::Cons(*value),
             Value::Vector(value) => Value::Vector(value.clone()),
             Value::BuiltinFunc(value) => Value::BuiltinFunc(value.clone()),
             Value::Lambda(value) => Value::Lambda(value.clone()),
@@ -2288,7 +2280,7 @@ impl Clone for Value {
         } else if let Value::Cons(cell) = self {
             // The evaluator's reads of a form's cells: the count taken in
             // line, not through the general copy.
-            Value::Cons(Rc::clone(cell))
+            Value::Cons(*cell)
         } else if let Value::Symbol(name) = self {
             Value::Symbol(name.clone())
         } else {
@@ -2372,7 +2364,10 @@ impl EnvFrame {
     }
 }
 
-pub type Env = Vec<EnvFrame>;
+/// eval.c's `Vinternal_interpreter_environment' and the values `specbind'
+/// saved of it: the frames a Rust scope holds live in a vector the
+/// collector scans (a plain `Vec' on the Rust heap would not be).
+pub type Env = crate::lisp::alloc::RootedVec<EnvFrame>;
 
 /// The current interpreter environment: the last frame's, or `nil' with
 /// no frame.
@@ -2422,13 +2417,13 @@ fn assq_environment(
     matches: impl Fn(&SymbolName) -> bool,
 ) -> Result<Option<SharedCons>, LispError> {
     let mut tail = match environment {
-        Value::Cons(cell) => Rc::clone(cell),
+        Value::Cons(cell) => *cell,
         Value::Nil => return Ok(None),
         _ => return Err(improper_environment(environment, false)),
     };
     // FOR_EACH_TAIL's cycle check (Brent): the tortoise moves to the hare
     // at every power of two.
-    let mut tortoise = Rc::as_ptr(&tail);
+    let mut tortoise = tail.as_ptr();
     let mut steps = 0usize;
     let mut lap = 2usize;
     loop {
@@ -2437,20 +2432,20 @@ fn assq_environment(
             if let Value::Cons(binding) = &*entry
                 && matches!(&*binding.car.borrow(), Value::Symbol(bound) if matches(bound))
             {
-                return Ok(Some(Rc::clone(binding)));
+                return Ok(Some(*binding));
             }
         }
         let next = match &*tail.cdr.borrow() {
-            Value::Cons(cell) => Rc::clone(cell),
+            Value::Cons(cell) => *cell,
             Value::Nil => return Ok(None),
             _ => return Err(improper_environment(environment, false)),
         };
-        if Rc::as_ptr(&next) == tortoise {
+        if next.as_ptr() == tortoise {
             return Err(improper_environment(environment, true));
         }
         steps += 1;
         if steps == lap {
-            tortoise = Rc::as_ptr(&next);
+            tortoise = next.as_ptr();
             lap <<= 1;
         }
         tail = next;
@@ -2473,7 +2468,7 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// special.
 pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> bool {
     let mut tail = match environment {
-        Value::Cons(cell) => Rc::clone(cell),
+        Value::Cons(cell) => *cell,
         _ => return false,
     };
     loop {
@@ -2481,7 +2476,7 @@ pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> b
             return true;
         }
         let next = match &*tail.cdr.borrow() {
-            Value::Cons(cell) => Rc::clone(cell),
+            Value::Cons(cell) => *cell,
             _ => return false,
         };
         tail = next;
@@ -2634,7 +2629,8 @@ impl Value {
             Value::Float(value) => Rc::strong_count(&value.0) > 1,
             Value::String(value) => Rc::strong_count(&value.0) > 1,
             Value::StringObject(value) => Rc::strong_count(value) > 1,
-            Value::Cons(value) => Rc::strong_count(value) > 1,
+            // A cons has no count: the collector decides its life.
+            Value::Cons(_) => true,
             Value::Vector(value) => Rc::strong_count(value) > 1,
             Value::Lambda(value) => Rc::strong_count(value) > 1,
             Value::Buffer(value) => Rc::strong_count(value) > 1,
@@ -2667,7 +2663,7 @@ impl Value {
     }
 
     pub fn cons(car: Value, cdr: Value) -> Self {
-        Value::Cons(Rc::new(ConsCell::new(car, cdr)))
+        Value::Cons(crate::lisp::alloc::allocate_cons(ConsCell::new(car, cdr)))
     }
 
     pub fn vector(items: impl IntoIterator<Item = Value>) -> Self {
@@ -3027,7 +3023,7 @@ fn values_equal_recursive(
         }
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a), Value::Cons(b)) => {
-            if Rc::ptr_eq(a, b) {
+            if SharedCons::ptr_eq(a, b) {
                 return true;
             }
             let ids = (ConsCell::identity(a), ConsCell::identity(b));
@@ -3386,7 +3382,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
         match value {
             Value::Cons(cell) => {
                 out.push('(');
-                let mut cursor = Value::Cons(cell.clone());
+                let mut cursor = Value::Cons(*cell);
                 let mut emitted = 0;
                 while let Value::Cons(cell) = &cursor {
                     if emitted >= 8 || out.len() > 2048 {
@@ -3517,7 +3513,7 @@ mod tests {
             tail = tail.cdr().expect("cons");
         }
         assert!(
-            matches!(&tail, Value::Cons(cell) if matches!(outer.environment(), Value::Cons(o) if Rc::ptr_eq(cell, o)))
+            matches!(&tail, Value::Cons(cell) if matches!(outer.environment(), Value::Cons(o) if SharedCons::ptr_eq(cell, o)))
         );
         assert!(!environment_declares_special(frame.environment(), "cell"));
     }
@@ -3534,12 +3530,17 @@ mod tests {
     }
 
     #[test]
-    fn cons_destruction_handles_deep_car_and_cdr_chains_on_a_small_stack() {
+    fn deep_cons_chains_allocate_and_release_on_a_small_stack() {
+        // A chain deep along either word costs no stack to allocate or to
+        // let go of: the cells are the collector's (alloc.c's blocks), so
+        // dropping the handle recurses into nothing.  The sweep, which
+        // walks the blocks, is exercised by the evaluator's collection
+        // test.
         std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(|| {
-                let before = census_live_conses();
                 for along_car in [false, true] {
+                    let before = census_live_conses();
                     let mut root = Value::Nil;
                     for _ in 0..100_000 {
                         root = if along_car {
@@ -3548,38 +3549,13 @@ mod tests {
                             Value::cons(Value::Nil, root)
                         };
                     }
-                    assert_eq!(census_live_conses(), before + 100_000);
+                    assert!(census_live_conses() >= before + 100_000);
                     drop(root);
-                    assert_eq!(census_live_conses(), before);
                 }
             })
             .expect("small-stack worker")
             .join()
-            .expect("deep cons destruction completes without stack overflow");
-    }
-
-    #[test]
-    fn cons_destruction_preserves_shared_tails_and_expires_weak_observers() {
-        let before = census_live_conses();
-        let tail = Value::cons(Value::Integer(37), Value::Nil);
-        let identity = tail.cons_id();
-        let nested = Value::cons(tail.clone(), Value::Nil);
-        let Value::Cons(cell) = &nested else {
-            unreachable!("constructed cons");
-        };
-        let weak = Rc::downgrade(cell);
-        let root = Value::cons(nested, tail.clone());
-        assert_eq!(census_live_conses(), before + 3);
-        drop(root);
-        assert!(weak.upgrade().is_none());
-        assert_eq!(census_live_conses(), before + 1);
-        assert_eq!(tail.cons_id(), identity);
-        assert!(matches!(
-            tail.car().expect("shared tail"),
-            Value::Integer(37)
-        ));
-        drop(tail);
-        assert_eq!(census_live_conses(), before);
+            .expect("deep cons chains complete without stack overflow");
     }
 
     #[test]
@@ -3771,17 +3747,6 @@ mod tests {
 
         assert_eq!(clone.car().expect("car"), Value::Integer(3));
         assert_eq!(clone.cdr().expect("cdr"), Value::Integer(4));
-    }
-
-    #[test]
-    fn weak_cons_slot_does_not_keep_cell_alive() {
-        let weak = {
-            let pair = Value::cons(Value::T, Value::Nil);
-            let (car, _) = pair.cons_cells().expect("constructed cons");
-            car.downgrade()
-        };
-
-        assert!(weak.upgrade().is_none());
     }
 
     #[test]

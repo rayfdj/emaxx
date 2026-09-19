@@ -116,7 +116,7 @@ fn tty_popup_menu(
     position: &Value,
     menu: &Value,
 ) -> Result<Value, LispError> {
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
     // A click event's posn carries window-relative coordinates; the
     // dropdown draws in frame coordinates (Fx_popup_menu converts the
@@ -231,7 +231,7 @@ define_dispatch!(
                 if y != 0 {
                     return Ok(Value::Nil);
                 }
-                let mut env = Vec::new();
+                let mut env = crate::lisp::types::Env::new();
                 let items = crate::lisp::primitives::menu_bar_row_items(interp, &mut env);
                 let mut chosen = Value::Nil;
                 for (caption, key, column) in items {

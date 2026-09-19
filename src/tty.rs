@@ -303,7 +303,7 @@ impl TtyState {
 
 pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter(options)?;
-    let mut env: Env = Vec::new();
+    let mut env: Env = crate::lisp::types::Env::new();
     // emacs.c:init_display establishes the terminal before keyboard.c
     // evaluates top-level. startup.el then owns palette registration,
     // terminal Lisp initialization, buffers, file visitation, and messages.
@@ -670,7 +670,7 @@ fn wrapped_echo_cursor(
 /// The mini window's height ceiling, GNU's `max-mini-window-height'
 /// (default 0.25 of the frame).
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
-    match interpreter.lookup_var("max-mini-window-height", &Vec::new()) {
+    match interpreter.lookup_var("max-mini-window-height", &crate::lisp::types::Env::new()) {
         Some(Value::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
         Some(Value::Float(fraction)) if fraction.get() > 0.0 => {
             (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
@@ -3285,7 +3285,10 @@ fn redraw_with_echo_policy(
         }
         {
             let mut variables = interpreter
-                .lookup_var("overlay-arrow-variable-list", &Vec::new())
+                .lookup_var(
+                    "overlay-arrow-variable-list",
+                    &crate::lisp::types::Env::new(),
+                )
                 .unwrap_or(Value::Nil);
             while let Value::Cons(_) = variables {
                 let Ok(symbol_value) = variables.car() else {
@@ -3295,7 +3298,8 @@ fn redraw_with_echo_policy(
                 let Ok(symbol) = symbol_value.as_symbol() else {
                     continue;
                 };
-                let Some(Value::Marker(marker)) = interpreter.lookup_var(symbol, &Vec::new())
+                let Some(Value::Marker(marker)) =
+                    interpreter.lookup_var(symbol, &crate::lisp::types::Env::new())
                 else {
                     continue;
                 };
@@ -3322,7 +3326,10 @@ fn redraw_with_echo_policy(
                 let arrow = interpreter
                     .get_symbol_property(symbol, "overlay-arrow-string")
                     .filter(|value| value.is_string())
-                    .or_else(|| interpreter.lookup_var("overlay-arrow-string", &Vec::new()))
+                    .or_else(|| {
+                        interpreter
+                            .lookup_var("overlay-arrow-string", &crate::lisp::types::Env::new())
+                    })
                     .and_then(|value| value.as_string().map(str::to_string).ok())
                     .unwrap_or_else(|| "=>".to_string());
                 let arrow: String = arrow
@@ -4944,8 +4951,12 @@ mod tests {
     #[test]
     fn terminal_glyphless_expansion_tracks_coding_faces_and_point_columns() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
-        crate::test_support::eval_lisp(&mut interpreter, &mut Vec::new(), "(erase-buffer)")
-            .expect("erase scratch");
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut crate::lisp::types::Env::new(),
+            "(erase-buffer)",
+        )
+        .expect("erase scratch");
         interpreter.set_terminal_coding_system(None);
         interpreter.buffer.insert("AöB€C😀D\n");
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
@@ -4988,8 +4999,13 @@ mod tests {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
         interpreter.set_terminal_coding_system(None);
         // Startup left the *scratch* banner in the current buffer.
-        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut Vec::new())
-            .expect("erase the scratch banner");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "erase-buffer",
+            &[],
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect("erase the scratch banner");
         interpreter.buffer.insert("ö😀\n");
         let Value::CharTable(table_id) = interpreter
             .default_toplevel_value("glyphless-char-display")
@@ -5023,8 +5039,13 @@ mod tests {
     fn glyphless_wrap_restarts_a_split_display_element_like_gnu() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
         interpreter.set_terminal_coding_system(None);
-        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut Vec::new())
-            .expect("erase the scratch banner");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "erase-buffer",
+            &[],
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect("erase the scratch banner");
         interpreter
             .buffer
             .insert(&format!("{}öZ\n", "x".repeat(76)));
@@ -5070,7 +5091,7 @@ mod tests {
     #[test]
     fn tabulated_list_glyphless_table_uses_tty_sort_indicators() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn (require 'tabulated-list) (tabulated-list-mode))",
         )
@@ -5158,7 +5179,7 @@ mod tests {
     #[test]
     fn align_to_display_specs_lay_out_as_blank_columns() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let forms = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"ab \\tcd\\n\")
@@ -5184,7 +5205,7 @@ mod tests {
     #[test]
     fn width_display_specs_use_tty_cells_and_collapse_equal_runs() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let forms = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"aXbYcZZd\\n\")
@@ -5211,7 +5232,7 @@ mod tests {
     #[test]
     fn propertized_string_display_specs_replace_the_covered_text() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"x:y\n\")
@@ -5247,7 +5268,7 @@ mod tests {
     #[test]
     fn point_at_hidden_run_start_stays_before_the_ellipsis() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"head\nhidden\nnext\n\")
@@ -5276,7 +5297,7 @@ mod tests {
     #[test]
     fn canonical_t_invisibility_spec_hides_true_overlay_regions() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"head\\nhidden\\nnext\\n\")
@@ -5298,7 +5319,7 @@ mod tests {
     #[test]
     fn window_overlay_after_strings_splice_before_hidden_newlines_with_faces() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"head\\nhidden\\nnext\\n\")
@@ -5330,7 +5351,7 @@ mod tests {
     #[test]
     fn point_max_overlay_before_string_contributes_hard_display_rows() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             r#"(progn
                  (insert "a")
@@ -5372,7 +5393,7 @@ mod tests {
     #[test]
     fn point_precedes_a_point_max_overlay_after_string() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             r#"(progn
                  (insert "alp")
@@ -5398,7 +5419,7 @@ mod tests {
     #[test]
     fn overlay_display_string_replaces_its_covered_buffer_range() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             r#"(progn
                  (insert "a")
@@ -5427,7 +5448,7 @@ mod tests {
     #[test]
     fn invisible_properties_on_overlay_strings_remove_their_tty_cells() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"[-] root\\n\")
@@ -5450,7 +5471,7 @@ mod tests {
     #[test]
     fn window_margin_display_strings_do_not_enter_the_text_body() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"Recent commits\n\")
@@ -5474,7 +5495,7 @@ mod tests {
     #[test]
     fn graphical_fringe_overlay_strings_have_no_tty_text_glyph() {
         let mut interp = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"alpha\\n\")
@@ -5514,7 +5535,7 @@ mod tests {
     #[test]
     fn interactive_startup_initializes_scratch_and_messages_buffers() {
         let mut interp = initialized_interactive_runtime();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interp.set_variable("noninteractive", Value::Nil, &mut env);
         // This fixture now reaches the end of GNU startup, not the former
         // handwritten midpoint before its startup message. A separate GNU
@@ -5797,7 +5818,7 @@ mod tests {
     #[test]
     fn display_string_cursor_property_selects_its_first_non_nil_cell() {
         let mut interpreter = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form =
             crate::lisp::reader::Reader::new("#(\" xy\" 0 1 (cursor t) 2 3 (cursor ignored))")
                 .read()
@@ -5812,7 +5833,7 @@ mod tests {
     #[test]
     fn tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows() {
         let mut interpreter = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let setup = crate::lisp::reader::Reader::new(
             "(progn
                (setq tty--pre-redisplay-argument 'unset)
@@ -5838,7 +5859,7 @@ mod tests {
     #[test]
     fn active_minibuffer_only_owns_cursor_while_its_window_is_selected() {
         let mut interpreter = initialized_interactive_runtime();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let ordinary_window = interpreter.selected_window_id();
         let active = crate::lisp::primitives::activate_minibuffer(
@@ -5861,7 +5882,7 @@ mod tests {
     #[test]
     fn transient_printed_value_takes_precedence_over_an_active_minibuffer() {
         let mut interpreter = initialized_interactive_runtime();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
@@ -5891,7 +5912,7 @@ mod tests {
     #[test]
     fn minibuffer_before_string_inherits_its_prompt_anchor_face() {
         let mut interpreter = initialized_interactive_runtime();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
@@ -6039,7 +6060,7 @@ mod tests {
     #[test]
     fn window_end_stops_before_a_wholly_invisible_buffer_tail() {
         let mut interpreter = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let form = crate::lisp::reader::Reader::new(
             "(progn
                (insert \"head\nhidden\nmore\n\")
@@ -6341,7 +6362,7 @@ mod tests {
         };
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         interpreter
             .load_target("isearch")
@@ -6424,7 +6445,7 @@ gamma word three
         };
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         interpreter.buffer.insert("abcdefghijklmnop\n");
         interpreter.buffer.goto_char(1);
@@ -6482,7 +6503,7 @@ gamma word three
         // mechanics against a real keymap assembled through C-owned
         // primitives instead of any transcribed default table.
         let mut interpreter = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         for form in [
             "(defvar tty-test-global-map (make-sparse-keymap))",
             "(use-global-map tty-test-global-map)",
@@ -6525,7 +6546,7 @@ gamma word three
     #[test]
     fn interactive_execution_inserts_through_lisp() {
         let mut interpreter = Interpreter::new();
-        let mut env: Env = Vec::new();
+        let mut env: Env = crate::lisp::types::Env::new();
         let keys = [Value::Integer(104)];
         execute_binding(
             &mut interpreter,

@@ -55,7 +55,9 @@ pub(crate) fn resolve_buffer_invisibility(
     }
     let spec = interpreter
         .buffer_local_value(buffer_id, "buffer-invisibility-spec")
-        .or_else(|| interpreter.lookup_var("buffer-invisibility-spec", &Vec::new()))
+        .or_else(|| {
+            interpreter.lookup_var("buffer-invisibility-spec", &crate::lisp::types::Env::new())
+        })
         .unwrap_or(Value::T);
     match &spec {
         Value::Nil => InvisibilitySpec::default(),

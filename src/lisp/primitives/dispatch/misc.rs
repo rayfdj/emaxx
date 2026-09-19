@@ -1288,7 +1288,11 @@ define_dispatch!(
                     interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
                 if interp.lookup_var(&symbol_name, env).is_none() {
-                    interp.set_variable(&symbol_name, args[1].clone(), &mut Vec::new());
+                    interp.set_variable(
+                        &symbol_name,
+                        args[1].clone(),
+                        &mut crate::lisp::types::Env::new(),
+                    );
                 }
                 Ok(Value::Symbol(symbol_name.into()))
             }
@@ -1304,7 +1308,7 @@ define_dispatch!(
                     interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
                 let value = purecopy_value(interp, &args[1], env)?;
-                interp.set_variable(&symbol_name, value, &mut Vec::new());
+                interp.set_variable(&symbol_name, value, &mut crate::lisp::types::Env::new());
                 interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
                 Ok(Value::Symbol(symbol_name.into()))
             }
@@ -1419,7 +1423,9 @@ define_dispatch!(
                     (Value::StringObject(left), Value::StringObject(right)) => {
                         Rc::ptr_eq(left, right)
                     }
-                    (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+                    (Value::Cons(left), Value::Cons(right)) => {
+                        crate::lisp::types::SharedCons::ptr_eq(left, right)
+                    }
                     (Value::Lambda(left), Value::Lambda(right)) => {
                         Rc::ptr_eq(&left.body, &right.body)
                     }

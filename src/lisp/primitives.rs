@@ -287,6 +287,7 @@ pub(crate) use dispatch::echo_area_message;
 pub(crate) use dispatch::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
+pub(crate) use dispatch::mark_thread_local_roots;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::name_facts_symbol;
 pub(crate) use dispatch::native_elisp_load;

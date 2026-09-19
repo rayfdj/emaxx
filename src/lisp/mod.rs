@@ -434,6 +434,7 @@ macro_rules! define_dispatch {
     };
 }
 
+pub mod alloc;
 pub mod bytecode;
 pub mod eval;
 pub mod json;
@@ -1123,18 +1124,20 @@ fn read_symbol_shorthands_value(shorthands: &[(String, String)]) -> types::Value
     }))
 }
 
-pub fn read_forms(path: &Path) -> Result<Vec<types::Value>, types::LispError> {
+pub fn read_forms(path: &Path) -> Result<alloc::RootedVec<types::Value>, types::LispError> {
     let source = read_source(path)?;
     read_source_forms(&source)
 }
 
-pub(crate) fn read_source_forms(source: &str) -> Result<Vec<types::Value>, types::LispError> {
+pub(crate) fn read_source_forms(
+    source: &str,
+) -> Result<alloc::RootedVec<types::Value>, types::LispError> {
     read_source_forms_with_unescaped_literals(source).map(|(forms, _)| forms)
 }
 
 pub(crate) fn read_source_forms_with_unescaped_literals(
     source: &str,
-) -> Result<(Vec<types::Value>, types::Value), types::LispError> {
+) -> Result<(alloc::RootedVec<types::Value>, types::Value), types::LispError> {
     let settings = source_settings(source)?;
     let mut reader =
         reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands);
@@ -1242,7 +1245,7 @@ fn read_lisp_file_bytes(
     interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
-            vec![types::EnvFrame::lexical()]
+            crate::lisp::types::Env::from_vec(vec![types::EnvFrame::lexical()])
         } else {
             types::Env::new()
         };

@@ -536,7 +536,7 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
         .expect("bytecode argument descriptor contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("bytecode argument descriptor contract should evaluate")
             .to_string(),
         expected
@@ -699,7 +699,7 @@ fn compiled_time_string_results_keep_text_property_mutation() {
         .expect("read compiled time-string program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate compiled time-string program");
     assert_eq!(result.to_string(), expected);
 }
@@ -707,7 +707,7 @@ fn compiled_time_string_results_keep_text_property_mutation() {
 #[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "insert",
@@ -738,7 +738,7 @@ fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
 #[test]
 fn compare_buffer_substrings_uses_dynamic_case_folding_and_the_canonical_table() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
         (with-temp-buffer
@@ -794,7 +794,7 @@ fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
         .expect("comparison contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("comparison contract should evaluate"),
         Value::list([Value::T, Value::T])
     );
@@ -814,7 +814,7 @@ fn subr_frontier_reader_decodes_the_complete_classic_string_escape_table() {
         .expect("classic reader escape contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("classic reader escape contract should evaluate")
             .to_string(),
         expected
@@ -839,7 +839,7 @@ fn subr_frontier_delete_reuses_retained_cons_cells_and_copies_other_sequences() 
         .expect("delete contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("delete contract should evaluate")
             .to_string(),
         r#"(t t "b" [b])"#
@@ -863,7 +863,7 @@ fn subr_frontier_buffer_local_value_signals_when_no_binding_exists() {
         .expect("buffer-local-value contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("void-variable should be caught"),
         Value::Symbol("void-variable".into())
     );
@@ -883,7 +883,7 @@ fn subr_frontier_mapbacktrace_with_an_absent_base_is_an_empty_traversal() {
         .expect("mapbacktrace contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("mapbacktrace contract should evaluate"),
         Value::list([Value::Nil, Value::Nil])
     );
@@ -908,7 +908,7 @@ fn subr_frontier_replace_match_applies_gnu_case_adaptation() {
         .expect("replace-match contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("replace-match contract should evaluate")
             .to_string(),
         r#"("Carrot" "carrot" "Meta")"#
@@ -927,7 +927,7 @@ fn subr_frontier_recordp_does_not_expose_hash_table_runtime_storage() {
         .expect("record predicate contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("record predicate contract should evaluate"),
         Value::list([Value::Nil, Value::T])
     );
@@ -950,7 +950,7 @@ fn subr_frontier_direct_vector_evaluation_materializes_nested_record_literals() 
         .expect("nested record vector contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("nested record vector contract should evaluate")
             .to_string(),
         r#"(t "[#s(sample value)]")"#
@@ -987,7 +987,7 @@ fn subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu() {
         .expect("aset string-promotion contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("aset string-promotion contract should evaluate")
             .to_string(),
         expected
@@ -1004,7 +1004,7 @@ fn make_string_and_aset_share_the_internal_character_encoding() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(let ((s (make-string 1 ?a)) (c (max-char)))\
            (aset s 0 c)\
@@ -1054,7 +1054,7 @@ fn make_string_follows_alloc_c_for_the_multibyte_flag() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate the make-string multibyte contract")
             .to_string(),
         expected
@@ -1108,7 +1108,7 @@ fn syntax_property_searches_after_random_edits_match_the_oracle() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate the random-edit syntax contract")
             .to_string(),
         expected
@@ -1131,7 +1131,7 @@ fn overlay_properties_accept_nil_keys_and_accessible_endpoints() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(with-temp-buffer\
            (insert \"foo\")\
@@ -1168,7 +1168,7 @@ fn overlay_property_keys_use_lisp_identity() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(with-temp-buffer
            (let* ((overlay (make-overlay 1 1))
@@ -1192,7 +1192,7 @@ fn overlay_property_keys_use_lisp_identity() {
 #[test]
 fn kill_buffer_queries_before_the_interactive_modified_prompt() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(progn (require 'cl-lib)\
          (let ((victim (get-buffer-create \" kill-query-order\")) events)\
@@ -1224,7 +1224,7 @@ fn kill_buffer_queries_before_the_interactive_modified_prompt() {
 #[test]
 fn noninteractive_kill_buffer_does_not_prompt_for_a_modified_file() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(progn (require 'cl-lib)\
          (let ((victim (get-buffer-create \" kill-no-prompt\")) prompted)\
@@ -1249,7 +1249,7 @@ fn noninteractive_kill_buffer_does_not_prompt_for_a_modified_file() {
 #[test]
 fn kill_buffer_restores_the_current_buffer_when_a_query_signals() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(let ((caller (current-buffer))
                (victim (get-buffer-create \" kill-query-error\")))
@@ -1299,7 +1299,7 @@ fn subr_frontier_replace_match_distinguishes_string_and_buffer_escapes() {
         .expect("replace-match escape contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("replace-match escape contract should evaluate"),
         Value::list([
             Value::String("\\,\\?ba".into()),
@@ -1329,7 +1329,7 @@ fn subr_frontier_fundamental_mode_is_not_a_stored_derived_parent() {
         .expect("derived-mode parent contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("derived-mode parent contract should evaluate")
             .to_string(),
         expected
@@ -1349,7 +1349,7 @@ fn subr_frontier_backquote_folds_the_constant_suffix_like_gnu() {
         .expect("backquote suffix contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("backquote suffix contract should evaluate")
             .to_string(),
         expected
@@ -1385,7 +1385,7 @@ fn subr_frontier_hook_execution_uses_elisp_owned_local_value_cells() {
         .expect("Elisp-owned hook contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("Elisp-owned hook contract should evaluate")
             .to_string(),
         expected
@@ -1411,7 +1411,7 @@ fn redisplay_defaults_match_native_terminal_and_input_state() {
 
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate redisplay defaults probe"),
         Value::list([
             Value::Integer(0),
@@ -1429,7 +1429,7 @@ fn redisplay_defaults_match_native_terminal_and_input_state() {
 #[test]
 fn sort_recognizes_an_evaluated_numeric_lambda_without_interpreting_each_comparison() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new("(lambda (x y) (< x y))")
         .read()
         .expect("the comparator should parse")
@@ -1472,7 +1472,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
     .expect("read kill-emacs nonlocal-control contract")
     .remove(0);
     let error = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect_err("kill-emacs must not return into Lisp");
     assert!(matches!(
         error,
@@ -1482,7 +1482,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         })
     ));
     assert_eq!(
-        interp.lookup_var("emaxx-kill-seen", &Vec::new()),
+        interp.lookup_var("emaxx-kill-seen", &crate::lisp::types::Env::new()),
         Some(Value::list([
             Value::symbol("third"),
             Value::symbol("first")
@@ -1499,8 +1499,13 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
 
     let termination_for = |args: &[Value]| {
         let mut interp = Interpreter::new();
-        match call(&mut interp, "kill-emacs", args, &mut Vec::new())
-            .expect_err("native kill-emacs must request process termination")
+        match call(
+            &mut interp,
+            "kill-emacs",
+            args,
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect_err("native kill-emacs must request process termination")
         {
             LispError::Terminate(termination) => termination,
             other => panic!("unexpected kill-emacs outcome: {other}"),
@@ -1547,7 +1552,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
 #[test]
 fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let string_object = interp
         .eval(
             &Reader::new("\"heap string\"")
@@ -1813,7 +1818,7 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), &expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("native-comp filename contract should parse")
@@ -2346,7 +2351,7 @@ fn unreached_markers_leave_their_buffers_edit_walk() {
     // one and the buffer's mark), where before every edit walked the
     // dropped ones too.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"(with-current-buffer (get-buffer-create "walk")
              (insert "0123456789")
@@ -2545,7 +2550,7 @@ fn a_failing_finalizer_is_logged_not_signalled() {
         .expect("read finalizer program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("a failing finalizer does not signal to the collector's caller");
     let text = string_like(&result).expect("*Messages* text").text;
     assert!(
@@ -2961,8 +2966,12 @@ fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
         "GNU's file-dialog availability/owner does not match its backend: {oracle}"
     );
     let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
-    let actual = crate::test_support::eval_lisp(&mut interpreter, &mut Vec::new(), availability)
-        .expect("read the terminal runtime's graphical capability boundary");
+    let actual = crate::test_support::eval_lisp(
+        &mut interpreter,
+        &mut crate::lisp::types::Env::new(),
+        availability,
+    )
+    .expect("read the terminal runtime's graphical capability boundary");
     // This is a capability boundary, not a claim of NS/GTK availability
     // parity. A future graphical runtime needs its matching backend case.
     assert_eq!(actual.to_string(), "(terminal nil nil)");
@@ -2980,7 +2989,7 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
     assert_upstream_primitive_contract(&format!("(prin1 {sort_program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(sort_program)
         .read()
         .expect("portable-dump sort program should parse")
@@ -3155,7 +3164,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     use super::pdumper::image::{DUMP_MAGIC, RootSlot};
     use super::pdumper::load::{load_image, validate_header};
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let has_native_functions = interp.known_symbol_names().iter().any(|name| {
         matches!(interp.raw_function_binding(name, &env), Some(Value::Record(id))
             if interp.find_record(id).is_some_and(|record|
@@ -3309,7 +3318,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         pdumper_load(&loaded_path, &mut restored),
         Err(PdumperLoadError::Error("a dump is already loaded".into()))
     );
-    let mut env_restored = Vec::new();
+    let mut env_restored = crate::lisp::types::Env::new();
     let target_groups = restored.dump_root_groups();
     assert_eq!(source_groups.len(), target_groups.len());
     let mut compared = 0;
@@ -3452,7 +3461,7 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
     })
     .expect("the loadup state");
     let has_native_functions = temacs.known_symbol_names().iter().any(|name| {
-        matches!(temacs.raw_function_binding(name, &Vec::new()), Some(Value::Record(id))
+        matches!(temacs.raw_function_binding(name, &crate::lisp::types::Env::new()), Some(Value::Record(id))
             if temacs.find_record(id).is_some_and(|record|
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
     });
@@ -3479,7 +3488,7 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
     .read()
     .expect("dump form parses")
     .expect("a dump form");
-    let dumped = temacs.eval(&dump, &mut Vec::new());
+    let dumped = temacs.eval(&dump, &mut crate::lisp::types::Env::new());
     dumped.unwrap_or_else(|error| panic!("temacs dumps: {error:?}"));
     // The writer's units are closed before the image reopens them, and
     // so are the reference session's: the reference answers are taken
@@ -3510,7 +3519,7 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
            (list n (string-trim \" a \") first))",
     ];
     let print = |interp: &mut crate::lisp::eval::Interpreter, program: &str| {
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let form = Reader::new(program)
             .read()
             .expect("program parses")
@@ -3532,7 +3541,7 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
                 .read()
                 .expect("parses")
                 .expect("a form"),
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("pdumper-stats");
     assert_eq!(reference_stats.is_nil(), !reference.dump_loaded_p());
@@ -3554,7 +3563,7 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
     // (the image carries `process-environment' as nil; `HOME' above
     // answered the same as the reference), the dump-time `setenv' gone
     // with the dumped list.
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let stats = restored
         .eval(
             &Reader::new(
@@ -3594,7 +3603,7 @@ fn native_units_and_functions_round_trip_through_the_image() {
     }
     use super::pdumper::{PdumperLoadError, pdumper_load};
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let eval = |interp: &mut crate::lisp::eval::Interpreter, env: &mut Env, program: &str| {
         let form = Reader::new(program)
             .read()
@@ -3696,7 +3705,7 @@ fn native_units_and_functions_round_trip_through_the_image() {
 
     let mut restored = crate::lisp::eval::Interpreter::new();
     pdumper_load(&path, &mut restored).unwrap_or_else(|error| panic!("pdumper_load: {error:?}"));
-    let mut restored_env = Vec::new();
+    let mut restored_env = crate::lisp::types::Env::new();
     let answers = eval(
         &mut restored,
         &mut restored_env,
@@ -3777,7 +3786,7 @@ fn fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it() {
     ];
     let observe = |interp: &mut crate::lisp::eval::Interpreter| {
         programs.map(|program| {
-            let mut env = Vec::new();
+            let mut env = crate::lisp::types::Env::new();
             let form = Reader::new(program)
                 .read()
                 .expect("program parses")
@@ -3901,7 +3910,7 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
         "(error \"Compiled regexp introspection is unavailable from the fancy-regex backend\")";
     let boundary_expected = format!("((1 . 2) invalid-regexp {unavailable} {unavailable})");
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(boundary_program)
         .read()
         .expect("compiled-regexp boundary program should parse")
@@ -3931,7 +3940,7 @@ fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
     assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
         (list
@@ -4050,7 +4059,7 @@ fn module_load_validates_and_initializes_real_libraries() {
     assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let contract_form = Reader::new(contract_program)
         .read()
         .expect("dynamic-module contract should parse")
@@ -4280,7 +4289,7 @@ fn file_notification_primitives_follow_the_host_contract() {
 #[test]
 fn native_dispatch_fails_closed_at_the_gnu_c_boundary() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     for name in [
         "semantic-go-to-tag",
@@ -4437,7 +4446,7 @@ fn translate_elisp_regex_elides_repeated_empty_shy_groups() {
 #[test]
 fn subregexp_context_rejects_classes_bounds_and_trailing_escape() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call_via_lisp(
@@ -4505,7 +4514,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(
@@ -4593,7 +4602,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
 #[test]
 fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for character in [0xd800, 0x110000, 0x3fffff] {
         assert_eq!(
             call(
@@ -4651,7 +4660,7 @@ fn internal_char_font_matches_the_headless_gnu_font_boundary() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         call(
             &mut interp,
@@ -4691,7 +4700,7 @@ fn fontp_matches_the_gnu_font_record_contract() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let font = call(
         &mut interp,
         "font-spec",
@@ -4759,7 +4768,7 @@ fn native_frame_identity_and_single_tty_traversal_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("frame identity contract should parse")
@@ -4848,7 +4857,7 @@ fn native_frame_geometry_parameters_and_state_flags_match_gnu() {
 
     // window.el owns frame-windows-min-size even when it is native-compiled.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("frame geometry contract should parse")
@@ -4887,7 +4896,7 @@ fn window_configuration_restore_keeps_the_current_frame_size_like_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("window configuration contract should parse")
@@ -4987,7 +4996,7 @@ fn native_frame_focus_mouse_geometry_and_headless_errors_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("frame headless contract should parse")
@@ -5047,7 +5056,7 @@ fn native_font_spec_state_and_headless_lookup_family_matches_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("font.c pure family contract should parse")
@@ -5104,7 +5113,7 @@ fn native_font_spec_validation_and_name_normalization_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("font validation contract should parse")
@@ -5152,7 +5161,7 @@ fn native_font_at_and_info_match_the_headless_gnu_boundary() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("headless font boundary should parse")
@@ -5269,7 +5278,7 @@ fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("font backend contract should parse")
@@ -5412,7 +5421,7 @@ fn native_fontset_registry_family_matches_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("fontset.c family contract should parse")
@@ -5443,7 +5452,7 @@ fn nil_coding_system_queries_match_the_gnu_primitive_contract() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let mut actual = [
         "coding-system-p",
         "coding-system-type",
@@ -5504,7 +5513,7 @@ fn bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (coding, charset) in [
         ("utf-8", Some("unicode")),
         ("utf-8-unix", Some("unicode")),
@@ -5555,7 +5564,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (coding, expected) in [
         (
             "utf-8",
@@ -5607,7 +5616,7 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_global_binding("executing-kbd-macro", Value::T);
     for (events, default, expected) in [
         (
@@ -5657,7 +5666,7 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
 #[test]
 fn map_char_table_exposes_public_syntax_descriptors() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let ((table (make-syntax-table))
@@ -5708,7 +5717,7 @@ fn eval_region_preserves_point_and_uses_the_supplied_reader() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil 2 2 2 42)");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let result = Reader::new(program)
         .read_all()
         .expect("eval-region contract should parse")
@@ -5746,8 +5755,10 @@ fn headless_terminal_queries_match_the_upstream_batch_terminal() {
             "tty-top-frame",
         ]
         .into_iter()
-        .map(|name| call(&mut interp, name, &[], &mut Vec::new())
-            .unwrap_or_else(|error| panic!("query {name}: {error}")))
+        .map(
+            |name| call(&mut interp, name, &[], &mut crate::lisp::types::Env::new())
+                .unwrap_or_else(|error| panic!("query {name}: {error}"))
+        )
         .collect::<Vec<_>>(),
         vec![
             Value::Nil,
@@ -5800,7 +5811,7 @@ fn native_terminal_state_and_tty_controls_share_the_gnu_headless_contract() {
         .expect("read native terminal contract")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate native terminal contract");
     assert_eq!(result.to_string(), expected);
 }
@@ -5827,7 +5838,7 @@ fn native_terminal_identity_is_opaque_and_shared_with_the_frame() {
         .expect("terminal identity contract should parse")
         .expect("terminal identity contract should contain a form");
     let actual = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("terminal identity contract should evaluate");
     let expected = Reader::new(expected)
         .read()
@@ -5872,7 +5883,7 @@ fn native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal() {
         .expect("read delete-terminal contract")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate delete-terminal contract");
     assert_eq!(
         result,
@@ -5895,7 +5906,7 @@ fn native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal() {
             &mut no_op_interp,
             "delete-terminal",
             &[Value::symbol("bogus"), Value::T],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("an object that does not designate a terminal is a no-op"),
         Value::Nil
@@ -5945,7 +5956,7 @@ fn native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&state_form, &mut Vec::new())
+            .eval(&state_form, &mut crate::lisp::types::Env::new())
             .expect("evaluate dispnew state contract")
             .to_string(),
         expected_state
@@ -5975,7 +5986,7 @@ fn native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&surface_form, &mut Vec::new())
+            .eval(&surface_form, &mut crate::lisp::types::Env::new())
             .expect("evaluate dispnew headless surface")
             .to_string(),
         expected_surface
@@ -5985,7 +5996,7 @@ fn native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts() {
             &mut interp,
             "display--update-for-mouse-movement",
             &[Value::Integer(1), Value::Integer(2)],
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("valid fixnum mouse coordinates"),
         Value::Nil
@@ -6013,7 +6024,7 @@ fn headless_input_mode_family_matches_the_upstream_batch_terminal() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate input-mode family probe"),
         Value::list([
             Value::list([Value::T, Value::Nil, Value::T, Value::Integer(7)]),
@@ -6466,7 +6477,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     std::fs::create_dir_all(directory.join("ext4")).expect("create ext4 fixture");
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let result = call(
         &mut interp,
         "directory-files",
@@ -6537,7 +6548,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
 #[test]
 fn seq_uniq_preserves_first_occurrence_order() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let result = call_via_lisp(
         &mut interp,
         "seq-uniq",
@@ -6613,7 +6624,7 @@ fn unicode_char_property_helpers_cover_names_and_general_categories_inner() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let name = crate::test_support::call_lisp_function(
         &mut interp,
@@ -6699,7 +6710,7 @@ fn max_char_distinguishes_the_internal_and_unicode_character_spaces() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         call(&mut interp, "max-char", &[], &mut env).expect("internal character ceiling"),
         Value::Integer(0x3f_ffff)
@@ -6737,7 +6748,7 @@ fn unicode_property_tables_are_stable_and_preserve_overrides_inner() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let property = Value::Symbol("general-category".into());
     let table = call(
         &mut interp,
@@ -6837,7 +6848,7 @@ fn unicode_property_internal_encoders_follow_gnu_decision_table() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("Unicode encoder contract should parse")
@@ -6859,7 +6870,7 @@ fn unicode_property_internal_encoders_follow_gnu_decision_table() {
 #[test]
 fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let pattern = Value::String("-[0-9A-F]+\\'".into());
     let haystack = Value::String("CJK IDEOGRAPH-4E00".into());
 
@@ -6886,7 +6897,7 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
 #[test]
 fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     regexp::reset_regexp_syntax_class_render_count();
     for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
@@ -6934,7 +6945,7 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
 #[test]
 fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let word_match = |interp: &mut Interpreter, env: &mut Env, text: &str| {
         call(
             interp,
@@ -7052,7 +7063,7 @@ fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
     }
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (pattern, text, expected) in [
         (
             "\\([[:alnum:]_$]\\{,1000\\}\\)x",
@@ -7090,7 +7101,7 @@ fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
 #[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = call(
         &mut interp,
         "make-hash-table",
@@ -7197,7 +7208,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
 #[test]
 fn equal_structured_hash_tables_use_structural_buckets() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = call(
         &mut interp,
         "make-hash-table",
@@ -7386,7 +7397,7 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
     let mut interp = Interpreter::new();
     crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate preloaded undo contract");
     assert_eq!(result, expected);
 }
@@ -7419,7 +7430,7 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
     let mut interp = Interpreter::new();
     crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate dynamic undo binding contract");
     assert_eq!(result, expected);
 }
@@ -7444,7 +7455,7 @@ fn buffer_undo_list_assignment_preserves_cons_identity() {
         .expect("undo-list identity form");
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate undo-list identity contract");
     assert_eq!(result, Value::list([Value::T, Value::T]));
 }
@@ -7470,7 +7481,7 @@ fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
     let mut interp = Interpreter::new();
     crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate marker-adjustment undo contract");
     assert_eq!(
         result,
@@ -7544,7 +7555,7 @@ fn x_window_properties_validate_the_frame_before_property_arguments() {
         .expect("window-property contract is valid Lisp")
         .expect("window-property contract contains a form");
     let value = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("window-property contract catches the expected frame errors");
     let expected = Reader::new(&expected)
         .read()
@@ -7636,7 +7647,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
             .read_all()
             .expect("read directory-family list")
             .remove(0),
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("evaluate directory-family list");
     assert_eq!(values.to_string(), expected);
@@ -7645,7 +7656,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
 #[test]
 fn insert_file_contents_reports_missing_input_as_file_missing() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "emaxx-missing-input-{}",
         std::time::SystemTime::now()
@@ -7680,7 +7691,7 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
 #[test]
 fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "emaxx-replace-point-{}",
         std::time::SystemTime::now()
@@ -7714,7 +7725,7 @@ fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
 #[test]
 fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "emaxx-missing-trash-input-{}",
         std::time::SystemTime::now()
@@ -7766,7 +7777,7 @@ fn get_walks_the_plist_as_plist_get_does() {
     // tail or a non-list plist nil, a circular plist nil (FOR_EACH_TAIL_SAFE
     // breaks out).  The oracle's values.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (form, expected) in [
         (
             "(progn (setplist 'plist-x '(a 1 b)) (list (get 'plist-x 'a) (get 'plist-x 'b) (get 'plist-x 1)))",
@@ -7802,7 +7813,7 @@ fn mapatoms_walks_the_standard_obarray_in_place() {
     // and t as the objects they are; a symbol interned by the callback
     // joins the obarray without disturbing the walk.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let value = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -7829,7 +7840,7 @@ fn failed_deletions_report_as_fileio_c_does() {
     // handles `file-error' and let a plain `error' through.  A path through
     // a regular file is ENOTDIR for any user; the values are the oracle's.
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let file = std::env::temp_dir().join(format!(
         "emaxx-deletion-report-{}",
         std::time::SystemTime::now()
@@ -7882,7 +7893,7 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
         .to_string();
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable(
         "default-directory",
         Value::String(cwd.display().to_string().into()),
@@ -7910,7 +7921,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     // explicit permit; unrelated primitive tests remain parallel.
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
     let buffer = Value::buffer(buffer_id, buffer_name);
 
@@ -8023,7 +8034,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
 #[test]
 fn process_list_is_newest_first_and_excludes_deleted_processes() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let first = call(
         &mut interp,
         "make-pipe-process",
@@ -8078,7 +8089,7 @@ fn process_sentinel_can_delete_its_own_process_exactly_once() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("self-deleting process sentinel contract should parse")
@@ -8108,7 +8119,7 @@ fn process_connection_probe_with_default(
     // The probe's `ignore' sentinel is subr.el Lisp; run on the early
     // GNU-Lisp runtime rather than the file-less host.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("process-connection-type", default_connection_type, &mut env);
     let (buffer_id, buffer_name) = interp.create_buffer(&format!("*{name}*"));
     let mut process_args = vec![
@@ -8212,7 +8223,7 @@ fn make_process_accepts_nil_coding_like_emacs() {
         .expect("nil-coding process contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("nil :coding should use process coding defaults"),
         Value::T
     );
@@ -8222,7 +8233,7 @@ fn make_process_accepts_nil_coding_like_emacs() {
 #[test]
 fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*pty-eof*");
     let process = call(
         &mut interp,
@@ -8282,7 +8293,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
 #[test]
 fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*split-pty-eof*");
     let process = call(
         &mut interp,
@@ -8343,7 +8354,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
 #[test]
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("captured-signal-event", Value::Nil, &mut env);
     let process = call_via_lisp(
         &mut interp,
@@ -8453,7 +8464,7 @@ fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t)");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("process filter buffer contract should parse")
@@ -8474,7 +8485,7 @@ fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
 #[test]
 fn deleted_process_is_not_returned_for_buffer() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*deleted-process*");
     let buffer = Value::buffer(buffer_id, buffer_name);
     let process = call_via_lisp(
@@ -8522,7 +8533,7 @@ fn deleted_process_is_not_returned_for_buffer() {
 #[test]
 fn string_limit_supports_end_flag() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call_via_lisp(
@@ -8549,7 +8560,7 @@ fn string_limit_supports_end_flag() {
 #[test]
 fn run_at_time_callbacks_fire_on_accept_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let callback = Value::lambda(
         Vec::new().into(),
         vec![
@@ -8582,7 +8593,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
 #[test]
 fn run_with_timer_callbacks_fire_on_accept_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let callback = Value::lambda(
         Vec::new().into(),
         vec![
@@ -8616,7 +8627,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
 fn accept_process_output_honors_seconds_with_no_millis_argument() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let buffer = Value::buffer(interp.current_buffer_id(), String::new());
     let process = call_via_lisp(
         &mut interp,
@@ -8686,7 +8697,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 #[test]
 fn accept_process_output_without_timeout_waits_for_requested_process() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let buffer = Value::buffer(interp.current_buffer_id(), String::new());
     let process = call_via_lisp(
         &mut interp,
@@ -8726,7 +8737,7 @@ fn accept_process_output_without_timeout_waits_for_requested_process() {
 #[test]
 fn accept_process_output_ignores_distractor_output_until_target_delivers() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let target_buffer = call_via_lisp(
         &mut interp,
         "generate-new-buffer",
@@ -8840,7 +8851,7 @@ fn accept_process_output_just_this_one_suspends_distractor_filters_like_emacs() 
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("JUST-THIS-ONE contract should parse")
@@ -8883,7 +8894,7 @@ fn zero_duration_sleep_does_not_dispatch_ready_process_output_like_emacs() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("zero-duration sleep contract should parse")
@@ -8913,7 +8924,7 @@ fn accept_process_output_does_not_count_an_outputless_exit_as_delivery() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil exit)");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("outputless-exit contract should parse")
@@ -8936,7 +8947,7 @@ fn make_network_process_requires_the_gnu_name_contract() {
     assert_upstream_primitive_contract(program, expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         call(&mut interp, "make-network-process", &[], &mut env)
             .expect("zero arguments follow GNU's nil fast path"),
@@ -8967,7 +8978,7 @@ fn make_network_process_requires_the_gnu_name_contract() {
 #[test]
 fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let process = call(
         &mut interp,
         "make-network-process",
@@ -9025,7 +9036,7 @@ fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
         return;
     }
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let process = call(
         &mut interp,
         "make-network-process",
@@ -9081,7 +9092,7 @@ fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
 #[test]
 fn make_network_process_coding_precedence_matches_gnu() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
         (let ((coding-system-for-read 'binary)
@@ -9126,7 +9137,7 @@ fn make_network_process_coding_precedence_matches_gnu() {
 #[test]
 fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let server = call(
         &mut interp,
         "make-network-process",
@@ -9195,7 +9206,7 @@ fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
 #[test]
 fn make_network_process_nowait_opens_on_the_next_event_pump() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let server = call(
         &mut interp,
         "make-network-process",
@@ -9290,7 +9301,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
 #[test]
 fn process_command_reports_child_argv_and_nil_for_connection_records() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let child = interp
         .create_process(
             None,
@@ -9351,7 +9362,7 @@ fn indent_rigidly_shifts_each_line_in_region() {
         let buffer = &mut interp.buffer;
         buffer.goto_char(buffer.point_max());
     }
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call_via_lisp(
         &mut interp,
@@ -9375,7 +9386,7 @@ fn indent_rigidly_shifts_each_line_in_region() {
 fn inhibit_read_only_allows_buffer_read_only_edits() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
     interp.set_variable("inhibit-read-only", Value::T, &mut env);
     interp.buffer.goto_char(1);
@@ -9396,7 +9407,7 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
 fn insert_signals_buffer_read_only_unless_inhibited() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
 
     assert!(matches!(
@@ -9429,7 +9440,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
 fn failed_search_with_move_noerror_moves_to_bound() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc def");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer.goto_char(1);
 
     assert_eq!(
@@ -9470,7 +9481,7 @@ fn failed_search_with_move_noerror_moves_to_bound() {
 fn delete_line_removes_the_current_line() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer.goto_char(6);
 
     call_via_lisp(&mut interp, "delete-line", &[], &mut env).expect("delete-line should succeed");
@@ -9492,7 +9503,7 @@ fn make_button_signals_on_an_incomplete_range() {
     // returned nil here instead.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "button");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let error = call_via_lisp(
         &mut interp,
@@ -9513,7 +9524,7 @@ fn make_button_signals_on_an_incomplete_range() {
 fn looking_at_p_preserves_existing_match_data() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "re-search-forward",
@@ -9588,7 +9599,7 @@ fn native_posix_buffer_search_and_search_state_helpers_match_gnu_contracts() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("POSIX search contract should parse")
@@ -9636,7 +9647,7 @@ fn match_data_preserves_gnu_source_reuse_reseat_and_elision_contracts() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t t t)");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("match-data state contract should parse")
@@ -9677,7 +9688,7 @@ fn native_sqlite_columns_uses_the_live_result_set_schema() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t t t t t)");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("sqlite-columns contract should parse")
@@ -9713,7 +9724,7 @@ fn native_sqlite_errors_publish_the_gnu_condition_hierarchy() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("SQLite condition contract should parse")
@@ -9751,7 +9762,7 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "lock-primitive-{}-{}",
         std::process::id(),
@@ -9861,7 +9872,7 @@ fn native_message_dialog_fallbacks_share_the_headless_message_contract() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("message dialog fallback contract should parse")
@@ -9898,7 +9909,7 @@ fn native_mutex_name_reads_the_shared_mutex_state() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(\"gate\" nil t (arg1))");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("mutex-name contract should parse")
@@ -9949,7 +9960,7 @@ fn native_thread_and_synchronization_handles_compare_by_identity() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("opaque-handle equality contract should parse")
@@ -9975,7 +9986,7 @@ fn native_menu_activity_predicate_is_false_without_a_graphical_menu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil t nil)");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("menu activity contract should parse")
@@ -10011,7 +10022,7 @@ fn native_imagep_validates_the_shared_image_specification_shape() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("imagep contract should parse")
@@ -10067,7 +10078,7 @@ fn native_image_cache_family_matches_the_headless_frame_contract() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("image cache contract should parse")
@@ -10115,7 +10126,7 @@ fn native_image_variables_match_the_gnu_image_c_contract() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("image variable contract should parse")
@@ -10214,7 +10225,7 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("fringe.c family contract should parse")
@@ -10355,7 +10366,7 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     // dump time; the expected literal is the dumped oracle's answer, so the
     // in-process arm must carry the same dumped Lisp surface.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("composite.c family contract should parse")
@@ -10408,7 +10419,7 @@ fn find_composition_reports_the_automatic_composition_for_a_displayed_buffer() {
         .expect("automatic composition contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("automatic composition contract should evaluate")
             .to_string(),
         expected
@@ -10449,7 +10460,7 @@ fn char_charset_restriction_narrows_to_charset_list_or_coding_system() {
         .expect("char-charset restriction contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("char-charset restriction contract should evaluate")
             .to_string(),
         expected
@@ -10480,7 +10491,7 @@ fn composition_gstring_uses_the_effective_terminal_coding_system() {
         .expect("terminal gstring contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("terminal gstring contract should evaluate")
             .to_string(),
         expected
@@ -10571,7 +10582,7 @@ Raw \\[forward-char] docs.\n\n(fn LIST)\
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("doc.c family contract should parse")
@@ -10810,7 +10821,7 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
     // `tty-register-default-colors' (xfaces.c tty_lookup_color), so the
     // Emaxx side runs on the same batch image the oracle answered from.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&host_program)
         .read()
         .expect("xfaces.c family contract should parse")
@@ -10889,7 +10900,7 @@ fn native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu() {
         .expect("xfaces set-attribute contract should parse")
         .expect("xfaces set-attribute contract should contain a form");
     let actual = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("xfaces set-attribute contract should evaluate");
     let expected = Reader::new(expected)
         .read()
@@ -10925,7 +10936,7 @@ fn native_internal_lisp_face_p_is_a_total_predicate() {
         .expect("internal-lisp-face-p contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("internal-lisp-face-p contract should evaluate"),
         Value::list([
             Value::Nil,
@@ -10971,7 +10982,7 @@ fn native_xfaces_frame_table_and_resource_boundary_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("xfaces frame table contract should parse")
@@ -11092,7 +11103,7 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("GnuTLS digest contract should parse")
@@ -11111,7 +11122,7 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
 #[test]
 fn native_gnutls_advertises_loaded_host_capabilities() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(let ((capabilities (gnutls-available-p)))
            (if (and (equal (secure-hash-algorithms)
@@ -11189,7 +11200,7 @@ fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     // identical text; the anchors underneath keep the answer from being
     // trivially empty.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&format!("(prin1-to-string {program})"))
         .read()
         .expect("GnuTLS catalog and error contract should parse")
@@ -11244,7 +11255,7 @@ fn native_gnutls_formats_x509_certificates_with_the_host_library() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("GnuTLS certificate-format contract should parse")
@@ -11305,7 +11316,7 @@ fn native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("GnuTLS MAC contract should parse")
@@ -11416,7 +11427,7 @@ fn native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("GnuTLS symmetric contract should parse")
@@ -11508,7 +11519,7 @@ fn native_gnutls_pre_session_state_warnings_and_error_predicate_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("GnuTLS pre-session contract should parse")
@@ -11566,7 +11577,7 @@ fn native_gnutls_boot_and_bye_preserve_gnu_validation_contracts() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("GnuTLS lifecycle validation should parse")
@@ -11680,7 +11691,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
             (kill-buffer buffer)))"#
     );
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("GnuTLS transport program should parse")
@@ -11898,7 +11909,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         client_certificate = client_certificate.display()
     );
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("X.509 verification program should parse")
@@ -11952,7 +11963,7 @@ fn native_conditional_gc_and_memory_info_match_the_host_contract() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("conditional GC and memory contract should parse")
@@ -11981,7 +11992,7 @@ fn native_conditional_gc_and_memory_info_match_the_host_contract() {
     .expect("ordinary conditional GC form should contain a form");
     assert_eq!(
         interp
-            .eval(&due_form, &mut Vec::new())
+            .eval(&due_form, &mut crate::lisp::types::Env::new())
             .expect("ordinary conditional GC should evaluate"),
         Value::T
     );
@@ -12006,7 +12017,7 @@ fn native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_ba
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("invocation contract should parse")
@@ -12071,7 +12082,7 @@ fn native_syntax_description_decodes_the_shared_descriptor_bits() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t t t t t t) t (arg1))");
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("syntax description contract should parse")
@@ -12097,7 +12108,7 @@ fn canonical_combining_classes_come_from_complete_unicode_data() {
 
 fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (character, expected) in [(0x0307, 230), (0x0323, 220)] {
         assert_eq!(
             crate::test_support::call_lisp_function(
@@ -12240,7 +12251,7 @@ fn core_libraries_are_not_shadowed_by_cedet_subdirectories() {
         .expect("read core-library program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate core-library program");
     assert_eq!(result.to_string(), expected);
 }
@@ -12311,7 +12322,7 @@ fn threads_get_their_own_bindings_handlers_and_join_semantics() {
         .expect("read thread semantics program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate thread semantics program");
     assert_eq!(result.to_string(), expected);
 }
@@ -12334,7 +12345,7 @@ fn thread_join_leaves_unrelated_timers_pending() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate thread-join timer program"),
         Value::list([Value::Nil, Value::T])
     );
@@ -12365,7 +12376,7 @@ fn subprocess_cwd_uses_native_unhandled_directory_mechanism() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate subprocess cwd dispatch program")
             .to_string(),
         expected
@@ -12391,7 +12402,7 @@ fn process_tty_name_rejects_unknown_streams() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate process tty stream program")
             .to_string(),
         expected
@@ -12413,7 +12424,7 @@ fn dropping_an_interpreter_terminates_and_reaps_its_child() {
         .expect("read child-drop lifecycle program")
         .remove(0);
     let process = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("create child for interpreter-drop lifecycle");
     let process_id = interp
         .resolve_process_id(&process)
@@ -12459,7 +12470,7 @@ fn interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks() 
         .expect("read pty child-drop program")
         .remove(0);
     let process = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("create pty child for interpreter-drop lifecycle");
     let process_id = interp
         .resolve_process_id(&process)
@@ -12508,7 +12519,7 @@ fn buffer_file_name_primitive_observes_current_buffer_dynamic_binding() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate dynamically bound buffer-file-name program")
             .to_string(),
         expected
@@ -12606,7 +12617,7 @@ fn inotify_directory_watch_reports_external_child_creation() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate external inotify directory program")
             .to_string(),
         expected
@@ -12634,10 +12645,15 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
     // compared through GNU's: the Rust Display form is not print.c (it
     // renders a shared sublist as circular and does not escape quotes).
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .unwrap_or_else(|error| panic!("evaluate {label} program: {error:?}"));
-    let printed = call(&mut interp, "prin1-to-string", &[result], &mut Vec::new())
-        .unwrap_or_else(|error| panic!("print {label} result: {error:?}"));
+    let printed = call(
+        &mut interp,
+        "prin1-to-string",
+        &[result],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .unwrap_or_else(|error| panic!("print {label} result: {error:?}"));
     let printed = string_like(&printed)
         .unwrap_or_else(|| panic!("{label} result printed as a string"))
         .text;
@@ -12681,7 +12697,7 @@ fn embedded_native_compilation_builds_uncached_advice_trampolines() {
         .expect("native compilation control form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("compile native caller and fresh trampoline"),
         Value::list([Value::T, Value::T, Value::symbol("mocked"), Value::T]),
     );
@@ -13661,7 +13677,7 @@ fn copy_family_native_path_uses_handler_expanded_names() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate copy-family handler program")
             .to_string(),
         expected
@@ -13716,7 +13732,7 @@ fn skip_chars_word_class_includes_ascii_digits() {
         .expect("read skip-word program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate skip-word program");
     assert_eq!(result.to_string(), expected);
 }
@@ -13760,7 +13776,7 @@ fn euc_jp_codec_follows_the_oracle_contract() {
         .expect("read euc-jp program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate euc-jp program");
     assert_eq!(result.to_string(), expected);
 }
@@ -13797,7 +13813,7 @@ fn unify_charset_validates_and_deunifies_like_charset_c() {
         .expect("read unify-charset program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate unify-charset program");
     assert_eq!(result.to_string(), expected);
 }
@@ -13878,7 +13894,7 @@ fn file_reads_consult_the_coding_alist_and_name_like_the_oracle() {
         .expect("read file-coding program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate file-coding program");
     assert_eq!(result.to_string(), expected);
 }
@@ -13921,7 +13937,7 @@ fn string_decode_names_last_coding_system_used_like_the_oracle() {
         .expect("read lcsu program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate lcsu program");
     assert_eq!(result.to_string(), expected);
 }
@@ -13990,7 +14006,7 @@ fn undecided_decode_detects_shift_jis_like_coding_c() {
         .expect("read Shift-JIS detection program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate Shift-JIS detection program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14063,7 +14079,7 @@ fn string_byte_conversions_use_the_internal_encoding() {
         .expect("read byte-conversion program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate byte-conversion program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14114,7 +14130,7 @@ fn sjis_conversion_follows_the_oracle_contract() {
         .expect("read sjis program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate sjis program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14156,7 +14172,7 @@ fn big5_conversion_follows_the_oracle_contract() {
         .expect("read big5 program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate big5 program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14187,7 +14203,7 @@ fn garbage_collect_reports_the_live_census() {
         .expect("read garbage-collect shape program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate garbage-collect shape program");
     assert_eq!(result.to_string(), expected);
 
@@ -14201,7 +14217,7 @@ fn garbage_collect_reports_the_live_census() {
     .expect("read garbage-collect counts program")
     .remove(0);
     let counts = interp
-        .eval(&counts_form, &mut Vec::new())
+        .eval(&counts_form, &mut crate::lisp::types::Env::new())
         .expect("evaluate garbage-collect counts program")
         .to_string();
     let count_of = |key: &str| -> i64 {
@@ -14229,7 +14245,7 @@ fn garbage_collect_reports_the_live_census() {
     .expect("read garbage-collect sizes program")
     .remove(0);
     let sizes = interp
-        .eval(&sizes_form, &mut Vec::new())
+        .eval(&sizes_form, &mut crate::lisp::types::Env::new())
         .expect("evaluate garbage-collect sizes program")
         .to_string();
     assert_eq!(
@@ -14246,7 +14262,7 @@ fn garbage_collect_reports_the_live_census() {
         .expect("read positioned-symbol GC program")
         .remove(0);
     interp
-        .eval(&positioned_gc, &mut Vec::new())
+        .eval(&positioned_gc, &mut crate::lisp::types::Env::new())
         .expect("evaluate positioned-symbol GC program");
     assert!(
         interp.symbols_with_positions_enabled(),
@@ -14320,7 +14336,7 @@ fn overriding_keymaps_follow_the_oracle_contract() {
         .expect("read overriding-keymap program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate overriding-keymap program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14367,7 +14383,7 @@ fn max_lisp_eval_depth_is_honoured_dynamically() {
         .expect("read depth program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate depth program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14423,7 +14439,7 @@ fn get_unused_iso_final_char_scans_the_registered_charsets() {
         .expect("read iso-final-char program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate iso-final-char program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14451,7 +14467,7 @@ fn gnutls_digests_are_queried_from_the_library() {
         .expect("read gnutls-digests program")
         .remove(0);
     let rendered = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate gnutls-digests program");
     let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
     assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
@@ -14573,7 +14589,7 @@ fn set_network_process_option_applies_the_option_or_refuses() {
         .expect("read socket-option program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate socket-option program");
     let rendered = result.to_string();
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), &rendered);
@@ -14622,7 +14638,7 @@ fn file_name_case_insensitivity_is_asked_of_the_filesystem() {
         .expect("read case-insensitivity program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate case-insensitivity program");
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), &result.to_string());
 
@@ -14663,7 +14679,7 @@ fn operating_system_release_is_wired_to_the_uname_syscall() {
         .expect("read operating-system-release")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate operating-system-release");
     assert_eq!(result, Value::String(expected.into()));
 }
@@ -14691,7 +14707,7 @@ fn init_editfns_computes_the_user_names_once_per_process() {
             None => std::env::remove_var("LOGNAME"),
         }
     }
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let mut eval = |interp: &mut crate::lisp::eval::Interpreter, program: &str| {
         let form = Reader::new(program)
             .read()
@@ -14769,7 +14785,7 @@ fn text_quoting_default_is_derived_from_the_process_locale() {
     .expect("read locale-derived quoting program")
     .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate locale-derived quoting program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14813,7 +14829,7 @@ fn interactive_form_prefers_the_property_over_advice_and_walks_aliases() {
         .expect("read advice interactive-form program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate advice interactive-form program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14846,7 +14862,7 @@ fn text_quoting_style_follows_the_locale_flag_only_for_a_nil_setting() {
         .expect("read text-quoting policy program")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate text-quoting policy program");
     assert_eq!(result.to_string(), expected);
 }
@@ -14872,7 +14888,7 @@ fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("text quoting contract should parse")
@@ -14929,7 +14945,7 @@ fn format_message_quotes_only_format_literals_with_the_effective_text_style() {
         .expect("read format-message quoting contract")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate format-message quoting contract");
     assert_eq!(result.to_string(), expected);
 }
@@ -14959,7 +14975,7 @@ fn selected_global_keymap_is_distinct_from_the_global_map_variable() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("selected global keymap contract should parse")
@@ -15039,7 +15055,7 @@ fn minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("minor-mode keymap contract should parse")
@@ -15183,7 +15199,7 @@ fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("internal keymap walker contract should parse")
@@ -15250,7 +15266,7 @@ fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describer
     assert_upstream_primitive_contract(&format!("(prin1 {bare_program})"), bare_expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(bare_program)
         .read()
         .expect("vector description contract should parse")
@@ -15289,7 +15305,7 @@ fn internal_buffer_completion_preserves_hidden_filtering_metadata_and_predicate_
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("buffer completion contract should parse")
@@ -15345,7 +15361,7 @@ fn native_command_and_variable_readers_normalize_defaults_and_intern_results() {
          (subrp (symbol-function 'read-variable))
          (help-function-arglist 'read-variable))"#;
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(emaxx_program)
         .read()
         .expect("native symbol reader contract should parse")
@@ -15380,7 +15396,7 @@ fn set_minibuffer_window_validates_and_updates_the_shared_window_state() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("minibuffer window contract should parse")
@@ -15401,7 +15417,7 @@ fn looking_back_matches_text_before_point_with_limit() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "alpha beta");
     interp.buffer.goto_char(11);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let result = call_via_lisp(
         &mut interp,
@@ -15432,7 +15448,7 @@ fn looking_back_matches_text_before_point_with_limit() {
 fn set_text_properties_replaces_existing_properties() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call(
         &mut interp,
@@ -15512,7 +15528,7 @@ fn set_text_properties_replaces_existing_properties() {
 fn buffer_substring_accepts_reversed_bounds() {
     let mut interp = Interpreter::new();
     interp.buffer.insert("abcdef");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call(
@@ -15530,7 +15546,7 @@ fn buffer_substring_accepts_reversed_bounds() {
 fn delete_and_extract_region_preserves_text_properties() {
     let mut interp = Interpreter::new();
     interp.buffer.insert("abcdef");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "put-text-property",
@@ -15576,7 +15592,7 @@ fn delete_and_extract_region_preserves_text_properties() {
 fn buffer_substring_preserves_properties_with_reversed_bounds() {
     let mut interp = Interpreter::new();
     interp.buffer.insert("abcdef");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "set-text-properties",
@@ -15613,7 +15629,7 @@ fn buffer_substring_preserves_properties_with_reversed_bounds() {
 #[test]
 fn next_single_property_change_uses_string_positions() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let string = call(
         &mut interp,
@@ -15653,7 +15669,7 @@ fn next_single_property_change_uses_string_positions() {
 #[test]
 fn next_single_property_change_returns_nil_for_uniform_string_property() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let string = call(
         &mut interp,
@@ -15682,7 +15698,7 @@ fn next_single_property_change_returns_nil_for_uniform_string_property() {
 fn property_change_helpers_accept_markers() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call(
         &mut interp,
@@ -15733,7 +15749,7 @@ fn get_text_property_inherits_from_category_symbol() {
         "type",
         Value::Symbol("sample-button-type".into()),
     );
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call(
         &mut interp,
@@ -15769,7 +15785,7 @@ fn overlay_get_inherits_from_category_symbol() {
         "type",
         Value::Symbol("sample-button-type".into()),
     );
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let overlay = call(
         &mut interp,
@@ -15806,7 +15822,7 @@ fn overlay_get_inherits_from_category_symbol() {
 fn copy_overlay_clones_region_and_properties_with_new_identity() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcdef");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let overlay = call(
         &mut interp,
@@ -15871,7 +15887,7 @@ fn copy_overlay_clones_region_and_properties_with_new_identity() {
 #[test]
 fn substitute_command_keys_uses_explicit_keymaps() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -15896,7 +15912,7 @@ fn substitute_command_keys_uses_explicit_keymaps() {
 #[test]
 fn add_face_text_property_preserves_other_string_properties() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let string = call(
         &mut interp,
@@ -15951,7 +15967,7 @@ fn mapconcat_result_preserves_gnu_mutable_string_identity() {
         .expect("mutable mapconcat contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("mutable mapconcat contract should evaluate")
             .to_string(),
         expected
@@ -15961,7 +15977,7 @@ fn mapconcat_result_preserves_gnu_mutable_string_identity() {
 #[test]
 fn propertize_preserves_existing_string_properties() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let seed = call(
         &mut interp,
@@ -15992,7 +16008,7 @@ fn propertize_preserves_existing_string_properties() {
 #[test]
 fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // alloc.c starts with purify-flag=t; exercise Fintern's ordinary
     // post-loadup path explicitly, without changing that GNU default.
     interp.define_special_variable("purify-flag", Value::Nil);
@@ -16049,7 +16065,7 @@ fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
 #[test]
 fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let table = make_obarray(&mut interp);
     let bad_name = Value::symbol("not-a-string");
     let error = call(
@@ -16128,7 +16144,7 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
 #[test]
 fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let supplied_name = Value::String("help".into());
 
     let left = call(
@@ -16178,7 +16194,7 @@ fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
 fn text_property_search_helpers_find_matches_and_gaps() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcd");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call(
         &mut interp,
@@ -16233,7 +16249,7 @@ fn font_lock_mode_declines_to_enable_in_a_batch_session() {
     // noninteractive session.  An earlier Emaxx facade fabricated an enabled
     // jit-lock state here instead.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         call_via_lisp(&mut interp, "font-lock-mode", &[], &mut env)
@@ -16259,7 +16275,7 @@ fn font_lock_mode_declines_to_enable_in_a_batch_session() {
 #[test]
 fn backtrace_frame_internal_honors_depth_relative_to_base() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let outer_args = [Value::Integer(7)];
     interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &outer_args);
     interp.push_backtrace_frame(Value::Symbol("base-frame".into()), &[]);
@@ -16289,7 +16305,7 @@ fn backtrace_frame_internal_honors_depth_relative_to_base() {
 #[test]
 fn set_buffer_redisplay_is_a_callable_variable_watcher() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let watcher = interp
         .lookup_function("set-buffer-redisplay", &env)
         .expect("xdisp watcher primitive should be prebound");
@@ -16320,7 +16336,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
 fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "foo");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     call(
         &mut interp,
@@ -16433,7 +16449,7 @@ fn bidi_override_positions_match_upstream_cases() {
 #[test]
 fn key_description_formats_follow_prefix_defaults() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let result = call(
         &mut interp,
         "key-description",
@@ -16447,7 +16463,7 @@ fn key_description_formats_follow_prefix_defaults() {
 #[test]
 fn key_description_matches_upstream_string_and_vector_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let prefixed = call(
         &mut interp,
         "key-description",
@@ -16592,7 +16608,7 @@ fn define_key_preserves_raw_space_events_in_shared_prefixes() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"(let ((map (make-sparse-keymap)))
               (define-key map "\C-c, " 'semantic-complete-analyze-inline)
@@ -16632,7 +16648,7 @@ fn define_key_creates_a_local_prefix_over_an_inherited_non_prefix_binding() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"(let ((parent (make-sparse-keymap))
                  (map (make-keymap)))
@@ -16673,7 +16689,7 @@ fn define_key_creates_a_specific_prefix_over_a_default_binding() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"(let ((map (make-sparse-keymap)))
               (define-key map [t] 'fallback-command)
@@ -16699,7 +16715,7 @@ fn define_key_creates_a_specific_prefix_over_a_default_binding() {
 #[test]
 fn keymap_set_where_is_internal_preserves_control_prefixes() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
     call_via_lisp(
         &mut interp,
@@ -16744,7 +16760,7 @@ fn keymap_character_contracts_share_gnu_control_and_full_map_storage() {
 
     // The C-x C-f resolution comes from files.el in the dumped image.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("keymap character contract should parse")
@@ -16763,7 +16779,7 @@ fn keymap_character_contracts_share_gnu_control_and_full_map_storage() {
 #[test]
 fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
     call_via_lisp(
         &mut interp,
@@ -16977,7 +16993,7 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);
     interp.load_target("case-table").expect("load case-table");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let* ((tab (copy-case-table (standard-case-table)))
@@ -17049,7 +17065,7 @@ fn string_case_conversion_preserves_properties_until_character_count_changes() {
         .expect("case-property contract should parse")
         .expect("case-property contract should contain a form");
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("case-property contract should evaluate");
     assert_eq!(result.to_string(), expected);
 }
@@ -17057,7 +17073,7 @@ fn string_case_conversion_preserves_properties_until_character_count_changes() {
 #[test]
 fn capitalize_uses_current_syntax_table_word_boundaries() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (with-temp-buffer
@@ -17094,7 +17110,7 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);
     interp.load_target("case-table").expect("load case-table");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let* ((tab (copy-case-table (standard-case-table)))
@@ -17128,7 +17144,7 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions() {
 #[test]
 fn single_key_description_matches_symbol_cases() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let home = call(
         &mut interp,
         "single-key-description",
@@ -17151,7 +17167,7 @@ fn single_key_description_matches_symbol_cases() {
 #[test]
 fn keymap_bindings_accept_t_vector_events() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         "(let ((map (make-sparse-keymap \"demo\")))
                (define-key map [t] 'fallback-command)
@@ -17265,7 +17281,7 @@ fn keymap_views_hand_out_their_own_cells() {
 #[test]
 fn map_keymap_visits_runtime_keymap_bindings() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let ((map (make-sparse-keymap))
@@ -17294,7 +17310,7 @@ fn map_keymap_visits_runtime_keymap_bindings() {
 #[test]
 fn keymaps_nest_multi_event_bindings_and_report_full_map_ranges() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (let ((map (make-keymap))
@@ -17346,7 +17362,7 @@ fn keymaps_nest_multi_event_bindings_and_report_full_map_ranges() {
 #[test]
 fn keymap_walkers_follow_prefix_command_symbols_and_run_leaf_menu_filters() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -17404,7 +17420,7 @@ fn completion_predicates_preserve_string_list_membership() {
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
             let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-            let mut env = Vec::new();
+            let mut env = crate::lisp::types::Env::new();
             let forms = Reader::new(
                 "(let* ((abcdef '(\"abc\" \"def\"))
                             (pred (lambda (elt) (memq elt abcdef))))
@@ -17445,7 +17461,7 @@ fn case_folded_try_completion_preserves_unextended_input_spelling() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("case-folded completion contract should parse")
@@ -17471,7 +17487,7 @@ fn all_completions_preserves_propertized_string_candidate_identity() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t 7)");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("propertized completion identity contract should parse")
@@ -17491,7 +17507,7 @@ fn all_completions_preserves_propertized_string_candidate_identity() {
 #[test]
 fn completion_results_accept_text_properties() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"(let* ((matches (all-completions "foo" '("foobar") nil))
                   (candidate (car matches)))
@@ -17510,7 +17526,7 @@ fn completion_results_accept_text_properties() {
 #[test]
 fn substring_of_completion_result_accepts_text_properties() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"(let* ((matches (all-completions "foo" '("foobar") nil))
                   (candidate (car matches))
@@ -17568,7 +17584,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer(" *native-process-audit*");
     interp
         .switch_to_buffer_id(buffer_id)
@@ -17717,7 +17733,7 @@ fn native_connection_control_and_pid_signals_follow_gnu_process_c() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("native process control contract should parse")
@@ -17750,7 +17766,7 @@ fn native_signal_names_share_the_platform_codec_used_by_signal_process() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("native signal-name contract should parse")
@@ -17811,7 +17827,7 @@ fn process_filters_can_observe_that_read_event_is_waiting_for_user_input() {
     assert_upstream_primitive_contract("(prin1 (waiting-for-user-input-p))", "nil");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("read-event waiting contract should parse")
@@ -17859,7 +17875,7 @@ fn native_process_thread_ownership_matches_gnu_descriptor_locking() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("process thread ownership contract should parse")
@@ -17896,7 +17912,7 @@ fn native_network_lookup_uses_platform_address_vectors_and_gnu_validation() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("network lookup contract should parse")
@@ -17941,7 +17957,7 @@ fn native_network_lookup_delegates_numeric_syntax_to_the_host_resolver() {
         .expect("numeric lookup oracle result should exist");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("numeric lookup contract should parse")
@@ -18071,7 +18087,7 @@ fn url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection() {
     let (emaxx_port, emaxx_request_rx, emaxx_server) = one_shot_http_fixture();
     let emaxx_program = http_retrieval_program(emaxx_port);
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&emaxx_program)
         .read()
         .expect("HTTP retrieval contract should parse")
@@ -18109,7 +18125,7 @@ fn url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection() {
 #[test]
 fn native_network_interface_list_reports_the_ipv4_loopback_subnet() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let interfaces = call(
         &mut interp,
         "network-interface-list",
@@ -18162,7 +18178,7 @@ fn native_serial_process_validation_matches_gnu_process_c() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("serial validation contract should parse")
@@ -18238,7 +18254,7 @@ fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
     assert_upstream_primitive_contract(&format!("(prin1 {active})"), active_expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (program, expected) in [(inactive, inactive_expected), (active, active_expected)] {
         let form = Reader::new(program)
             .read()
@@ -18331,7 +18347,7 @@ fn reused_minibuffer_discards_overlays_from_the_previous_read() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("minibuffer overlay reset contract should parse")
@@ -18364,7 +18380,7 @@ fn native_read_expression_history_matches_gnu_minibuf_c_value_cell() {
     assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(contract)
         .read()
         .expect("read-expression-history contract should parse")
@@ -18395,7 +18411,7 @@ fn native_record_and_pseudovector_type_names_match_gnu_data_c() {
     assert_upstream_primitive_contract(&format!("(prin1 {public_program})"), public_expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(public_program)
         .read()
         .expect("type-name contract should parse")
@@ -18596,7 +18612,7 @@ fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for (program, expected) in [
         (validation, validation_expected),
         (synchronization, synchronization_expected),
@@ -18649,7 +18665,7 @@ fn native_combined_after_change_merges_ranges_before_running_hooks() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("combined after-change contract should parse")
@@ -18692,7 +18708,7 @@ fn change_hook_nonlocal_exits_clear_the_active_hook_value() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("change-hook cleanup contract should parse")
@@ -18737,7 +18753,7 @@ fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
 
     let mut interp =
         crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("combine-change-calls contract should parse")
@@ -18849,7 +18865,7 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
         let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let form = Reader::new(program)
             .read()
             .expect("keyboard-macro contract should parse")
@@ -18870,7 +18886,7 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 #[test]
 fn native_keyboard_macro_family_publishes_gnu_status_messages() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     crate::lisp::primitives::set_echo_area_message(None);
 
@@ -18903,7 +18919,7 @@ fn native_keyboard_macro_family_publishes_gnu_status_messages() {
 #[test]
 fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer.insert("xy");
     interp.buffer.goto_char(1);
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
@@ -18939,7 +18955,7 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
 #[test]
 fn keyboard_macro_records_input_read_inside_a_command() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let definition =
         Reader::new("(defun emaxx-test-read-char-command () (interactive) (read-char))")
             .read()
@@ -19039,7 +19055,7 @@ fn file_attributes_nil_matches_gnu_missing_file_contract() {
     assert_upstream_primitive_contract("(prin1 (file-attributes nil))", "nil");
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         call(&mut interp, "file-attributes", &[Value::Nil], &mut env)
             .expect("nil denotes an absent file"),
@@ -19174,7 +19190,7 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
         let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let form = Reader::new(program)
             .read()
             .expect("keyboard-input contract should parse")
@@ -19217,7 +19233,7 @@ fn char_property_primitives_accept_windows_and_filter_window_overlays() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("window char-property contract should parse")
@@ -19255,7 +19271,7 @@ fn native_open_dribble_file_creates_and_closes_a_private_file_like_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program)
         .read()
         .expect("dribble-file contract should parse")
@@ -19325,7 +19341,7 @@ fn native_libxml_family_uses_strict_xml_and_tolerant_html_dom_contracts() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("libxml family contract should parse")
@@ -19411,7 +19427,7 @@ fn native_headless_window_geometry_and_hscroll_match_gnu_c_contracts() {
 
     let mut interp =
         crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("window geometry contract should parse")
@@ -19492,7 +19508,7 @@ fn native_indent_c_motion_and_line_number_width_family_matches_gnu() {
 
     let mut interp =
         crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("indent.c family contract should parse")
@@ -19637,7 +19653,7 @@ fn native_xdisp_headless_query_family_matches_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("xdisp.c family contract should parse")
@@ -19695,7 +19711,7 @@ fn native_x_display_queries_observe_the_headless_backend_boundary() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("X display query contract should parse")
@@ -19771,7 +19787,7 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("headless GUI action contract should parse")
@@ -19837,7 +19853,7 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("headless menu contract should parse")
@@ -19913,7 +19929,7 @@ fn native_display_connection_management_stops_at_the_headless_backend() {
     assert_upstream_primitive_contract(&format!("(prin1 {validation})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let validation = Reader::new(validation)
         .read()
         .expect("display connection validation should parse")
@@ -20040,7 +20056,7 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
     );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("Tree-sitter capability contract should parse")
@@ -20144,7 +20160,7 @@ fn native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime() {
         .expect("Tree-sitter parser lifecycle program should parse")
         .expect("Tree-sitter parser lifecycle form should exist");
     let actual = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("official Tree-sitter JSON parser lifecycle should evaluate");
     interp.set_global_binding("emaxx-treesit-result", actual);
     let comparison = Reader::new(&format!("(equal emaxx-treesit-result '{expected})"))
@@ -20153,7 +20169,7 @@ fn native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime() {
         .expect("Tree-sitter parser lifecycle comparison should exist");
     assert_eq!(
         interp
-            .eval(&comparison, &mut Vec::new())
+            .eval(&comparison, &mut crate::lisp::types::Env::new())
             .expect("Tree-sitter parser lifecycle result should compare"),
         Value::T
     );
@@ -20263,7 +20279,7 @@ fn native_treesit_queries_and_traversal_use_official_runtime() {
         .expect("Tree-sitter query and traversal program should parse")
         .expect("Tree-sitter query and traversal form should exist");
     let actual = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("official Tree-sitter query and traversal runtime should evaluate");
     interp.set_global_binding("emaxx-treesit-query-result", actual);
     let comparison = Reader::new(&format!("(equal emaxx-treesit-query-result '{expected})"))
@@ -20272,7 +20288,7 @@ fn native_treesit_queries_and_traversal_use_official_runtime() {
         .expect("Tree-sitter query result comparison should exist");
     assert_eq!(
         interp
-            .eval(&comparison, &mut Vec::new())
+            .eval(&comparison, &mut crate::lisp::types::Env::new())
             .expect("Tree-sitter query and traversal result should compare"),
         Value::T
     );
@@ -20336,7 +20352,7 @@ fn native_window_change_state_hooks_and_minibuffer_resize_match_gnu() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("window state contract should parse")
@@ -20430,7 +20446,7 @@ fn native_serial_process_surface_and_configuration_match_gnu() {
     let (_emaxx_master, emaxx_path) = serial_test_pty();
     let emaxx_program = serial_surface_program(&emaxx_path);
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&emaxx_program)
         .read()
         .expect("serial surface contract should parse")
@@ -20474,7 +20490,7 @@ fn native_serial_speed_nil_preserves_the_unconfigured_gnu_contract() {
 
     let (_emaxx_master, emaxx_path) = serial_test_pty();
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(&program(&emaxx_path))
         .read()
         .expect("unconfigured serial contract should parse")
@@ -20497,7 +20513,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
         .set_timeout(Duration::from_secs(1))
         .expect("set serial test PTY timeout");
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let filter_form = Reader::new("(lambda (_process text) (setq emaxx-test-serial-input text))")
         .read()
         .expect("serial filter should parse")
@@ -20585,7 +20601,7 @@ fn native_network_process_resolves_named_services_from_the_services_database() {
     let expected = upstream_primitive_contract_output(&format!("(prin1 {program})"));
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("named-service contract should parse")
@@ -20639,7 +20655,7 @@ fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("datagram address contract should parse")
@@ -20704,7 +20720,7 @@ fn local_network_process_rejects_overlong_service_before_host_bind() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("overlong local socket contract should parse")
@@ -20777,7 +20793,7 @@ fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("UDP event-pump contract should parse")
@@ -20867,7 +20883,7 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("network accept contract should parse")
@@ -20926,7 +20942,7 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
     }
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let stopped = start_sleep(&mut interp, &mut env, "stopped-child");
     let stopped_id = interp
@@ -21035,7 +21051,7 @@ fn native_system_process_inventory_and_attributes_share_the_host_snapshot() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(program)
         .read()
         .expect("process inventory assertion should parse")
@@ -21081,8 +21097,13 @@ fn native_system_process_inventory_matches_oracle_availability() {
     let oracle_is_empty = output.stdout == b"t";
 
     let mut interp = Interpreter::new();
-    let inventory = call(&mut interp, "list-system-processes", &[], &mut Vec::new())
-        .expect("list native system processes");
+    let inventory = call(
+        &mut interp,
+        "list-system-processes",
+        &[],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .expect("list native system processes");
     assert_eq!(inventory.is_nil(), oracle_is_empty);
 }
 
@@ -21091,7 +21112,7 @@ fn native_system_process_inventory_matches_oracle_availability() {
 fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer(" *held-process-output*");
     let buffer = interp
         .buffer_identity_value(buffer_id)
@@ -21221,7 +21242,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
     );
 
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let make_process =
         |interp: &mut Interpreter, env: &mut Env, name: &str, connection_type: &str| {
             call(
@@ -21296,7 +21317,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 #[test]
 fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
@@ -21310,7 +21331,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
 #[test]
 fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     set_tty_event_reader(Some(Box::new(|| None)));
     let event = call(&mut interp, "read-event", &[], &mut env);
@@ -21324,7 +21345,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
 #[test]
 fn tty_event_reader_does_not_preempt_queued_events() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_variable(
         "unread-command-events",
@@ -21343,7 +21364,7 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 #[test]
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     crate::test_support::eval_lisp(
         &mut interp,
@@ -21388,7 +21409,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 #[test]
 fn blocking_tty_event_read_redraws_after_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let process = crate::test_support::eval_lisp(
         &mut interp,
@@ -21460,7 +21481,7 @@ fn redisplay_dispatches_an_already_due_timer() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate redisplay timer program"),
         Value::T
     );
@@ -21482,7 +21503,7 @@ fn input_pending_check_timers_dispatches_an_already_due_timer() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate input-pending timer program"),
         Value::list([Value::Nil, Value::T])
     );
@@ -21491,7 +21512,7 @@ fn input_pending_check_timers_dispatches_an_already_due_timer() {
 #[test]
 fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -21516,7 +21537,7 @@ fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
 fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     crate::test_support::mark_process_test();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     set_tty_event_poller(Some(Box::new(|| Some(None))));
     let result = crate::test_support::eval_lisp(
@@ -21548,7 +21569,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
 #[test]
 fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_variable(
         "this-command",
@@ -21604,7 +21625,7 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
 #[test]
 fn write_region_mustbenew_consumes_a_full_negative_answer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let directory = std::env::temp_dir().join(format!(
         "emaxx-write-region-mustbenew-{}-{}",
@@ -21658,7 +21679,7 @@ fn write_region_mustbenew_consumes_a_full_negative_answer() {
 #[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     // The terminal feeds "answer.txt" then RET into the minibuffer loop.
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
@@ -21687,7 +21708,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
 #[test]
 fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     crate::test_support::eval_lisp(
         &mut interp,
@@ -21766,7 +21787,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
 #[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_variable(
         "minibuffer-history",
@@ -21818,7 +21839,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 #[test]
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_variable(
         "minibuffer-history",
@@ -21857,7 +21878,7 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
 #[test]
 fn tty_minibuffer_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     // The frontend's reader answers None for C-g; the loop signals quit.
     set_tty_event_reader(Some(Box::new(|| None)));
@@ -21877,7 +21898,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
 #[test]
 fn tty_completing_read_completes_with_tab() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -21911,7 +21932,7 @@ fn tty_completing_read_completes_with_tab() {
 #[test]
 fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
     set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
@@ -21958,7 +21979,7 @@ fn upstream_interactive_interpreter() -> (Interpreter, Env) {
     };
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp
         .load_target("minibuffer")
@@ -22061,7 +22082,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
 #[test]
 fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(interp.active_minibuffer_activation_id(), None);
     let entry = call(&mut interp, "selected-window", &[], &mut env).expect("entry window");
     let outer = crate::lisp::primitives::activate_minibuffer(
@@ -22244,7 +22265,7 @@ fn interactive_form_strips_command_modes_like_gnu() {
         .expect("interactive-form contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("interactive-form contract should evaluate")
             .to_string(),
         expected
@@ -22288,7 +22309,7 @@ fn indirect_buffers_share_text_properties_with_their_base() {
         .expect("indirect property contract should contain a form");
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("indirect property contract should evaluate")
             .to_string(),
         expected
@@ -22298,7 +22319,7 @@ fn indirect_buffers_share_text_properties_with_their_base() {
 #[test]
 fn window_resize_apply_commits_staged_pixel_sizes() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let upper = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
     call(
         &mut interp,
@@ -22345,7 +22366,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
 #[test]
 fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer.insert("aa\nbbbb\nc\n");
     let plain = call(&mut interp, "window-text-pixel-size", &[], &mut env).expect("size");
     assert_eq!(
@@ -22379,7 +22400,7 @@ fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
 #[test]
 fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // `switch-to-buffer' is GNU window.el's; the undo protocol under
     // test only needs the buffer to become current.
     let undo_buffer = call(
@@ -22459,7 +22480,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
     // Emaxx models a no-window-system build, so those platform rebinds are
     // deliberately absent and not asserted here.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // GNU starts in *scratch*, whose `lisp-interaction-mode' map shadows DEL
     // with `backward-delete-char-untabify' -- both runtimes agree on that.
     // These expectations are about the dumped *global* map, so read them
@@ -22513,7 +22534,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
 #[test]
 fn command_remapping_finds_fresh_remap_bindings() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(let ((map (make-keymap)))
            (define-key map \"x\" 'foo)
@@ -22546,7 +22567,7 @@ fn command_remapping_finds_fresh_remap_bindings() {
 #[test]
 fn window_end_and_posn_follow_published_interactive_geometry() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     for n in 0..60 {
         call(
             &mut interp,
@@ -22593,7 +22614,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
 #[test]
 fn recenter_uses_the_published_window_height_for_negative_lines() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::T, &mut env);
     for n in 0..60 {
         call(
@@ -22631,7 +22652,7 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
 #[test]
 fn interactive_recenter_uses_the_live_shrunken_window_height() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     for n in 0..30 {
         call(
@@ -22676,7 +22697,7 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
 #[test]
 fn interactive_vertical_motion_honors_the_cons_goal_column() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "insert",
@@ -22724,7 +22745,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 #[test]
 fn format_mode_line_renders_the_dumped_spec_interactively() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
@@ -22768,7 +22789,7 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
 #[test]
 fn mode_line_line_number_is_relative_to_the_accessible_region() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
@@ -22810,7 +22831,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
 /// oracle's stdout comparison.
 fn emaxx_batch_output(program: &str) -> String {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // These unchanged samples assume an empty buffer. GNU executes their
     // --eval action before command-line-1 inserts initial-scratch-message;
     // the in-process fixture now returns after complete GNU startup.
@@ -22909,7 +22930,7 @@ fn paging_keys_carry_the_gnu_bindings() {
 #[test]
 fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     for n in 0..60 {
@@ -22948,7 +22969,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 #[test]
 fn glass_mode_line_honors_font_lock_face_string_properties() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let form = Reader::new(
@@ -22978,7 +22999,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
 #[test]
 fn undo_file_marker_records_the_visited_modtime() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let directory = std::env::temp_dir().join(format!("emaxx-undo-marker-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
     let path = directory.join("marker.txt");
@@ -23072,7 +23093,7 @@ fn interactive_undo_restores_the_unmodified_state() {
     };
     let mut interp = crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize GNU-compatible batch interpreter");
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let directory = std::env::temp_dir().join(format!("emaxx-undo-clean-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
@@ -23171,7 +23192,7 @@ fn window_edges_from_natives(
 #[test]
 fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     let root_edges = window_edges_from_natives(&mut interp, &mut env, &[]);
     assert_eq!(
@@ -23188,7 +23209,7 @@ fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
 #[test]
 fn window_render_layout_reports_split_geometry_in_tree_order() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\ngamma\n");
     let upper = interp.selected_window_value();
@@ -23231,7 +23252,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
 #[test]
 fn window_cycling_follows_tree_order_from_the_selected_window() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\n");
     let upper_left = interp.selected_window_value();
@@ -23295,7 +23316,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
 #[test]
 fn window_mode_lines_render_in_each_windows_own_context() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\ngamma\ndelta\n");
     let upper = interp.selected_window_value();
@@ -23446,7 +23467,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
 #[test]
 fn interactive_spec_i_passes_nil_without_reading_anything() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         "(defalias 'emaxx-test-spec-i (function (lambda (a b) (interactive \"i\\np\") (setq emaxx-test-spec-args (list a b)))))",
     )
@@ -23655,7 +23676,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
 #[test]
 fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\ngamma\n");
@@ -24242,7 +24263,7 @@ fn terminal_frames_follow_gnu_device_window_and_deletion_lifecycle() {
         .expect("valid terminal contract fixture")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("terminal lifecycle");
     assert_eq!(result.to_string(), expected);
 }
@@ -24284,7 +24305,7 @@ fn terminal_frames_preserve_other_frames_when_windows_change() {
         .expect("valid terminal contract fixture")
         .remove(0);
     let result = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("independent window trees");
     assert_eq!(result.to_string(), expected);
 }
@@ -24342,7 +24363,7 @@ fn terminal_frames_isolate_faces_keyboards_and_saved_configurations() {
         .read_all()
         .expect("valid terminal contract fixture")
         .remove(0);
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let result = interp
         .eval(&form, &mut env)
         .expect("frame/keyboard isolation");
@@ -24615,7 +24636,7 @@ fn assert_oracle_file_contract_with_observer(
 #[test]
 fn lock_file_ignores_a_lock_it_cannot_create() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let directory = std::env::temp_dir().join(format!(
         "emaxx-lock-enotdir-{}-{}",
         std::process::id(),
@@ -24668,7 +24689,7 @@ fn lock_file_ignores_a_lock_it_cannot_create() {
 #[test]
 fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let prefix = "/nonexistent-dir-emaxx-zz/prefix";
     for (dir_flag, message) in [
         (Value::Nil, "Creating file with prefix"),
@@ -24724,7 +24745,7 @@ fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
 #[test]
 fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let buffer = Value::buffer(interp.current_buffer_id(), String::new());
     let process = call_via_lisp(
         &mut interp,
@@ -24773,7 +24794,7 @@ fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
 #[test]
 fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let text = format!("{}b{}\n", "a".repeat(300), "c".repeat(100));
     call(
         &mut interp,
@@ -24834,7 +24855,7 @@ fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
 #[test]
 fn load_history_lists_a_repeated_definition_twice_as_gnu_does() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = std::env::temp_dir().join(format!(
         "emaxx-load-history-{}-{}.el",
         std::process::id(),
@@ -24921,7 +24942,7 @@ fn reader_distinguishes_unibyte_string_characters_from_byte8_sources() {
 #[test]
 fn read_positioning_symbols_positions_the_symbols_inside_vectors() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let form = call(
         &mut interp,
         "read-positioning-symbols",
@@ -24995,7 +25016,7 @@ fn read_positioning_symbols_positions_the_symbols_inside_vectors() {
 #[test]
 fn text_property_writes_touch_only_the_spans_they_cover() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
 (with-temp-buffer
   (buffer-enable-undo)
@@ -25047,7 +25068,7 @@ fn text_property_writes_touch_only_the_spans_they_cover() {
 #[test]
 fn equal_hash_table_answers_survive_removals_and_slot_reuse() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let program = r#"
 (let ((table (make-hash-table :test 'equal)) (log nil))
   (dotimes (i 40) (puthash (list "key" i (* i i)) i table))

@@ -623,7 +623,7 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         "text-mode-abbrev-table",
     ] {
         if !interp
-            .lookup_var(symbol, &Vec::new())
+            .lookup_var(symbol, &crate::lisp::types::Env::new())
             .is_some_and(|value| is_abbrev_table_value(interp, &value))
         {
             let table = make_runtime_abbrev_table(interp, Some(symbol), Value::Nil);
@@ -632,7 +632,7 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
     }
 
     let existing = interp
-        .lookup_var("abbrev-table-name-list", &Vec::new())
+        .lookup_var("abbrev-table-name-list", &crate::lisp::types::Env::new())
         .unwrap_or(Value::Nil);
     let mut items = existing.to_vec().unwrap_or_default();
     for symbol in [
@@ -648,7 +648,10 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         }
     }
     interp.set_global_binding("abbrev-table-name-list", Value::list(items));
-    if let Some(table) = interp.lookup_var("fundamental-mode-abbrev-table", &Vec::new()) {
+    if let Some(table) = interp.lookup_var(
+        "fundamental-mode-abbrev-table",
+        &crate::lisp::types::Env::new(),
+    ) {
         interp.set_global_binding("local-abbrev-table", table);
     }
 }

@@ -19,6 +19,8 @@ thread_local! {
     /// saves and later re-formats it when restoring a message.
     static ECHO_AREA_MESSAGE_VALUE: std::cell::RefCell<Option<Value>> =
         const { std::cell::RefCell::new(None) };
+    // xdisp.c's echo_area_buffer is staticpro'd; the value behind the
+    // current message is a root of every collection (`mark_echo_area_roots').
     /// GNU's echo_area_buffer[1]: the last message shown on the glass.
     /// `redisplay' from Lisp is redisplay_preserve_echo_area — when the
     /// current message was wiped by input arrival, it re-displays this
@@ -2293,7 +2295,7 @@ pub(crate) fn window_line_number_layout(
     let width = needed.max(explicit);
     let tick = |name: &str| {
         interp
-            .lookup_var(name, &Vec::new())
+            .lookup_var(name, &crate::lisp::types::Env::new())
             .and_then(|value| value.as_integer().ok())
             .unwrap_or(0)
     };
@@ -5723,7 +5725,9 @@ fn decode_mode_line_spec(
     spec: char,
 ) -> Result<String, LispError> {
     let var = |interp: &Interpreter, name: &str| -> Value {
-        interp.lookup_var(name, &Vec::new()).unwrap_or(Value::Nil)
+        interp
+            .lookup_var(name, &crate::lisp::types::Env::new())
+            .unwrap_or(Value::Nil)
     };
     Ok(match spec {
         '%' => "%".to_string(),
@@ -5999,6 +6003,16 @@ pub(super) fn direct_following_char(
         Some(code) => Ok(Value::Integer(code)),
         None => Ok(Value::Integer(0)),
     }
+}
+
+/// The echo area's Lisp value, a root of every collection (xdisp.c
+/// staticpros `echo_area_buffer').
+pub(crate) fn mark_echo_area_roots(mark: &mut dyn FnMut(&Value)) {
+    ECHO_AREA_MESSAGE_VALUE.with_borrow(|value| {
+        if let Some(value) = value {
+            mark(value);
+        }
+    });
 }
 
 #[cfg(test)]

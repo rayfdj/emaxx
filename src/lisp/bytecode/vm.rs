@@ -1683,11 +1683,12 @@ fn run_frames(
                         program = callee;
                         pc = 0;
                         op_error_frames = 0;
-                        // setup_frame: the declared depth checked once, the
-                        // arguments padded or gathered in place.
-                        if !interp.bc_stack.has_room(program.stack_depth + 1) {
-                            return Err(stack_overflow());
-                        }
+                        // setup_frame: the callee's frame starts above the
+                        // caller's top; the arguments are copied into it
+                        // (`PUSH (*args)'), the optionals padded, the rest
+                        // gathered.  The caller's own slots -- the function
+                        // and the arguments the backtrace frame borrows --
+                        // stay as they are until Breturn cuts back to them.
                         let ArgSpec::Packed {
                             mandatory,
                             nonrest,
@@ -1701,9 +1702,20 @@ fn run_frames(
                         if argc < mandatory || (!rest && argc > nonrest) {
                             return Err(packed_arity_error(mandatory, nonrest, argc));
                         }
+                        let pushed = argc.min(nonrest);
+                        if !interp.bc_stack.has_room(program.stack_depth + nonrest + 2) {
+                            return Err(stack_overflow());
+                        }
+                        for index in 0..pushed {
+                            let argument = interp.bc_stack[args_start + index].clone();
+                            push!(argument);
+                        }
                         if argc > nonrest {
-                            let rest_list =
-                                Value::list(interp.bc_stack.drain_from(args_start + nonrest));
+                            let rest_list = Value::list(
+                                interp.bc_stack[args_start + nonrest..args_start + argc]
+                                    .iter()
+                                    .cloned(),
+                            );
                             push!(rest_list);
                         } else {
                             for _ in argc..nonrest {

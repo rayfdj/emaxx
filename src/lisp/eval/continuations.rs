@@ -64,6 +64,12 @@ impl Drop for StackBaseGuard {
 /// stack, so they cannot be used while an alternate stack is active.
 pub(crate) fn on_stack<R>(stack: DefaultStack, body: impl FnOnce() -> R) -> R {
     let base = stack.base().get();
+    // The OS stack region the trampoline's caller keeps using: from here
+    // up to the thread's stack base, scanned by the collector with the
+    // coroutine's stack (alloc.c's stack_bottom for the main thread).
+    if let Some(os_base) = crate::lisp::alloc::os_stack_base() {
+        crate::lisp::alloc::note_os_stack(crate::lisp::alloc::approximate_stack_pointer(), os_base);
+    }
     corosensei::on_stack(stack, || {
         let _guard = StackBaseGuard::enter(base);
         body()
@@ -123,8 +129,23 @@ impl ThreadContinuation {
             yielder: Rc::clone(&self.yielder),
         };
         let _guard = ResumeGuard(CURRENT_RESUME.replace(std::ptr::from_ref(&context)));
+        // The driving stack's frames from here to its base stay live while
+        // the coroutine runs (the collector scans them as another thread's
+        // stack); the coroutine's own stack is no longer parked.
+        let driver_base = CURRENT_STACK_BASE
+            .get()
+            .map(|base| base as usize)
+            .or_else(crate::lisp::alloc::os_stack_base)
+            .unwrap_or(0);
+        crate::lisp::alloc::push_driver_region(
+            crate::lisp::alloc::approximate_stack_pointer(),
+            driver_base,
+        );
+        crate::lisp::alloc::forget_parked_stack(self.stack_base);
         let _stack_guard = StackBaseGuard::enter(self.stack_base);
-        self.coroutine.resume(state)
+        let result = self.coroutine.resume(state);
+        crate::lisp::alloc::pop_driver_region();
+        result
     }
 
     pub(super) fn done(&self) -> bool {
@@ -184,6 +205,13 @@ fn suspend_payload(interpreter: &mut Interpreter) {
         .state
         .take()
         .expect("suspending thread owns editor state");
+    // This coroutine's stack parks from its base down to here.
+    if let Some(base) = CURRENT_STACK_BASE.get() {
+        crate::lisp::alloc::note_parked_stack(
+            base as usize,
+            crate::lisp::alloc::approximate_stack_pointer(),
+        );
+    }
     // SAFETY: the yielder is borrowed by the coroutine's entry function and
     // remains live until that function returns. It is used only while this
     // same continuation is active; no Send implementation is introduced.
@@ -459,6 +487,54 @@ mod tests {
             interpreter.with_lisp_stack_roots(&local, suspend)?;
             Ok(Value::list(local))
         }
+        // The driver's frame holds the child's result (the weak key in
+        // it) until it returns: a frame of its own, the stack under the
+        // test cleared before the collection that expects the key gone.
+        #[inline(never)]
+        fn drive(interpreter: &mut Interpreter, table_id: u64, payload: usize) {
+            let mut continuation =
+                ThreadContinuation::with_body(nested).expect("guarded coroutine stack");
+            assert!(current_stack_base().is_none());
+            for index in 0..2 {
+                let state = interpreter.state.take().expect("driver owns the payload");
+                let CoroutineResult::Yield(state) = continuation.resume(state) else {
+                    panic!("nested function must suspend before returning");
+                };
+                interpreter.state = Some(state);
+                assert_eq!(std::ptr::from_ref(&**interpreter) as usize, payload);
+                assert!(
+                    current_stack_base().is_none(),
+                    "resume scope removed on parent stack"
+                );
+                crate::lisp::primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
+                    .expect("collect while the actual child frame is suspended");
+                assert_eq!(
+                    interpreter
+                        .hash_table_runtime_entries(table_id)
+                        .expect("live weak table")
+                        .len(),
+                    1
+                );
+                if index == 0 {
+                    interpreter.set_global_binding("continuation-write", Value::Integer(29));
+                }
+            }
+            let CoroutineResult::Return(completion) =
+                continuation.resume(interpreter.state.take().expect("driver owns payload"))
+            else {
+                panic!("nested function must now return");
+            };
+            interpreter.state = Some(completion.state);
+            assert_eq!(
+                completion
+                    .result
+                    .expect("no Rust panic")
+                    .expect("Lisp result"),
+                Value::list([Value::list([Value::Integer(11)]), Value::Integer(29)])
+            );
+            assert!(continuation.done());
+            assert_eq!(std::ptr::from_ref(&**interpreter) as usize, payload);
+        }
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
         let Value::Record(table_id) = table else {
@@ -469,54 +545,9 @@ mod tests {
             .expect("weak table")
             .slots[5] = Value::symbol("key");
         interpreter.set_global_binding("continuation-table", Value::Record(table_id));
-        let payload = std::ptr::from_ref(&*interpreter);
-        let mut continuation =
-            ThreadContinuation::with_body(nested).expect("guarded coroutine stack");
-        assert!(current_stack_base().is_none());
-        for index in 0..2 {
-            let state = interpreter.state.take().expect("driver owns the payload");
-            let CoroutineResult::Yield(state) = continuation.resume(state) else {
-                panic!("nested function must suspend before returning");
-            };
-            interpreter.state = Some(state);
-            assert_eq!(std::ptr::from_ref(&*interpreter), payload);
-            assert!(
-                current_stack_base().is_none(),
-                "resume scope removed on parent stack"
-            );
-            crate::lisp::primitives::call(
-                &mut interpreter,
-                "garbage-collect",
-                &[],
-                &mut Env::new(),
-            )
-            .expect("collect while the actual child frame is suspended");
-            assert_eq!(
-                interpreter
-                    .hash_table_runtime_entries(table_id)
-                    .expect("live weak table")
-                    .len(),
-                1
-            );
-            if index == 0 {
-                interpreter.set_global_binding("continuation-write", Value::Integer(29));
-            }
-        }
-        let CoroutineResult::Return(completion) =
-            continuation.resume(interpreter.state.take().expect("driver owns payload"))
-        else {
-            panic!("nested function must now return");
-        };
-        interpreter.state = Some(completion.state);
-        assert_eq!(
-            completion
-                .result
-                .expect("no Rust panic")
-                .expect("Lisp result"),
-            Value::list([Value::list([Value::Integer(11)]), Value::Integer(29)])
-        );
-        assert!(continuation.done());
-        assert_eq!(std::ptr::from_ref(&*interpreter), payload);
+        let payload = std::ptr::from_ref(&*interpreter) as usize;
+        drive(&mut interpreter, table_id, payload);
+        crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after the child frame and result are released");
         assert!(

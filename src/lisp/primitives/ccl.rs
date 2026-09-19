@@ -765,7 +765,7 @@ mod tests {
             &Value::String("foo".into()),
             false,
             false,
-            &mut Vec::new(),
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("execute GNU's pgg CRC24 program");
 
@@ -816,8 +816,13 @@ mod tests {
                 .chain(std::iter::repeat_n(Value::Integer(0), 7)),
         );
 
-        ccl_execute(&mut interp, &program, &registers, &mut Vec::new())
-            .expect("execute lookup-integer");
+        ccl_execute(
+            &mut interp,
+            &program,
+            &registers,
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect("execute lookup-integer");
         assert_eq!(
             vector_items(&registers).expect("register vector"),
             vec![

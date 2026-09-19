@@ -391,7 +391,9 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Value::String(_), Value::String(_))
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
-        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left), Value::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        }
         (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,

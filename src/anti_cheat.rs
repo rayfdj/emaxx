@@ -1334,7 +1334,21 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         .find("\n    }\n")
         .map(|offset| roots_start + offset)
         .expect("end of root-marking function");
-    let roots = &source[roots_start..roots_end];
+    // The static roots are marked by a function of their own (every state
+    // alive in the process is marked through it); scan both.
+    let static_start = source
+        .find("pub(crate) fn mark_static_roots_into")
+        .expect("static root-marking function");
+    let static_end = source[static_start..]
+        .find("\n    }\n")
+        .map(|offset| static_start + offset)
+        .expect("end of static root-marking function");
+    let roots = format!(
+        "{}\n{}",
+        &source[roots_start..roots_end],
+        &source[static_start..static_end]
+    );
+    let roots = roots.as_str();
     assert!(
         field_pattern
             .captures_iter(&source[struct_start..struct_end])
@@ -1475,7 +1489,21 @@ pub(crate) fn interpreter_roots_are_dumped_or_documented() {
         .find("\n    }\n")
         .map(|offset| roots_start + offset)
         .expect("end of root-marking function");
-    let marking = &source[roots_start..roots_end];
+    // The static roots are marked by a function of their own (every state
+    // alive in the process is marked through it); scan both.
+    let static_start = source
+        .find("pub(crate) fn mark_static_roots_into")
+        .expect("static root-marking function");
+    let static_end = source[static_start..]
+        .find("\n    }\n")
+        .map(|offset| static_start + offset)
+        .expect("end of static root-marking function");
+    let marking = format!(
+        "{}\n{}",
+        &source[roots_start..roots_end],
+        &source[static_start..static_end]
+    );
+    let marking = marking.as_str();
     let dump_values_start = source
         .find("pub(crate) fn dump_root_values")
         .expect("dump_root_values");
@@ -1486,7 +1514,9 @@ pub(crate) fn interpreter_roots_are_dumped_or_documented() {
     let dump_values = &source[dump_values_start..dump_values_end];
     let dump_roots = fs::read_to_string(repo_root().join("src/lisp/eval/dump_roots.rs"))
         .expect("read src/lisp/eval/dump_roots.rs");
-    let field_pattern = regex::Regex::new(r"self\.([a-z_0-9]+)").expect("compile field pattern");
+    // A field read (`self.field'), not a method call (`self.method(').
+    let field_pattern =
+        regex::Regex::new(r"self\.([a-z_0-9]+)[^a-z_0-9(]").expect("compile field pattern");
     let mut fields = std::collections::BTreeSet::new();
     for capture in field_pattern.captures_iter(marking) {
         fields.insert(capture[1].to_string());

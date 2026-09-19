@@ -75,8 +75,8 @@ fn values_equal_signaling_depth(
             return Err(LispError::Signal("Stack overflow in equal".into()));
         }
         if let (Value::Cons(lc), Value::Cons(rc)) = (left, right) {
-            let left_key = Rc::as_ptr(lc) as usize;
-            let right_key = Rc::as_ptr(rc) as usize;
+            let left_key = lc.as_ptr() as usize;
+            let right_key = rc.as_ptr() as usize;
             let entry = memo.entry(left_key).or_default();
             if entry.contains(&right_key) {
                 return Ok(true);
@@ -102,14 +102,14 @@ fn values_equal_signaling_depth(
         let left_cdr = lc.cdr.borrow().clone();
         let right_cdr = rc.cdr.borrow().clone();
         if let (Value::Cons(a), Value::Cons(b)) = (&left_cdr, &right_cdr)
-            && Rc::ptr_eq(a, b)
+            && crate::lisp::types::SharedCons::ptr_eq(a, b)
         {
             return Ok(true);
         }
         l = left_cdr;
         r = right_cdr;
         if let (Value::Cons(current), Value::Cons(lagging)) = (&l, &tortoise)
-            && Rc::ptr_eq(current, lagging)
+            && crate::lisp::types::SharedCons::ptr_eq(current, lagging)
         {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
@@ -516,7 +516,9 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left), Value::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        }
         (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
@@ -585,7 +587,9 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Value::String(_), Value::StringObject(_)) | (Value::StringObject(_), Value::String(_)) => {
             false
         }
-        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left), Value::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        }
         (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
@@ -3102,7 +3106,12 @@ pub(crate) fn keymap_define_binding_with_placement(
         // inherited command at HEAD is therefore shadowed by a new local
         // prefix instead of incorrectly making this sequence invalid.
         let existing = keymap_lookup_direct_binding_exact_parts(interp, keymap, head)?;
-        let existing = keymap_get_keyelt(interp, &existing, false, &mut Vec::new())?;
+        let existing = keymap_get_keyelt(
+            interp,
+            &existing,
+            false,
+            &mut crate::lisp::types::Env::new(),
+        )?;
         let prefix = if existing.is_nil() {
             let prefix = make_runtime_keymap(interp, None);
             keymap_define_binding_with_placement(
@@ -3117,7 +3126,7 @@ pub(crate) fn keymap_define_binding_with_placement(
         } else if is_keymap_value(interp, &existing) {
             existing
         } else if let Value::Symbol(symbol) = &existing
-            && let Ok(function) = interp.lookup_function(symbol, &Vec::new())
+            && let Ok(function) = interp.lookup_function(symbol, &crate::lisp::types::Env::new())
             && is_keymap_value(interp, &function)
         {
             function
@@ -3232,7 +3241,8 @@ pub(crate) fn keymap_remove_binding(
 
     if parts.len() > 1 {
         let prefix = keymap_lookup_direct_binding_exact_parts(interp, keymap, &parts[..1])?;
-        let prefix = keymap_get_keyelt(interp, &prefix, false, &mut Vec::new())?;
+        let prefix =
+            keymap_get_keyelt(interp, &prefix, false, &mut crate::lisp::types::Env::new())?;
         if is_keymap_value(interp, &prefix) {
             return keymap_remove_binding(interp, &prefix, &parts[1..].join(" "));
         }
@@ -3408,7 +3418,7 @@ fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
         return None;
     };
     interp
-        .lookup_function(name, &Vec::new())
+        .lookup_function(name, &crate::lisp::types::Env::new())
         .ok()
         .filter(|function| is_keymap_value(interp, function))
 }

@@ -456,7 +456,7 @@ impl Interpreter {
             name,
             kind,
             !self
-                .lookup_var("noninteractive", &Vec::new())
+                .lookup_var("noninteractive", &crate::lisp::types::Env::new())
                 .is_some_and(|value| value.is_truthy()),
         )?);
         #[cfg(not(unix))]
@@ -495,7 +495,7 @@ impl Interpreter {
                 keyboard.insert(name.into(), Value::Nil);
             }
             use crate::lisp::primitives as p;
-            let mut env = Vec::new();
+            let mut env = crate::lisp::types::Env::new();
             let decode = p::call(self, "make-sparse-keymap", &[], &mut env)?;
             for (bytes, key) in &device.keys {
                 let sequence = Value::string(&String::from_utf8_lossy(bytes));
@@ -563,11 +563,11 @@ impl Interpreter {
             .get_buffer_by_id(buffer_id)
             .map_or(1, |buffer| buffer.point());
         let menu = i64::from(
-            self.lookup_var("menu-bar-mode", &Vec::new())
+            self.lookup_var("menu-bar-mode", &crate::lisp::types::Env::new())
                 .is_some_and(|value| value.is_truthy()),
         );
         let tab = i64::from(
-            self.lookup_var("tab-bar-mode", &Vec::new())
+            self.lookup_var("tab-bar-mode", &crate::lisp::types::Env::new())
                 .is_some_and(|value| value.is_truthy()),
         );
         let margin = menu + tab;

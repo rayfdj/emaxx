@@ -228,7 +228,7 @@ define_dispatch!(
                     return Err(LispError::Signal("Args out of range".into()));
                 }
                 let tab_width = interp
-                    .lookup_var("tab-width", &Vec::new())
+                    .lookup_var("tab-width", &crate::lisp::types::Env::new())
                     .and_then(|value| value.as_integer().ok())
                     .unwrap_or(8)
                     .max(1) as usize;
@@ -249,7 +249,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::Signal(format!("Invalid character: {codepoint}")))?;
                 let width = if ch == '\t' {
                     interp
-                        .lookup_var("tab-width", &Vec::new())
+                        .lookup_var("tab-width", &crate::lisp::types::Env::new())
                         .and_then(|value| value.as_integer().ok())
                         .unwrap_or(8)
                         .max(1) as usize

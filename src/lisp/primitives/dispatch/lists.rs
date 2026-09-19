@@ -1433,7 +1433,9 @@ define_dispatch!(
             "mapcar" => {
                 need_args(name, args, 2)?;
                 let list = sequence_values(interp, &args[1])?;
-                let mut results = Vec::new();
+                // fns.c's mapcar1 gathers the results in a SAFE_ALLOCA_LISP
+                // array the collector reaches while the calls go on.
+                let mut results = crate::lisp::alloc::RootedVec::with_capacity(list.len());
                 for item in list {
                     results.push(call_function_value(interp, &args[0], &[item], env)?);
                 }
@@ -1442,7 +1444,7 @@ define_dispatch!(
             "mapcan" => {
                 need_args(name, args, 2)?;
                 let list = sequence_values(interp, &args[1])?;
-                let mut mapped = Vec::with_capacity(list.len());
+                let mut mapped = crate::lisp::alloc::RootedVec::with_capacity(list.len());
                 for item in list {
                     mapped.push(call_function_value(interp, &args[0], &[item], env)?);
                 }
@@ -2507,7 +2509,7 @@ pub(super) fn direct_assq_family(
     // bump per step and no whole-Value churn.
     let mut cell = match alist {
         Value::Nil => return Ok(Value::Nil),
-        Value::Cons(cell) => Rc::clone(cell),
+        Value::Cons(cell) => *cell,
         other => {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("wrong-type-argument".into()),
@@ -2556,7 +2558,7 @@ pub(super) fn direct_assq_family(
         let tail = cell.cdr.borrow();
         let next = match &*tail {
             Value::Nil => return Ok(Value::Nil),
-            Value::Cons(next) => Rc::clone(next),
+            Value::Cons(next) => *next,
             other => {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("wrong-type-argument".into()),

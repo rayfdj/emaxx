@@ -31,7 +31,7 @@ fn coding_plist_property(
 #[test]
 fn coding_system_get_reports_for_unibyte_for_raw_text() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         coding_plist_property(&mut interp, &mut env, "raw-text", ":for-unibyte"),
@@ -46,7 +46,7 @@ fn coding_system_get_reports_for_unibyte_for_raw_text() {
 #[test]
 fn define_coding_system_internal_derives_public_utf8_attributes_like_coding_c() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "define-coding-system-internal",
@@ -87,7 +87,7 @@ fn define_coding_system_internal_derives_public_utf8_attributes_like_coding_c() 
 #[test]
 fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
         "define-coding-system-internal",
@@ -147,7 +147,7 @@ fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
 #[test]
 fn decode_coding_region_inserts_into_destination_buffer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*source*", "abc");
     let (buffer_id, buffer_name) = interp.create_buffer("*dest*");
 
@@ -177,7 +177,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         (b"\r".as_slice(), "iso-2022-7bit-mac"),
     ] {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let mut bytes = vec![0x1b, b'$', b'B', b'$', b'"', 0x1b, b'(', b'B'];
         bytes.extend_from_slice(line_ending);
         interp.buffer =
@@ -207,7 +207,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
 #[test]
 fn funcall_message_builtin_from_lambda() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -230,7 +230,7 @@ fn funcall_message_builtin_from_lambda() {
 #[test]
 fn apply_format_message_from_lambda() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -251,7 +251,7 @@ fn apply_format_message_from_lambda() {
 #[test]
 fn apply_format_message_top_level() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(r#"(apply #'format-message '("value=%s" 42))"#)
         .read_all()
         .expect("top-level apply format-message should parse");
@@ -265,7 +265,7 @@ fn apply_format_message_top_level() {
 #[test]
 fn direct_format_message_top_level() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(r#"(format-message "value=%s" 42)"#)
         .read_all()
         .expect("top-level direct format-message should parse");
@@ -283,7 +283,7 @@ fn advice_add_supports_after_function() {
 
 fn advice_add_supports_after_function_inner() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let forms = Reader::new(
         r#"
             (progn
@@ -562,7 +562,7 @@ fn advice_add_supports_after_function_inner() {
 #[test]
 fn make_temp_file_creates_a_file_for_relative_prefix() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     let path = crate::test_support::call_lisp_function(
         &mut interp,
@@ -581,7 +581,7 @@ fn make_temp_file_creates_a_file_for_relative_prefix() {
 #[test]
 fn file_name_extension_helpers_match_archive_usage() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
         crate::test_support::call_lisp_function(
@@ -618,7 +618,7 @@ fn file_name_extension_helpers_match_archive_usage() {
 #[test]
 fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let old_path = make_compat_temp_file(&mut interp, &mut env, "emaxx-rename-visited-file-");
     let new_path = format!("{old_path}.zip");
 
@@ -652,7 +652,7 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
 #[test]
 fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-raw-buffer-");
     let bytes = [0xFF, b'a'];
     std::fs::write(&path, bytes).expect("write raw bytes");
@@ -680,7 +680,7 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
 #[test]
 fn save_buffer_skips_unmodified_and_unchanged_files() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-save-unmodified-");
     std::fs::write(&path, "fresh").expect("write source file");
 
@@ -717,7 +717,7 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
 #[test]
 fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-lock-supersession-");
     std::fs::write(&path, "visited bytes\n").expect("write initial visited file");
     std::fs::File::open(&path)
@@ -784,7 +784,7 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
 #[test]
 fn buffer_stale_default_detects_clean_file_modtime_changes() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-buffer-stale-");
     std::fs::write(&path, "fresh").expect("write initial file contents");
 
@@ -826,7 +826,7 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
 fn revert_buffer_honors_buffer_local_revert_function() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-function-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
@@ -861,7 +861,7 @@ fn revert_buffer_honors_buffer_local_revert_function() {
 fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = Vec::new();
+        let mut env = crate::lisp::types::Env::new();
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-dynamic-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
@@ -892,7 +892,7 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
 #[test]
 fn get_byte_reads_unibyte_buffer_positions() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}");
     interp.buffer.set_multibyte(false);
 
@@ -932,7 +932,7 @@ fn get_byte_reads_unibyte_buffer_positions() {
 #[test]
 fn extracted_strings_preserve_the_buffer_multibyte_mode() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*text*", "ASCII");
 
     let multibyte =
@@ -958,7 +958,7 @@ fn extracted_strings_preserve_the_buffer_multibyte_mode() {
 #[test]
 fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00d0}\u{0097}");
     interp.buffer.set_multibyte(false);
 
@@ -976,7 +976,7 @@ fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
 #[test]
 fn write_process_output_supports_stdout_buffer_and_stderr_file() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
@@ -1018,7 +1018,7 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
 #[test]
 fn write_process_output_accepts_a_shared_string_buffer_name() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer("*shared-name-output*");
     let destination =
         make_shared_string_value_with_multibyte("*shared-name-output*".into(), Vec::new(), true);
@@ -1051,7 +1051,7 @@ fn write_process_output_accepts_a_shared_string_buffer_name() {
 #[test]
 fn write_process_output_merges_stderr_for_t_cons_destination() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
@@ -1073,7 +1073,7 @@ fn write_process_output_merges_stderr_for_t_cons_destination() {
 #[test]
 fn write_process_output_decodes_with_the_default_process_coding_system() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     // The fixture's *scratch* holds the banner command-line-1 inserts at
     // the end of GNU's startup; this test uses the buffer as scratch space.
     crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
@@ -1099,9 +1099,13 @@ fn write_process_output_decodes_with_the_default_process_coding_system() {
 #[test]
 fn process_coding_alist_overrides_the_default_for_synchronous_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    crate::test_support::eval_lisp(&mut interp, &mut Vec::new(), "(erase-buffer)")
-        .expect("erase scratch");
-    let mut env = vec![crate::lisp::types::EnvFrame::bindings(
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut crate::lisp::types::Env::new(),
+        "(erase-buffer)",
+    )
+    .expect("erase scratch");
+    let mut env = crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
         [(
             "process-coding-system-alist".into(),
             Value::list([Value::cons(
@@ -1113,7 +1117,7 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
             )]),
         )],
         &Value::Nil,
-    )];
+    )]);
 
     write_process_output(
         &mut interp,
@@ -1136,7 +1140,7 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
 #[test]
 fn file_regular_p_distinguishes_files_from_directories() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let dir = std::env::temp_dir().join(format!(
         "emaxx-file-regular-{}",
         std::time::SystemTime::now()
@@ -1176,7 +1180,7 @@ fn file_regular_p_distinguishes_files_from_directories() {
 #[test]
 fn write_region_reports_output_errors_as_file_error() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let directory =
         std::env::temp_dir().join(format!("emaxx-write-region-dir-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create temp directory");
@@ -1208,7 +1212,7 @@ fn write_region_reports_output_errors_as_file_error() {
 #[test]
 fn value_less_vectors_break_ties_after_equal_prefix_values() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*value-less-buffer*");
     let buffer = Value::buffer(buffer_id, buffer_name);
     let marker = interp.make_marker();
@@ -1277,7 +1281,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
 #[test]
 fn value_less_selected_upstream_ordered_cases_match_emacs() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let (buf1_id, buf1_name) = interp.create_buffer(" *one*");
     let (buf2_id, buf2_name) = interp.create_buffer(" *two*");
     let (buf3_id, buf3_name) = interp.create_buffer(" *three*");
@@ -1714,7 +1718,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
 #[test]
 fn value_less_selected_upstream_unordered_cases_match_emacs() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let uninterned_a = call(
         &mut interp,
         "make-symbol",
@@ -1839,7 +1843,7 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
 #[test]
 fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let char_table = call(
         &mut interp,
         "make-char-table",
@@ -1923,7 +1927,7 @@ fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
 #[test]
 fn eq_uses_identity_for_copied_sequences() {
     let mut interp = Interpreter::new();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     let list = Value::list([Value::Integer(1), Value::Integer(2)]);
     let copied_list = call(
         &mut interp,
@@ -1964,21 +1968,21 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         &mut interp,
         "position-symbol",
         &[Value::Symbol("foo".into()), Value::Integer(42)],
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     )
     .expect("foo1");
     let foo2 = call(
         &mut interp,
         "position-symbol",
         &[Value::Symbol("foo".into()), Value::Integer(666)],
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     )
     .expect("foo2");
     let foo3 = call(
         &mut interp,
         "position-symbol",
         &[Value::Symbol("foo".into()), Value::Integer(42)],
-        &mut Vec::new(),
+        &mut crate::lisp::types::Env::new(),
     )
     .expect("foo3");
     let plain = Value::Symbol("foo".into());
@@ -2149,7 +2153,7 @@ fn member_ignore_case_matches_strings_case_insensitively_on_the_image() {
     // Finding 34 re-host; expectations probed against the pinned oracle
     // (note GNU's compare-strings does NOT fold German sharp s to "SS").
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let mut env = Vec::new();
+    let mut env = crate::lisp::types::Env::new();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
@@ -2188,10 +2192,10 @@ fn unicode_property_registry_uses_the_c_owned_symbol_value_cell() {
         Value::symbol("probe"),
         Value::String("wrong.el".into()),
     )]);
-    let mut env = vec![crate::lisp::types::EnvFrame::bindings(
+    let mut env = crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
         [("char-code-property-alist".into(), lexical_registry)],
         &Value::Nil,
-    )];
+    )]);
     assert_eq!(
         call(
             &mut interp,

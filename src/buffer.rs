@@ -2652,7 +2652,9 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         // alt text and replaced two characters of a twenty-char image).
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left), Value::Cons(right)) => {
+            crate::lisp::types::SharedCons::ptr_eq(left, right)
+        }
         (Value::Lambda(left), Value::Lambda(right)) => {
             left.params == right.params
                 && left.body == right.body
@@ -3058,7 +3060,7 @@ mod tests {
         let second_insert = second_view.car().expect("coalesced undo record");
         assert!(matches!(
             (&first_insert, &second_insert),
-            (Value::Cons(left), Value::Cons(right)) if Rc::ptr_eq(left, right)
+            (Value::Cons(left), Value::Cons(right)) if crate::lisp::types::SharedCons::ptr_eq(left, right)
         ));
         assert_eq!(
             second_insert,
