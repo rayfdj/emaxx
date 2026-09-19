@@ -1607,8 +1607,8 @@ pub(crate) fn find_file_name_handler(
             let Some((pattern, handler)) = (entry).cons_cells() else {
                 continue;
             };
-            let pattern = *pattern.borrow();
-            let handler = *handler.borrow();
+            let pattern = pattern.get();
+            let handler = handler.get();
             let Some(pattern_text) = string_like(&pattern) else {
                 continue;
             };

@@ -4601,8 +4601,8 @@ impl NativeHeap {
         // Register a cell before queuing its fields, so shared and cyclic
         // edges reuse its address while the worklist finishes the graph.
         while let Some(cell) = pending.pop() {
-            let car = *cell.car.borrow();
-            let cdr = *cell.cdr.borrow();
+            let car = cell.car.get();
+            let cdr = cell.cdr.get();
             let car = self.encode_inner(&car, &mut pending)?;
             let cdr = self.encode_inner(&cdr, &mut pending)?;
             let native = ConsCell::native_words(&cell);
@@ -4827,12 +4827,12 @@ impl NativeHeap {
                 let decoded = self.decode_inner(current[field], decoding_conses, false, true);
                 decoding_conses.remove(&address);
                 let decoded = decoded?;
-                if !crate::lisp::primitives::values_eql(&slot.borrow(), &decoded) {
-                    *slot.borrow_mut() = decoded;
+                if !crate::lisp::primitives::values_eql(&slot.get(), &decoded) {
+                    slot.set(decoded);
                     rust_changed = true;
                 }
             } else if rust_dirty {
-                let field_value = *slot.borrow();
+                let field_value = slot.get();
                 let word = self.encode(&field_value)?;
                 if word != current[field] {
                     unsafe {
@@ -6764,7 +6764,7 @@ mod tests {
                     panic!("native assq lost the captured binding");
                 };
                 assert!(SharedCons::ptr_eq(&result, &expected_entry));
-                assert_eq!(*result.cdr.borrow(), Value::Integer(expected));
+                assert_eq!(result.cdr.get(), Value::Integer(expected));
             }
             // A name that reaches the Rust boundary resolves to the live
             // symbol object with that private name (V02: a symbol and its
@@ -8681,13 +8681,13 @@ mod tests {
                 let Kind::Cons(cell) = cycle.kind() else {
                     unreachable!();
                 };
-                *cell.cdr.borrow_mut() = cycle;
+                cell.cdr.set(cycle);
                 let mut heap = NativeHeapOwner::new();
                 let word = heap.encode(&cycle).expect("cyclic graph");
                 let native = word.wrapping_sub(TAG_CONS) as *const NativeCons;
                 assert_eq!(unsafe { (*native).cdr() }, word);
                 assert_eq!(heap.cons_values.len(), 1);
-                *cell.cdr.borrow_mut() = Value::Nil;
+                cell.cdr.set(Value::Nil);
             })
             .expect("small-stack worker")
             .join()

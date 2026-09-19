@@ -115,11 +115,11 @@ impl Interpreter {
         };
         let mut nargs = 0usize;
         while let Some(symbol_cell) = cur {
-            let sym = *symbol_cell.car.borrow();
+            let sym = symbol_cell.car.get();
             let Some(value_cell) = next_cons(&symbol_cell) else {
                 return Err(LispError::WrongNumberOfArgs("setq".into(), nargs + 1));
             };
-            let value_form = *value_cell.car.borrow();
+            let value_form = value_cell.car.get();
             cur = next_cons(&value_cell);
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.

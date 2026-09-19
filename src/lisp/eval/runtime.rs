@@ -1933,8 +1933,8 @@ impl Interpreter {
         if !visited.insert(identity) {
             return false;
         }
-        self.value_contains_positioned_symbol(&cell.car.borrow(), visited)
-            || self.value_contains_positioned_symbol(&cell.cdr.borrow(), visited)
+        self.value_contains_positioned_symbol(&cell.car.get(), visited)
+            || self.value_contains_positioned_symbol(&cell.cdr.get(), visited)
     }
 
     pub fn reindex_hash_table_runtime_entries_in_env(&mut self, id: u64, env: &Env) {
@@ -2653,7 +2653,7 @@ impl Interpreter {
                 break;
             };
             if cell_id != crate::lisp::types::ConsCell::identity(&root)
-                && matches!((*cell.car.borrow()).kind(), Kind::Symbol(name) if name == "keymap")
+                && matches!(cell.car.get().kind(), Kind::Symbol(name) if name == "keymap")
             {
                 break;
             }
@@ -2667,7 +2667,7 @@ impl Interpreter {
             // A binding pair is itself mutable keymap structure.  Do not
             // claim arbitrary binding definitions or included keymap roots;
             // those either are not structure or have their own owner.
-            let entry = *cell.car.borrow();
+            let entry = cell.car.get();
             if let Kind::Cons(entry_cell) = entry.kind()
                 && !matches!(entry.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "keymap")
             {
@@ -2679,7 +2679,7 @@ impl Interpreter {
                     .or_default()
                     .push(keymap_id);
             }
-            tail = *cell.cdr.borrow();
+            tail = cell.cdr.get();
         }
         self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
         let watch = crate::lisp::types::ConsMutationSnapshot::cells(watched_cells.iter());
@@ -3023,11 +3023,11 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
         while let Kind::Cons(cell) = tail.kind() {
-            let next = *cell.cdr.borrow();
+            let next = cell.cdr.get();
             if next.is_nil() {
-                let last = cell.car.borrow();
-                if matches!((*last).kind(), Kind::String(_) | Kind::StringObject(_)) {
-                    file = *last;
+                let last = cell.car.get();
+                if matches!((last).kind(), Kind::String(_) | Kind::StringObject(_)) {
+                    file = last;
                 }
             }
             seen += 1;

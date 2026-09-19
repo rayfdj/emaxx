@@ -673,9 +673,9 @@ fn run_fast(
                 let replacement = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(cell) => {
                         if matches!(op, Op::Car | Op::CarSafe) {
-                            *cell.car.borrow()
+                            cell.car.get()
                         } else {
-                            *cell.cdr.borrow()
+                            cell.cdr.get()
                         }
                     }
                     Kind::Nil => continue,
@@ -1259,9 +1259,9 @@ fn run_frames(
                         match operands.last().expect("validated bytecode").kind() {
                             Kind::Cons(cell) => {
                                 Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
-                                    *cell.car.borrow()
+                                    cell.car.get()
                                 } else {
-                                    *cell.cdr.borrow()
+                                    cell.cdr.get()
                                 })
                             }
                             Kind::Nil => Step::Keep,
@@ -2013,11 +2013,11 @@ fn run_frames(
                     let a = pop!();
                     match (a.kind(), op) {
                         (Kind::Cons(cell), Op::Car | Op::CarSafe) => {
-                            let value = *cell.car.borrow();
+                            let value = cell.car.get();
                             push!(value);
                         }
                         (Kind::Cons(cell), _) => {
-                            let value = *cell.cdr.borrow();
+                            let value = cell.cdr.get();
                             push!(value);
                         }
                         (Kind::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {

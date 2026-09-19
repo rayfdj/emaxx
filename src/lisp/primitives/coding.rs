@@ -2875,7 +2875,7 @@ pub(crate) fn find_operation_coding_system_value(
         )));
     };
     let operation_target = match target.kind() {
-        Kind::Cons(cell) if operation == "insert-file-contents" => *cell.car.borrow(),
+        Kind::Cons(cell) if operation == "insert-file-contents" => cell.car.get(),
         other => other.value(),
     };
     let Some(alist) = interp.lookup_var(alist_name, env) else {

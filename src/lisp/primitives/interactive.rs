@@ -1646,8 +1646,8 @@ pub(crate) fn unread_command_events(
 pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
     match value.kind() {
         Kind::Integer(code) if code >= 0 => modified_event_code_char(code),
-        Kind::Cons(cell) if matches!((*cell.car.borrow()).kind(), Kind::T) => {
-            match (*cell.cdr.borrow()).kind() {
+        Kind::Cons(cell) if matches!(cell.car.get().kind(), Kind::T) => {
+            match cell.cdr.get().kind() {
                 Kind::Integer(code) if code >= 0 => modified_event_code_char(code),
                 _ => None,
             }

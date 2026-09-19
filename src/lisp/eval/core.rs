@@ -202,7 +202,7 @@ define_native_forms! {
 /// The cell after CELL, when its cdr is one (`CONSP (XCDR (tail))').
 #[inline]
 pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
-    match (*cell.cdr.borrow()).kind() {
+    match cell.cdr.get().kind() {
         Kind::Cons(next) => Some(next),
         _ => None,
     }
@@ -235,7 +235,7 @@ impl Iterator for ListForms {
     #[inline]
     fn next(&mut self) -> Option<Value> {
         let cell = self.0.take()?;
-        let form = *cell.car.borrow();
+        let form = cell.car.get();
         self.0 = next_cons(&cell);
         Some(form)
     }
@@ -247,7 +247,7 @@ impl Iterator for ListForms {
 #[inline]
 pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
     match tail.kind() {
-        Kind::Cons(cell) => Some((*cell.car.borrow(), *cell.cdr.borrow())),
+        Kind::Cons(cell) => Some((cell.car.get(), cell.cdr.get())),
         _ => None,
     }
 }
@@ -256,7 +256,7 @@ pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
 #[inline]
 pub(super) fn list_car(list: &Value) -> Value {
     match list.kind() {
-        Kind::Cons(cell) => *cell.car.borrow(),
+        Kind::Cons(cell) => cell.car.get(),
         _ => Value::Nil,
     }
 }
@@ -265,7 +265,7 @@ pub(super) fn list_car(list: &Value) -> Value {
 #[inline]
 pub(super) fn list_cdr(list: &Value) -> Value {
     match list.kind() {
-        Kind::Cons(cell) => *cell.cdr.borrow(),
+        Kind::Cons(cell) => cell.cdr.get(),
         _ => Value::Nil,
     }
 }
@@ -321,8 +321,8 @@ pub(super) fn list_to_vector(list: &Value) -> Result<smallvec::SmallVec<[Value; 
         match tail.kind() {
             Kind::Nil => return Ok(items),
             Kind::Cons(cell) => {
-                items.push(*cell.car.borrow());
-                let next = *cell.cdr.borrow();
+                items.push(cell.car.get());
+                let next = cell.cdr.get();
                 tail = next;
             }
             other => return Err(LispError::WrongTypeArgument("listp".into(), other.value())),
@@ -552,11 +552,11 @@ impl Interpreter {
                 // eval_sub: XCAR (form) read for its symbol (copied only
                 // when it is something else), XCDR (form) held by its
                 // cell, CHECK_LIST (original_args).
-                let (head_symbol, head_value) = match (*cell.car.borrow()).kind() {
+                let (head_symbol, head_value) = match cell.car.get().kind() {
                     Kind::Symbol(name) => (Some(name), None),
                     other => (None, Some(other.value())),
                 };
-                let args_cell: Option<SharedCons> = match (*cell.cdr.borrow()).kind() {
+                let args_cell: Option<SharedCons> = match cell.cdr.get().kind() {
                     Kind::Cons(args) => Some(args),
                     Kind::Nil => None,
                     other => {

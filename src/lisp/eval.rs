@@ -3258,19 +3258,19 @@ impl ImageGraphCopier {
             let placeholder = Value::cons(Value::Nil, Value::Nil);
             self.cons.insert(key, placeholder);
             spine.push((cell, placeholder));
-            let next = *cell.cdr.borrow();
+            let next = cell.cdr.get();
             cursor = next;
         }
         for (source, copied) in spine.into_iter().rev() {
-            let car = *source.car.borrow();
-            let cdr = *source.cdr.borrow();
+            let car = source.car.get();
+            let cdr = source.cdr.get();
             let copied_car = self.copy(&car);
             let copied_cdr = self.copy(&cdr);
             let Kind::Cons(cell) = copied.kind() else {
                 unreachable!("cons placeholder is a cons")
             };
-            *cell.car.borrow_mut() = copied_car;
-            *cell.cdr.borrow_mut() = copied_cdr;
+            cell.car.set(copied_car);
+            cell.cdr.set(copied_cdr);
         }
         self.copy_known(head)
     }
@@ -3564,8 +3564,8 @@ impl LispReachability<'_, '_> {
             }
             Kind::Cons(cell) => {
                 // The two words, read in place.
-                self.enqueue(&cell.car.borrow());
-                self.enqueue(&cell.cdr.borrow());
+                self.enqueue(&cell.car.get());
+                self.enqueue(&cell.cdr.get());
             }
             Kind::Vector(vector) => {
                 // Slot by slot, in place.
@@ -6978,7 +6978,7 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             );
             let value = match read.map(|v| v.kind()) {
-                Ok(Kind::Cons(cell)) => *cell.car.borrow(),
+                Ok(Kind::Cons(cell)) => cell.car.get(),
                 _ => panic!("the oracle's printed default for `{name}' does not read back"),
             };
             interp.define_special_variable(name, value);
@@ -8166,7 +8166,7 @@ fn proper_list_headed_by(value: &Value, name: &str) -> bool {
     let Some((car, _)) = value.cons_cells() else {
         return false;
     };
-    let head_matches = matches!((*car.borrow()).kind(), Kind::Symbol(head) if head == name);
+    let head_matches = matches!(car.get().kind(), Kind::Symbol(head) if head == name);
     head_matches && value.to_vec().is_ok()
 }
 

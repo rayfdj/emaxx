@@ -236,8 +236,8 @@ fn closure_arity_value(
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(invalid_function_arity(function));
         }
-        let parameter = *cell.car.borrow();
-        cursor = *cell.cdr.borrow();
+        let parameter = cell.car.get();
+        cursor = cell.cdr.get();
         let Some(parameter) = arity_bare_symbol(interp, &parameter, positions_enabled) else {
             return Err(invalid_function_arity(function));
         };
@@ -867,8 +867,8 @@ pub(crate) fn exact_time_from_value(
                 return exact_time_from_old_style(interp, &items);
             }
             exact_time_value(
-                integer_like_bigint(interp, &car.borrow())?,
-                integer_like_bigint(interp, &cdr.borrow())?,
+                integer_like_bigint(interp, &car.get())?,
+                integer_like_bigint(interp, &cdr.get())?,
             )
         }
         _ => Err(LispError::TypeError("time-value".into(), value.type_name())),

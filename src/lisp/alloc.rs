@@ -1514,7 +1514,7 @@ fn verify_marking(epoch: u32) {
                         describe(&value),
                     );
                 }
-                if let super::types::Kind::Cons(target) = (*value).kind() {
+                if let super::types::Kind::Cons(target) = (value).kind() {
                     // SAFETY: the pointer came from a marked cell; its
                     // words are readable in every state.
                     let target_mark = unsafe { mark_of(target.as_ptr().cast_mut()) }.raw();
@@ -1617,7 +1617,7 @@ fn verify_heap() {
             let live = unsafe { &*cell };
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.value_in_place();
-                if let super::types::Kind::Cons(target) = (*value).kind() {
+                if let super::types::Kind::Cons(target) = (value).kind() {
                     // SAFETY: the pointer came from a live cell; only its
                     // mark word is read.
                     if unsafe { mark_of(target.as_ptr().cast_mut()) }.raw() == FREE_MARK {

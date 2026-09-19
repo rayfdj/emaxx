@@ -322,15 +322,15 @@ define_dispatch!(
                 {
                     let mut tail = *reuse;
                     while let Kind::Cons(cell) = tail.kind() {
-                        let marker_id = match (*cell.car.borrow()).kind() {
+                        let marker_id = match cell.car.get().kind() {
                             Kind::Marker(marker_id) => Some(marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
                             interp.set_marker(marker_id, None, None)?;
-                            *cell.car.borrow_mut() = Value::Nil;
+                            cell.car.set(Value::Nil);
                         }
-                        tail = *cell.cdr.borrow();
+                        tail = cell.cdr.get();
                     }
                 }
                 let use_integers = args.first().is_some_and(Value::is_truthy);
@@ -388,10 +388,11 @@ define_dispatch!(
                 let mut previous = None;
                 let mut item_index = 0usize;
                 while let Kind::Cons(cell) = tail.kind() {
-                    *cell.car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
+                    cell.car
+                        .set(items.get(item_index).cloned().unwrap_or(Value::Nil));
                     item_index += 1;
                     previous = Some(Value::Cons(cell));
-                    tail = *cell.cdr.borrow();
+                    tail = cell.cdr.get();
                 }
                 if item_index < items.len()
                     && let Some(previous) = previous
@@ -449,15 +450,15 @@ define_dispatch!(
                 if args.get(1).is_some_and(Value::is_truthy) {
                     let mut tail = args[0];
                     while let Kind::Cons(cell) = tail.kind() {
-                        let marker_id = match (*cell.car.borrow()).kind() {
+                        let marker_id = match cell.car.get().kind() {
                             Kind::Marker(marker_id) => Some(marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
                             interp.set_marker(marker_id, None, None)?;
-                            *cell.car.borrow_mut() = Value::Nil;
+                            cell.car.set(Value::Nil);
                         }
-                        tail = *cell.cdr.borrow();
+                        tail = cell.cdr.get();
                     }
                 }
                 interp.last_match_data = Some(restored);

@@ -1201,7 +1201,7 @@ fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
     let tail = nthcdr_value(count, list)?;
     match tail.kind() {
         Kind::Nil => Ok(Value::Nil),
-        Kind::Cons(ref cell) => Ok(*cell.car.borrow()),
+        Kind::Cons(ref cell) => Ok(cell.car.get()),
         other => Err(wrong_type_argument("listp", other.value())),
     }
 }
@@ -1336,13 +1336,13 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let item = *car.borrow();
+                            let item = car.get();
                             if matches!(item.kind(), Kind::Cons(_))
                                 && values_equal_in_env(interp, &item.cdr()?, &args[0], env)
                             {
                                 return Ok(item);
                             }
-                            current = *cdr.borrow();
+                            current = cdr.get();
                         }
                         other => {
                             return Err(LispError::SignalValue(Value::list([
@@ -1371,7 +1371,7 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let item = *car.borrow();
+                            let item = car.get();
                             if matches!(item.kind(), Kind::Cons(_))
                                 && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                                 {
@@ -1388,7 +1388,7 @@ define_dispatch!(
                             {
                                 return Ok(item);
                             }
-                            current = *cdr.borrow();
+                            current = cdr.get();
                         }
                         other => {
                             return Err(LispError::SignalValue(Value::list([
@@ -2302,7 +2302,7 @@ pub(super) fn direct_car_safe(
     let name = "car-safe";
     need_args(name, args, 1)?;
     Ok(match args[0].kind() {
-        Kind::Cons(cell) => *cell.car.borrow(),
+        Kind::Cons(cell) => cell.car.get(),
         value => runtime_keymap_public_view(interp, &value.value())
             .and_then(|view| view.car().ok())
             .unwrap_or(Value::Nil),
@@ -2318,7 +2318,7 @@ pub(super) fn direct_cdr_safe(
     let name = "cdr-safe";
     need_args(name, args, 1)?;
     Ok(match args[0].kind() {
-        Kind::Cons(cell) => *cell.cdr.borrow(),
+        Kind::Cons(cell) => cell.cdr.get(),
         value => runtime_keymap_public_view(interp, &value.value())
             .and_then(|view| view.cdr().ok())
             .unwrap_or(Value::Nil),
@@ -2428,7 +2428,7 @@ pub(super) fn direct_member_family(
                     ])));
                 }
                 let matches = {
-                    let item = car.borrow();
+                    let item = car.get();
                     match test {
                         MemTest::Equal => values_equal_in_env(interp, &item, &args[0], env),
                         MemTest::Eql => values_eql(&item, &args[0]),
@@ -2438,7 +2438,7 @@ pub(super) fn direct_member_family(
                 if matches {
                     return Ok(current);
                 }
-                *cdr.borrow()
+                cdr.get()
             }
             Kind::Nil => return Ok(Value::Nil),
             other => {
@@ -2524,14 +2524,14 @@ pub(super) fn direct_assq_family(
             ])));
         }
         let matched = {
-            let item = cell.car.borrow();
-            match (*item).kind() {
+            let item = cell.car.get();
+            match (item).kind() {
                 Kind::Cons(cons_cell) => {
                     let item_car = &cons_cell.car;
                     let item_cdr = &cons_cell.cdr;
                     let slot = if want_car { item_car } else { item_cdr };
-                    let entry_key = slot.borrow();
-                    match ((*entry_key).kind(), key.kind()) {
+                    let entry_key = slot.get();
+                    match ((entry_key).kind(), key.kind()) {
                         (Kind::Integer(a), Kind::Integer(b)) => a == b,
                         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
                         (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
@@ -2551,10 +2551,10 @@ pub(super) fn direct_assq_family(
             }
         };
         if matched {
-            return Ok(*cell.car.borrow());
+            return Ok(cell.car.get());
         }
-        let tail = cell.cdr.borrow();
-        let next = match (*tail).kind() {
+        let tail = cell.cdr.get();
+        let next = match (tail).kind() {
             Kind::Nil => return Ok(Value::Nil),
             Kind::Cons(next) => next,
             other => {
@@ -2565,7 +2565,6 @@ pub(super) fn direct_assq_family(
                 ])));
             }
         };
-        drop(tail);
         cell = next;
     }
 }

@@ -610,22 +610,22 @@ impl Interpreter {
         let mut tortoise = crate::lisp::types::ConsCell::identity(&cell);
         let (mut power, mut steps) = (2usize, 0usize);
         loop {
-            let matches = match (*cell.car.borrow()).kind() {
+            let matches = match cell.car.get().kind() {
                 Kind::Symbol(key) => key == *property,
                 Kind::Nil => property == "nil",
                 Kind::T => property == "t",
                 _ => false,
             };
             let next = {
-                let rest = cell.cdr.borrow();
-                let Kind::Cons(value_cell) = (*rest).kind() else {
+                let rest = cell.cdr.get();
+                let Kind::Cons(value_cell) = (rest).kind() else {
                     return None;
                 };
                 if matches {
-                    return Some(*value_cell.car.borrow());
+                    return Some(value_cell.car.get());
                 }
-                let after = value_cell.cdr.borrow();
-                match (*after).kind() {
+                let after = value_cell.cdr.get();
+                match (after).kind() {
                     Kind::Cons(next) => next,
                     _ => return None,
                 }
@@ -651,12 +651,12 @@ impl Interpreter {
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
         while let Kind::Cons(cell) = tail.kind() {
-            let rest = *cell.cdr.borrow();
+            let rest = cell.cdr.get();
             let (value_cell, next_cell) = rest.cons_cells()?;
-            if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
-                return Some(*value_cell.borrow());
+            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+                return Some(value_cell.get());
             }
-            tail = *next_cell.borrow();
+            tail = next_cell.get();
             if tortoise.cycle(&tail) {
                 return None;
             }
@@ -675,18 +675,20 @@ impl Interpreter {
             let mut tail = plist;
             let mut tortoise = Brent::new(&tail);
             while let Kind::Cons(cell) = tail.kind() {
-                let rest = *cell.cdr.borrow();
+                let rest = cell.cdr.get();
                 let Some((value_cell, next_cell)) = (rest).cons_cells() else {
                     return;
                 };
-                if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
-                    *value_cell.borrow_mut() = value;
+                if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+                    value_cell.set(value);
                     return;
                 }
-                let next = *next_cell.borrow();
+                let next = next_cell.get();
                 if next.is_nil() {
-                    *next_cell.borrow_mut() =
-                        Value::list([Value::Symbol(property.to_string().into()), value]);
+                    next_cell.set(Value::list([
+                        Value::Symbol(property.to_string().into()),
+                        value,
+                    ]));
                     return;
                 }
                 tail = next;
@@ -752,8 +754,8 @@ impl Interpreter {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
                     if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cons_cell)) {
-                        pending.push(*cdr.borrow());
-                        pending.push(*car.borrow());
+                        pending.push(cdr.get());
+                        pending.push(car.get());
                     }
                 }
                 Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
@@ -827,12 +829,12 @@ impl Interpreter {
                     .cons
                     .insert(crate::lisp::types::ConsCell::identity(&cell))
                 {
-                    let car = *cell.car.borrow();
-                    let cdr = *cell.cdr.borrow();
+                    let car = cell.car.get();
+                    let cdr = cell.cdr.get();
                     let car = self.intern_read_symbols_in_obarray(car, obarray, seen)?;
                     let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen)?;
-                    *cell.car.borrow_mut() = car;
-                    *cell.cdr.borrow_mut() = cdr;
+                    cell.car.set(car);
+                    cell.cdr.set(cdr);
                 }
                 Ok(Value::Cons(cell))
             }
@@ -930,12 +932,12 @@ impl Interpreter {
             if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                 return;
             }
-            let rest = *cell.cdr.borrow();
+            let rest = cell.cdr.get();
             let Some((_, next_cell)) = rest.cons_cells() else {
                 return;
             };
-            let next = *next_cell.borrow();
-            if matches!((*cell.car.borrow()).kind(), Kind::Symbol(key) if key == property) {
+            let next = next_cell.get();
+            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
                 self.note_definition_changed();
                 if let Some(previous) = previous_value_cell {
                     previous

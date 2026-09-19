@@ -712,7 +712,7 @@ pub(crate) fn hash_table_count(interp: &Interpreter, value: &Value) -> Option<us
     let mut tail = record.slots.get(1).copied().unwrap_or(Value::Nil);
     while let Kind::Cons(cell) = tail.kind() {
         count += 1;
-        tail = *cell.cdr.borrow();
+        tail = cell.cdr.get();
     }
     Some(count)
 }

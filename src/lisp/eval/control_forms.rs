@@ -213,12 +213,12 @@ impl Interpreter {
         let Kind::Cons(cell) = binding.kind() else {
             return Err(wrong_type_argument("listp", *binding));
         };
-        let name = *cell.car.borrow();
-        let rest = *cell.cdr.borrow();
+        let name = cell.car.get();
+        let rest = cell.cdr.get();
         match rest.kind() {
             Kind::Nil => Ok((name, None)),
             Kind::Cons(second) => {
-                if !second.cdr.borrow().is_nil() {
+                if !second.cdr.get().is_nil() {
                     return Err(LispError::SignalValue(Value::cons(
                         Value::symbol("error"),
                         Value::cons(
@@ -229,7 +229,7 @@ impl Interpreter {
                         ),
                     )));
                 }
-                Ok((name, Some(*second.car.borrow())))
+                Ok((name, Some(second.car.get())))
             }
             other => Err(wrong_type_argument("listp", other.value())),
         }
@@ -244,7 +244,7 @@ impl Interpreter {
     ) -> Result<Option<(Value, Value)>, LispError> {
         match tail.kind() {
             Kind::Nil => Ok(None),
-            Kind::Cons(cell) => Ok(Some((*cell.car.borrow(), *cell.cdr.borrow()))),
+            Kind::Cons(cell) => Ok(Some((cell.car.get(), cell.cdr.get()))),
             _ => Err(wrong_type_argument("listp", *varlist)),
         }
     }

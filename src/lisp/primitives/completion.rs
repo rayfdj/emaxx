@@ -419,10 +419,20 @@ pub(crate) fn substitute_object_recurse(
             let Some((car_slot, cdr_slot)) = subtree.cons_cells() else {
                 return Ok(*subtree);
             };
-            *car_slot.borrow_mut() =
-                substitute_object_recurse(interp, object, placeholder, &car, seen)?;
-            *cdr_slot.borrow_mut() =
-                substitute_object_recurse(interp, object, placeholder, &cdr, seen)?;
+            car_slot.set(substitute_object_recurse(
+                interp,
+                object,
+                placeholder,
+                &car,
+                seen,
+            )?);
+            cdr_slot.set(substitute_object_recurse(
+                interp,
+                object,
+                placeholder,
+                &cdr,
+                seen,
+            )?);
             Ok(*subtree)
         }
         Kind::StringObject(state) => {
@@ -558,12 +568,12 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
 }
 
 pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
-    let current = *item.borrow();
+    let current = item.get();
     match current.kind() {
         Kind::String(text) => {
             let shared =
                 make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
-            *item.borrow_mut() = shared;
+            item.set(shared);
             Ok(shared)
         }
         value => Ok(value.value()),
@@ -605,7 +615,7 @@ pub(crate) fn completion_list_candidates(
                         predicate_args: vec![item],
                     });
                 }
-                current = *cdr.borrow();
+                current = cdr.get();
             }
             // minibuf.c iterates `for (tail = collection; CONSP (tail);
             // tail = XCDR (tail))': any non-cons tail simply ends the

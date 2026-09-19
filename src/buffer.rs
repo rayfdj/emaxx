@@ -1740,12 +1740,12 @@ impl Buffer {
             *view = None;
             return;
         };
-        let head = *head.borrow();
+        let head = head.get();
         let Some((_, end)) = head.cons_cells() else {
             *view = None;
             return;
         };
-        *end.borrow_mut() = Value::Integer((pos + len) as i64);
+        end.set(Value::Integer((pos + len) as i64));
     }
 
     /// Record GNU's `(t . TIME)' save-point marker before the first
@@ -2619,8 +2619,8 @@ fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
         let Some((property, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!((*property.borrow()).kind(), Kind::Symbol(candidate) if candidate == name)
-            && nonsticky.borrow().is_truthy()
+        matches!(property.get().kind(), Kind::Symbol(candidate) if candidate == name)
+            && nonsticky.get().is_truthy()
     })
 }
 

@@ -1055,6 +1055,14 @@ One of 20n's three ignored contracts is back; two stay ignored (the
 native heap's own conservative word scan retains the bytecode one).
 Next: the 16-byte cons (D2), then the id-addressed kinds as objects.
 
+Checkpoint 20p (2026-09-19): the cons fields as plain words (a
+`Cell<Value>' each; `get' the load, `set' the store; the `RefCell'
+gone from the cons).  Measured against 20o in one run: the lexical
+loop 2.06 to 1.94 s (GNU 0.86), the defun calls 1.43 to 1.32 (0.60),
+the corpus rows 2 to 7 percent faster.  Next: the mark bit into the
+block's bitmap and the serial out of the cell (20q), the native words
+into the heap's mirror map (20r), and the cons is sixteen bytes.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

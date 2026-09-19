@@ -177,8 +177,8 @@ pub(crate) fn parse_lcms_numeric_prefix<const N: usize>(value: &Value) -> Option
     let mut current = *value;
     for item in &mut result {
         let (car, cdr) = current.cons_cells()?;
-        *item = car.borrow().as_float().ok()?;
-        current = *cdr.borrow();
+        *item = car.get().as_float().ok()?;
+        current = cdr.get();
     }
     Some(result)
 }

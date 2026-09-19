@@ -13749,3 +13749,100 @@ compat_runtime 84, batch 50, lightweight 445 -- 2,715 of the 2,719
 scheduled passing and 4 ignored (the two of before and the two of
 item 3), no failures; bins 57, 2, 0 and 1 passed; integration 23, 6,
 3, 1, 1 and 5 passed; GATE-EXIT=0.
+
+## 2026-09-19 Checkpoint 20p: the cons fields as plain words (phase D, step 2b)
+
+*What prompted it.*  With the word in place (20n) and the result in
+registers (20o), the profile of the interpreted loops was the cell
+around the word: every car and cdr read went through a `RefCell'
+(a borrow-count increment, a check, a guard, a decrement) and every
+write through `borrow_mut'; `assq_environment', the alist walk under
+every variable reference, spent most of its instructions there.
+lisp.h's `XCAR' is one load and `XSETCAR' one store.
+
+*Done.*
+
+1. **The field as a word.**  `ConsValueCell' holds a `Cell<Value>':
+   `get' is the load (after the native view's agreement check, as
+   before), `set' the store (after the mutation notice for the caches
+   keyed on the cell and the native view's, as before).  `ConsSlot'
+   reads and writes the same way.  The `RefCell', its guards and the
+   `Ref'/`RefMut' types are gone from the cons.
+
+2. **The sites.**  Some 190 reads and 40 writes across 39 files: the
+   rewrite was a regex over the source (`*x.car.borrow()' to
+   `x.car.get()', `*x.car.borrow_mut() = v' to `x.car.set(v)'), then
+   the compiler's errors for the bound field handles; no site changed
+   its meaning.
+
+3. **Nothing else.**  The cell's layout is otherwise 20o's: the
+   native words, the mark word and the serial stay for 20q and 20r.
+
+*Measured.*  Wall clock, three interleaved rounds with nothing
+else on the machine, seconds (min / median); w28 is checkpoint 20o,
+w29 this one, GNU on the same machine; the probes are `tools/perf/'.
+
+| probe | w28 (20o) | w29 (20p) | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 2.063 / 2.107 | 1.941 / 1.996 | 0.864 / 0.892 |
+| interpreted dynamic loop, 2 M | 0.962 / 0.974 | 0.907 / 0.937 | 0.393 / 0.398 |
+| 1 M interpreted defun calls | 1.430 / 1.431 | 1.319 / 1.343 | 0.598 / 0.616 |
+| byte-code call loop, 10 M | 0.513 / 0.513 | 0.474 / 0.509 | 0.179 / 0.182 |
+| 300 k conses pushed | 0.266 / 0.267 | 0.246 / 0.254 | 0.082 / 0.083 |
+| the collection after them | 0.039 / 0.042 | 0.036 / 0.037 | 0.010 / 0.010 |
+| ten collections of the idle booted heap | 0.119 / 0.123 | 0.111 / 0.119 | 0.053 / 0.056 |
+| mapcar over 100 k, twenty times | 0.708 / 0.718 | 0.702 / 0.707 | 0.173 / 0.182 |
+| six million conses (`gcs-per-conses.el') | 120 collections, 3.34 / 3.56 s | 120 collections, 3.38 / 3.41 s | 120 collections, 1.47 / 1.49 s |
+
+The corpus rows (two rounds, the minimum): ucs-names GNU 1.92 s, 20o
+6.78, 20p 6.64; fns-tests-sort 1.11, 3.11, 2.90; pcase-tests-macro
+0.08, 0.41, 0.40; undo-test4 0.85, 4.39, 4.19.  Callgrind: the
+lexical loop 10,568 instructions an iteration to 9,724 (GNU 5,477),
+the dynamic 6,822 to 6,440 (3,234), the byte-code call loop 902 to
+899 (330); one collection of the idle heap 65.8 M to 63.4 M.
+
+*What did not move, and what was learned.*  Six to eight
+percent off the interpreted loops (the lexical 2.06 to 1.94 s, GNU
+0.86; the defun calls 1.43 to 1.32, GNU 0.60; the instruction counts
+down 6 to 8 percent) and the corpus rows 2 to 7 percent; the
+allocating probes within noise (the cell is the same size, so the
+bytes a collection touches are the same).  The lexical loop is now
+2.25 times GNU by wall clock, from 4.5 at 20j: the word, the result
+in registers and the plain field between them took the half that the
+representation owed.  What a cons read still pays beyond C's load is
+the native view's agreement check (a null test of the cell's native
+word) and, on a write, the mutation notice; and the cell is still
+several words wide, which is what the allocating probes wait for:
+the mark bit into the block's bitmap and the serial out of the cell
+(20q), the native words into the heap's mirror map (20r).
+
+*Which of these mirror C, and which do not.*  C: the car and cdr as
+words, read and written in place.  Not C: the mutation notice at the
+store (C's caches -- the byte-code and the macroexpansion -- are not
+keyed on a cell's identity, so a store notes nothing there), the
+native view's agreement check at the load, and the cell still several
+words wide (the native words, the mark word, the serial: 20q and
+20r).  The standing list from 20o otherwise unchanged: the error as a
+value through `Result' rather than a longjmp, tag 1 as the home of
+nil, t, the unbound marker, the subr and the six id-addressed kinds;
+`eq' through the kind-pair switch; `Kind' as a materialized view; the
+id on the record and the side tables keyed by it, the registry and
+the purge after the sweep, the keymap facade as a root, the image's
+objects in the swept blocks, the stack zeroed after a collection, the
+native heap as a second representation and its handles as roots, the
+symbol's cells outside the symbol, the uninterned symbol's book, the
+sweep order, no global lock, the subr's minimum arity policed after
+evaluation, a borrowed string object's bytes uncounted by the sweep.
+
+*Verified.*  The full library suite on the gate build,
+2,712 of 2,719 passing, with the three tests that need a non-root
+user failing as they do for root and the four ignored as at 20o; the
+focused groups after the change (collection, census, roots, symbol,
+gc, record, hash, window, thread, process, keymap, pdumper, native
+runtime, module, continuation, bytecode, let, finalizer, anti-cheat,
+cons, setcar, setcdr, nconc, mutation, reader); `cargo clippy
+--all-targets -- -D warnings' and `cargo fmt --check' clean; the
+probes above on the release build, three rounds interleaved with GNU
+and checkpoint 20o's binary.
+
+*Gate.*  GATE-PLACEHOLDER

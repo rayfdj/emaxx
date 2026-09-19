@@ -31,12 +31,12 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
             let Kind::Cons(cell) = cycle.kind() else {
                 unreachable!("constructed cons");
             };
-            *cell.cdr.borrow_mut() = cycle;
+            cell.cdr.set(cycle);
             let mut reached = LispReachability::default();
             assert!(reached.mark(&interp, &cycle));
             assert!(reached.contains(&leaf));
             assert!(reached.pending.is_empty());
-            *cell.cdr.borrow_mut() = Value::Nil;
+            cell.cdr.set(Value::Nil);
         })
         .expect("small-stack collector control")
         .join()

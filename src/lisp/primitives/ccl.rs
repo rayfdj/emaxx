@@ -94,8 +94,8 @@ fn resolve_ccl_program(
             Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
-                let symbol = car.borrow().as_symbol()?.to_string();
-                let property = cdr.borrow().as_symbol()?.to_string();
+                let symbol = car.get().as_symbol()?.to_string();
+                let property = cdr.get().as_symbol()?.to_string();
                 interp
                     .get_symbol_property(&symbol, &property)
                     .and_then(|value| value.as_integer().ok())
@@ -211,7 +211,7 @@ fn register_code_conversion_map(
     let mut index = None;
     for (candidate, slot) in slots.iter().enumerate() {
         match slot.kind() {
-            Kind::Cons(cell) if cell.car.borrow().as_symbol().ok() == Some(symbol.as_str()) => {
+            Kind::Cons(cell) if cell.car.get().as_symbol().ok() == Some(symbol.as_str()) => {
                 index = Some(candidate);
                 break;
             }
@@ -491,7 +491,7 @@ impl CclMachine {
         let Some((_, table)) = (slot).cons_cells() else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };
-        let table = *table.borrow();
+        let table = table.get();
         let Some((test, entries)) = json::hash_table_entries(interp, &table) else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };

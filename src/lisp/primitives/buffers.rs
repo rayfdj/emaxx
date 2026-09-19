@@ -778,8 +778,8 @@ pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>,
         Kind::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
-            let start = car.borrow().as_integer()?;
-            let end = cdr.borrow().as_integer()?;
+            let start = car.get().as_integer()?;
+            let end = cdr.get().as_integer()?;
             if start < 0 || end < 0 {
                 return Err(LispError::Signal("Args out of range".into()));
             }

@@ -98,7 +98,7 @@ impl Interpreter {
             }
             _ => assq_binding_named(environment, name)?,
         };
-        Ok(binding.map(|binding| *binding.cdr.borrow()))
+        Ok(binding.map(|binding| binding.cdr.get()))
     }
 
     fn lookup_var_with_resolved_name(
@@ -713,7 +713,7 @@ impl Interpreter {
         if let Some(environment) = current_environment(env)
             && let Some(binding) = assq_binding(environment, name)?
         {
-            return Ok(*binding.cdr.borrow());
+            return Ok(binding.cdr.get());
         }
         if self.globals.plain_store(name)
             && let Some(value) = self.globals.value(name)
@@ -1136,7 +1136,7 @@ impl Interpreter {
         let Some(binding) = assq_binding_named(environment, name)? else {
             return Ok(false);
         };
-        *binding.cdr.borrow_mut() = Self::stored_value(value);
+        binding.cdr.set(Self::stored_value(value));
         Ok(true)
     }
 
@@ -1154,7 +1154,7 @@ impl Interpreter {
         let Some(binding) = assq_binding(environment, symbol)? else {
             return Ok(false);
         };
-        *binding.cdr.borrow_mut() = Self::stored_value(value);
+        binding.cdr.set(Self::stored_value(value));
         Ok(true)
     }
 
@@ -1289,8 +1289,8 @@ impl Interpreter {
                 Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
-                    return match (*car.borrow()).kind() {
-                        Kind::Symbol(head) if head == "macro" => Some(*cdr.borrow()),
+                    return match car.get().kind() {
+                        Kind::Symbol(head) if head == "macro" => Some(cdr.get()),
                         _ => None,
                     };
                 }

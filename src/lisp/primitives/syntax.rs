@@ -283,15 +283,15 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
     let Some((car, cdr)) = (value).cons_cells() else {
         return ("invalid".into(), false);
     };
-    let Kind::Integer(raw_code) = (*car.borrow()).kind() else {
+    let Kind::Integer(raw_code) = car.get().kind() else {
         return ("invalid".into(), false);
     };
-    let matching = match (*cdr.borrow()).kind() {
+    let matching = match cdr.get().kind() {
         Kind::Nil => None,
         Kind::Integer(code) => u32::try_from(code).ok().and_then(char::from_u32),
         _ => return ("invalid".into(), false),
     };
-    if !cdr.borrow().is_nil() && matching.is_none() {
+    if !cdr.get().is_nil() && matching.is_none() {
         return ("invalid".into(), false);
     }
     let syntax_code = raw_code & i64::from(i32::MAX);
@@ -1129,10 +1129,10 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             let Some((open_pos, close_char)) = (entry).cons_cells() else {
                 continue;
             };
-            let Ok(open_pos) = open_pos.borrow().as_integer() else {
+            let Ok(open_pos) = open_pos.get().as_integer() else {
                 continue;
             };
-            let Ok(close_char) = close_char.borrow().as_integer() else {
+            let Ok(close_char) = close_char.get().as_integer() else {
                 continue;
             };
             let Some(close_char) = char::from_u32(close_char as u32) else {

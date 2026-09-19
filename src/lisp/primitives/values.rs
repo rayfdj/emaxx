@@ -55,7 +55,7 @@ fn values_equal_signaling_depth(
 ) -> Result<bool, LispError> {
     fn plain_cons(value: &Value) -> bool {
         matches!(value.kind(), Kind::Cons(cell)
-            if !matches!(cell.car.borrow().kind(), Kind::Symbol(tag) if tag == "vector-literal"))
+            if !matches!(cell.car.get().kind(), Kind::Symbol(tag) if tag == "vector-literal"))
     }
     if !plain_cons(left) || !plain_cons(right) {
         // Leaves take the same env-aware walk `equal' uses everywhere
@@ -95,13 +95,13 @@ fn values_equal_signaling_depth(
         let Kind::Cons(rc) = r.kind() else {
             return Ok(false);
         };
-        let left_car = *lc.car.borrow();
-        let right_car = *rc.car.borrow();
+        let left_car = lc.car.get();
+        let right_car = rc.car.get();
         if !values_equal_signaling_depth(interp, &left_car, &right_car, env, depth + 1, memo)? {
             return Ok(false);
         }
-        let left_cdr = *lc.cdr.borrow();
-        let right_cdr = *rc.cdr.borrow();
+        let left_cdr = lc.cdr.get();
+        let right_cdr = rc.cdr.get();
         if let (Kind::Cons(a), Kind::Cons(b)) = (left_cdr.kind(), right_cdr.kind())
             && crate::lisp::types::SharedCons::ptr_eq(&a, &b)
         {
@@ -630,7 +630,7 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
                     return len;
                 }
                 len += 1;
-                current = *cdr.borrow();
+                current = cdr.get();
             }
             Kind::Nil => return len,
             _ => return len,
@@ -679,7 +679,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
 
                 remaining -= 1;
                 steps += 1;
-                current = *cdr.borrow();
+                current = cdr.get();
             }
             other => return Err(wrong_type_argument("listp", other.value())),
         }
@@ -1273,10 +1273,10 @@ pub(crate) fn value_ordering(
                     return Err(circular_signal(left));
                 }
                 let result = (|| {
-                    let left_head = *left_cell.car.borrow();
-                    let left_tail = *left_cell.cdr.borrow();
-                    let right_head = *right_cell.car.borrow();
-                    let right_tail = *right_cell.cdr.borrow();
+                    let left_head = left_cell.car.get();
+                    let left_tail = left_cell.cdr.get();
+                    let right_head = right_cell.car.get();
+                    let right_tail = right_cell.cdr.get();
                     let head_order =
                         value_ordering(interp, &left_head, &right_head, env, seen_lists)?;
                     if matches!(head_order, ValueOrder::Less | ValueOrder::Greater) {
@@ -1577,8 +1577,8 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
                 Value::string("Circular list"),
             ])));
         }
-        match (*cdr.borrow()).kind() {
-            Kind::Cons(_) => current = *cdr.borrow(),
+        match cdr.get().kind() {
+            Kind::Cons(_) => current = cdr.get(),
             _ => return Ok(current),
         }
     }
@@ -2841,12 +2841,12 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
         if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
             return Ok((items, Value::Nil));
         }
-        let item = *cell.car.borrow();
+        let item = cell.car.get();
         if matches!(item.kind(), Kind::Symbol(name) if name == "keymap") {
             return Ok((items, tail));
         }
         items.push(item);
-        let next = *cell.cdr.borrow();
+        let next = cell.cdr.get();
         tail = next;
     }
 }

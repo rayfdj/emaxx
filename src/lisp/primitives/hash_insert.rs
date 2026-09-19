@@ -420,8 +420,8 @@ fn project_embedded_keymaps(
         // primitive remains responsible for reporting or traversing it.
         return Ok(*value);
     }
-    let original_car = *car.borrow();
-    let original_cdr = *cdr.borrow();
+    let original_car = car.get();
+    let original_cdr = cdr.get();
     let projected_car = project_embedded_keymaps(interp, &original_car, seen_keymaps, seen_cons)?;
     let projected_cdr = project_embedded_keymaps(interp, &original_cdr, seen_keymaps, seen_cons)?;
     seen_cons.remove(&identity);

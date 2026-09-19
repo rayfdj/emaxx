@@ -532,12 +532,12 @@ const DIGESTS: &[DigestSpec] = &[
 fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     let mut current = *plist;
     while let Kind::Cons(cell) = current.kind() {
-        let rest = *cell.cdr.borrow();
+        let rest = cell.cdr.get();
         let (value, tail) = rest.cons_cells()?;
-        if matches!((*cell.car.borrow()).kind(), Kind::Symbol(name) if name == property) {
-            return value.borrow().as_integer().ok();
+        if matches!(cell.car.get().kind(), Kind::Symbol(name) if name == property) {
+            return value.get().as_integer().ok();
         }
-        current = *tail.borrow();
+        current = tail.get();
     }
     None
 }

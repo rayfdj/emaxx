@@ -42,7 +42,7 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     // Before Emacs 30, lazily loaded BYTECODE could occupy this slot as a
     // (FILE . OFFSET) pair.  It is still bytecode, whereas an interpreted
     // closure's code slot is a (proper) list of body forms.
-    !matches!((*cdr.borrow()).kind(), Kind::Integer(_))
+    !matches!(cdr.get().kind(), Kind::Integer(_))
 }
 
 fn invalid_circular_read_syntax() -> LispError {
@@ -67,8 +67,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                     continue;
                 };
                 if seen_cons.insert(car.cell_id()) {
-                    pending.push(*cdr.borrow());
-                    pending.push(*car.borrow());
+                    pending.push(cdr.get());
+                    pending.push(car.get());
                 }
             }
             Kind::Vector(vector) => {
@@ -160,8 +160,8 @@ fn fill_circular_label_value(
     let Some((target_car, target_cdr)) = target.cons_cells() else {
         return Err(invalid_circular_read_syntax());
     };
-    *target_car.borrow_mut() = resolve_circular_read_syntax_inner(&template_car, labels)?;
-    *target_cdr.borrow_mut() = resolve_circular_read_syntax_inner(&template_cdr, labels)?;
+    target_car.set(resolve_circular_read_syntax_inner(&template_car, labels)?);
+    target_cdr.set(resolve_circular_read_syntax_inner(&template_cdr, labels)?);
     Ok(())
 }
 
@@ -384,8 +384,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 if !seen.insert(ptr) {
                     continue;
                 }
-                stack.push(*car_cell.borrow());
-                stack.push(*cdr_cell.borrow());
+                stack.push(car_cell.get());
+                stack.push(cdr_cell.get());
             }
             Kind::Vector(vector) => {
                 if seen_vectors.insert(vector.identity()) {
@@ -2652,7 +2652,7 @@ mod tests {
     fn circular_syntax_scan_handles_already_materialized_cycles() {
         let cycle = Value::list([Value::Integer(1)]);
         let (_, cdr) = cycle.cons_cells().expect("one-element list");
-        *cdr.borrow_mut() = cycle;
+        cdr.set(cycle);
 
         assert!(!contains_circular_read_syntax(&cycle));
 

@@ -627,12 +627,12 @@ fn call_internal_macroexpand_for_load(
     let owner = interp.lookup_function("internal-macroexpand-for-load", env)?;
     if std::env::var_os("EMAXX_DEBUG_EAGER_MACROEXPAND").is_some() {
         let head = match form.kind() {
-            Kind::Cons(cell) => format!("{}", cell.car.borrow().clone()),
+            Kind::Cons(cell) => format!("{}", cell.car.get().clone()),
             other => format!("{other}"),
         };
         let second = if let Kind::Cons(cell) = form.kind() {
-            if let Kind::Cons(inner) = (*cell.cdr.borrow()).kind() {
-                format!(" {}", inner.car.borrow().clone())
+            if let Kind::Cons(inner) = cell.cdr.get().kind() {
+                format!(" {}", inner.car.get().clone())
             } else {
                 String::new()
             }

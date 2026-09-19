@@ -308,7 +308,7 @@ pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
     if let Some(environment) = crate::lisp::types::current_environment(env)
         && let Ok(Some(binding)) = crate::lisp::types::assq_binding_named(environment, name)
     {
-        *binding.cdr.borrow_mut() = value;
+        binding.cdr.set(value);
         return;
     }
     Interpreter::push_bindings(env, vec![(name.into(), value)]);
@@ -328,7 +328,7 @@ pub(crate) fn sync_print_number_table(
                 .ok()
                 .flatten()
         })
-        .map(|binding| *binding.cdr.borrow())
+        .map(|binding| binding.cdr.get())
     else {
         return;
     };
@@ -1638,12 +1638,12 @@ fn materialize_positioned_symbols(
         Kind::Cons(cell) => {
             let pointer = cell.as_ptr();
             if seen.insert(pointer) {
-                let car = *cell.car.borrow();
+                let car = cell.car.get();
                 let car = materialize_positioned_symbols(interp, car, seen);
-                *cell.car.borrow_mut() = car;
-                let cdr = *cell.cdr.borrow();
+                cell.car.set(car);
+                let cdr = cell.cdr.get();
                 let cdr = materialize_positioned_symbols(interp, cdr, seen);
-                *cell.cdr.borrow_mut() = cdr;
+                cell.cdr.set(cdr);
             }
             Value::Cons(cell)
         }
@@ -1847,10 +1847,14 @@ fn materialize_char_table_literals_inner(
     if !seen.insert(ptr) {
         return Ok(*value);
     }
-    let car = *car_cell.borrow();
-    *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, env, seen)?;
-    let cdr = *cdr_cell.borrow();
-    *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, env, seen)?;
+    let car = car_cell.get();
+    car_cell.set(materialize_char_table_literals_inner(
+        interp, &car, env, seen,
+    )?);
+    let cdr = cdr_cell.get();
+    cdr_cell.set(materialize_char_table_literals_inner(
+        interp, &cdr, env, seen,
+    )?);
     Ok(*value)
 }
 
@@ -2238,12 +2242,12 @@ fn materialize_hash_table_literals_inner(
     if !seen.insert(ptr) {
         return Ok(*value);
     }
-    let car = *car_cell.borrow();
+    let car = car_cell.get();
     let new_car = materialize_hash_table_literals_inner(interp, &car, env, seen)?;
-    *car_cell.borrow_mut() = new_car;
-    let cdr = *cdr_cell.borrow();
+    car_cell.set(new_car);
+    let cdr = cdr_cell.get();
     let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, env, seen)?;
-    *cdr_cell.borrow_mut() = new_cdr;
+    cdr_cell.set(new_cdr);
     Ok(*value)
 }
 
@@ -2673,7 +2677,7 @@ mod tests {
         let mut interp = Interpreter::new();
         let object = Value::cons(Value::Integer(1), Value::Nil);
         let (_, cdr) = object.cons_cells().expect("cons");
-        *cdr.borrow_mut() = object;
+        cdr.set(object);
         let mut env = preprocess_env(&mut interp, Value::Nil);
 
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess cyclic list");

@@ -163,8 +163,8 @@ fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
         let Some((name, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!((*name.borrow()).kind(), Kind::Symbol(candidate) if candidate == prop)
-            && nonsticky.borrow().is_truthy()
+        matches!(name.get().kind(), Kind::Symbol(candidate) if candidate == prop)
+            && nonsticky.get().is_truthy()
     })
 }
 

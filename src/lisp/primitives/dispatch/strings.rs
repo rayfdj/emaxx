@@ -1080,12 +1080,12 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
         let Kind::Cons(cell) = tail.kind() else {
             return None;
         };
-        if let Kind::Cons(entry) = (*cell.car.borrow()).kind()
-            && entry.car.borrow().as_symbol().ok() == Some(property)
+        if let Kind::Cons(entry) = cell.car.get().kind()
+            && entry.car.get().as_symbol().ok() == Some(property)
         {
-            return Some(*entry.cdr.borrow());
+            return Some(entry.cdr.get());
         }
-        let rest = *cell.cdr.borrow();
+        let rest = cell.cdr.get();
         tail = rest;
     }
 }

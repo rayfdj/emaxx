@@ -483,8 +483,8 @@ pub(crate) fn write_sorted_sequence(
                     Kind::Cons(cons_cell) => {
                         let car = &cons_cell.car;
                         let cdr = &cons_cell.cdr;
-                        *car.borrow_mut() = *item;
-                        current = *cdr.borrow();
+                        car.set(*item);
+                        current = cdr.get();
                     }
                     Kind::Nil => break,
                     _ => return Err(list_or_vector_type_error(target)),

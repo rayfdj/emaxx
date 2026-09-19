@@ -1259,8 +1259,8 @@ define_dispatch!(
                 }
                 let mut base = args[2];
                 if let Kind::Cons(cell) = base.kind() {
-                    frame_offset += cell.car.borrow().as_integer()?;
-                    let function = *cell.cdr.borrow();
+                    frame_offset += cell.car.get().as_integer()?;
+                    let function = cell.cdr.get();
                     base = function;
                 }
                 if frame_offset < 0 {
@@ -1682,8 +1682,8 @@ fn widget_get_inner(
         Kind::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
-            let widget_type = *car.borrow();
-            if let Some(value) = plist_get_exact(&cdr.borrow().clone(), property)? {
+            let widget_type = car.get();
+            if let Some(value) = plist_get_exact(&cdr.get().clone(), property)? {
                 return Ok(value);
             }
             widget_get_inner(interp, &widget_type, property, seen)
@@ -1710,9 +1710,9 @@ fn widget_put(
     let Some((_, cdr)) = (widget).cons_cells() else {
         return Err(LispError::TypeError("widget".into(), widget.type_name()));
     };
-    let plist = *cdr.borrow();
+    let plist = cdr.get();
     let updated = plist_put_exact(plist, *property, value)?;
-    *cdr.borrow_mut() = updated;
+    cdr.set(updated);
     Ok(value)
 }
 
@@ -1729,14 +1729,14 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
                 if seen.step(cell_id) {
                     return Ok(None);
                 }
-                if *car.borrow() == *property {
-                    return match (*cdr.borrow()).kind() {
-                        Kind::Cons(cell) => Ok(Some(*cell.car.borrow())),
+                if car.get() == *property {
+                    return match cdr.get().kind() {
+                        Kind::Cons(cell) => Ok(Some(cell.car.get())),
                         _ => Ok(Some(Value::Nil)),
                     };
                 }
-                match (*cdr.borrow()).kind() {
-                    Kind::Cons(cell) => current = *cell.cdr.borrow(),
+                match cdr.get().kind() {
+                    Kind::Cons(cell) => current = cell.cdr.get(),
                     _ => return Ok(None),
                 }
             }
@@ -1761,24 +1761,24 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                         Value::String("Circular list".into()),
                     ])));
                 }
-                if *car.borrow() == property {
-                    return match (*cdr.borrow()).kind() {
+                if car.get() == property {
+                    return match cdr.get().kind() {
                         Kind::Cons(cons_cell) => {
                             let existing = &cons_cell.car;
                             let _ = &cons_cell.cdr;
-                            *existing.borrow_mut() = value;
+                            existing.set(value);
                             Ok(plist)
                         }
                         _ => Err(plist_type_error(&plist)),
                     };
                 }
-                match (*cdr.borrow()).kind() {
+                match cdr.get().kind() {
                     Kind::Cons(cons_cell) => {
                         let _ = &cons_cell.car;
                         let next = &cons_cell.cdr;
-                        let next_value = *next.borrow();
+                        let next_value = next.get();
                         if next_value.is_nil() {
-                            *next.borrow_mut() = Value::list([property, value]);
+                            next.set(Value::list([property, value]));
                             return Ok(plist);
                         }
                         current = next_value;

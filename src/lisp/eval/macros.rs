@@ -150,8 +150,8 @@ impl CircularReadMaterializer<'_> {
         let Some((target_car, target_cdr)) = target.cons_cells() else {
             return Err(Self::invalid());
         };
-        *target_car.borrow_mut() = self.resolve(&template_car)?;
-        *target_cdr.borrow_mut() = self.resolve(&template_cdr)?;
+        target_car.set(self.resolve(&template_car)?);
+        target_cdr.set(self.resolve(&template_cdr)?);
         Ok(())
     }
 
@@ -201,10 +201,10 @@ impl CircularReadMaterializer<'_> {
                 let Some((car_cell, cdr_cell)) = value.cons_cells() else {
                     return Err(Self::invalid());
                 };
-                let car = *car_cell.borrow();
-                *car_cell.borrow_mut() = self.resolve(&car)?;
-                let cdr = *cdr_cell.borrow();
-                *cdr_cell.borrow_mut() = self.resolve(&cdr)?;
+                let car = car_cell.get();
+                car_cell.set(self.resolve(&car)?);
+                let cdr = cdr_cell.get();
+                cdr_cell.set(self.resolve(&cdr)?);
                 Ok(*value)
             }
             Kind::Vector(vector) => {
@@ -451,24 +451,24 @@ impl Interpreter {
         if !seen_cons.insert(identity) {
             return Ok(*value);
         }
-        let car = *car_cell.borrow();
-        *car_cell.borrow_mut() = self.materialize_read_record_literals_inner(
+        let car = car_cell.get();
+        car_cell.set(self.materialize_read_record_literals_inner(
             &car,
             env,
             seen_cons,
             seen_vectors,
             active_reader_forms,
             records,
-        )?;
-        let cdr = *cdr_cell.borrow();
-        *cdr_cell.borrow_mut() = self.materialize_read_record_literals_inner(
+        )?);
+        let cdr = cdr_cell.get();
+        cdr_cell.set(self.materialize_read_record_literals_inner(
             &cdr,
             env,
             seen_cons,
             seen_vectors,
             active_reader_forms,
             records,
-        )?;
+        )?);
         Ok(*value)
     }
 
@@ -502,10 +502,10 @@ impl Interpreter {
             if !seen.insert(ConsCell::identity(&list_cell)) {
                 break;
             }
-            if let Kind::Symbol(name) = (*list_cell.car.borrow()).kind() {
+            if let Kind::Symbol(name) = list_cell.car.get().kind() {
                 self.note_captured_local_special(name.as_str());
             }
-            cursor = *list_cell.cdr.borrow();
+            cursor = list_cell.cdr.get();
         }
 
         Ok(Value::lambda_with_public_parameters(
@@ -671,11 +671,11 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let mut cursor = crate::lisp::types::current_environment_value(env);
         while let Kind::Cons(list_cell) = cursor.kind() {
-            let entry = *list_cell.car.borrow();
+            let entry = list_cell.car.get();
             if let Kind::Symbol(_) | Kind::T | Kind::Nil = entry.kind() {
                 dynvars = Value::cons(entry, dynvars);
             }
-            cursor = *list_cell.cdr.borrow();
+            cursor = list_cell.cdr.get();
         }
         if let Err(error) = cached_symbol!("macroexp--dynvars")
             .with(|symbol| self.specbind_symbol(symbol, dynvars, env))

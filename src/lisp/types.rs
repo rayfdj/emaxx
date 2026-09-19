@@ -5,7 +5,7 @@ use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
     borrow::Borrow,
-    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
+    cell::{Cell, RefCell, UnsafeCell},
     collections::{HashMap, HashSet},
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
@@ -335,7 +335,7 @@ impl ConsMutationSnapshot {
             if cell.attached_native_address().is_some() {
                 native_cells.push(cell.downgrade());
             }
-            current = *cell.cdr.borrow();
+            current = cell.cdr.get();
         }
         let mut snapshot = Self::from_field_ids(field_ids);
         snapshot.native_cells = native_cells;
@@ -395,8 +395,8 @@ impl ConsMutationSnapshot {
                 self.track_native_cell(&cell);
             }
             added.extend(fields);
-            pending.push(*cell.car.borrow());
-            pending.push(*cell.cdr.borrow());
+            pending.push(cell.car.get());
+            pending.push(cell.cdr.get());
         }
         added.sort_unstable();
         added.dedup();
@@ -1503,7 +1503,9 @@ pub struct ConsCell {
 /// unchanged case without entering the native heap's lookup tables.
 #[derive(Debug)]
 pub(crate) struct ConsValueCell {
-    value: RefCell<Value>,
+    /// The field's word (`XCAR'/`XCDR' read it, `XSETCAR'/`XSETCDR'
+    /// write it: a plain load and a plain store, no borrow count).
+    value: Cell<Value>,
     /// Low bit distinguishes cdr from car; native Lisp words are eight-byte
     /// aligned, so the tag does not consume pointer information.
     native_word: Cell<*const usize>,
@@ -1513,7 +1515,7 @@ pub(crate) struct ConsValueCell {
 impl ConsValueCell {
     fn new(value: Value) -> Self {
         Self {
-            value: RefCell::new(value),
+            value: Cell::new(value),
             native_word: Cell::new(std::ptr::null()),
             native_agreed: Cell::new(0),
         }
@@ -1567,16 +1569,18 @@ impl ConsValueCell {
         }
     }
 
+    /// `XCAR'/`XCDR': the word, after any write generated code left in
+    /// the native view is brought over.
     #[inline]
-    pub(crate) fn borrow(&self) -> Ref<'_, Value> {
+    pub(crate) fn get(&self) -> Value {
         self.synchronize_native_write();
-        self.value.borrow()
+        self.value.get()
     }
 
     /// The Rust field as stored, for the heap check: no native
     /// synchronization, no mutation notice.
-    pub(crate) fn value_in_place(&self) -> Ref<'_, Value> {
-        self.value.borrow()
+    pub(crate) fn value_in_place(&self) -> Value {
+        self.value.get()
     }
 
     /// The image loader's relocation store into a cell it created an
@@ -1584,16 +1588,19 @@ impl ConsValueCell {
     /// the cell, so there is no mutation to note (pdumper.c writes the
     /// relocated word in place).
     pub(crate) fn initialize(&self, value: Value) {
-        *self.value.borrow_mut() = value;
+        self.value.set(value);
     }
 
-    pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
+    /// `XSETCAR'/`XSETCDR': the store, noted for the caches keyed on
+    /// the cell and for the native view.
+    #[inline]
+    pub(crate) fn set(&self, value: Value) {
         self.synchronize_native_write();
         note_cons_mutation(self as *const Self as usize);
         if let Some(key) = self.native_cons_key() {
             note_native_cons_mutation(key);
         }
-        self.value.borrow_mut()
+        self.value.set(value);
     }
 }
 
@@ -1790,17 +1797,17 @@ impl ConsSlot {
         }
     }
 
-    pub fn borrow(&self) -> Ref<'_, Value> {
+    pub fn get(&self) -> Value {
         match self.field {
-            ConsField::Car => self.cell.car.borrow(),
-            ConsField::Cdr => self.cell.cdr.borrow(),
+            ConsField::Car => self.cell.car.get(),
+            ConsField::Cdr => self.cell.cdr.get(),
         }
     }
 
-    pub fn borrow_mut(&self) -> RefMut<'_, Value> {
+    pub fn set(&self, value: Value) {
         match self.field {
-            ConsField::Car => self.cell.car.borrow_mut(),
-            ConsField::Cdr => self.cell.cdr.borrow_mut(),
+            ConsField::Car => self.cell.car.set(value),
+            ConsField::Cdr => self.cell.cdr.set(value),
         }
     }
 
@@ -2489,14 +2496,14 @@ fn assq_environment(
     let mut lap = 2usize;
     loop {
         {
-            let entry = tail.car.borrow();
-            if let Kind::Cons(binding) = (*entry).kind()
-                && matches!((*binding.car.borrow()).kind(), Kind::Symbol(bound) if matches(&bound))
+            let entry = tail.car.get();
+            if let Kind::Cons(binding) = (entry).kind()
+                && matches!(binding.car.get().kind(), Kind::Symbol(bound) if matches(&bound))
             {
                 return Ok(Some(binding));
             }
         }
-        let next = match (*tail.cdr.borrow()).kind() {
+        let next = match tail.cdr.get().kind() {
             Kind::Cons(cell) => cell,
             Kind::Nil => return Ok(None),
             _ => return Err(improper_environment(environment, false)),
@@ -2533,10 +2540,10 @@ pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> b
         _ => return false,
     };
     loop {
-        if matches!((*tail.car.borrow()).kind(), Kind::Symbol(entry) if entry.as_str() == name) {
+        if matches!(tail.car.get().kind(), Kind::Symbol(entry) if entry.as_str() == name) {
             return true;
         }
-        let next = match (*tail.cdr.borrow()).kind() {
+        let next = match tail.cdr.get().kind() {
             Kind::Cons(cell) => cell,
             _ => return false,
         };
@@ -2919,7 +2926,7 @@ impl Value {
 
     pub fn car(&self) -> Result<Value, LispError> {
         match self.kind() {
-            Kind::Cons(cell) => Ok(*cell.car.borrow()),
+            Kind::Cons(cell) => Ok(cell.car.get()),
             Kind::Nil => Ok(Value::Nil),
             _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
@@ -2927,7 +2934,7 @@ impl Value {
 
     pub fn cdr(&self) -> Result<Value, LispError> {
         match self.kind() {
-            Kind::Cons(cell) => Ok(*cell.cdr.borrow()),
+            Kind::Cons(cell) => Ok(cell.cdr.get()),
             Kind::Nil => Ok(Value::Nil),
             _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
@@ -2936,7 +2943,7 @@ impl Value {
     pub fn set_car(&self, new_car: Value) -> Result<(), LispError> {
         match self.kind() {
             Kind::Cons(cell) => {
-                *cell.car.borrow_mut() = new_car;
+                cell.car.set(new_car);
                 Ok(())
             }
             _ => Err(LispError::WrongTypeArgument("consp".into(), *self)),
@@ -2946,7 +2953,7 @@ impl Value {
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), LispError> {
         match self.kind() {
             Kind::Cons(cell) => {
-                *cell.cdr.borrow_mut() = new_cdr;
+                cell.cdr.set(new_cdr);
                 Ok(())
             }
             _ => Err(LispError::WrongTypeArgument("consp".into(), *self)),
@@ -2968,8 +2975,7 @@ impl Value {
     }
 
     pub fn cons_values(&self) -> Option<(Value, Value)> {
-        self.cons_cells()
-            .map(|(car, cdr)| (*car.borrow(), *cdr.borrow()))
+        self.cons_cells().map(|(car, cdr)| (car.get(), cdr.get()))
     }
 
     /// Convert a proper list to a Vec.
@@ -3000,8 +3006,8 @@ impl Value {
                     if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
                     }
-                    result.push(*cell.car.borrow());
-                    current = *cell.cdr.borrow();
+                    result.push(cell.car.get());
+                    current = cell.cdr.get();
                 }
                 _ => {
                     return Err(LispError::WrongTypeArgument("listp".into(), current));
@@ -3101,8 +3107,8 @@ fn values_equal_recursive(
             if !seen.get_or_insert_with(HashSet::new).insert(ids) {
                 return true;
             }
-            values_equal_recursive(&a.car.borrow(), &b.car.borrow(), seen)
-                && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
+            values_equal_recursive(&a.car.get(), &b.car.get(), seen)
+                && values_equal_recursive(&a.cdr.get(), &b.cdr.get(), seen)
         }
         (Kind::Vector(a), Kind::Vector(b)) => {
             if a.ptr_eq(&b) {
@@ -3173,32 +3179,32 @@ fn format_value(
             seen.remove(&id);
             write!(f, "]")
         }
-        Kind::Cons(cell) if matches!((*cell.car.borrow()).kind(), Kind::Symbol(head) if head == "vector-literal") =>
+        Kind::Cons(cell) if matches!(cell.car.get().kind(), Kind::Symbol(head) if head == "vector-literal") =>
         {
             // Vector literals ride on conses internally but print as vectors.
             write!(f, "[")?;
-            let mut current = *cell.cdr.borrow();
+            let mut current = cell.cdr.get();
             let mut first = true;
             while let Kind::Cons(cell) = current.kind() {
                 if !first {
                     write!(f, " ")?;
                 }
-                format_value(&cell.car.borrow(), f, seen)?;
+                format_value(&cell.car.get(), f, seen)?;
                 first = false;
-                current = *cell.cdr.borrow();
+                current = cell.cdr.get();
             }
             write!(f, "]")
         }
         Kind::Cons(cell) => {
             // GNU prints reader shorthands: (quote X) as 'X and
             // (function X) as #'X.
-            if let Kind::Symbol(head) = (*cell.car.borrow()).kind()
+            if let Kind::Symbol(head) = cell.car.get().kind()
                 && (head == "quote" || head == "function")
-                && let Kind::Cons(inner) = (*cell.cdr.borrow()).kind()
-                && matches!((*inner.cdr.borrow()).kind(), Kind::Nil)
+                && let Kind::Cons(inner) = cell.cdr.get().kind()
+                && matches!(inner.cdr.get().kind(), Kind::Nil)
             {
                 write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
-                return format_value(&inner.car.borrow(), f, seen);
+                return format_value(&inner.car.get(), f, seen);
             }
             write!(f, "(")?;
             let mut current = *value;
@@ -3217,9 +3223,9 @@ fn format_value(
                         if !first {
                             write!(f, " ")?;
                         }
-                        format_value(&cell.car.borrow(), f, seen)?;
+                        format_value(&cell.car.get(), f, seen)?;
                         first = false;
-                        current = *cell.cdr.borrow();
+                        current = cell.cdr.get();
                     }
                     Kind::Nil => break,
                     other => {
@@ -3565,9 +3571,9 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                     if emitted > 0 {
                         out.push(' ');
                     }
-                    render(&cell.car.borrow().clone(), depth - 1, out);
+                    render(&cell.car.get().clone(), depth - 1, out);
                     emitted += 1;
-                    let next = *cell.cdr.borrow();
+                    let next = cell.cdr.get();
                     match next.kind() {
                         Kind::Nil => break,
                         Kind::Cons(_) => cursor = next,
@@ -3684,7 +3690,7 @@ mod tests {
         let binding = assq_binding(frame.environment(), &x)
             .expect("proper alist")
             .expect("bound");
-        assert_eq!(*binding.cdr.borrow(), Value::Integer(2));
+        assert_eq!(binding.cdr.get(), Value::Integer(2));
         // The head shares the outer scope's cells: the tail of the frame
         // is the outer environment itself.
         let mut tail = *frame.environment();
@@ -3940,11 +3946,8 @@ mod tests {
         assert!(car.ptr_eq(&cloned_car));
         assert!(cdr.ptr_eq(&cloned_cdr));
 
-        let mut car_value = car.borrow_mut();
-        let mut cdr_value = cdr.borrow_mut();
-        *car_value = Value::Integer(3);
-        *cdr_value = Value::Integer(4);
-        drop((car_value, cdr_value));
+        car.set(Value::Integer(3));
+        cdr.set(Value::Integer(4));
 
         assert_eq!(clone.car().expect("car"), Value::Integer(3));
         assert_eq!(clone.cdr().expect("cdr"), Value::Integer(4));
@@ -3959,7 +3962,7 @@ mod tests {
 
         let (_, cdr) = pair.cons_cells().expect("constructed cons");
         let before_cdr = super::cons_mutation_epoch();
-        *cdr.borrow_mut() = Value::Integer(4);
+        cdr.set(Value::Integer(4));
         assert_ne!(super::cons_mutation_epoch(), before_cdr);
     }
 

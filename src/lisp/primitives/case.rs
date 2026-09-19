@@ -507,8 +507,8 @@ pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, 
             Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
-                bounds.push(parse_region_bound(&car.borrow())?);
-                cursor = *cdr.borrow();
+                bounds.push(parse_region_bound(&car.get())?);
+                cursor = cdr.get();
             }
             _ => return Err(LispError::Signal("Invalid region bounds".into())),
         }

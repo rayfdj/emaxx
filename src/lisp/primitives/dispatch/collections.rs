@@ -43,13 +43,11 @@ fn delete_from_list(
                         Value::String("Circular list".into()),
                     ])));
                 }
-                let next = *cell.cdr.borrow();
+                let next = cell.cdr.get();
                 let matches = match comparison {
-                    DeleteListComparison::Eq => {
-                        values_eq_in_env(interp, &cell.car.borrow(), elt, env)
-                    }
+                    DeleteListComparison::Eq => values_eq_in_env(interp, &cell.car.get(), elt, env),
                     DeleteListComparison::Equal => {
-                        values_equal_in_env(interp, elt, &cell.car.borrow(), env)
+                        values_equal_in_env(interp, elt, &cell.car.get(), env)
                     }
                 };
                 if matches {
@@ -118,8 +116,8 @@ fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
     match value.kind() {
         Kind::Integer(code) => checked(code).map(|code| (code, code)),
         Kind::Cons(cell) => Ok((
-            checked(cell.car.borrow().as_integer()?)?,
-            checked(cell.cdr.borrow().as_integer()?)?,
+            checked(cell.car.get().as_integer()?)?,
+            checked(cell.cdr.get().as_integer()?)?,
         )),
         other => Err(LispError::TypeError(
             "character-or-cons".into(),
@@ -180,15 +178,15 @@ define_dispatch!(
                             if seen.step(cell_id) {
                                 return Ok(Value::Nil);
                             }
-                            let property = *car.borrow();
+                            let property = car.get();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match (*cdr.borrow()).kind() {
-                                    Kind::Cons(cell) => Ok(*cell.car.borrow()),
+                                return match cdr.get().kind() {
+                                    Kind::Cons(cell) => Ok(cell.car.get()),
                                     _ => Ok(Value::Nil),
                                 };
                             }
-                            match (*cdr.borrow()).kind() {
-                                Kind::Cons(cell) => current = *cell.cdr.borrow(),
+                            match cdr.get().kind() {
+                                Kind::Cons(cell) => current = cell.cdr.get(),
                                 Kind::Nil => return Ok(Value::Nil),
                                 _ => return Ok(Value::Nil),
                             }
@@ -224,25 +222,25 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let property = *car.borrow();
+                            let property = car.get();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return match (*cdr.borrow()).kind() {
+                                return match cdr.get().kind() {
                                     Kind::Cons(cons_cell) => {
                                         let value = &cons_cell.car;
                                         let _ = &cons_cell.cdr;
-                                        *value.borrow_mut() = *val;
+                                        value.set(*val);
                                         Ok(plist)
                                     }
                                     _ => Err(plist_type_error(&plist)),
                                 };
                             }
-                            match (*cdr.borrow()).kind() {
+                            match cdr.get().kind() {
                                 Kind::Cons(cons_cell) => {
                                     let _ = &cons_cell.car;
                                     let next_cdr = &cons_cell.cdr;
-                                    let next = *next_cdr.borrow();
+                                    let next = next_cdr.get();
                                     if next.is_nil() {
-                                        *next_cdr.borrow_mut() = Value::list([*key, *val]);
+                                        next_cdr.set(Value::list([*key, *val]));
                                         return Ok(plist);
                                     }
                                     current = next;
@@ -275,13 +273,13 @@ define_dispatch!(
                                     Value::String("Circular list".into()),
                                 ])));
                             }
-                            let property = *car.borrow();
+                            let property = car.get();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
                                 return Ok(Value::Cons(cons_cell));
                             }
                             // Skip the value
-                            match (*cdr.borrow()).kind() {
-                                Kind::Cons(cell) => current = *cell.cdr.borrow(),
+                            match cdr.get().kind() {
+                                Kind::Cons(cell) => current = cell.cdr.get(),
                                 Kind::Nil => return Ok(Value::Nil),
                                 _ => return Err(plist_type_error(&plist)),
                             }
@@ -1349,8 +1347,8 @@ define_dispatch!(
                             Kind::Cons(cons_cell) => {
                                 let car = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
-                                items.push(*car.borrow());
-                                current = *cdr.borrow();
+                                items.push(car.get());
+                                current = cdr.get();
                                 remaining -= 1;
                             }
                             value => {
@@ -1372,7 +1370,7 @@ define_dispatch!(
                             Kind::Cons(cons_cell) => {
                                 let _ = &cons_cell.car;
                                 let cdr = &cons_cell.cdr;
-                                let next = *cdr.borrow();
+                                let next = cdr.get();
                                 match next.kind() {
                                     Kind::Cons(_) => {
                                         current = next;
@@ -1400,7 +1398,7 @@ define_dispatch!(
                         Kind::Cons(cons_cell) => {
                             let _ = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
-                            *cdr.borrow_mut() = Value::Nil;
+                            cdr.set(Value::Nil);
                             if let Some(keymap_id) = keymap_id {
                                 sync_runtime_keymap_from_public_view(interp, keymap_id)?;
                             }

@@ -903,8 +903,8 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
                 Value::String("Circular list".into()),
             ])));
         }
-        let next = *cell.cdr.borrow();
-        *cell.cdr.borrow_mut() = reversed;
+        let next = cell.cdr.get();
+        cell.cdr.set(reversed);
         reversed = Value::Cons(cell);
         current = next;
     }
