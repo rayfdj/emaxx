@@ -918,7 +918,7 @@ mod install {
 
     fn expect_vector(value: &Value, what: &str) -> Result<Vec<Value>, String> {
         match value {
-            Value::Vector(vector) => Ok(vector.slots().clone()),
+            Value::Vector(vector) => Ok(vector.slots().to_vec()),
             other => Err(format!("{what}: not a vector: {other:?}")),
         }
     }

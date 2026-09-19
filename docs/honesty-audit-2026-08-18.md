@@ -12605,3 +12605,172 @@ ignored), the bins stage (57, 2, 0 and 1 in 17 s) and the six
 integration binaries (23, 6, 3, 1, 1 and 5 in 259 s), 2,717 scheduled
 and observed, on the first run; fmt and strict clippy exit 0 before
 and after.  The c-mode defaults test, rerun alone under `EMAXX_GC_STRESS=1' (a collection at every allocation), passed in 2,346 s; the stress hour's failure of it, after the tests before it in the same process, was not reproduced and its message was not captured, and stands unexplained.
+
+## 2026-09-19 Checkpoint 20i: vectorlike objects in alloc.c's vector blocks (the representation, phase B, step 3)
+
+*What prompted it.*  Checkpoint 20h left five kinds reference counted
+and marked through hash sets: the vectors, the closures, the buffer
+objects, the mutable string objects and the reader forms (and the
+bignums, a pseudovector in C).  Phase B's third step takes them all
+into alloc.c's vector storage, so that every Lisp object but the
+symbol is a cell the collector owns and marks in place.
+
+*Done.*  (1) alloc.c's vector storage: `vector_block' (4,096 bytes),
+`VBLOCK_BYTES_MIN' and `VBLOCK_BYTES_MAX', `vector_free_lists' by
+footprint with the overflow bin and `last_inserted_vector_free_idx',
+a larger free vector split for a smaller request (the rest back on
+its list), a new block carved from its start; a vector past
+`VBLOCK_BYTES_MAX' on its own, registered as `MEM_TYPE_VECTORLIKE'
+(`large_vectors').  The block registry is a `BTreeMap' by start
+address (alloc.c's mem tree is a red-black tree; the sorted vector it
+was would have moved its tail on every large vector).  (2) An ordinary
+vector is `struct Lisp_Vector': the header, then the slots in place --
+no `Vec', no `RefCell'; `slots' and `slots_mut' are `AREF' and `ASET'
+over the cell; `zero_vector' is one static object.  (3) The other
+kinds are `allocate_pseudovector''s, the header's size word carrying
+`PSEUDOVECTOR_FLAG', the tag and the word count: closures
+(`PVEC_CLOSURE'), buffer objects (`PVEC_BUFFER'), bignums
+(`PVEC_BIGNUM'), and two of this implementation's own past
+`PVEC_TAG_MAX', the string object (a mutable string with properties;
+a `Lisp_String' with intervals in C) and the reader form.  (4)
+`sweep_vectors' as C's: a run of unmarked vectors coalesced into one
+free vector, `cleanup_vector' by kind before it (the slots dropped;
+the closure's fields; the string's text and property spans; the
+bignum's limbs, C's `mpz_clear'), a block with nothing live in it
+given back, the large vectors freed one by one, the free lists
+rebuilt.  (5) `live_small_vector_p', `live_large_vector_p' and
+`live_vector_pointer' for the conservative scan: a word naming the
+header, a slot, or any field of a pseudovector marks the object.  (6)
+The mark of every one of these kinds is the epoch in its header: the
+five hash sets of the mark phase (big integers, string objects,
+lambdas, buffers, reader forms) are gone, and the mark-set sizing
+memo keeps only the records.  (7) The census comes from the sweep
+(gcstat's `total_vectors' and `total_vector_slots'; the string
+objects' share of `total_strings' and `total_string_bytes') and from
+the allocation counters; the weak books of string objects and
+closures, with their pruning, are gone.  (8) A native handle of any
+of these kinds lives while the mark reaches the cell (no owner
+count).  (9) minibuf.c's `Fall_completions' answers with `SYMBOL_NAME'
+itself for an obarray's symbol: this implementation made a fresh
+string copy per symbol (17,000 of them for one `all-completions'),
+held in a Rust vector across the predicate's calls, and the
+collection a predicate ran under freed them (the first boot of the
+batch image faulted in eldoc's `eldoc-add-command-completions').  The
+rule is C's: a Lisp object in malloc'd memory is rooted
+(`SAFE_ALLOCA_LISP'; `RootedVec' here) or it is not held there.
+(10) The same rule found two more holders, both in the evaluator and
+both C's `argvals[8]' shape: `eval_sub''s evaluated arguments lived
+in a small vector inline for eight and spilled to the heap past that
+(a `(list ...)' of fourteen `prin1-to-string' calls lost its first
+results to the collections the later calls ran), and `Flet''s
+`temps' -- the values of the special bindings, held until the varlist
+is read -- lived in a heap vector; both are on the stack for up to
+eight and in `SAFE_ALLOCA_LISP''s rooted array past that, the count
+taken first as C's `list_length' is.  (11) The marking verifier
+(`EMAXX_GC_VERIFY') checks a marked cons's vectorlike fields as it
+checks its cons fields.  (12) The gate's first run failed
+`suspended_bytecode_retains_operand_and_unwind_roots': a weak key
+survived its closure's death by a word on the main thread's stack --
+an interior pointer into a cons, left by the previous collection's
+own marking frames in the area a later, deeper call chain laid its
+frames over.  Two changes: `eval_sub''s `argvals' array and `Flet''s
+inline `temps' are initialized before use (C's are not; its frames
+are smaller), and after every collection the collector zeroes the
+stack area its own frames used (`clear_stack_below', sixty-four
+kilobytes below the collection's entry frame) -- alloc.c does not,
+the Boehm collector does (`GC_clear_stack'), for the same reason; the
+scoped-roots test keeps its release check in a frame of its own.
+
+*Measured.*  The same machine, GNU 30.2 built here (`src'), checkpoint 20h
+(`w21') and this checkpoint (`w22'), five rounds each, the minimum and
+the median.  The host was slower this session by about a fifth for
+all three (GNU's lexical loop 0.87 s the session before, 1.09 here),
+so the columns compare with each other, not with the earlier tables:
+
+| probe | GNU (min / median) | 20h (min / median) | 20i (min / median) |
+|---|---|---|---|
+| interp lexical loop, 2M iterations | 1.034 / 1.094 s | 1.985 / 2.024 s | 1.803 / 1.848 s |
+| interp dynamic loop | 0.444 / 0.457 s | 1.600 / 1.613 s | 1.443 / 1.491 s |
+| call of an interpreted defun | 0.698 / 0.717 s | 0.899 / 0.927 s | 0.899 / 0.911 s |
+| byte-code call loop, 10M | 0.205 / 0.210 s | 0.866 / 0.877 s | 0.781 / 0.794 s |
+| 300k conses (the sweep part) | 0.096 / 0.098 s (0.013) | 0.282 / 0.293 s (0.057) | 0.270 / 0.277 s (0.056) |
+| ten collections of the idle booted heap | 0.066 / 0.067 s | 0.269 / 0.280 s | 0.240 / 0.269 s |
+| mapcar over 2M | 0.218 / 0.228 s | 0.596 / 0.603 s | 0.566 / 0.587 s |
+
+Callgrind, instructions an iteration: the dynamic loop 8,615 (20h) to
+8,622, the lexical loop 9,618 to 9,594, the byte-code call loop 1,345
+to 1,294.  The corpus rows (two rounds, the minimum): ucs-names GNU
+2.17 s, 20h 9.38, 20i 8.95; fns-tests-sort 1.32, 6.11, 5.71;
+pcase-tests-macro 0.10, 0.45, 0.43; undo-test4 0.99, 3.47, 3.54.  The
+booted heap's census: 143,805 conses, 318,304 strings with 4,658,503
+bytes of text, 13,878 vectors.  The library suite's peak resident
+size: 1.69 GB (1.72 at 20h).
+
+*What did not move, and what was learned.*  The collection of the idle heap fell by a tenth (the mark
+of a vector, a closure or a string object is a word written in the
+header where it was a hash-set insertion) and the byte-code call loop
+by four percent in instructions (a `Value' with no reference-counted
+kind but the symbol is cheaper to copy and to drop); the interpreted
+loops are within noise of 20h in time and in instructions (the
+`list_length' walk over a MANY subr's arguments, which C pays too,
+costs what the cheaper `Value' drop saves).  What the step was for is what it found: with every vectorlike
+kind collected, the holders the collector cannot see came out one by
+one, and each was a place where this implementation kept Lisp objects
+in malloc'd memory across a call into Lisp where C keeps them on the
+stack or in a rooted array -- `all-completions'' fresh copies, the
+evaluator's spilled argument vector, `let''s pending values, `sort''s
+keys and its merge sort's scratch buffer (sort.c's `merge_markmem'
+marks that buffer; here the sort moves a permutation of indices and
+the values never leave their rooted array).  The stress run over the
+primitives found three of the four; the fourth (sort) showed as a row
+that failed one run in two.  The lesson for the steps after this one
+is that rule, and its check: `EMAXX_GC_STRESS=1' over a group, with
+the fixture image built first (a fresh binary's first stress test
+otherwise builds the image itself under a collection per call, an
+hour for nothing).  The collection of the booted heap is still 27 ms
+against GNU's 6.7 (this session's numbers): the mark phase's walk is
+the larger part, and its next reductions are the symbol as a cell
+(phase C) and the tagged word (phase D).
+
+*Which of these mirror C, and which do not.*  The vector blocks, the
+free lists by footprint, the large vectors, the sweep's coalescing
+and cleanup, the live-vector checks, the pseudovector header, the
+zero vector, the completions answering with the symbol's name:
+alloc.c's and minibuf.c's.  Not C, each to go with its phase: the
+header is two words (the epoch mark beside the size word, where C
+folds `ARRAY_MARK_FLAG' into it; the bitmap and the one-word header
+come with the tagged word); a slot is the 16-byte `Value'; the
+closure is a Rust struct whose parameter and body vectors are still
+reference counted (C's closure is an ordinary vector of three to six
+slots, its body a list); the string object and the reader form are
+kinds of this implementation's; the buffer object is an (id, name)
+pair made on demand (C's one `struct buffer', on `all_buffers');
+records, hash tables, char-tables, markers, overlays, frames and
+terminals are still by id in the interpreter's tables; the symbols
+are still reference counted; the sweep order (conses, floats, vectors,
+strings); the stack cleared after a collection and the evaluator's
+argument arrays initialized (a conservative scan over frames larger
+than C's).
+
+*Verified.*  `cargo test --lib' at the gate profile with the image
+template, one test thread, on the tree before the sort and evaluator
+fixes: 2,712 passed, the three tests that need an unwritable directory
+failing under root as before, 484 s, peak resident size 1.69 GB; the
+focused groups (collection, census, sort, let, bytecode, pdumper: 108
+tests) on the final tree; `EMAXX_GC_STRESS=1' over `eval_01' for the
+hour's cap fails only the `accept_process_output' timing test as at
+20g and 20h; the stress run over the primitives, which found the
+completions, argument-vector and `let' holders, was rerun test by
+test on the fixed tree: the backquote printing test passes (176 s),
+the batch startup image round trip does not finish under stress in 25
+minutes (it boots child processes, each under a collection per call);
+the two stress hours over `eval_01' and the primitives on the final
+tree (the fixture image built first): `eval_01' fails only the
+`accept_process_output' timing test as at 20g and 20h, the primitives
+none within the hour;
+`cargo clippy --all-targets -- -D warnings' and `cargo fmt --check'
+exit 0.  The controls (checkpoints 19z3, 20a, 20e) print their
+expected output from the release build; the stress boot boots; the
+corpus rows above all pass, fns-tests-sort four runs in four.
+
+*Gate.*  GATE-PLACEHOLDER

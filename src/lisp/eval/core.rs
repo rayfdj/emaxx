@@ -738,27 +738,118 @@ impl Interpreter {
             let head = head.expect("a callee that is no symbol is held as a value");
             FunctionResolution::Resolved(self.eval(head, env)?)
         };
-        // eval_sub's argvals[8]: the evaluated arguments on the stack, the
-        // forms read off the list cell by cell.
-        let mut args = smallvec::SmallVec::<[Value; 8]>::new();
-        let mut arg_error = None;
+        // eval_sub's argvals[8]: the evaluated arguments on the stack for
+        // up to eight, the forms read off the list cell by cell; past
+        // eight, SAFE_ALLOCA_LISP's array, which the collector scans (a
+        // heap vector the stack scan cannot see lost a fresh argument to
+        // the collection a later argument's evaluation ran).
+        let argnum = match &prepared {
+            // A fixed-arity subr of at most eight takes argvals[8] without
+            // the length walk; MANY, more than eight, and a lambda (whose
+            // funcall_lambda allocates its array by list_length) count.
+            FunctionResolution::DirectBuiltin(facts)
+                if facts.max_args.is_some_and(|maximum| maximum <= 8) =>
+            {
+                0
+            }
+            _ => ListForms::from_cell(args_list).count(),
+        };
+        if argnum > 8 {
+            return self.eval_call_rooted(
+                depth,
+                unevald_frame,
+                callable_name,
+                prepared,
+                args_list,
+                env,
+            );
+        }
+        // The array's storage is zeroed before use (one small memset): the
+        // conservative scan reads every word of a live frame, and a stale
+        // pointer left there by an earlier, deeper call would keep its
+        // object (C's argvals is uninitialized; its frames are smaller).
+        // Only the ARGNUM values written are ever read or dropped.
+        let mut argvals = std::mem::MaybeUninit::<[Value; 8]>::zeroed();
+        let base = argvals.as_mut_ptr().cast::<Value>();
+        let mut argnum = 0usize;
+        // SAFETY: BASE addresses eight slots on this frame; ARGNUM counts
+        // the slots written, which are the only ones read or dropped.
+        let drop_written = |count: usize| unsafe {
+            for index in 0..count {
+                base.add(index).drop_in_place();
+            }
+        };
+        for form in ListForms::from_cell(args_list) {
+            match self.eval(&form, env) {
+                // SAFETY: as above; ARGNUM < 8 by the count taken.
+                Ok(value) => unsafe {
+                    base.add(argnum).write(value);
+                    argnum += 1;
+                },
+                Err(error) => {
+                    drop_written(argnum);
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                }
+            }
+        }
+        // SAFETY: the ARGNUM slots written, read in place for the call.
+        let args = unsafe { std::slice::from_raw_parts(base, argnum) };
+        let result = self.finish_eval_call(depth, callable_name, prepared, args, env);
+        drop_written(argnum);
+        result
+    }
+
+    /// `eval_call' past eight arguments: SAFE_ALLOCA_LISP's array.
+    #[inline(never)]
+    fn eval_call_rooted(
+        &mut self,
+        depth: usize,
+        unevald_frame: bool,
+        callable_name: Option<SymbolName>,
+        prepared: FunctionResolution,
+        args_list: Option<SharedCons>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut args =
+            crate::lisp::alloc::RootedVec::with_capacity(ListForms::from_cell(args_list).count());
         for form in ListForms::from_cell(args_list) {
             match self.eval(&form, env) {
                 Ok(value) => args.push(value),
                 Err(error) => {
-                    arg_error = Some(error);
-                    break;
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
                 }
             }
         }
-        if let Some(error) = arg_error {
-            if unevald_frame {
-                let result = self.settle_frame_result(Err(error), env);
-                self.truncate_backtrace_frames(depth);
-                return result;
-            }
-            return Err(error);
+        self.finish_eval_call(depth, callable_name, prepared, &args, env)
+    }
+
+    /// An argument's evaluation signaled: the frame recorded before the
+    /// arguments settles the error and is popped.
+    #[cold]
+    fn eval_call_argument_error(
+        &mut self,
+        depth: usize,
+        unevald_frame: bool,
+        error: LispError,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if unevald_frame {
+            let result = self.settle_frame_result(Err(error), env);
+            self.truncate_backtrace_frames(depth);
+            return result;
         }
+        Err(error)
+    }
+
+    #[inline]
+    fn finish_eval_call(
+        &mut self,
+        depth: usize,
+        callable_name: Option<SymbolName>,
+        prepared: FunctionResolution,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         match (callable_name.as_ref(), prepared) {
             (Some(name), FunctionResolution::DirectBuiltin(facts)) => {
                 // eval_sub's SUBRP arm: the frame recorded before the
@@ -766,9 +857,9 @@ impl Interpreter {
                 // now (set_backtrace_args), and the subr runs under that
                 // one frame -- a second frame was pushed and popped around
                 // every primitive call before.
-                self.set_backtrace_args(Value::Symbol(name.clone()), &args);
+                self.set_backtrace_args(Value::Symbol(name.clone()), args);
                 self.capture_current_backtrace_context(Some(name.as_str()), env, None);
-                let result = primitives::call_with_facts(self, name, facts, &args, env)
+                let result = primitives::call_with_facts(self, name, facts, args, env)
                     .map_err(|error| Self::builtin_call_error(name, args.len(), false, error));
                 let result = self.settle_frame_result(result, env);
                 self.truncate_backtrace_frames(depth);
@@ -776,16 +867,10 @@ impl Interpreter {
             }
             (Some(name), FunctionResolution::Resolved(func)) => {
                 self.pop_backtrace_frame();
-                self.call_function_value_named(
-                    func,
-                    Some(CallName::Symbol(name)),
-                    &args,
-                    env,
-                    false,
-                )
+                self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, false)
             }
             (None, FunctionResolution::Resolved(func)) => {
-                self.call_function_value_named(func, None, &args, env, false)
+                self.call_function_value_named(func, None, args, env, false)
             }
             (None, FunctionResolution::DirectBuiltin(_)) => {
                 unreachable!("only a symbol callee can have a direct native verdict")

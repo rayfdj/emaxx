@@ -21,9 +21,14 @@
 
 use super::types::{ConsCell, MarkBit, Value};
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
+
+mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+pub use vectors::{VectorHeader, VectorRef, VectorlikeRef};
+pub(crate) use vectors::{live_string_object_census, live_vector_census, sweep_vectors};
 
 /// alloc.c's `BLOCK_BYTES': the size of one cons block.  Cells here are
 /// wider than `struct Lisp_Cons' (the native words, the borrow flags and
@@ -45,11 +50,33 @@ pub(crate) enum BlockKind {
     Cons,
     Float,
     String,
+    /// alloc.c's `MEM_TYPE_VECTOR_BLOCK': small vectors carved by size.
+    VectorBlock,
+    /// alloc.c's `MEM_TYPE_VECTORLIKE': one large vector on its own.
+    LargeVector,
 }
 
 /// The blocks, by start address, with their kinds, for `mem_find'
-/// (alloc.c's mem tree).
-static BLOCKS: Mutex<Vec<(usize, BlockKind)>> = Mutex::new(Vec::new());
+/// (alloc.c's mem tree, a red-black tree there; the map's lookup is the
+/// same order).
+static BLOCKS: Mutex<BTreeMap<usize, BlockKind>> = Mutex::new(BTreeMap::new());
+
+/// alloc.c's `mem_insert' of a block of KIND at START.
+fn register_block(start: usize, kind: BlockKind) {
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(start, kind);
+}
+
+/// alloc.c's `mem_delete'.
+fn unregister_block(start: usize) {
+    let removed = BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&start);
+    debug_assert!(removed.is_some());
+}
 /// gcstat's `total_conses' and `total_free_conses': raised by allocation
 /// on any thread, set by the sweep (the heap is the process's).
 static LIVE_CONSES: AtomicUsize = AtomicUsize::new(0);
@@ -260,6 +287,7 @@ pub(crate) enum Found {
     Cons(*mut ConsCell),
     Float(*mut FloatCell),
     String(*mut StringCell),
+    Vectorlike(*mut VectorHeader),
 }
 
 /// alloc.c's `string_block', `string_free_list' and the index into the
@@ -1144,13 +1172,7 @@ fn bump_cell() -> *mut ConsCell {
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
 /// (the sweep found nothing live in it).
 fn release_block(start: usize) {
-    let mut blocks = BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&(existing, _)| existing < start);
-    debug_assert_eq!(blocks.get(position).map(|entry| entry.0), Some(start));
-    blocks.remove(position);
-    drop(blocks);
+    unregister_block(start);
     let layout = std::alloc::Layout::from_size_align(CONS_BLOCK_BYTES, BLOCK_ALIGN)
         .expect("cons block layout");
     // SAFETY: a block `new_block' allocated with this layout, unregistered
@@ -1198,12 +1220,11 @@ fn new_block(kind: BlockKind) -> usize {
                 };
             }
         }
+        BlockKind::VectorBlock | BlockKind::LargeVector => {
+            unreachable!("vectors have their own blocks (alloc/vectors.rs)")
+        }
     }
-    let mut blocks = BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&(existing, _)| existing < start);
-    blocks.insert(position, (start, kind));
+    register_block(start, kind);
     start
 }
 
@@ -1232,8 +1253,7 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
     let blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let position = blocks.partition_point(|&(start, _)| start <= address);
-    let (start, kind) = *blocks.get(position.checked_sub(1)?)?;
+    let (&start, &kind) = blocks.range(..=address).next_back()?;
     drop(blocks);
     let offset = address.checked_sub(start)?;
     match kind {
@@ -1269,6 +1289,12 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
             let mark = unsafe { (*cell).mark.raw() };
             (mark != FREE_MARK).then_some(Found::String(cell))
         }
+        BlockKind::VectorBlock => {
+            vectors::live_small_vector_holding(start, address).map(Found::Vectorlike)
+        }
+        BlockKind::LargeVector => {
+            vectors::live_large_vector_holding(start, address).map(Found::Vectorlike)
+        }
     }
 }
 
@@ -1299,8 +1325,8 @@ fn blocks_of(kind: BlockKind) -> Vec<usize> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
-        .filter(|entry| entry.1 == kind)
-        .map(|entry| entry.0)
+        .filter(|entry| *entry.1 == kind)
+        .map(|entry| *entry.0)
         .collect()
 }
 
@@ -1406,6 +1432,18 @@ fn verify_marking(epoch: u32) {
             let live = unsafe { &*cell };
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.value_in_place();
+                if let Some(target_mark) = vectorlike_mark_raw(&value)
+                    && target_mark != epoch
+                {
+                    panic!(
+                        "before the sweep of epoch {epoch}, marked cons {:#x} (serial {}, car {}, cdr {}) holds an unmarked vectorlike (mark {target_mark}) in its {which}: {}",
+                        cell as usize,
+                        live.serial,
+                        describe(&live.car.value_in_place()),
+                        describe(&live.cdr.value_in_place()),
+                        describe(&value),
+                    );
+                }
                 if let super::types::Value::Cons(target) = &*value {
                     // SAFETY: the pointer came from a marked cell; its
                     // words are readable in every state.
@@ -1463,6 +1501,20 @@ fn verify_marking(epoch: u32) {
                 }
             }
         }
+    }
+}
+
+/// The mark word of a vectorlike the value names, for the checks.
+fn vectorlike_mark_raw(value: &super::types::Value) -> Option<u32> {
+    use super::types::Value;
+    match value {
+        Value::Vector(vector) => Some(vector.mark_bit().raw()),
+        Value::Lambda(lambda) => Some(lambda.mark_bit().raw()),
+        Value::Buffer(buffer) => Some(buffer.mark_bit().raw()),
+        Value::StringObject(state) => Some(state.mark_bit().raw()),
+        Value::ReaderForm(form) => Some(form.mark_bit().raw()),
+        Value::BigInteger(integer) => Some(integer.mark_bit().raw()),
+        _ => None,
     }
 }
 
@@ -1596,7 +1648,28 @@ pub(crate) fn flush_stack_call_func<R>(body: impl FnOnce() -> R) -> R {
     }
     let result = body();
     std::hint::black_box(&spill);
+    if previous == 0 {
+        clear_stack_below();
+    }
     result
+}
+
+/// After a collection, zero the stack area its frames used (below this
+/// frame): the marker and the sweep leave words naming cells (interior
+/// pointers into the cells they read) where a later, deeper call chain
+/// lays its frames, and the next collection's scan would take them as
+/// roots.  GNU's alloc.c does not do this (its mark_object leaves fewer
+/// such words, and its frames are smaller); the Boehm collector does
+/// (`GC_clear_stack'), for the same reason.  Sixty-four kilobytes cover
+/// the collection's own depth many times over.
+#[inline(never)]
+fn clear_stack_below() {
+    let mut scratch = std::mem::MaybeUninit::<[usize; 1 << 13]>::uninit();
+    // SAFETY: a write of every word of the array on this frame.
+    unsafe {
+        std::ptr::write_bytes(scratch.as_mut_ptr().cast::<u8>(), 0, 8 << 13);
+    }
+    std::hint::black_box(&scratch);
 }
 
 /// The recorded `stack_top' of the running collection, or zero.
@@ -1667,6 +1740,8 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
             Some(Found::String(cell)) => mark(Value::String(TextRef(unsafe {
                 NonNull::new_unchecked(cell)
             }))),
+            // SAFETY: an allocated vector.
+            Some(Found::Vectorlike(header)) => mark(unsafe { vectors::value_of(header) }),
             None => {}
         }
     }

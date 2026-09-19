@@ -1420,9 +1420,7 @@ define_dispatch!(
                     (Value::Integer(left), Value::Integer(right)) => left == right,
                     (Value::Symbol(left), Value::Symbol(right))
                     | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
-                    (Value::StringObject(left), Value::StringObject(right)) => {
-                        Rc::ptr_eq(left, right)
-                    }
+                    (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
                     (Value::Cons(left), Value::Cons(right)) => {
                         crate::lisp::types::SharedCons::ptr_eq(left, right)
                     }

@@ -475,20 +475,22 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
 
 #[test]
 fn character_table_literal_materializes_nested_bytecode_decoder() {
-    let decoder = Value::ReaderForm(std::rc::Rc::new(crate::lisp::types::ReaderForm::Closure {
-        kind: crate::lisp::types::ReaderClosureKind::ByteCode,
-        slots: vec![
-            Value::Integer(0),
-            Value::String(String::new().into()),
-            Value::list([Value::symbol("vector-literal")]),
-            Value::Integer(0),
-        ],
-    }));
+    let decoder = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+        crate::lisp::types::ReaderForm::Closure {
+            kind: crate::lisp::types::ReaderClosureKind::ByteCode,
+            slots: vec![
+                Value::Integer(0),
+                Value::String(String::new().into()),
+                Value::list([Value::symbol("vector-literal")]),
+                Value::Integer(0),
+            ],
+        },
+    ));
     let mut fields = vec![Value::Nil; 70];
     fields[2] = Value::symbol("char-code-property-table");
     fields[68] = Value::symbol("name");
     fields[69] = decoder;
-    let literal = Value::ReaderForm(std::rc::Rc::new(
+    let literal = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
         crate::lisp::types::ReaderForm::CharTable { fields },
     ));
 
@@ -16058,7 +16060,7 @@ fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
         let Value::StringObject(supplied) = supplied else {
             unreachable!()
         };
-        assert!(Rc::ptr_eq(&returned, &supplied));
+        assert!(returned.ptr_eq(&supplied));
     }
 }
 

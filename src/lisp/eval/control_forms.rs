@@ -248,6 +248,18 @@ impl Interpreter {
     }
 
     pub(super) fn sf_let(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        /// fns.c's list_length over a proper list; 0 past its end or for
+        /// anything else (the binding walk reports the shape itself).
+        fn list_length_or_zero(list: &Value) -> usize {
+            let mut count = 0;
+            let mut tail = list.clone();
+            while let Some((_, next)) = list_next(&tail) {
+                count += 1;
+                tail = next;
+            }
+            count
+        }
+
         // eval.c Flet: list_length (varlist) -- a vector or any other
         // non-list signals wrong-type-argument listp (a vector read as a
         // sequence bound its elements to nil before).  The varlist and
@@ -264,7 +276,27 @@ impl Interpreter {
         // and the new environment installed once, after the varlist.
         let mut lexenv = crate::lisp::types::current_environment_value(env);
         let mut lexical_bindings = false;
-        let mut special_bindings = Vec::new();
+        // Flet's `temps': SAFE_ALLOCA_LISP, an array the collector scans.
+        // A lexical value is consed onto LEXENV at once (a local the
+        // stack scan sees); a special's waits here until the varlist is
+        // read, across the evaluation of the initializers after it, so
+        // the array is on the stack for up to eight bindings and rooted
+        // past that (a heap vector the scan cannot see lost a fresh
+        // value to the collection a later initializer ran).
+        let varlist_len = list_length_or_zero(&varlist);
+        // The inline array is initialized before use (see eval_call's
+        // argvals): a stale word in a live frame is a root to the scan.
+        let mut inline_specials: [Option<(SymbolName, Value)>; 8] = [const { None }; 8];
+        let mut inline_count = 0usize;
+        let mut rooted_specials =
+            (varlist_len > 8).then(|| crate::lisp::alloc::RootedVec::with_capacity(varlist_len));
+        let mut push_special = |name: SymbolName, value: Value| match rooted_specials.as_mut() {
+            Some(rooted) => rooted.push((name, value)),
+            None => {
+                inline_specials[inline_count] = Some((name, value));
+                inline_count += 1;
+            }
+        };
 
         let mut tail = varlist.clone();
         while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
@@ -273,7 +305,7 @@ impl Interpreter {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
                     if self.binding_is_dynamic_symbol(name, env) {
-                        special_bindings.push((name.clone(), Value::Nil));
+                        push_special(name.clone(), Value::Nil);
                     } else {
                         lexenv = Self::cons_binding(name.clone(), Value::Nil, lexenv);
                         lexical_bindings = true;
@@ -288,7 +320,7 @@ impl Interpreter {
                         crate::lisp::primitives::checked_symbol_identity(self, &binding, env)?;
                     Self::check_let_binding_name(&name)?;
                     if self.binding_is_dynamic_symbol(&name, env) {
-                        special_bindings.push((name, Value::Nil));
+                        push_special(name, Value::Nil);
                     } else {
                         lexenv = Self::cons_binding(name, Value::Nil, lexenv);
                         lexical_bindings = true;
@@ -304,7 +336,7 @@ impl Interpreter {
                         None => Value::Nil,
                     };
                     if self.binding_is_dynamic_symbol(&name, env) {
-                        special_bindings.push((name, val));
+                        push_special(name, val);
                     } else {
                         lexenv = Self::cons_binding(name, Self::stored_value(val), lexenv);
                         lexical_bindings = true;
@@ -318,10 +350,24 @@ impl Interpreter {
         // bind unwinds the ones made (its error was returned over them
         // before).
         let count = self.specpdl_index();
-        for (name, value) in special_bindings {
-            if let Err(error) = self.specbind_symbol(&name, value, env) {
-                let _ = self.unbind_to(count, env);
+        let mut bind = |this: &mut Self, name: SymbolName, value: Value| -> Result<(), LispError> {
+            if let Err(error) = this.specbind_symbol(&name, value, env) {
+                let _ = this.unbind_to(count, env);
                 return Err(error);
+            }
+            Ok(())
+        };
+        match rooted_specials.take() {
+            Some(rooted) => {
+                for (name, value) in rooted {
+                    bind(self, name, value)?;
+                }
+            }
+            None => {
+                for slot in &mut inline_specials[..inline_count] {
+                    let (name, value) = slot.take().expect("a pushed special binding");
+                    bind(self, name, value)?;
+                }
             }
         }
         // `specbind (Qinternal_interpreter_environment, lexenv)' once the

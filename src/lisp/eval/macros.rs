@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::StringPropertySpan;
-use crate::lisp::types::VectorValue;
 
 struct CircularReadMaterializer<'a> {
     interpreter: &'a mut Interpreter,
@@ -57,10 +56,10 @@ impl CircularReadMaterializer<'_> {
 
     fn record_placeholder(
         &mut self,
-        form: &Rc<ReaderForm>,
+        form: &crate::lisp::types::ReaderFormRef,
         label: Option<u32>,
     ) -> Result<Option<Value>, LispError> {
-        let identity = Rc::as_ptr(form) as usize;
+        let identity = form.identity();
         if let Some(record) = self.records.get(&identity).cloned() {
             if let Some(label) = label {
                 self.labels.insert(label, record.clone());
@@ -208,10 +207,10 @@ impl CircularReadMaterializer<'_> {
                 Ok(value.clone())
             }
             Value::Vector(vector) => {
-                if !self.resolved_vectors.insert(VectorValue::identity(vector)) {
+                if !self.resolved_vectors.insert(vector.identity()) {
                     return Ok(value.clone());
                 }
-                let slots = vector.slots().clone();
+                let slots = vector.slots().to_vec();
                 for (index, slot) in slots.iter().enumerate() {
                     vector.slots_mut()[index] = self.resolve(slot)?;
                 }
@@ -279,7 +278,9 @@ impl CircularReadMaterializer<'_> {
                         unreachable!("circular forms are handled before structural descent")
                     }
                 };
-                Ok(Value::ReaderForm(Rc::new(resolved)))
+                Ok(Value::ReaderForm(
+                    crate::lisp::alloc::VectorlikeRef::allocate(resolved),
+                ))
             }
             _ => Ok(value.clone()),
         }
@@ -371,7 +372,7 @@ impl Interpreter {
                 ReaderForm::Record { .. } | ReaderForm::Closure { .. }
             )
         {
-            let identity = Rc::as_ptr(form) as usize;
+            let identity = form.identity();
             if let Some(record) = records.get(&identity) {
                 return Ok(record.clone());
             }
@@ -426,10 +427,10 @@ impl Interpreter {
             return Ok(record);
         }
         if let Value::Vector(vector) = value {
-            if !seen_vectors.insert(VectorValue::identity(vector)) {
+            if !seen_vectors.insert(vector.identity()) {
                 return Ok(value.clone());
             }
-            let slots = vector.slots().clone();
+            let slots = vector.slots().to_vec();
             for (index, slot) in slots.iter().enumerate() {
                 vector.slots_mut()[index] = self.materialize_read_record_literals_inner(
                     slot,

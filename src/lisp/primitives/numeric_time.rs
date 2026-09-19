@@ -364,7 +364,7 @@ pub(crate) fn integer_like_bigint(
 ) -> Result<BigInt, LispError> {
     match value {
         Value::Integer(n) => Ok(BigInt::from(*n)),
-        Value::BigInteger(n) => Ok(n.clone().into()),
+        Value::BigInteger(n) => Ok((*n).into()),
         Value::Marker(id) => interp
             .marker_position(*id)
             .map(BigInt::from)
@@ -695,7 +695,7 @@ pub(crate) fn exact_binary_rational(
     match value {
         Value::Float(value) => Ok(exact_float_binary_rational(value.get())),
         Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
-        Value::BigInteger(value) => Ok(Some((value.clone().into(), 0))),
+        Value::BigInteger(value) => Ok(Some(((*value).into(), 0))),
         Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
@@ -868,7 +868,7 @@ pub(crate) fn exact_time_from_value(
     match value {
         Value::Nil => Ok(now.clone()),
         Value::Integer(value) => exact_time_value(BigInt::from(*value), BigInt::from(1u8)),
-        Value::BigInteger(value) => exact_time_value(value.clone().into(), BigInt::from(1u8)),
+        Value::BigInteger(value) => exact_time_value((*value).into(), BigInt::from(1u8)),
         Value::Float(value) => exact_time_from_float(value.get()),
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
@@ -2506,7 +2506,7 @@ pub(crate) fn numeric_result_value(
 ) -> Result<Value, LispError> {
     match value {
         Value::Integer(number) => Ok(Value::Integer(*number)),
-        Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone().into())),
+        Value::BigInteger(number) => Ok(normalize_bigint_value((*number).into())),
         Value::Float(number) => Ok(Value::Float(*number)),
         Value::Marker(id) => Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
             LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())

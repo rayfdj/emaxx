@@ -225,15 +225,13 @@ pub(crate) fn print_ref_key(
         Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
             cell,
         ))),
-        Value::Vector(vector) => Some(PrintRefKey::Vector(
-            crate::lisp::types::VectorValue::identity(vector),
-        )),
+        Value::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
         Value::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
-        Value::Lambda(lambda) => Some(PrintRefKey::Lambda(std::rc::Rc::as_ptr(lambda) as usize)),
-        Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
+        Value::Lambda(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
+        Value::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
         {
@@ -1616,16 +1614,16 @@ fn materialize_positioned_symbols(
                     .iter()
                     .map(|slot| materialize_positioned_symbols(interp, slot.clone(), seen))
                     .collect();
-                Value::ReaderForm(std::rc::Rc::new(crate::lisp::types::ReaderForm::Record {
-                    slots,
-                }))
+                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+                    crate::lisp::types::ReaderForm::Record { slots },
+                ))
             }
             crate::lisp::types::ReaderForm::HashTable { fields } => {
                 let fields = fields
                     .iter()
                     .map(|field| materialize_positioned_symbols(interp, field.clone(), seen))
                     .collect();
-                Value::ReaderForm(std::rc::Rc::new(
+                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
                     crate::lisp::types::ReaderForm::HashTable { fields },
                 ))
             }
@@ -1650,14 +1648,12 @@ fn materialize_positioned_symbols(
         // vector and was printed as `#<reader-form>' into every `.elc'
         // and `.eln' holding a key sequence such as `[mouse-1]'.
         Value::Vector(vector) => {
-            let pointer = std::rc::Rc::as_ptr(&vector).cast::<crate::lisp::types::ConsCell>();
+            let pointer = vector.identity() as *const crate::lisp::types::ConsCell;
             if seen.insert(pointer) {
-                let slots = vector.slots().clone();
-                let slots = slots
-                    .into_iter()
-                    .map(|slot| materialize_positioned_symbols(interp, slot, seen))
-                    .collect::<Vec<_>>();
-                *vector.slots_mut() = slots;
+                let slots = vector.slots().to_vec();
+                for (slot, materialized) in vector.slots_mut().iter_mut().zip(slots) {
+                    *slot = materialize_positioned_symbols(interp, materialized, seen);
+                }
             }
             Value::Vector(vector)
         }
@@ -1823,10 +1819,10 @@ fn materialize_char_table_literals_inner(
         return char_table_from_literal_fields(interp, &fields, env, seen);
     }
     if let Value::Vector(vector) = value {
-        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+        if !seen.insert(vector.identity()) {
             return Ok(value.clone());
         }
-        let slots = vector.slots().clone();
+        let slots = vector.slots().to_vec();
         for (index, slot) in slots.iter().enumerate() {
             vector.slots_mut()[index] =
                 materialize_char_table_literals_inner(interp, slot, env, seen)?;
@@ -2214,10 +2210,10 @@ fn materialize_hash_table_literals_inner(
         return hash_table_from_literal_fields(interp, &fields, env, seen);
     }
     if let Value::Vector(vector) = value {
-        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+        if !seen.insert(vector.identity()) {
             return Ok(value.clone());
         }
-        let slots = vector.slots().clone();
+        let slots = vector.slots().to_vec();
         for (index, slot) in slots.iter().enumerate() {
             vector.slots_mut()[index] =
                 materialize_hash_table_literals_inner(interp, slot, env, seen)?;

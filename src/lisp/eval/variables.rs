@@ -756,10 +756,10 @@ impl Interpreter {
                         pending.push(car.borrow().clone());
                     }
                 }
-                Value::Vector(vector) if seen_vectors.insert(Rc::as_ptr(&vector) as usize) => {
+                Value::Vector(vector) if seen_vectors.insert(vector.identity()) => {
                     pending.extend(vector.slots().iter().cloned());
                 }
-                Value::StringObject(state) if seen_strings.insert(Rc::as_ptr(&state) as usize) => {
+                Value::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
                         for (property, property_value) in &span.props {
                             self.intern_symbol_name(property);
@@ -837,7 +837,7 @@ impl Interpreter {
                 Ok(Value::Cons(cell))
             }
             Value::Vector(vector) => {
-                if seen.vectors.insert(Rc::as_ptr(&vector) as usize) {
+                if seen.vectors.insert(vector.identity()) {
                     let slots = vector.slots().to_vec();
                     let mapped = self.intern_read_symbol_fields(&slots, obarray, seen)?;
                     vector.slots_mut().clone_from_slice(&mapped);
@@ -901,7 +901,9 @@ impl Interpreter {
                         }
                     }
                 };
-                Ok(Value::ReaderForm(Rc::new(mapped)))
+                Ok(Value::ReaderForm(
+                    crate::lisp::alloc::VectorlikeRef::allocate(mapped),
+                ))
             }
             other => Ok(other),
         }

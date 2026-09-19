@@ -1,15 +1,11 @@
 use super::types::{
     LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
-    VectorValue, make_uninterned_symbol_name,
+    make_uninterned_symbol_name,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::{
-    cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet},
-    rc::Rc,
-};
 use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
@@ -76,7 +72,7 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 }
             }
             Value::Vector(vector) => {
-                if seen_vectors.insert(VectorValue::identity(&vector)) {
+                if seen_vectors.insert(vector.identity()) {
                     pending.extend(vector.slots().iter().cloned());
                 }
             }
@@ -358,7 +354,9 @@ fn resolve_changed(
                     unreachable!("circular reader forms are handled before structural descent")
                 }
             };
-            Ok(Some(Value::ReaderForm(Rc::new(resolved))))
+            Ok(Some(Value::ReaderForm(
+                crate::lisp::alloc::VectorlikeRef::allocate(resolved),
+            )))
         }
         _ => Ok(None),
     }
@@ -390,7 +388,7 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 stack.push(cdr_cell.borrow().clone());
             }
             Value::Vector(vector) => {
-                if seen_vectors.insert(VectorValue::identity(vector)) {
+                if seen_vectors.insert(vector.identity()) {
                     stack.extend(vector.slots().iter().cloned());
                 }
             }
@@ -754,14 +752,14 @@ impl<'a> Reader<'a> {
                     // when a quoted list is traversed or macro-expanded.
                     // GNU's reader allocates the object once, so repeated
                     // evaluation of the same literal returns that object.
-                    let state = Rc::new(RefCell::new(SharedStringState {
-                        text: s,
-                        props: Vec::new(),
-                        multibyte: has_explicit_multibyte || has_invalid_unicode,
-                        extended_chars,
-                    }));
-                    crate::lisp::types::register_string_object(&state);
-                    return Ok(Some(Value::StringObject(state)));
+                    return Ok(Some(crate::lisp::types::string_object_value(
+                        SharedStringState {
+                            text: s,
+                            props: Vec::new(),
+                            multibyte: has_explicit_multibyte || has_invalid_unicode,
+                            extended_chars,
+                        },
+                    )));
                 }
                 Some(b'\\') => {
                     self.advance();
@@ -1484,11 +1482,13 @@ impl<'a> Reader<'a> {
                         ));
                     }
                 }
-                Ok(Some(Value::ReaderForm(Rc::new(if sub_table {
-                    ReaderForm::SubCharTable { fields }
-                } else {
-                    ReaderForm::CharTable { fields }
-                }))))
+                Ok(Some(Value::ReaderForm(
+                    crate::lisp::alloc::VectorlikeRef::allocate(if sub_table {
+                        ReaderForm::SubCharTable { fields }
+                    } else {
+                        ReaderForm::CharTable { fields }
+                    }),
+                )))
             }
             Some(b'[') => {
                 self.advance();
@@ -1534,14 +1534,16 @@ impl<'a> Reader<'a> {
                         "invalid byte-code object syntax".into(),
                     ));
                 }
-                Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::Closure {
-                    kind: if interpreted {
-                        ReaderClosureKind::Interpreted
-                    } else {
-                        ReaderClosureKind::ByteCode
-                    },
-                    slots: fields,
-                }))))
+                Ok(Some(Value::ReaderForm(
+                    crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::Closure {
+                        kind: if interpreted {
+                            ReaderClosureKind::Interpreted
+                        } else {
+                            ReaderClosureKind::ByteCode
+                        },
+                        slots: fields,
+                    }),
+                )))
             }
             Some(b'&') => {
                 self.advance();
@@ -1581,9 +1583,11 @@ impl<'a> Reader<'a> {
                 }
                 bits.resize(len, false);
 
-                Ok(Some(Value::ReaderForm(std::rc::Rc::new(
-                    crate::lisp::types::ReaderForm::BoolVector { bits },
-                ))))
+                Ok(Some(Value::ReaderForm(
+                    crate::lisp::alloc::VectorlikeRef::allocate(
+                        crate::lisp::types::ReaderForm::BoolVector { bits },
+                    ),
+                )))
             }
             Some(b':') => {
                 self.advance();
@@ -1643,18 +1647,22 @@ impl<'a> Reader<'a> {
                     Some(b'=') => {
                         self.advance();
                         let value = self.read()?.ok_or(LispError::EndOfInput)?;
-                        return Ok(Some(Value::ReaderForm(Rc::new(
-                            ReaderForm::CircularLabel {
-                                id: base,
-                                payload: value,
-                            },
-                        ))));
+                        return Ok(Some(Value::ReaderForm(
+                            crate::lisp::alloc::VectorlikeRef::allocate(
+                                ReaderForm::CircularLabel {
+                                    id: base,
+                                    payload: value,
+                                },
+                            ),
+                        )));
                     }
                     Some(b'#') => {
                         self.advance();
-                        return Ok(Some(Value::ReaderForm(Rc::new(
-                            ReaderForm::CircularReference(base),
-                        ))));
+                        return Ok(Some(Value::ReaderForm(
+                            crate::lisp::alloc::VectorlikeRef::allocate(
+                                ReaderForm::CircularReference(base),
+                            ),
+                        )));
                     }
                     _ => {
                         // lread.c's INVALID_SYNTAX_WITH_BUFFER: the datum is
@@ -1790,14 +1798,16 @@ impl<'a> Reader<'a> {
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
                 if matches!(&kind, Value::Symbol(kind_name) if kind_name == "hash-table") {
-                    Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::HashTable {
-                        fields,
-                    }))))
+                    Ok(Some(Value::ReaderForm(
+                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::HashTable {
+                            fields,
+                        }),
+                    )))
                 } else {
                     let slots = std::iter::once(kind).chain(fields).collect();
-                    Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::Record {
-                        slots,
-                    }))))
+                    Ok(Some(Value::ReaderForm(
+                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::Record { slots }),
+                    )))
                 }
             }
             _ => {
@@ -1869,14 +1879,14 @@ impl<'a> Reader<'a> {
             });
             index += 3;
         }
-        let state = Rc::new(RefCell::new(SharedStringState {
-            text,
-            props,
-            multibyte,
-            extended_chars,
-        }));
-        crate::lisp::types::register_string_object(&state);
-        Ok(Some(Value::StringObject(state)))
+        Ok(Some(crate::lisp::types::string_object_value(
+            SharedStringState {
+                text,
+                props,
+                multibyte,
+                extended_chars,
+            },
+        )))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
@@ -1909,7 +1919,7 @@ impl<'a> Reader<'a> {
     /// materializes into a real `symbol-with-pos'.
     fn positioned_symbol_value(&mut self, start_byte: usize, name: String) -> Value {
         let pos = self.character_position(start_byte);
-        Value::ReaderForm(std::rc::Rc::new(
+        Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
             crate::lisp::types::ReaderForm::PositionedSymbol { name, pos },
         ))
     }
@@ -2644,7 +2654,9 @@ mod tests {
 
         assert!(!contains_circular_read_syntax(&cycle));
 
-        let reference = Value::ReaderForm(Rc::new(ReaderForm::CircularReference(7)));
+        let reference = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+            ReaderForm::CircularReference(7),
+        ));
         let containing_cycle = Value::list([cycle, reference]);
         assert!(contains_circular_read_syntax(&containing_cycle));
     }

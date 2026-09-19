@@ -1853,8 +1853,8 @@ mod tests {
             super::types::Value::symbol("reader-data-must-not-be-called"),
             super::types::Value::symbol("payload"),
         ]);
-        let literal =
-            super::types::Value::ReaderForm(std::rc::Rc::new(super::types::ReaderForm::Closure {
+        let literal = super::types::Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+            super::types::ReaderForm::Closure {
                 kind: super::types::ReaderClosureKind::ByteCode,
                 slots: vec![
                     super::types::Value::Integer(0),
@@ -1863,7 +1863,8 @@ mod tests {
                     super::types::Value::Integer(0),
                     callable_looking_data.clone(),
                 ],
-            }));
+            },
+        ));
         let mut interp = super::eval::Interpreter::new();
         let mut env = super::types::Env::new();
         let materialized = interp

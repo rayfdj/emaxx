@@ -3024,11 +3024,11 @@ impl ImageGraphCopier {
                 if vector.slots().is_empty() {
                     return value.clone();
                 }
-                let key = crate::lisp::types::VectorValue::identity(vector);
+                let key = vector.identity();
                 if let Some(copied) = self.vectors.get(&key) {
                     return copied.clone();
                 }
-                let source_slots = vector.slots().clone();
+                let source_slots = vector.slots().to_vec();
                 let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
                 self.vectors.insert(key, copied.clone());
                 let Value::Vector(copied_vector) = &copied else {
@@ -3040,21 +3040,19 @@ impl ImageGraphCopier {
                 copied
             }
             Value::StringObject(state) => {
-                let key = std::rc::Rc::as_ptr(state) as usize;
+                let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
                     return copied.clone();
                 }
                 let mut inner = state.borrow().clone();
-                let copied_state = std::rc::Rc::new(std::cell::RefCell::new(
+                let copied = crate::lisp::types::string_object_value(
                     crate::lisp::types::SharedStringState {
                         text: std::mem::take(&mut inner.text),
                         props: Vec::new(),
                         multibyte: inner.multibyte,
                         extended_chars: std::mem::take(&mut inner.extended_chars),
                     },
-                ));
-                crate::lisp::types::register_string_object(&copied_state);
-                let copied = Value::StringObject(copied_state);
+                );
                 self.strings.insert(key, copied.clone());
                 let props = state.borrow().props.clone();
                 let copied_props = props
@@ -3075,7 +3073,7 @@ impl ImageGraphCopier {
                 copied
             }
             Value::Lambda(lambda) => {
-                let key = std::rc::Rc::as_ptr(lambda) as usize;
+                let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
                     return copied.clone();
                 }
@@ -3108,56 +3106,58 @@ impl ImageGraphCopier {
                 copied
             }
             Value::ReaderForm(form) => {
-                let key = std::rc::Rc::as_ptr(form) as usize;
+                let key = form.identity();
                 if let Some(copied) = self.reader_forms.get(&key) {
                     return copied.clone();
                 }
-                let copied = Value::ReaderForm(std::rc::Rc::new(match form.as_ref() {
-                    crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
-                        crate::lisp::types::ReaderForm::CircularLabel {
-                            id: *id,
-                            payload: self.copy(payload),
+                let copied = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+                    match form.as_ref() {
+                        crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
+                            crate::lisp::types::ReaderForm::CircularLabel {
+                                id: *id,
+                                payload: self.copy(payload),
+                            }
                         }
-                    }
-                    crate::lisp::types::ReaderForm::CircularReference(id) => {
-                        crate::lisp::types::ReaderForm::CircularReference(*id)
-                    }
-                    crate::lisp::types::ReaderForm::HashTable { fields } => {
-                        crate::lisp::types::ReaderForm::HashTable {
-                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        crate::lisp::types::ReaderForm::CircularReference(id) => {
+                            crate::lisp::types::ReaderForm::CircularReference(*id)
                         }
-                    }
-                    crate::lisp::types::ReaderForm::CharTable { fields } => {
-                        crate::lisp::types::ReaderForm::CharTable {
-                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        crate::lisp::types::ReaderForm::HashTable { fields } => {
+                            crate::lisp::types::ReaderForm::HashTable {
+                                fields: fields.iter().map(|field| self.copy(field)).collect(),
+                            }
                         }
-                    }
-                    crate::lisp::types::ReaderForm::SubCharTable { fields } => {
-                        crate::lisp::types::ReaderForm::SubCharTable {
-                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        crate::lisp::types::ReaderForm::CharTable { fields } => {
+                            crate::lisp::types::ReaderForm::CharTable {
+                                fields: fields.iter().map(|field| self.copy(field)).collect(),
+                            }
                         }
-                    }
-                    crate::lisp::types::ReaderForm::Record { slots } => {
-                        crate::lisp::types::ReaderForm::Record {
-                            slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                        crate::lisp::types::ReaderForm::SubCharTable { fields } => {
+                            crate::lisp::types::ReaderForm::SubCharTable {
+                                fields: fields.iter().map(|field| self.copy(field)).collect(),
+                            }
                         }
-                    }
-                    crate::lisp::types::ReaderForm::Closure { kind, slots } => {
-                        crate::lisp::types::ReaderForm::Closure {
-                            kind: *kind,
-                            slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                        crate::lisp::types::ReaderForm::Record { slots } => {
+                            crate::lisp::types::ReaderForm::Record {
+                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                            }
                         }
-                    }
-                    crate::lisp::types::ReaderForm::BoolVector { bits } => {
-                        crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
-                    }
-                    crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
-                        crate::lisp::types::ReaderForm::PositionedSymbol {
-                            name: name.clone(),
-                            pos: *pos,
+                        crate::lisp::types::ReaderForm::Closure { kind, slots } => {
+                            crate::lisp::types::ReaderForm::Closure {
+                                kind: *kind,
+                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                            }
                         }
-                    }
-                }));
+                        crate::lisp::types::ReaderForm::BoolVector { bits } => {
+                            crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
+                        }
+                        crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
+                            crate::lisp::types::ReaderForm::PositionedSymbol {
+                                name: name.clone(),
+                                pos: *pos,
+                            }
+                        }
+                    },
+                ));
                 self.reader_forms.insert(key, copied.clone());
                 copied
             }
@@ -3267,7 +3267,6 @@ pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 /// The mark bits of one collection, keyed by object address or id.  The
 /// sets hash by identity (alloc.c's mark bit is a flag on the object; a
 /// SipHash of every visited address made the mark phase a quarter hashing).
-type MarkedAddresses = HashSet<usize, crate::lisp::types::IdentityBuildHasher>;
 pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
 
 /// How many objects of each kind the last collection reached: the mark
@@ -3275,7 +3274,6 @@ pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher
 /// table (alloc.c's mark bit sits on the object and allocates nothing).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct MarkSetSizes {
-    string_objects: usize,
     records: usize,
 }
 
@@ -3296,10 +3294,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    big_integers: MarkedAddresses,
-    string_objects: MarkedAddresses,
-    lambdas: MarkedAddresses,
-    buffers: MarkedAddresses,
     markers: MarkedIds,
     overlays: MarkedIds,
     char_tables: MarkedIds,
@@ -3307,7 +3301,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     terminals: MarkedIds,
     records: MarkedIds,
     finalizers: MarkedIds,
-    reader_forms: MarkedAddresses,
 }
 
 impl LispReachability<'_, '_> {
@@ -3338,10 +3331,6 @@ impl LispReachability<'_, '_> {
             pending: smallvec::SmallVec::new(),
             retaining: false,
             epoch: 0,
-            big_integers: MarkedAddresses::default(),
-            string_objects: MarkedAddresses::default(),
-            lambdas: MarkedAddresses::default(),
-            buffers: MarkedAddresses::default(),
             markers: MarkedIds::default(),
             overlays: MarkedIds::default(),
             char_tables: MarkedIds::default(),
@@ -3349,7 +3338,6 @@ impl LispReachability<'_, '_> {
             terminals: MarkedIds::default(),
             records: MarkedIds::default(),
             finalizers: MarkedIds::default(),
-            reader_forms: MarkedAddresses::default(),
         }
     }
 }
@@ -3395,20 +3383,18 @@ impl LispReachability<'_, '_> {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
                 true
             }
-            Value::BigInteger(value) => self.big_integers.contains(&value.identity_ptr()),
+            Value::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
             Value::Float(value) => value.mark_bit().is_marked(self.epoch),
             Value::String(value) => value.mark_bit().is_marked(self.epoch),
-            Value::StringObject(value) => {
-                self.string_objects.contains(&(Rc::as_ptr(value) as usize))
-            }
+            Value::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             Value::Symbol(symbol) => {
                 crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
                     || symbol.mark_bit().is_marked(self.epoch)
             }
             Value::Cons(value) => value.mark.is_marked(self.epoch),
-            Value::Vector(value) => value.mark.is_marked(self.epoch),
-            Value::Lambda(value) => self.lambdas.contains(&(Rc::as_ptr(value) as usize)),
-            Value::Buffer(value) => self.buffers.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Vector(value) => value.mark_bit().is_marked(self.epoch),
+            Value::Lambda(value) => value.mark_bit().is_marked(self.epoch),
+            Value::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Value::Marker(id) => self.markers.contains(id),
             Value::Overlay(id) => self.overlays.contains(id),
             Value::CharTable(id) => self.char_tables.contains(id),
@@ -3416,7 +3402,7 @@ impl LispReachability<'_, '_> {
             Value::Terminal(id) => self.terminals.contains(id),
             Value::Record(id) => self.records.contains(id),
             Value::Finalizer(id) => self.finalizers.contains(id),
-            Value::ReaderForm(value) => self.reader_forms.contains(&(Rc::as_ptr(value) as usize)),
+            Value::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
     }
 
@@ -3480,7 +3466,7 @@ impl LispReachability<'_, '_> {
     fn prefetch_mark(value: &Value) {
         let mark: *const crate::lisp::types::MarkBit = match value {
             Value::Cons(cell) => &cell.mark,
-            Value::Vector(vector) => &vector.mark,
+            Value::Vector(vector) => vector.mark_bit(),
             Value::String(text) => text.mark_bit(),
             Value::Symbol(symbol) => symbol.mark_bit(),
             Value::Float(value) => value.mark_bit(),
@@ -3512,15 +3498,15 @@ impl LispReachability<'_, '_> {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
                 false
             }
-            Value::BigInteger(value) => self.big_integers.insert(value.identity_ptr()),
+            Value::BigInteger(value) => value.mark_bit().mark(self.epoch),
             Value::Float(value) => value.mark_bit().mark(self.epoch),
             Value::String(value) => value.mark_bit().mark(self.epoch),
-            Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
+            Value::StringObject(value) => value.mark_bit().mark(self.epoch),
             Value::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
             Value::Cons(value) => value.mark.mark(self.epoch),
-            Value::Vector(value) => value.mark.mark(self.epoch),
-            Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
-            Value::Buffer(value) => self.buffers.insert(Rc::as_ptr(value) as usize),
+            Value::Vector(value) => value.mark_bit().mark(self.epoch),
+            Value::Lambda(value) => value.mark_bit().mark(self.epoch),
+            Value::Buffer(value) => value.mark_bit().mark(self.epoch),
             Value::Marker(id) => self.markers.insert(*id),
             Value::Overlay(id) => self.overlays.insert(*id),
             Value::CharTable(id) => self.char_tables.insert(*id),
@@ -3528,7 +3514,7 @@ impl LispReachability<'_, '_> {
             Value::Terminal(id) => self.terminals.insert(*id),
             Value::Record(id) => self.records.insert(*id),
             Value::Finalizer(id) => self.finalizers.insert(*id),
-            Value::ReaderForm(value) => self.reader_forms.insert(Rc::as_ptr(value) as usize),
+            Value::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
 
@@ -4178,7 +4164,6 @@ impl Interpreter {
         }
         let mut marked = LispReachability {
             native,
-            string_objects: sized(sizes.string_objects),
             records: sized(sizes.records),
             ..LispReachability::default()
         };
@@ -4234,7 +4219,7 @@ impl Interpreter {
             roots::mark_source(self, &mut marked, entry);
         }
         for constants in &self.bc_live_programs {
-            marked.mark(self, &Value::Vector(Rc::clone(constants)));
+            marked.mark(self, &Value::Vector(*constants));
         }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
@@ -4284,7 +4269,6 @@ impl Interpreter {
         }
 
         self.gc_mark_set_sizes.set(MarkSetSizes {
-            string_objects: marked.string_objects.len(),
             records: marked.records.len(),
         });
         let tables = weak_tables
@@ -5504,7 +5488,7 @@ pub struct InterpreterState {
     /// roots for as long as the activations run (alloc.c:mark_threads).
     pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
     pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
-    pub(crate) bc_live_programs: Vec<Rc<crate::lisp::types::VectorValue>>,
+    pub(crate) bc_live_programs: Vec<crate::lisp::types::VectorRef>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.

@@ -236,7 +236,7 @@ pub(crate) fn is_vector_value(value: &Value) -> bool {
 
 pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
     match value {
-        Value::Vector(vector) => Some(crate::lisp::types::VectorValue::identity(vector)),
+        Value::Vector(vector) => Some(vector.identity()),
         _ => None,
     }
 }

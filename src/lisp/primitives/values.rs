@@ -480,8 +480,8 @@ fn values_equal_recursive_with_env(
                 && values_equal_recursive_with_env(interp, &a_cdr, &b_cdr, seen, env)
         }
         (Value::Lambda(left), Value::Lambda(right)) => {
-            let left_ptr = Rc::as_ptr(left) as usize;
-            let right_ptr = Rc::as_ptr(right) as usize;
+            let left_ptr = left.identity();
+            let right_ptr = right.identity();
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
                 return true;
             }
@@ -515,12 +515,12 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
         (Value::Cons(left), Value::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(left, right)
         }
-        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
+        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -530,7 +530,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
         // eql on non-numbers is eq; identity must be reflexive here too.
-        (Value::ReaderForm(left), Value::ReaderForm(right)) => Rc::ptr_eq(left, right),
+        (Value::ReaderForm(left), Value::ReaderForm(right)) => left.ptr_eq(right),
         _ => false,
     }
 }
@@ -583,15 +583,15 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
         (Value::String(_), Value::StringObject(_)) | (Value::StringObject(_), Value::String(_)) => {
             false
         }
         (Value::Cons(left), Value::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(left, right)
         }
-        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
+        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -603,7 +603,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
-        (Value::ReaderForm(left), Value::ReaderForm(right)) => Rc::ptr_eq(left, right),
+        (Value::ReaderForm(left), Value::ReaderForm(right)) => left.ptr_eq(right),
         _ => false,
     }
 }
@@ -640,7 +640,7 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
 pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
     let mut remaining = match count {
         Value::Integer(n) => BigInt::from(*n),
-        Value::BigInteger(n) => n.clone().into(),
+        Value::BigInteger(n) => (*n).into(),
         _ => {
             return Err(LispError::WrongTypeArgument(
                 "integerp".into(),
@@ -1823,7 +1823,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::StringObject(shared) => {
             hash_mix(state, 4);
-            hash_mix(state, Rc::as_ptr(shared) as usize as u64);
+            hash_mix(state, shared.identity() as u64);
         }
         Value::String(text) => {
             hash_mix(state, 5);
@@ -1832,10 +1832,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::Vector(vector) => {
             hash_mix(state, 16);
-            hash_mix(
-                state,
-                crate::lisp::types::VectorValue::identity(vector) as u64,
-            );
+            hash_mix(state, vector.identity() as u64);
         }
         Value::BuiltinFunc(name) => {
             hash_mix(state, 6);
@@ -1843,7 +1840,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::Lambda(lambda_value) => {
             hash_mix(state, 7);
-            hash_mix(state, Rc::as_ptr(lambda_value) as usize as u64);
+            hash_mix(state, lambda_value.identity() as u64);
         }
         Value::Buffer(buffer_value) => {
             let id = buffer_value.id;
@@ -1881,7 +1878,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::ReaderForm(form) => {
             hash_mix(state, 20);
-            hash_mix(state, Rc::as_ptr(form) as usize as u64);
+            hash_mix(state, form.identity() as u64);
         }
         Value::Unbound => {
             hash_mix(state, 17);
@@ -2102,7 +2099,7 @@ pub(crate) fn hash_value_equal_at(
         }
         Value::ReaderForm(form) => {
             hash_mix(state, 50);
-            hash_mix(state, Rc::as_ptr(form) as usize as u64);
+            hash_mix(state, form.identity() as u64);
         }
         Value::Unbound => {
             hash_mix(state, 47);

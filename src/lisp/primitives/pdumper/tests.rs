@@ -116,8 +116,8 @@ fn graph_matches(
             graph_matches(&a.cdr().expect("cdr"), &b.cdr().expect("cdr"), seen)
         }
         (Value::Vector(x), Value::Vector(y)) => {
-            let x = x.slots().clone();
-            let y = y.slots().clone();
+            let x = x.slots().to_vec();
+            let y = y.slots().to_vec();
             if x.len() != y.len() {
                 return Err("vector length differs".into());
             }
@@ -566,7 +566,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     let Value::Vector(vector) = &loaded else {
         panic!("root vector")
     };
-    let slots = vector.slots().clone();
+    let slots = vector.slots().to_vec();
 
     // Two closures over one environment: the frame is shared, and calling
     // them in the restored interpreter mutates the shared binding.
@@ -710,7 +710,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let Value::Vector(vector) = &loaded else {
         panic!("root vector")
     };
-    let slots = vector.slots().clone();
+    let slots = vector.slots().to_vec();
     let eq_table = slots[0].clone();
     let equal_table = slots[1].clone();
     let weak = slots[2].clone();
@@ -997,7 +997,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Value::Vector(source_vector) = &graph else {
         panic!("root vector")
     };
-    let source = source_vector.slots().clone();
+    let source = source_vector.slots().to_vec();
     let Value::Buffer(source_buffer) = &source[0] else {
         panic!("buffer")
     };
@@ -1032,7 +1032,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Value::Vector(vector) = root(RootSlot::LoadPath) else {
         panic!("root vector")
     };
-    let slots = vector.slots().clone();
+    let slots = vector.slots().to_vec();
 
     // The buffer: text, positions, narrowing, flags, property spans, the
     // side list, the undo entries, the modtime, the local binding, the

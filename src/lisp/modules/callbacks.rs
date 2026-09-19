@@ -210,7 +210,7 @@ pub(super) unsafe extern "C" fn eq(env: *mut ModuleEnv, left: Handle, right: Han
 fn integer(value: &Value) -> Result<BigInt, LispError> {
     match value {
         Value::Integer(n) => Ok(BigInt::from(*n)),
-        Value::BigInteger(n) => Ok(n.clone().into()),
+        Value::BigInteger(n) => Ok((*n).into()),
         _ => Err(primitives::wrong_type_argument("integerp", value.clone())),
     }
 }

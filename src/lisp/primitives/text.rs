@@ -350,7 +350,7 @@ pub(crate) fn integer_for_format(
 ) -> Result<(Option<i64>, BigInt), LispError> {
     match value {
         Value::Integer(n) => Ok((Some(*n), BigInt::from(*n))),
-        Value::BigInteger(n) => Ok((None, n.clone().into())),
+        Value::BigInteger(n) => Ok((None, (*n).into())),
         Value::Float(f) => Ok((None, bigint_from_truncated_float(f.get())?)),
         Value::Marker(_) => {
             let n = integer_like_i64(interp, value)?;

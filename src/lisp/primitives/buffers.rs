@@ -301,7 +301,7 @@ pub(crate) fn marker_target(
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     if let Value::Vector(vector) = value {
-        Ok(vector.slots().clone())
+        Ok(vector.slots().to_vec())
     } else {
         Err(LispError::WrongTypeArgument(
             "vectorp".into(),
@@ -344,7 +344,7 @@ pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -
     let Value::Vector(vector) = value else {
         return None;
     };
-    let mut slots = vector.slots_mut();
+    let slots = vector.slots_mut();
     let slot = slots.get_mut(index)?;
     *slot = new_value.clone();
     Some(())

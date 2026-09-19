@@ -389,7 +389,10 @@ pub(crate) fn sort_sequence_items(
     reverse: bool,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
-    let mut keyed = Vec::with_capacity(items.len());
+    // fns.c:sort_list's SAFE_ALLOCA_LISP: the keys are fresh values the
+    // predicate's calls run collections under, so their array is one
+    // the collector scans.
+    let mut keyed = crate::lisp::alloc::RootedVec::with_capacity(items.len());
     for item in items {
         let sort_key = if let Some(function) = key {
             call_function_value(interp, function, std::slice::from_ref(&item), env)?
@@ -405,17 +408,21 @@ pub(crate) fn sort_sequence_items(
 
     let direct = lessp.and_then(|function| direct_sort_comparator(interp, function, env));
     let mut error = None;
-    keyed.sort_by(|(_, left_key), (_, right_key)| {
-        if let Some(existing) = &error {
-            let _ = existing;
+    // The sort moves a permutation of indices, never the values: a merge
+    // sort's scratch buffer would hold values the collector cannot see
+    // while the predicate runs (sort.c marks its temporary storage
+    // through `merge_markmem' for the same reason).
+    let mut order: Vec<usize> = (0..keyed.len()).collect();
+    order.sort_by(|&left, &right| {
+        if error.is_some() {
             return Ordering::Equal;
         }
         match sort_compare_ordering_resolved(
             interp,
             lessp,
             direct.as_ref(),
-            left_key,
-            right_key,
+            &keyed[left].1,
+            &keyed[right].1,
             env,
         ) {
             Ok(ordering) => ordering,
@@ -428,12 +435,13 @@ pub(crate) fn sort_sequence_items(
     if let Some(err) = error {
         return Err(err);
     }
+    let mut sorted: Vec<Value> = order.iter().map(|&index| keyed[index].0.clone()).collect();
 
     if reverse {
-        keyed.reverse();
+        sorted.reverse();
     }
 
-    Ok(keyed.into_iter().map(|(item, _)| item).collect())
+    Ok(sorted)
 }
 
 pub(crate) fn write_sorted_sequence(

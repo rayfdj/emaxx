@@ -3,7 +3,6 @@
 use crate::lisp::types::Value;
 use ropey::Rope;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::SystemTime;
 
 /// One edit of a buffer: the characters [START, OLD_END) became
@@ -2651,7 +2650,7 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         // next-single-property-change saw a "change" at every char of the
         // alt text and replaced two characters of a twenty-char image).
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
-        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
         (Value::Cons(left), Value::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(left, right)
         }

@@ -283,7 +283,6 @@ pub(crate) fn purecopy_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
 
     fn vector(values: impl IntoIterator<Item = Value>) -> Value {
         Value::list(std::iter::once(Value::symbol("vector-literal")).chain(values))
@@ -312,8 +311,8 @@ mod tests {
         else {
             panic!("purecopy must preserve GNU's vector object class")
         };
-        assert!(!Rc::ptr_eq(source_vector, copied_vector));
-        assert!(Rc::ptr_eq(copied_vector, equal_copy_vector));
+        assert!(!source_vector.ptr_eq(copied_vector));
+        assert!(copied_vector.ptr_eq(equal_copy_vector));
 
         let source_items = vector_items(&source).expect("source should remain vectorlike");
         let copied_items = vector_items(&copied).expect("copy should remain vectorlike");
@@ -322,6 +321,6 @@ mod tests {
         else {
             panic!("nested values remain vectors")
         };
-        assert!(!Rc::ptr_eq(source_nested, copied_nested));
+        assert!(!source_nested.ptr_eq(copied_nested));
     }
 }

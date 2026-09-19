@@ -598,7 +598,7 @@ impl Loader<'_> {
                     let Value::Vector(vector) = self.objects[&offset].clone() else {
                         unreachable!()
                     };
-                    let mut slots = vector.slots_mut();
+                    let slots = vector.slots_mut();
                     for (index, slot) in slots.iter_mut().enumerate().take(size) {
                         *slot = self.value_at(offset + 8 * (index as u32 + 1))?;
                     }

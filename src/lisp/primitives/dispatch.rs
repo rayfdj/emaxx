@@ -154,7 +154,7 @@ pub(crate) struct NameFacts {
     direct: Option<DirectPrimitive>,
     /// The GNU subr's declared maximum argument count; None for MANY,
     /// UNEVALLED, and names outside the generated C manifest.
-    max_args: Option<u16>,
+    pub(crate) max_args: Option<u16>,
 }
 
 macro_rules! define_dispatch_modules {

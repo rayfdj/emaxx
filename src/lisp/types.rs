@@ -1229,27 +1229,60 @@ impl PartialEq<SymbolName> for &str {
     }
 }
 
+/// `Lisp_Object' for a bignum: alloc.c's `PVEC_BIGNUM' pseudovector's
+/// address, copied without a count.
 #[repr(transparent)]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SharedBigInt(Rc<LispBignum>);
+#[derive(Clone, Copy, Debug)]
+pub struct SharedBigInt(crate::lisp::alloc::VectorlikeRef<LispBignum>);
+
+impl PartialEq for SharedBigInt {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0) || (*self.0).0 == (*other.0).0
+    }
+}
+
+impl Eq for SharedBigInt {}
+
+impl PartialOrd for SharedBigInt {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SharedBigInt {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (*self.0).0.cmp(&(*other.0).0)
+    }
+}
+
+impl std::hash::Hash for SharedBigInt {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (*self.0).0.hash(state);
+    }
+}
 
 /// One allocated `struct Lisp_Bignum'; the live count is a counter.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LispBignum(BigInt);
 
-impl Drop for LispBignum {
-    fn drop(&mut self) {
-        LIVE_BIGNUMS.sub(1);
-    }
-}
-
 impl SharedBigInt {
     pub(crate) fn identity_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+        self.0.identity()
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn mark_bit(&self) -> &MarkBit {
+        self.0.mark_bit()
+    }
+
+    /// # Safety
+    /// HEADER is an allocated bignum's header.
+    pub(crate) unsafe fn from_raw(header: *mut crate::lisp::alloc::VectorHeader) -> Self {
+        // SAFETY: the caller's contract.
+        Self(unsafe { crate::lisp::alloc::VectorlikeRef::from_raw(header) })
     }
 }
 
@@ -1257,42 +1290,41 @@ impl Deref for SharedBigInt {
     type Target = BigInt;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.0
+        &(*self.0).0
     }
 }
 
 impl From<BigInt> for SharedBigInt {
     fn from(value: BigInt) -> Self {
+        // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
         crate::lisp::native_comp::note_lisp_allocation(24);
-        LIVE_BIGNUMS.add(1);
-        Self(Rc::new(LispBignum(value)))
+        Self(crate::lisp::alloc::VectorlikeRef::allocate(LispBignum(
+            value,
+        )))
     }
 }
 
 impl From<SharedBigInt> for BigInt {
     fn from(value: SharedBigInt) -> Self {
-        match Rc::try_unwrap(value.0) {
-            Ok(mut owned) => std::mem::take(&mut owned.0),
-            Err(shared) => shared.0.clone(),
-        }
+        (*value.0).0.clone()
     }
 }
 
 impl PartialEq<BigInt> for SharedBigInt {
     fn eq(&self, other: &BigInt) -> bool {
-        self.0.0 == *other
+        (*self.0).0 == *other
     }
 }
 
 impl PartialEq<SharedBigInt> for BigInt {
     fn eq(&self, other: &SharedBigInt) -> bool {
-        *self == other.0.0
+        *self == (*other.0).0
     }
 }
 
 impl fmt::Display for SharedBigInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.0.fmt(f)
+        (*self.0).0.fmt(f)
     }
 }
 
@@ -1412,59 +1444,14 @@ pub struct BufferValue {
     pub name: SharedText,
 }
 
-/// One ordinary GNU vector: stable object identity plus contiguous mutable
-/// Lisp slots.  The Rust owner is reference counted, while the payload shape
-/// follows `struct Lisp_Vector` instead of the historical tagged-cons facade.
-#[derive(Debug)]
-pub struct VectorValue {
-    slots: RefCell<Vec<Value>>,
-    accounted_slots: usize,
-    pub(crate) mark: MarkBit,
-}
-
-impl VectorValue {
-    fn allocated(slots: Vec<Value>) -> Rc<Self> {
-        let accounted_slots = slots.len().saturating_add(1);
-        crate::lisp::native_comp::note_lisp_allocation(accounted_slots.saturating_mul(8));
-        LIVE_VECTORS.add(1);
-        LIVE_VECTOR_SLOTS.add(accounted_slots);
-        Rc::new(Self {
-            slots: RefCell::new(slots),
-            accounted_slots,
-            mark: MarkBit::default(),
-        })
-    }
-
-    fn static_zero() -> Rc<Self> {
-        Rc::new(Self {
-            slots: RefCell::new(Vec::new()),
-            accounted_slots: 0,
-            mark: MarkBit::default(),
-        })
-    }
-
-    pub(crate) fn identity(value: &Rc<Self>) -> usize {
-        Rc::as_ptr(value) as usize
-    }
-
-    pub(crate) fn slots(&self) -> Ref<'_, Vec<Value>> {
-        self.slots.borrow()
-    }
-
-    pub(crate) fn slots_mut(&self) -> RefMut<'_, Vec<Value>> {
-        self.slots.borrow_mut()
-    }
-}
-
-impl Drop for VectorValue {
-    fn drop(&mut self) {
-        if self.accounted_slots == 0 {
-            return;
-        }
-        LIVE_VECTORS.sub(1);
-        LIVE_VECTOR_SLOTS.sub(self.accounted_slots);
-    }
-}
+/// `Lisp_Object' for an ordinary vector: alloc.c's `struct Lisp_Vector'
+/// in a vector block (or on its own when large), named by its address.
+pub use crate::lisp::alloc::VectorRef;
+/// The pseudovector kinds' handles (alloc.c's `allocate_pseudovector').
+pub type LambdaRef = crate::lisp::alloc::VectorlikeRef<LambdaValue>;
+pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
+pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
+pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 
 /// The two tagged Lisp words generated code reads and writes directly.
 ///
@@ -1634,51 +1621,6 @@ impl ConsValueCell {
 // Strings register a Weak handle at allocation; the census upgrades each
 // handle and prunes the dead ones, which is the lazy equivalent of GNU's
 // sweep visiting every string block.
-thread_local! {
-    static STRING_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<RefCell<SharedStringState>>>> =
-        const { RefCell::new(Vec::new()) };
-    static STRING_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static LAMBDA_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<LambdaValue>>> =
-        const { RefCell::new(Vec::new()) };
-    static LAMBDA_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-}
-
-/// gcstat's total_strings, total_string_bytes, total_floats, the bignums'
-/// share of total_vectors, total_vectors and total_vector_slots, as
-/// counters (see `LispText').  The heap is the process's (a template
-/// interpreter built on one thread is used from another, and the
-/// collector frees on the thread that collects), so the books are too.
-struct LiveBook(std::sync::atomic::AtomicUsize);
-
-impl LiveBook {
-    const fn new() -> Self {
-        Self(std::sync::atomic::AtomicUsize::new(0))
-    }
-
-    fn get(&self) -> usize {
-        self.0.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn add(&self, count: usize) {
-        self.0
-            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Never below zero: an object may be released on a thread other
-    /// than the one whose allocation raised the count.
-    fn sub(&self, count: usize) {
-        let _ = self.0.fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |current| Some(current.saturating_sub(count)),
-        );
-    }
-}
-
-static LIVE_BIGNUMS: LiveBook = LiveBook::new();
-static LIVE_VECTORS: LiveBook = LiveBook::new();
-static LIVE_VECTOR_SLOTS: LiveBook = LiveBook::new();
-
 pub(crate) fn note_string_allocation(bytes: usize) {
     // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
     // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
@@ -1692,43 +1634,23 @@ pub(crate) fn note_string_allocation(bytes: usize) {
     crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
 }
 
-/// Drop the dead handles when a book outgrows its limit, so a session that
-/// never calls `garbage-collect' holds at most ~2x the live handles.  The
-/// amortized cost per registration stays O(1).
-fn prune_book<T>(book: &RefCell<Vec<std::rc::Weak<T>>>, limit: &std::cell::Cell<usize>) {
-    let mut book = book.borrow_mut();
-    if book.len() < limit.get() {
-        return;
-    }
-    book.retain(|weak| weak.strong_count() > 0);
-    limit.set((book.len() * 2).max(1 << 16));
+/// A string OBJECT (text properties, raw bytes, an `aset' target): a
+/// pseudovector of this implementation's, counted with the strings.
+pub(crate) fn string_object_value(state: SharedStringState) -> Value {
+    let bytes = state.storage_bytes();
+    string_object_value_with_storage_bytes(state, bytes)
 }
 
-/// Every new string OBJECT must pass through here (all four construction
-/// sites do); an unregistered object would be invisible to the census.
-pub(crate) fn register_string_object(state: &Rc<RefCell<SharedStringState>>) {
-    let bytes = {
-        let state = RefCell::borrow(state);
-        crate::lisp::primitives::lisp_string_storage_byte_len(
-            &state.text,
-            state.multibyte,
-            &state.extended_chars,
-        )
-    };
-    register_string_object_with_storage_bytes(state, bytes);
-}
-
-/// `register_string_object' for a string whose storage size is already
+/// `string_object_value' for a string whose storage size is already
 /// known (the image records it).
-pub(crate) fn register_string_object_with_storage_bytes(
-    state: &Rc<RefCell<SharedStringState>>,
+pub(crate) fn string_object_value_with_storage_bytes(
+    state: SharedStringState,
     bytes: usize,
-) {
+) -> Value {
     note_string_allocation(bytes);
-    STRING_OBJECT_BOOK.with(|book| {
-        book.borrow_mut().push(Rc::downgrade(state));
-        STRING_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-    });
+    Value::StringObject(crate::lisp::alloc::VectorlikeRef::allocate(RefCell::new(
+        state,
+    )))
 }
 
 #[derive(Default)]
@@ -1750,34 +1672,14 @@ pub(crate) fn census_live_conses() -> usize {
 }
 
 pub(crate) fn census_live_strings() -> StringCensus {
-    // The immutable texts are counted; only the string objects (text
-    // properties, raw bytes, `aset' targets: a few thousand against
-    // hundreds of thousands of texts) are still walked, for their
-    // property spans as well.
-    let mut census = StringCensus {
-        count: crate::lisp::alloc::live_strings(),
-        bytes: crate::lisp::alloc::live_string_bytes(),
-        property_spans: 0,
-    };
-    STRING_OBJECT_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|weak| match weak.upgrade() {
-            Some(state) => {
-                let state = RefCell::borrow(&state);
-                census.count += 1;
-                census.bytes += crate::lisp::primitives::lisp_string_storage_byte_len(
-                    &state.text,
-                    state.multibyte,
-                    &state.extended_chars,
-                );
-                census.property_spans += state.props.len();
-                true
-            }
-            None => false,
-        });
-        STRING_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-    });
-    census
+    // The texts and the string objects, both counted by the sweep and
+    // raised by allocation (gcstat's total_strings, total_string_bytes).
+    let (objects, bytes, property_spans) = crate::lisp::alloc::live_string_object_census();
+    StringCensus {
+        count: crate::lisp::alloc::live_strings() + objects,
+        bytes: crate::lisp::alloc::live_string_bytes() + bytes,
+        property_spans,
+    }
 }
 
 pub(crate) fn census_live_floats() -> usize {
@@ -1785,43 +1687,16 @@ pub(crate) fn census_live_floats() -> usize {
 }
 
 pub(crate) fn census_live_vectors() -> VectorCensus {
-    let mut census = VectorCensus {
-        count: LIVE_VECTORS.get(),
-        slots: LIVE_VECTOR_SLOTS.get(),
+    // gcstat's total_vectors and total_vector_slots: the ordinary vectors,
+    // the closures (eval.c:Fmake_interpreted_closure allocates an
+    // ordinary vector and retags it PVEC_CLOSURE; the header is one word
+    // beyond the Lisp-visible slots) and the bignums (three words each).
+    let (count, slots) = crate::lisp::alloc::live_vector_census();
+    VectorCensus {
+        count,
+        slots,
         representation_conses: 0,
-    };
-    let bignums = LIVE_BIGNUMS.get();
-    census.count += bignums;
-    // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
-    census.slots = census.slots.saturating_add(bignums.saturating_mul(3));
-    LAMBDA_OBJECT_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|weak| match weak.upgrade() {
-            Some(lambda) => {
-                census.count += 1;
-                // eval.c:Fmake_interpreted_closure allocates an ordinary
-                // vector and retags it PVEC_CLOSURE.  The header is one
-                // word beyond the Lisp-visible slots.
-                census.slots = census
-                    .slots
-                    .saturating_add(lambda.public_len().saturating_add(1));
-                true
-            }
-            None => false,
-        });
-        LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-    });
-    census
-}
-
-fn register_lambda_object(lambda: &Rc<LambdaValue>) {
-    crate::lisp::native_comp::note_lisp_allocation(
-        lambda.public_len().saturating_add(1).saturating_mul(8),
-    );
-    LAMBDA_OBJECT_BOOK.with(|book| {
-        book.borrow_mut().push(Rc::downgrade(lambda));
-        LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-    });
+    }
 }
 
 impl ConsCell {
@@ -1994,6 +1869,17 @@ pub struct SharedStringState {
     pub extended_chars: Vec<(usize, u32)>,
 }
 
+impl SharedStringState {
+    /// `size_byte' as the census reads it.
+    pub(crate) fn storage_bytes(&self) -> usize {
+        crate::lisp::primitives::lisp_string_storage_byte_len(
+            &self.text,
+            self.multibyte,
+            &self.extended_chars,
+        )
+    }
+}
+
 /// Detects circular lists during traversal with Brent's algorithm, the same
 /// scheme GNU's FOR_EACH_TAIL uses: constant memory and no hashing.
 pub struct CycleGuard {
@@ -2091,11 +1977,11 @@ pub enum Value {
     BigInteger(SharedBigInt),
     Float(SharedFloat),
     String(SharedText),
-    StringObject(Rc<RefCell<SharedStringState>>),
+    StringObject(StringObjectRef),
     Symbol(SymbolName),
     Cons(SharedCons),
     /// An ordinary vector with GNU vector identity and contiguous slots.
-    Vector(Rc<VectorValue>),
+    Vector(VectorRef),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(SymbolName),
     /// A lambda or closure: params, immutable shared body, captured env.
@@ -2103,9 +1989,9 @@ pub enum Value {
     /// Function-cell lookup clones Lisp values on every call.  Sharing the
     /// immutable code keeps that clone O(1) while the captured environment
     /// retains its independent Lisp identity and mutability.
-    Lambda(Rc<LambdaValue>),
+    Lambda(LambdaRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
-    Buffer(Rc<BufferValue>),
+    Buffer(BufferRef),
     /// A marker object, identified by unique id.
     Marker(u64),
     /// An overlay object, identified by unique id.
@@ -2121,7 +2007,7 @@ pub enum Value {
     /// A finalizer object, identified by unique id.
     Finalizer(u64),
     /// Typed reader state awaiting Interpreter-owned object allocation.
-    ReaderForm(Rc<ReaderForm>),
+    ReaderForm(ReaderFormRef),
     /// Internal marker for EIEIO slots that have not been bound.
     Unbound,
 }
@@ -2166,16 +2052,16 @@ impl Value {
             Value::Nil => Value::Nil,
             Value::T => Value::T,
             Value::Integer(value) => Value::Integer(*value),
-            Value::BigInteger(value) => Value::BigInteger(value.clone()),
+            Value::BigInteger(value) => Value::BigInteger(*value),
             Value::Float(value) => Value::Float(*value),
             Value::String(value) => Value::String(*value),
-            Value::StringObject(value) => Value::StringObject(value.clone()),
+            Value::StringObject(value) => Value::StringObject(*value),
             Value::Symbol(value) => Value::Symbol(value.clone()),
             Value::Cons(value) => Value::Cons(*value),
-            Value::Vector(value) => Value::Vector(value.clone()),
+            Value::Vector(value) => Value::Vector(*value),
             Value::BuiltinFunc(value) => Value::BuiltinFunc(value.clone()),
-            Value::Lambda(value) => Value::Lambda(value.clone()),
-            Value::Buffer(value) => Value::Buffer(value.clone()),
+            Value::Lambda(value) => Value::Lambda(*value),
+            Value::Buffer(value) => Value::Buffer(*value),
             Value::Marker(value) => Value::Marker(*value),
             Value::Overlay(value) => Value::Overlay(*value),
             Value::CharTable(value) => Value::CharTable(*value),
@@ -2183,7 +2069,7 @@ impl Value {
             Value::Terminal(value) => Value::Terminal(*value),
             Value::Record(value) => Value::Record(*value),
             Value::Finalizer(value) => Value::Finalizer(*value),
-            Value::ReaderForm(value) => Value::ReaderForm(value.clone()),
+            Value::ReaderForm(value) => Value::ReaderForm(*value),
             Value::Unbound => Value::Unbound,
         }
     }
@@ -2208,12 +2094,6 @@ impl Clone for Value {
             self.clone_shared()
         }
     }
-}
-
-thread_local! {
-    // alloc.c:zero_vector is one static object returned by every zero-length
-    // ordinary-vector allocation and is outside the heap vector census.
-    static EMPTY_VECTOR_VALUE: Value = Value::Vector(VectorValue::static_zero());
 }
 
 /// eval.c's `Vinternal_interpreter_environment' as one scope holds it:
@@ -2546,20 +2426,22 @@ impl Value {
     /// wrappers are the stable identities generated code observes.
     pub(crate) fn native_handle_has_external_owner(&self) -> bool {
         match self {
-            Value::BigInteger(value) => Rc::strong_count(&value.0) > 1,
+            Value::BigInteger(_) => false,
             // A float has no count: its handle lives while the mark
             // reaches the cell (from Lisp or from generated code).
             Value::Float(_) => false,
             // A string has no count: its handle lives while the mark
             // reaches the cell.
             Value::String(_) => false,
-            Value::StringObject(value) => Rc::strong_count(value) > 1,
+            // A vectorlike has no count either: its handle lives while
+            // the mark reaches the cell.
+            Value::StringObject(_)
+            | Value::Vector(_)
+            | Value::Lambda(_)
+            | Value::Buffer(_)
+            | Value::ReaderForm(_) => false,
             // A cons has no count: the collector decides its life.
             Value::Cons(_) => true,
-            Value::Vector(value) => Rc::strong_count(value) > 1,
-            Value::Lambda(value) => Rc::strong_count(value) > 1,
-            Value::Buffer(value) => Rc::strong_count(value) > 1,
-            Value::ReaderForm(value) => Rc::strong_count(value) > 1,
             Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Unbound => true,
             _ => false,
         }
@@ -2593,11 +2475,15 @@ impl Value {
 
     pub fn vector(items: impl IntoIterator<Item = Value>) -> Self {
         let slots = items.into_iter().collect::<Vec<_>>();
-        if slots.is_empty() {
-            EMPTY_VECTOR_VALUE.with(Clone::clone)
-        } else {
-            Value::Vector(VectorValue::allocated(slots))
+        if !slots.is_empty() {
+            // The C footprint: the header word and a word a slot
+            // (alloc.c:zero_vector is one static object, outside the
+            // census).
+            crate::lisp::native_comp::note_lisp_allocation(
+                slots.len().saturating_add(1).saturating_mul(8),
+            );
         }
+        Value::Vector(VectorRef::allocate(slots))
     }
 
     pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: Value) -> Self {
@@ -2650,13 +2536,14 @@ impl Value {
     }
 
     pub(crate) fn allocated_lambda(lambda: LambdaValue) -> Self {
-        let lambda = Rc::new(lambda);
-        register_lambda_object(&lambda);
-        Value::Lambda(lambda)
+        crate::lisp::native_comp::note_lisp_allocation(
+            lambda.public_len().saturating_add(1).saturating_mul(8),
+        );
+        Value::Lambda(crate::lisp::alloc::VectorlikeRef::allocate(lambda))
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
-        Value::Buffer(Rc::new(BufferValue {
+        Value::Buffer(crate::lisp::alloc::VectorlikeRef::allocate(BufferValue {
             id,
             name: name.into(),
         }))
@@ -2959,10 +2846,10 @@ fn values_equal_recursive(
                 && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
         }
         (Value::Vector(a), Value::Vector(b)) => {
-            if Rc::ptr_eq(a, b) {
+            if a.ptr_eq(b) {
                 return true;
             }
-            let ids = (VectorValue::identity(a), VectorValue::identity(b));
+            let ids = (a.identity(), b.identity());
             if !seen.get_or_insert_with(HashSet::new).insert(ids) {
                 return true;
             }
@@ -2990,7 +2877,7 @@ fn values_equal_recursive(
         (Value::Terminal(a), Value::Terminal(b)) => a == b,
         (Value::Record(a), Value::Record(b)) => a == b,
         (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
-        (Value::ReaderForm(a), Value::ReaderForm(b)) => Rc::ptr_eq(a, b),
+        (Value::ReaderForm(a), Value::ReaderForm(b)) => a.ptr_eq(b),
         (Value::Unbound, Value::Unbound) => true,
         _ => false,
     }
@@ -3013,7 +2900,7 @@ fn format_value(
         }
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
         Value::Vector(vector) => {
-            let id = VectorValue::identity(vector);
+            let id = vector.identity();
             if !seen.insert(id) {
                 return write!(f, "#<circular-vector>");
             }
@@ -3503,9 +3390,10 @@ mod tests {
         );
 
         drop(vector);
+        // A vector is freed by the sweep, not by the drop of a handle.
         let vectors_after_drop = census_live_vectors();
-        assert_eq!(vectors_after_drop.count, vectors_before.count);
-        assert_eq!(vectors_after_drop.slots, vectors_before.slots);
+        assert_eq!(vectors_after_drop.count, vectors_before.count + 1);
+        assert_eq!(vectors_after_drop.slots, vectors_before.slots + 3);
         assert_eq!(
             vectors_after_drop.representation_conses,
             vectors_before.representation_conses
@@ -3544,9 +3432,10 @@ mod tests {
 
         drop(integer);
         drop(closure);
+        // Both are freed by the sweep, not by the drop of a handle.
         let after_drop = census_live_vectors();
-        assert_eq!(after_drop.count, before.count);
-        assert_eq!(after_drop.slots, before.slots);
+        assert_eq!(after_drop.count, before.count + 2);
+        assert_eq!(after_drop.slots, before.slots + 3 + 4);
     }
 
     #[test]
@@ -3581,7 +3470,7 @@ mod tests {
             unreachable!("constructed big integer values")
         };
 
-        assert!(Rc::ptr_eq(&integer.0, &cloned_integer.0));
+        assert!(integer.ptr_eq(cloned_integer));
     }
 
     #[test]
@@ -3633,7 +3522,7 @@ mod tests {
         let (Value::Lambda(lambda), Value::Lambda(cloned_lambda)) = (&lambda, &clone) else {
             unreachable!("constructed lambda values")
         };
-        assert!(Rc::ptr_eq(lambda, cloned_lambda));
+        assert!(lambda.ptr_eq(cloned_lambda));
         assert!(Rc::ptr_eq(&lambda.params, &cloned_lambda.params));
     }
 
@@ -3645,7 +3534,7 @@ mod tests {
             unreachable!("constructed buffer values")
         };
 
-        assert!(Rc::ptr_eq(buffer, cloned_buffer));
+        assert!(buffer.ptr_eq(cloned_buffer));
     }
 
     #[test]

@@ -945,6 +945,31 @@ the sweeps' order (strings last while a reference-counted kind's
 destructor reads them), the bignums still counted (a pseudovector, with
 the vectors next).
 
+Checkpoint 20i (2026-09-19, phase B, step 3) put the vectors, the
+closures, the buffer objects, the bignums, the string objects and the
+reader forms in alloc.c's vector storage: `vector_block', the free
+lists by footprint, `large_vectors', `allocate_vectorlike' and
+`allocate_pseudovector', `sweep_vectors' with its coalescing and
+`cleanup_vector' by kind, the live-vector checks for the conservative
+scan; an ordinary vector's slots are in place, and every one of these
+kinds is marked by the epoch in its header (the mark phase's five hash
+sets are gone, the census comes from the sweep).  Measured: a collection of the idle heap a tenth faster (27 ms against GNU's 6.7 on this session's slower host), the byte-code call loop four percent fewer instructions, the interpreted loops within noise.
+The fault the step found is the rule for the steps after it: a Lisp
+object held in malloc'd memory (a Rust `Vec') across a call into Lisp
+is invisible to the collector unless rooted (`RootedVec', C's
+`SAFE_ALLOCA_LISP') -- `all-completions' made a fresh name string per
+obarray symbol and kept them in a vector across the predicate's
+calls; it now answers with `SYMBOL_NAME' itself, as minibuf.c does.
+The collector now zeroes the stack area its own frames used after
+every collection (Boehm's `GC_clear_stack'; alloc.c does not): its
+marking frames left interior pointers into cells where a later,
+deeper call chain laid its frames, and the next scan revived a weak
+key through them.  Still not C: the two-word header, the 16-byte slot, the closure's
+parameter and body vectors still counted, the string object and the
+reader form as kinds of this implementation's, the buffer object made
+on demand, the id-addressed kinds and the symbols still outside the
+blocks.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

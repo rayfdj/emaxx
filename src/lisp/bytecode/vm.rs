@@ -10,7 +10,7 @@
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
-use super::super::types::{Env, LispError, Value, VectorValue};
+use super::super::types::{Env, LispError, Value, VectorRef};
 use super::{ArgSpec, ByteCodeObject, Op};
 use std::rc::Rc;
 
@@ -693,13 +693,13 @@ fn run_fast(
 pub struct CachedProgram {
     pub argspec: ArgSpec,
     pub decoded: Rc<super::DecodedCode>,
-    pub constants: Rc<VectorValue>,
+    pub constants: VectorRef,
     pub stack_depth: usize,
 }
 
 impl TraceLispRoots for CachedProgram {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
-        marker.value(&Value::Vector(Rc::clone(&self.constants)));
+        marker.value(&Value::Vector(self.constants));
         if let ArgSpec::Legacy(arguments) = &self.argspec {
             marker.value(arguments);
         }
@@ -728,7 +728,7 @@ fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
     Ok(CachedProgram {
         argspec: object.argspec.clone(),
         decoded: Rc::clone(&object.decoded),
-        constants: Rc::clone(&object.constants),
+        constants: object.constants,
         stack_depth: object.stack_depth,
     })
 }
@@ -799,7 +799,7 @@ fn run(
     let frames_at_entry = interp.backtrace_frames_len();
     // The activation's program is a root while it runs (alloc.c marks the
     // thread's bytecode stack, whose frames hold their functions).
-    interp.bc_live_programs.push(Rc::clone(&program.constants));
+    interp.bc_live_programs.push(program.constants);
     let result = run_frames(interp, program, function, args, env);
     interp.bc_live_programs.pop();
     // A signaling byte op recorded itself as a backtrace frame
@@ -2331,10 +2331,7 @@ mod tests {
             .unwrap_or_else(|| panic!("fixture {name} missing"));
         // The decoder fixture helper returns reader syntax. Complete the
         // existing C-owned reader step before handing live objects to the VM.
-        interp.materialize_read_object_literals(
-            Value::Vector(Rc::clone(&object.constants)),
-            &mut env,
-        )?;
+        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -2442,7 +2439,7 @@ mod tests {
         let mut env = Env::new();
         let object = fixture_objects().remove("emaxx-fx-catch").unwrap();
         interp
-            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
             .expect("materialize unchanged fixture reader objects");
         // Non-signaling: (lambda () 42) via a builtin-friendly stand-in.
         let ok = execute(
@@ -2486,10 +2483,7 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
-        interp.materialize_read_object_literals(
-            Value::Vector(Rc::clone(&object.constants)),
-            &mut env,
-        )?;
+        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -2499,10 +2493,7 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
-        interp.materialize_read_object_literals(
-            Value::Vector(Rc::clone(&object.constants)),
-            &mut env,
-        )?;
+        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -2530,7 +2521,7 @@ mod phase_c_tests {
             .remove("emaxx-fx2-unwind")
             .unwrap();
         interp
-            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
             .expect("materialize unchanged fixture reader objects");
         let log = Value::list([Value::symbol("payload"), Value::symbol("untouched")]);
         let value = execute(&mut interp, &object, std::slice::from_ref(&log), &mut env).unwrap();
@@ -2566,7 +2557,7 @@ mod phase_c_tests {
             .remove("emaxx-fx2-dynbind")
             .unwrap();
         interp
-            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
             .expect("materialize unchanged fixture reader objects");
         let value = execute(&mut interp, &object, &[Value::symbol("bound")], &mut env).unwrap();
         assert_eq!(format!("{value}"), "bound");
@@ -2588,7 +2579,7 @@ mod phase_c_tests {
             .remove("emaxx-fx3-legacy")
             .unwrap();
         interp
-            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
             .expect("materialize unchanged fixture reader objects");
         assert!(matches!(object.argspec, ArgSpec::Legacy(_)));
         let value = execute(
@@ -2730,10 +2721,6 @@ mod native_surface_tests {
             Vec::new(),
             false,
         );
-        let Value::StringObject(string) = &removed else {
-            panic!("mutable string object")
-        };
-        let lifetime = Rc::downgrade(string);
         let constants = Value::vector([removed]);
         let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
             "\u{c0}\u{87}".to_owned(),
@@ -2753,8 +2740,8 @@ mod native_surface_tests {
         let Value::Vector(vector) = &constants else {
             panic!("constants vector")
         };
-        assert!(Rc::ptr_eq(vector, &object.constants));
-        assert!(Rc::ptr_eq(vector, &program.constants));
+        assert!(vector.ptr_eq(&object.constants));
+        assert!(vector.ptr_eq(&program.constants));
         prim(
             &mut interp,
             "aset",
@@ -2762,12 +2749,10 @@ mod native_surface_tests {
             &mut env,
         )
         .expect("replace the sole reference to the old constant");
+        // The program's constants are the vector itself (asserted above),
+        // read in place: no snapshot of the old constant exists to keep it
+        // (the collector frees the string object once nothing names it).
         assert_eq!(program.constant(0), Value::Nil);
-        assert_eq!(
-            lifetime.strong_count(),
-            0,
-            "a decoded program must not retain a stale constant snapshot",
-        );
     }
 
     /// `make-byte-code` output must execute through `byte-code`-adjacent

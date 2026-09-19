@@ -12,6 +12,12 @@ pub(crate) struct CompletionCandidate {
 fn completion_result_value(value: &Value, name: &str) -> Value {
     match value {
         Value::String(_) | Value::StringObject(_) => value.clone(),
+        // minibuf.c's Fall_completions and Ftry_completion answer with
+        // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
+        // symbol's own name object, which the symbol keeps reachable (a
+        // fresh copy per symbol lived in a Rust vector across the
+        // predicate's calls, where the collector could not see it).
+        Value::Symbol(symbol) => symbol.lisp_name(),
         _ => make_shared_string_value_with_multibyte(name.to_string(), Vec::new(), false),
     }
 }
@@ -387,15 +393,15 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::StringObject(left), Value::StringObject(right)) => left.ptr_eq(right),
         (Value::String(_), Value::String(_))
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(left, right)
         }
-        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => left.ptr_eq(right),
+        (Value::Lambda(left), Value::Lambda(right)) => left.ptr_eq(right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -409,8 +415,8 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
 pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
     match value {
         Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
-        Value::Vector(vector) => Some((4, crate::lisp::types::VectorValue::identity(vector))),
-        Value::StringObject(state) => Some((1, Rc::as_ptr(state) as usize)),
+        Value::Vector(vector) => Some((4, vector.identity())),
+        Value::StringObject(state) => Some((1, state.identity())),
         Value::Record(id) => Some((2, *id as usize)),
         Value::CharTable(id) => Some((3, *id as usize)),
         _ => None,

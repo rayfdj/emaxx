@@ -54,14 +54,14 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
     Some(match value {
         Value::Cons(cell) => ObjectKey::Cons(ConsCell::identity(cell)),
         Value::String(text) => ObjectKey::String(text.identity_ptr()),
-        Value::StringObject(state) => ObjectKey::StringObject(Rc::as_ptr(state) as usize),
+        Value::StringObject(state) => ObjectKey::StringObject(state.identity()),
         Value::Symbol(name) => {
             if name == "nil" || name == "t" {
                 return None;
             }
             ObjectKey::Symbol(name.id())
         }
-        Value::Vector(vector) => ObjectKey::Vector(Rc::as_ptr(vector) as usize),
+        Value::Vector(vector) => ObjectKey::Vector(vector.identity()),
         Value::Float(float) => ObjectKey::Float(float.identity_ptr()),
         Value::BigInteger(integer) => ObjectKey::Bignum(integer.identity_ptr()),
         Value::Integer(integer) => {
@@ -74,7 +74,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Value::Nil | Value::T | Value::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
-        Value::Lambda(lambda) => ObjectKey::Lambda(Rc::as_ptr(lambda) as usize),
+        Value::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
         Value::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Value::Marker(id) => ObjectKey::Marker(*id),
         Value::Overlay(id) => ObjectKey::Overlay(*id),
@@ -83,7 +83,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Value::Terminal(id) => ObjectKey::Terminal(*id),
         Value::Record(id) => ObjectKey::Record(*id),
         Value::Finalizer(id) => ObjectKey::Finalizer(*id),
-        Value::ReaderForm(form) => ObjectKey::ReaderForm(Rc::as_ptr(form) as usize),
+        Value::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
 }
 
@@ -1224,11 +1224,8 @@ impl DumpContext {
     }
 
     /// dump_vectorlike_generic for an ordinary vector: size, then slots.
-    fn dump_vector(
-        &mut self,
-        vector: &Rc<crate::lisp::types::VectorValue>,
-    ) -> Result<u32, DumpError> {
-        let slots = vector.slots().clone();
+    fn dump_vector(&mut self, vector: &crate::lisp::types::VectorRef) -> Result<u32, DumpError> {
+        let slots = vector.slots().to_vec();
         let start = self.object_start()?;
         let mut words = vec![slots.len() as u64];
         words.resize(slots.len() + 1, 0);
@@ -1509,10 +1506,7 @@ impl DumpContext {
     /// carry their exact Lisp objects; the parameter and body vectors and
     /// the environment are shared objects dumped through raw-pointer
     /// fixups, as intervals are.
-    fn dump_closure(
-        &mut self,
-        lambda: &Rc<crate::lisp::types::LambdaValue>,
-    ) -> Result<u32, DumpError> {
+    fn dump_closure(&mut self, lambda: &crate::lisp::types::LambdaRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         // The environment (CLOSURE_CONSTANTS) is a value field: the alist
         // whose conses the closure shares with every closure made under

@@ -479,12 +479,20 @@ mod tests {
                 );
             });
         }
+        // The keys live in frames of their own (`outer_scope' and below),
+        // cleared before the check: the test's own frame must hold no
+        // word naming one, as a C local would keep its object.
+        #[inline(never)]
+        fn released(interpreter: &mut Interpreter, table: &Value) -> usize {
+            crate::lisp::alloc::clobber_stack();
+            weak_entries(interpreter, table)
+        }
         let mut interpreter = Interpreter::new();
         let table = weak_key_table(&mut interpreter, "stack-root-table");
         outer_scope(&mut interpreter, &table);
         crate::lisp::alloc::clobber_stack();
         assert_eq!(
-            weak_entries(&mut interpreter, &table),
+            released(&mut interpreter, &table),
             0,
             "all execution roots released"
         );

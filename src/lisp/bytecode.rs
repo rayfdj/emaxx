@@ -9,7 +9,7 @@
 
 pub mod vm;
 
-use super::types::{Value, VectorValue};
+use super::types::{Value, VectorRef};
 use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
@@ -688,7 +688,7 @@ pub struct ByteCodeObject {
     /// The code decoded, shared with the other closures of its prototype.
     pub decoded: Rc<DecodedCode>,
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
-    pub constants: Rc<VectorValue>,
+    pub constants: VectorRef,
     pub stack_depth: usize,
     pub doc: Option<Value>,
     pub interactive: Option<Value>,
@@ -736,11 +736,11 @@ pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
         && matches!(slots[3], Value::Integer(_))
 }
 
-fn constant_vector(value: &Value) -> Option<Rc<VectorValue>> {
+fn constant_vector(value: &Value) -> Option<VectorRef> {
     let Value::Vector(vector) = value else {
         return None;
     };
-    Some(Rc::clone(vector))
+    Some(*vector)
 }
 
 impl ByteCodeObject {

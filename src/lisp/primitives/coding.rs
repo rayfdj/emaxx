@@ -844,7 +844,7 @@ pub(crate) fn aset_vector_value(
             target.clone(),
         ));
     };
-    let mut slots = vector.slots_mut();
+    let slots = vector.slots_mut();
     let slot = slots
         .get_mut(index)
         .ok_or_else(|| LispError::Signal("Args out of range".into()))?;

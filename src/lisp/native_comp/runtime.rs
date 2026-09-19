@@ -1026,6 +1026,7 @@ impl NativeRuntime {
             // by its name) reads strings, which must still be there.
             crate::lisp::alloc::sweep_conses(epoch);
             crate::lisp::alloc::sweep_floats(epoch);
+            crate::lisp::alloc::sweep_vectors(epoch);
             crate::lisp::alloc::sweep_strings(epoch);
             self.heap.forget_swept_conses();
             return;
@@ -4457,6 +4458,7 @@ impl NativeHeap {
         // The strings last (see the other path).
         crate::lisp::alloc::sweep_conses(epoch);
         crate::lisp::alloc::sweep_floats(epoch);
+        crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::alloc::sweep_strings(epoch);
         self.forget_swept_conses();
 
@@ -5177,19 +5179,12 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         ),
         Value::Float(float) => (NativeIdentity::Float(float.identity_ptr()), TAG_FLOAT),
         Value::String(string) => (NativeIdentity::String(string.identity_ptr()), TAG_STRING),
-        Value::StringObject(string) => (
-            NativeIdentity::StringObject(std::rc::Rc::as_ptr(string) as usize),
-            TAG_STRING,
-        ),
-        Value::Vector(vector) => (
-            NativeIdentity::Vector(crate::lisp::types::VectorValue::identity(vector)),
-            TAG_VECTORLIKE,
-        ),
+        Value::StringObject(string) => {
+            (NativeIdentity::StringObject(string.identity()), TAG_STRING)
+        }
+        Value::Vector(vector) => (NativeIdentity::Vector(vector.identity()), TAG_VECTORLIKE),
         Value::BuiltinFunc(name) => (NativeIdentity::Builtin(name.identity_ptr()), TAG_VECTORLIKE),
-        Value::Lambda(lambda) => (
-            NativeIdentity::Lambda(std::rc::Rc::as_ptr(lambda) as usize),
-            TAG_VECTORLIKE,
-        ),
+        Value::Lambda(lambda) => (NativeIdentity::Lambda(lambda.identity()), TAG_VECTORLIKE),
         Value::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
         Value::Marker(id) => (NativeIdentity::Marker(*id), TAG_VECTORLIKE),
         Value::Overlay(id) => (NativeIdentity::Overlay(*id), TAG_VECTORLIKE),
@@ -5198,10 +5193,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         Value::Terminal(id) => (NativeIdentity::Terminal(*id), TAG_VECTORLIKE),
         Value::Record(id) => (NativeIdentity::Record(*id), TAG_VECTORLIKE),
         Value::Finalizer(id) => (NativeIdentity::Finalizer(*id), TAG_VECTORLIKE),
-        Value::ReaderForm(form) => (
-            NativeIdentity::ReaderForm(std::rc::Rc::as_ptr(form) as usize),
-            TAG_VECTORLIKE,
-        ),
+        Value::ReaderForm(form) => (NativeIdentity::ReaderForm(form.identity()), TAG_VECTORLIKE),
         Value::Unbound => (NativeIdentity::Unbound, TAG_SYMBOL),
         Value::Nil | Value::T | Value::Symbol(_) | Value::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
@@ -6091,7 +6083,7 @@ mod tests {
         else {
             panic!("make-closure constants remain ordinary vectors")
         };
-        assert!(!Rc::ptr_eq(closure_constants, prototype_constants_identity));
+        assert!(!closure_constants.ptr_eq(prototype_constants_identity));
         assert_eq!(
             crate::lisp::primitives::vector_items(&prototype_constants)
                 .expect("prototype constants remain unchanged"),
