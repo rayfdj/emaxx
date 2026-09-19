@@ -133,7 +133,7 @@ impl CircularReadMaterializer<'_> {
         };
         if ordinary_record {
             let type_tag = resolved.remove(0);
-            self.interpreter.retag_record(record_id, type_tag)?;
+            self.interpreter.retag_record(record_id.id, type_tag)?;
         }
         self.interpreter
             .find_record_mut(record_id)

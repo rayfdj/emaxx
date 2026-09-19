@@ -786,9 +786,9 @@ define_dispatch!(
                 if record.kind != crate::lisp::eval::RecordKind::HashTable {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
-                let copy = interp.copy_record(id)?;
+                let copy = interp.copy_record(id.id)?;
                 if let Value::Record(copy_id) = copy {
-                    interp.reindex_hash_table_runtime_entries_in_env(copy_id, env);
+                    interp.reindex_hash_table_runtime_entries_in_env(copy_id.id, env);
                     Ok(Value::Record(copy_id))
                 } else {
                     Ok(copy)
@@ -800,12 +800,12 @@ define_dispatch!(
                 }
                 let default = args.get(2).cloned().unwrap_or(Value::Nil);
                 if let Value::Record(id) = &args[1]
-                    && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
+                    && let Some(value) = interp.equal_hash_lookup(id.id, &args[0], env)
                 {
                     return Ok(value.unwrap_or(default));
                 }
                 if let Value::Record(id) = &args[1]
-                    && interp.has_custom_hash_table_index(*id)
+                    && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
                         .find_record(*id)
@@ -814,7 +814,7 @@ define_dispatch!(
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
                         .to_string();
                     return Ok(custom_hash_lookup_indexed(
-                        interp, &args[1], *id, &test, &args[0], env,
+                        interp, &args[1], id.id, &test, &args[0], env,
                     )?
                     .unwrap_or(default));
                 }
@@ -838,17 +838,17 @@ define_dispatch!(
             "puthash" => {
                 need_args(name, args, 3)?;
                 if let Value::Record(id) = &args[2]
-                    && !interp.hash_table_is_mutable(*id)
+                    && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
                 if let Value::Record(id) = &args[2]
-                    && interp.equal_hash_put(*id, args[0], args[1], env)
+                    && interp.equal_hash_put(id.id, args[0], args[1], env)
                 {
                     return Ok(args[1]);
                 }
                 if let Value::Record(id) = &args[2]
-                    && interp.has_custom_hash_table_index(*id)
+                    && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
                         .find_record(*id)
@@ -856,8 +856,9 @@ define_dispatch!(
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
                         .to_string();
-                    if custom_hash_put_indexed(interp, &args[2], *id, &test, args[0], args[1], env)?
-                    {
+                    if custom_hash_put_indexed(
+                        interp, &args[2], id.id, &test, args[0], args[1], env,
+                    )? {
                         return Ok(args[1]);
                     }
                 }
@@ -879,18 +880,18 @@ define_dispatch!(
                 }
                 set_hash_table_entries(interp, &args[2], entries)?;
                 if let Value::Record(id) = args[2] {
-                    interp.reindex_hash_table_runtime_entries_in_env(id, env);
+                    interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
                 }
                 Ok(args[1])
             }
             "maphash" => {
                 need_args(name, args, 2)?;
                 if let Value::Record(id) = &args[1]
-                    && interp.hash_table_entry_at_or_after(*id, 0).is_some()
+                    && interp.hash_table_entry_at_or_after(id.id, 0).is_some()
                 {
                     let mut slot = 0;
                     loop {
-                        let Some(capacity) = interp.gnu_hash_table_capacity(*id) else {
+                        let Some(capacity) = interp.gnu_hash_table_capacity(id.id) else {
                             return Err(LispError::WrongTypeArgument(
                                 "hash-table-p".into(),
                                 args[1],
@@ -900,7 +901,7 @@ define_dispatch!(
                             break;
                         }
                         let Some((entry_slot, key, value)) =
-                            interp.hash_table_entry_at_or_after(*id, slot).flatten()
+                            interp.hash_table_entry_at_or_after(id.id, slot).flatten()
                         else {
                             break;
                         };
@@ -923,17 +924,17 @@ define_dispatch!(
             "remhash" => {
                 need_args(name, args, 2)?;
                 if let Value::Record(id) = &args[1]
-                    && !interp.hash_table_is_mutable(*id)
+                    && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
                 if let Value::Record(id) = &args[1]
-                    && interp.equal_hash_remove(*id, &args[0], env).is_some()
+                    && interp.equal_hash_remove(id.id, &args[0], env).is_some()
                 {
                     return Ok(Value::Nil);
                 }
                 if let Value::Record(id) = &args[1]
-                    && interp.has_custom_hash_table_index(*id)
+                    && interp.has_custom_hash_table_index(id.id)
                 {
                     let test = interp
                         .find_record(*id)
@@ -941,7 +942,7 @@ define_dispatch!(
                         .and_then(|value| value.as_symbol().ok())
                         .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
                         .to_string();
-                    if custom_hash_remove_indexed(interp, &args[1], *id, &test, &args[0], env)? {
+                    if custom_hash_remove_indexed(interp, &args[1], id.id, &test, &args[0], env)? {
                         return Ok(Value::Nil);
                     }
                 }
@@ -963,14 +964,14 @@ define_dispatch!(
                 }
                 set_hash_table_entries(interp, &args[1], retained)?;
                 if let Value::Record(id) = args[1] {
-                    interp.reindex_hash_table_runtime_entries_in_env(id, env);
+                    interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
                 }
                 Ok(Value::Nil)
             }
             "clrhash" => {
                 need_args(name, args, 1)?;
                 if let Value::Record(id) = &args[0]
-                    && !interp.hash_table_is_mutable(*id)
+                    && !interp.hash_table_is_mutable(id.id)
                 {
                     return Err(LispError::Signal("hash table test modifies table".into()));
                 }
@@ -978,7 +979,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
                 if let Value::Record(id) = &args[0]
-                    && interp.clear_custom_hash_table(*id)
+                    && interp.clear_custom_hash_table(id.id)
                 {
                     return Ok(args[0]);
                 }
@@ -1012,7 +1013,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let capacity = interp
-                    .gnu_hash_table_capacity(id)
+                    .gnu_hash_table_capacity(id.id)
                     .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
                 Ok(Value::Integer(capacity as i64))
             }
@@ -1039,7 +1040,7 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 };
                 let capacity = interp
-                    .gnu_hash_table_capacity(id)
+                    .gnu_hash_table_capacity(id.id)
                     .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
                 Ok(Value::Integer(
                     crate::lisp::eval::gnu_hash_table_index_slots(capacity) as i64,
@@ -1434,7 +1435,7 @@ define_dispatch!(
                     .ok_or_else(|| {
                         LispError::WrongTypeArgument("condition-variable-p".into(), args[0])
                     })?;
-                Ok(Value::Record(mutex_id))
+                Ok(interp.record_value(mutex_id))
             }
             "condition-name" => {
                 need_args(name, args, 1)?;
@@ -1676,7 +1677,7 @@ define_dispatch!(
                     Value::Terminal(_) => "terminal",
                     Value::Record(id) => {
                         let record = interp.find_record(*id).ok_or_else(|| {
-                            LispError::TypeError("record".into(), format!("record<{id}>"))
+                            LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
                         // data.c:Ftype_of answers `subr' for every
                         // PVEC_SUBR; only `cl-type-of' distinguishes native

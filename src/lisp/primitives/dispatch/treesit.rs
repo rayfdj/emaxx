@@ -1051,7 +1051,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 interp
                     .treesit_node_state(&args[0])
-                    .map(|node| Value::Record(node.parser_id))
+                    .map(|node| interp.record_value(node.parser_id))
                     .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), args[0]))
             }
             "treesit-node-type" => {

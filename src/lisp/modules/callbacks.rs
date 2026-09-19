@@ -142,7 +142,7 @@ pub(super) unsafe extern "C" fn make_function(
             unreachable!()
         };
         a.interpreter_mut().modules.functions.insert(
-            id,
+            id.id,
             ModuleFunction {
                 min,
                 max,
@@ -387,7 +387,7 @@ fn record_id(
             .find_record(id)
             .is_some_and(|record| record.kind == kind)
     {
-        return Ok(id);
+        return Ok(id.id);
     }
     Err(primitives::wrong_type_argument(predicate, value))
 }
@@ -408,7 +408,7 @@ pub(super) unsafe extern "C" fn make_user_ptr(
         a.interpreter_mut()
             .modules
             .pointers
-            .insert(id, UserPointer { data, finalizer });
+            .insert(id.id, UserPointer { data, finalizer });
         Ok(a.make(value))
     })
 }

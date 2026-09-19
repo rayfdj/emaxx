@@ -1,3 +1,4 @@
+;;; -*- lexical-binding: t -*-
 ;; callgrind-diff.sh probe: the byte-code call loop (the audit's instructions an
 ;; iteration; the second run length is the first times three).
 ;; (tools/perf/callgrind-diff.sh BINARY tools/perf/cg-call-loop.el 200000 600000).

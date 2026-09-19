@@ -895,7 +895,7 @@ pub(crate) fn deliver_process_output_decoded(
             interp,
             &filter,
             &[
-                Value::Record(process_id),
+                interp.record_value(process_id),
                 crate::lisp::primitives::strings::make_shared_string_value_with_multibyte(
                     output.to_string(),
                     Vec::new(),
@@ -2325,7 +2325,7 @@ fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result
             let text = string_text(value)?;
             interp
                 .find_process_id_by_name(&text)
-                .map(Value::Record)
+                .map(|id| interp.record_value(id))
                 .or_else(|| {
                     interp
                         .resolve_buffer_id(value)
@@ -2450,7 +2450,7 @@ fn run_process_sentinel(
             interp,
             &sentinel,
             &[
-                Value::Record(process_id),
+                interp.record_value(process_id),
                 Value::String(event.to_string().into()),
             ],
             env,
@@ -2473,8 +2473,8 @@ fn run_process_log(
             interp,
             &log,
             &[
-                Value::Record(server_id),
-                Value::Record(client_id),
+                interp.record_value(server_id),
+                interp.record_value(client_id),
                 Value::String(message.to_string().into()),
             ],
             env,

@@ -643,7 +643,7 @@ pub(crate) fn make_hash_table_with_capacity(
         ],
     );
     if let Value::Record(id) = table {
-        interp.replace_hash_table_runtime_entries(id, test, entries);
+        interp.replace_hash_table_runtime_entries(id.id, test, entries);
         Value::Record(id)
     } else {
         table
@@ -680,7 +680,7 @@ pub(crate) fn hash_table_entries(
         .and_then(|value| value.as_symbol().ok())
         .unwrap_or("eql")
         .to_string();
-    if let Some(entries) = interp.hash_table_runtime_entries(*id) {
+    if let Some(entries) = interp.hash_table_runtime_entries(id.id) {
         return Some((test, entries.clone()));
     }
     let entries = record

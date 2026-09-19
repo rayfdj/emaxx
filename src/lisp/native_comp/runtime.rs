@@ -1027,6 +1027,7 @@ impl NativeRuntime {
             crate::lisp::alloc::sweep_conses(epoch);
             crate::lisp::alloc::sweep_floats(epoch);
             crate::lisp::alloc::sweep_vectors(epoch);
+            crate::lisp::eval::purge_freed_records_in_live_states();
             crate::lisp::types::sweep_symbol_cells(epoch);
             crate::lisp::alloc::sweep_strings(epoch);
             self.heap.forget_swept_conses();
@@ -2223,7 +2224,8 @@ impl DirectFuncallTarget {
                 function.convention,
                 function.min_args,
                 function.max_args,
-                Value::Record(record_id),
+                // SAFETY: the active call's interpreter, live for the call.
+                unsafe { &*active.interpreter }.record_value(record_id),
             ),
             Self::ByteCode { .. } => unreachable!("handled above"),
         };
@@ -2275,15 +2277,17 @@ fn direct_funcall_target(
                 maximum: subroutine.max_args,
             })
         }
-        Value::Record(record_id) => super::loader::active_direct_function(record_id)
+        Value::Record(record_id) => super::loader::active_direct_function(record_id.id)
             .map(|function| DirectFuncallTarget::Native {
-                record_id,
+                record_id: record_id.id,
                 function,
             })
             .or_else(|| {
                 interpreter
-                    .is_genuine_bytecode_function(record_id)
-                    .then_some(DirectFuncallTarget::ByteCode { record_id })
+                    .is_genuine_bytecode_function(record_id.id)
+                    .then_some(DirectFuncallTarget::ByteCode {
+                        record_id: record_id.id,
+                    })
             }),
         _ => None,
     }
@@ -2480,7 +2484,7 @@ fn invoke_native_maphash(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     let Value::Record(table_id) = table_value else {
         return None;
     };
-    unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id, 0)?;
+    unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id.id, 0)?;
 
     static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
     let funcall = *FUNCALL_SUBR_INDEX.get_or_init(|| {
@@ -2492,13 +2496,13 @@ fn invoke_native_maphash(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     let mut slot = 0;
     loop {
         let capacity = unsafe { &*active.interpreter }
-            .gnu_hash_table_capacity(table_id)
+            .gnu_hash_table_capacity(table_id.id)
             .expect("a runtime-indexed hash table retains its record storage");
         if slot >= capacity {
             break;
         }
         let Some((entry_slot, key, value)) =
-            unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id, slot)?
+            unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id.id, slot)?
         else {
             break;
         };
@@ -4486,6 +4490,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_conses(epoch);
         crate::lisp::alloc::sweep_floats(epoch);
         crate::lisp::alloc::sweep_vectors(epoch);
+        crate::lisp::eval::purge_freed_records_in_live_states();
         crate::lisp::types::sweep_symbol_cells(epoch);
         crate::lisp::alloc::sweep_strings(epoch);
         self.forget_swept_conses();
@@ -5184,7 +5189,7 @@ impl NativeHeap {
         const HEADER: isize = (1_isize << 62) | (6_isize << 24) | 2;
         let view = self
             .symbol_with_position_views
-            .entry(*record_id)
+            .entry(record_id.id)
             .or_insert_with(|| {
                 Box::new(NativeSymbolWithPosition {
                     header: HEADER,
@@ -5219,7 +5224,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         Value::CharTable(id) => (NativeIdentity::CharTable(*id), TAG_VECTORLIKE),
         Value::Frame(id) => (NativeIdentity::Frame(*id), TAG_VECTORLIKE),
         Value::Terminal(id) => (NativeIdentity::Terminal(*id), TAG_VECTORLIKE),
-        Value::Record(id) => (NativeIdentity::Record(*id), TAG_VECTORLIKE),
+        Value::Record(id) => (NativeIdentity::Record(id.id), TAG_VECTORLIKE),
         Value::Finalizer(id) => (NativeIdentity::Finalizer(*id), TAG_VECTORLIKE),
         Value::ReaderForm(form) => (NativeIdentity::ReaderForm(form.identity()), TAG_VECTORLIKE),
         Value::Unbound => (NativeIdentity::Unbound, TAG_SYMBOL),
@@ -5718,10 +5723,10 @@ mod tests {
         let Value::Record(id) = closure else {
             panic!("closure is a pseudovector")
         };
-        assert!(interpreter.is_genuine_bytecode_function(id));
+        assert!(interpreter.is_genuine_bytecode_function(id.id));
         interpreter.find_record_mut(id).expect("closure").slots[1] =
             Value::list([Value::Integer(42)]);
-        assert!(!interpreter.is_genuine_bytecode_function(id));
+        assert!(!interpreter.is_genuine_bytecode_function(id.id));
         classify(
             &mut interpreter,
             &mut runtime,
@@ -7092,8 +7097,8 @@ mod tests {
                         expected.identity_ptr(),
                         "target={target:?}: report the exact original symbol, not its alias target"
                     ),
-                    (Value::Record(actual), Value::Record(expected)) => assert_eq!(
-                        actual, expected,
+                    (Value::Record(actual), Value::Record(expected)) => assert!(
+                        actual.ptr_eq(expected),
                         "target={target:?}: retain the original positioned-symbol object"
                     ),
                     _ => panic!("condition lost the original symbol: {condition:?}"),
@@ -9181,7 +9186,7 @@ mod tests {
             let reachable = interpreter.weak_hash_reachability(environment, &[]);
             crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachable);
             interpreter
-                .hash_table_runtime_entries(id)
+                .hash_table_runtime_entries(id.id)
                 .expect("weak table")
                 .len()
         };
@@ -9223,12 +9228,12 @@ mod tests {
                 panic!("hash table record");
             };
             interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-            assert!(interpreter.equal_hash_put(id, key, value, environment));
+            assert!(interpreter.equal_hash_put(id.id, key, value, environment));
             interpreter.set_global_binding("native-gc-weak-table", table);
             (
                 [key_word ^ HIDE, value_word ^ HIDE],
                 Value::vector([key]),
-                id,
+                id.id,
             )
         }
         let mut interpreter = Interpreter::new();
@@ -9305,9 +9310,9 @@ mod tests {
                     panic!("hash table record");
                 };
                 interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-                assert!(interpreter.equal_hash_put(id, key, value, environment));
+                assert!(interpreter.equal_hash_put(id.id, key, value, environment));
                 interpreter.set_global_binding(name, Value::Record(id));
-                tables.push(id);
+                tables.push(id.id);
             }
             (
                 [x_word ^ HIDE, y_word ^ HIDE, z_word ^ HIDE],
@@ -9691,11 +9696,27 @@ mod tests {
             &environment,
         );
         let initial_vectors = interpreter.live_object_census().vectors;
-        let record = interpreter.create_record("native-gc-record", vec![Value::Integer(7)]);
-        interpreter.create_record("native-gc-record", vec![Value::Integer(8)]);
-        let word = heap
-            .encode(&record)
-            .expect("encode record reachable only through native storage");
+        // The records are made out of this frame and named by their
+        // hidden identities: the stack is scanned conservatively, and a
+        // `Value::Record' left in a live frame would keep its cell.
+        const HIDE: usize = 0x5555_5555_5555_5555;
+        #[inline(never)]
+        fn make_records(
+            interpreter: &mut Interpreter,
+            heap: &mut NativeHeapOwner,
+        ) -> (usize, usize, u64) {
+            let record = interpreter.create_record("native-gc-record", vec![Value::Integer(7)]);
+            let other = interpreter.create_record("native-gc-record", vec![Value::Integer(8)]);
+            let word = heap
+                .encode(&record)
+                .expect("encode record reachable only through native storage");
+            let (Value::Record(record), Value::Record(other)) = (record, other) else {
+                unreachable!("records")
+            };
+            (word, record.identity() ^ HIDE, other.id)
+        }
+        let (word, hidden_identity, other_id) = make_records(&mut interpreter, &mut heap);
+        crate::lisp::alloc::clobber_stack();
 
         heap.collect(
             std::ptr::from_ref(&stack_marker),
@@ -9704,15 +9725,27 @@ mod tests {
             &environment,
         );
 
+        assert!(
+            interpreter.record_ref(other_id).is_none(),
+            "the record nothing reaches is swept and leaves the registry"
+        );
         assert_eq!(
             interpreter.live_object_census().vectors,
             initial_vectors + 1
         );
-        assert_eq!(
-            heap.decode(word)
-                .expect("published native root remains live"),
-            record
-        );
+        // The decoded value stays out of this frame too.
+        #[inline(never)]
+        fn decoded_identity(heap: &mut NativeHeapOwner, word: usize) -> usize {
+            let Value::Record(decoded) = heap
+                .decode(word)
+                .expect("published native root remains live")
+            else {
+                panic!("the native root decodes to the record");
+            };
+            decoded.identity() ^ HIDE
+        }
+        assert_eq!(decoded_identity(&mut heap, word), hidden_identity);
+        crate::lisp::alloc::clobber_stack();
         heap.collect(
             std::ptr::from_ref(&stack_marker),
             &[],

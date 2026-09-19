@@ -1019,6 +1019,15 @@ id-addressed kinds (records first) as vectorlikes, the precondition of
 both, since a record is an id the conservative scan cannot see and is
 therefore never swept (the retention pass).
 
+Checkpoint 20m (2026-09-19): records in alloc.c's vector blocks
+(PVEC_RECORD), `Value::Record' the cell's address; the retention pass,
+the records' mark set and the live-id census gone; the id kept on the
+record as the side tables' key, the registry weak and purged after
+every sweep, the holders marked as C marks its object lists.
+Measured against 20l in one run: a collection of the idle heap 24 to 17 ms (GNU 5.5), six million conses 5.6 to 4.7 s (1.5), the lexical loop 2.71 to 2.53 (0.89), the corpus rows three to fourteen percent faster; one collection 91 M to 67 M instructions.  Next: the other id-addressed kinds (markers,
+overlays, char-tables, frames, terminals, finalizers) the same way,
+then the tagged word and the 16-byte cons.
+
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

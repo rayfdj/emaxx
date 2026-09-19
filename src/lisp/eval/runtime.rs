@@ -1,4 +1,36 @@
 use super::*;
+use crate::lisp::types::RecordRef;
+
+/// What names a record to `find_record': the object, or an id in this
+/// state's registry (the side tables' key, until they live in the
+/// object).
+pub trait RecordKey {
+    fn record_ref(self, interp: &Interpreter) -> Option<RecordRef>;
+}
+
+impl RecordKey for u64 {
+    fn record_ref(self, interp: &Interpreter) -> Option<RecordRef> {
+        interp.record_ref(self)
+    }
+}
+
+impl RecordKey for &u64 {
+    fn record_ref(self, interp: &Interpreter) -> Option<RecordRef> {
+        interp.record_ref(*self)
+    }
+}
+
+impl RecordKey for RecordRef {
+    fn record_ref(self, _interp: &Interpreter) -> Option<RecordRef> {
+        Some(self)
+    }
+}
+
+impl RecordKey for &RecordRef {
+    fn record_ref(self, _interp: &Interpreter) -> Option<RecordRef> {
+        Some(*self)
+    }
+}
 
 impl Interpreter {
     pub(crate) fn inhibit_garbage_collection(&mut self) {
@@ -457,7 +489,7 @@ impl Interpreter {
     }
 
     pub fn selected_window_value(&self) -> Value {
-        Value::Record(self.selected_window_id)
+        self.record_value(self.selected_window_id)
     }
 
     pub fn selected_window_id(&self) -> u64 {
@@ -472,7 +504,7 @@ impl Interpreter {
     }
 
     pub(crate) fn root_window_value(&self) -> Value {
-        Value::Record(
+        self.record_value(
             self.selected_frame_state()
                 .expect("decoded frame has state")
                 .root_window_id,
@@ -492,7 +524,7 @@ impl Interpreter {
     }
 
     pub(crate) fn minibuffer_window_value(&self) -> Value {
-        Value::Record(
+        self.record_value(
             self.selected_frame_state()
                 .expect("decoded frame has state")
                 .minibuffer_window_id,
@@ -528,7 +560,7 @@ impl Interpreter {
     }
 
     pub(crate) fn old_selected_window_value(&self) -> Value {
-        Value::Record(self.old_selected_window_id)
+        self.record_value(self.old_selected_window_id)
     }
 
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
@@ -823,7 +855,7 @@ impl Interpreter {
             .find_record(id)
             .and_then(|record| record.slots.get(slot))
         {
-            Some(Value::Record(link)) => Some(*link),
+            Some(Value::Record(link)) => Some(link.id),
             _ => None,
         }
     }
@@ -973,6 +1005,7 @@ impl Interpreter {
             window_records: self
                 .records
                 .iter()
+                .flatten()
                 .filter(|record| {
                     record.kind == RecordKind::Window
                         && self.window_frame_id(record.id) == Some(frame_id)
@@ -996,7 +1029,7 @@ impl Interpreter {
                 Value::list(snapshot.selected_window_slots),
                 Value::Integer(snapshot.frame_width),
                 Value::Integer(snapshot.frame_height),
-                Value::Record(snapshot.root_window_id),
+                self.record_value(snapshot.root_window_id),
                 Value::list(
                     snapshot.window_records.into_iter().map(|(id, slots)| {
                         Value::cons(Value::Integer(id as i64), Value::list(slots))
@@ -1079,7 +1112,7 @@ impl Interpreter {
             root_window_id: slots
                 .get(5)
                 .and_then(|value| match value {
-                    Value::Record(id) => Some(*id),
+                    Value::Record(id) => Some(id.id),
                     _ => None,
                 })
                 .unwrap_or(selected_window_id),
@@ -1144,11 +1177,14 @@ impl Interpreter {
             .window_records
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
-        for record in self.records.iter_mut().filter(|record| {
-            record.kind == RecordKind::Window
-                && record.slots.get(primitives::WINDOW_FRAME_SLOT)
-                    == Some(&Value::Frame(snapshot.frame_id))
-        }) {
+        let windows = self.records_of_kind(RecordKind::Window, |record| {
+            record.slots.get(primitives::WINDOW_FRAME_SLOT)
+                == Some(&Value::Frame(snapshot.frame_id))
+        });
+        for window in windows {
+            let Some(record) = self.find_record_mut(window) else {
+                continue;
+            };
             if let Some(slots) = saved_windows.get(&record.id) {
                 record.slots.clone_from(slots);
             } else {
@@ -2528,34 +2564,41 @@ impl Interpreter {
         let id = self.alloc_record_id();
         let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
         let index = self.record_index_for(id);
-        self.records[index] = RecordState {
+        // alloc.c's allocate_record: the object in a vector block; the
+        // registry names it by id for the side tables.
+        let record = RecordRef::allocate(RecordState {
             id,
+            owner: self.record_owner,
             type_tag,
             slots,
             kind,
-        };
+        });
+        self.records[index] = Some(record);
         if let Some(type_name) = indexed_type {
             self.record_ids_by_type_index
                 .entry(type_name)
                 .or_default()
                 .insert(id);
         }
-        Value::Record(id)
+        Value::Record(record)
     }
 
-    pub fn find_record(&self, id: u64) -> Option<&RecordState> {
-        // Ids are handed out densely starting at 1 (main thread, standard
-        // obarray, then next_record_id onward) and records are never
-        // removed, so the id doubles as an index; the linear scan is a
-        // safety net in case that invariant ever changes.
-        let index = (id as usize).checked_sub(1)?;
-        match self.records.get(index) {
-            Some(record) if record.id == id => Some(record),
-            _ => self.records.iter().find(|record| record.id == id),
-        }
+    /// The record KEY names: the object itself (a `RecordRef', the
+    /// address) or, for the side tables that still know a record by its
+    /// id, the registry's entry for that id (None once the sweep has
+    /// freed it).
+    pub fn find_record(&self, key: impl RecordKey) -> Option<&RecordState> {
+        let record = key.record_ref(self)?;
+        // SAFETY: an allocated record the caller reached (through a value
+        // it holds or the registry, cleared after every sweep); the
+        // borrow is tied to `self', which outlives the call, and the
+        // collector runs only at a `maybe_gc' point, never inside it.
+        Some(unsafe { &*record.as_ptr() })
     }
 
-    pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
+    pub fn find_record_mut(&mut self, key: impl RecordKey) -> Option<&mut RecordState> {
+        let record = key.record_ref(self)?;
+        let id = record.id;
         // The caller may rewrite the slots, so a decoded byte-code program
         // or materialized keymap index for this record can no longer be
         // trusted (see bytecode::vm and primitives::keymap_direct_bindings).
@@ -2571,11 +2614,10 @@ impl Interpreter {
         {
             *slot = None;
         }
-        let index = (id as usize).checked_sub(1)?;
-        match self.records.get(index) {
-            Some(record) if record.id == id => self.records.get_mut(index),
-            _ => self.records.iter_mut().find(|record| record.id == id),
-        }
+        // SAFETY: as `find_record'; the exclusive borrow of `self' keeps
+        // any other path to the record's state out for its duration, as
+        // the registry's `&mut' did.
+        Some(unsafe { &mut *record.as_ptr() })
     }
 
     pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
@@ -2660,6 +2702,7 @@ impl Interpreter {
         let views = self
             .records
             .iter()
+            .flatten()
             .filter(|record| record.kind == RecordKind::Keymap)
             .filter_map(|record| {
                 let view = record
@@ -2705,7 +2748,7 @@ impl Interpreter {
             unreachable!("Tree-sitter queries use opaque record identities");
         };
         self.treesit_queries.push(TreeSitterQueryState {
-            record_id,
+            record_id: record_id.id,
             language,
             source,
             query: None,
@@ -2719,7 +2762,7 @@ impl Interpreter {
         };
         self.treesit_queries
             .iter()
-            .find(|query| query.record_id == *record_id)
+            .find(|query| query.record_id == record_id.id)
     }
 
     pub(crate) fn cache_treesit_query(
@@ -2732,9 +2775,24 @@ impl Interpreter {
         };
         self.treesit_queries
             .iter_mut()
-            .find(|state| state.record_id == *record_id)
+            .find(|state| state.record_id == record_id.id)
             .expect("compiled Tree-sitter query state exists")
             .query = Some(query);
+    }
+
+    /// The records of KIND that FILTER admits, as objects: a caller that
+    /// edits them takes each through `find_record_mut'.
+    pub(crate) fn records_of_kind(
+        &self,
+        kind: RecordKind,
+        filter: impl Fn(&RecordState) -> bool,
+    ) -> Vec<RecordRef> {
+        self.records
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|record| record.kind == kind && filter(record))
+            .collect()
     }
 
     pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
@@ -2798,16 +2856,16 @@ impl Interpreter {
                 crate::lisp::native_comp::note_lisp_allocation(
                     super::gnu_hash_table_storage_bytes(state.capacity),
                 );
-                self.equal_hash_tables.remove(copy_id);
-                self.custom_hash_tables.insert(*copy_id, state);
+                self.equal_hash_tables.remove(&copy_id.id);
+                self.custom_hash_tables.insert(copy_id.id, state);
             } else if let Some(state) = equal_hash_state {
                 crate::lisp::native_comp::note_lisp_allocation(
                     super::gnu_hash_table_storage_bytes(state.capacity),
                 );
-                self.custom_hash_tables.remove(copy_id);
-                self.equal_hash_tables.insert(*copy_id, state);
+                self.custom_hash_tables.remove(&copy_id.id);
+                self.equal_hash_tables.insert(copy_id.id, state);
             } else if let Some(entries) = hash_entries {
-                self.replace_hash_table_runtime_entries(*copy_id, &test, entries);
+                self.replace_hash_table_runtime_entries(copy_id.id, &test, entries);
             }
         }
         Ok(copy)
@@ -3348,28 +3406,28 @@ mod runtime_index_tests {
 
         assert_eq!(
             interp.record_ids_by_type("before"),
-            vec![first_id, second_id]
+            vec![first_id.id, second_id.id]
         );
         interp
-            .retag_record(first_id, Value::symbol("after"))
+            .retag_record(first_id.id, Value::symbol("after"))
             .expect("record must remain live");
-        assert_eq!(interp.record_ids_by_type("before"), vec![second_id]);
-        assert_eq!(interp.record_ids_by_type("after"), vec![first_id]);
+        assert_eq!(interp.record_ids_by_type("before"), vec![second_id.id]);
+        assert_eq!(interp.record_ids_by_type("after"), vec![first_id.id]);
 
         interp
-            .retag_record(second_id, Value::symbol("after"))
+            .retag_record(second_id.id, Value::symbol("after"))
             .expect("record must remain live");
         assert!(interp.record_ids_by_type("before").is_empty());
         assert_eq!(
             interp.record_ids_by_type("after"),
-            vec![first_id, second_id]
+            vec![first_id.id, second_id.id]
         );
 
         let descriptor = interp.create_record("descriptor", vec![Value::symbol("public-type")]);
         interp
-            .retag_record(first_id, descriptor)
+            .retag_record(first_id.id, descriptor)
             .expect("record must accept an arbitrary Lisp type descriptor");
-        assert_eq!(interp.record_ids_by_type("after"), vec![second_id]);
+        assert_eq!(interp.record_ids_by_type("after"), vec![second_id.id]);
         assert_eq!(
             interp.find_record(first_id).map(|record| &record.type_tag),
             Some(&descriptor)

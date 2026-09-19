@@ -1433,6 +1433,8 @@ pub type LambdaRef = crate::lisp::alloc::VectorlikeRef<LambdaValue>;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
+/// PVEC_RECORD's handle: the record's state in a vector block.
+pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
 
 /// The two tagged Lisp words generated code reads and writes directly.
 ///
@@ -1984,8 +1986,9 @@ pub enum Value {
     Frame(u64),
     /// An opaque terminal object, identified by unique id.
     Terminal(u64),
-    /// A record object, identified by unique id.
-    Record(u64),
+    /// A record, or one of the pseudovector kinds this implementation
+    /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
+    Record(RecordRef),
     /// A finalizer object, identified by unique id.
     Finalizer(u64),
     /// Typed reader state awaiting Interpreter-owned object allocation.
@@ -2010,7 +2013,6 @@ impl Value {
                 | Value::CharTable(_)
                 | Value::Frame(_)
                 | Value::Terminal(_)
-                | Value::Record(_)
                 | Value::Finalizer(_)
                 | Value::Unbound
         )
@@ -2698,7 +2700,7 @@ impl Value {
             Value::CharTable(id) => format!("char-table<{}>", id),
             Value::Frame(id) => format!("frame<{}>", id),
             Value::Terminal(id) => format!("terminal<{}>", id),
-            Value::Record(id) => format!("record<{}>", id),
+            Value::Record(record) => format!("record<{}>", record.id),
             Value::Finalizer(id) => format!("finalizer<{}>", id),
             Value::ReaderForm(_) => "reader-form".into(),
             Value::Unbound => "unbound".into(),
@@ -2797,7 +2799,7 @@ fn values_equal_recursive(
         (Value::CharTable(a), Value::CharTable(b)) => a == b,
         (Value::Frame(a), Value::Frame(b)) => a == b,
         (Value::Terminal(a), Value::Terminal(b)) => a == b,
-        (Value::Record(a), Value::Record(b)) => a == b,
+        (Value::Record(a), Value::Record(b)) => a.ptr_eq(b),
         (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
         (Value::ReaderForm(a), Value::ReaderForm(b)) => a.ptr_eq(b),
         (Value::Unbound, Value::Unbound) => true,
@@ -2902,7 +2904,7 @@ fn format_value(
         Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
         Value::Frame(id) => write!(f, "#<frame id:{}>", id),
         Value::Terminal(id) => write!(f, "#<terminal id:{}>", id),
-        Value::Record(id) => write!(f, "#<record id:{}>", id),
+        Value::Record(record) => write!(f, "#<record id:{}>", record.id),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Value::Finalizer(_) => write!(f, "#<finalizer>"),
         Value::ReaderForm(_) => write!(f, "#<reader-form>"),

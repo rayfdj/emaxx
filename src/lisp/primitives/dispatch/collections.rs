@@ -507,7 +507,7 @@ define_dispatch!(
                     }
                     Value::Record(id) => {
                         let record = interp.find_record(*id).ok_or_else(|| {
-                            LispError::TypeError("record".into(), format!("record<{id}>"))
+                            LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
                         if record.kind == crate::lisp::eval::RecordKind::BoolVector {
                             return record
@@ -593,7 +593,7 @@ define_dispatch!(
                         // (eieio's `make-instance' downgrades the class-object
                         // tag to the class symbol this way).
                         if idx == 0 {
-                            interp.retag_record(*id, args[2])?;
+                            interp.retag_record(id.id, args[2])?;
                             return Ok(args[2]);
                         }
                         let record = interp

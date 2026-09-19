@@ -264,7 +264,7 @@ impl Interpreter {
         };
         self.treesit_parsers
             .iter()
-            .find(|parser| parser.record_id == *record_id)
+            .find(|parser| parser.record_id == record_id.id)
     }
 
     fn treesit_parser_index(&self, value: &Value) -> Result<usize, LispError> {
@@ -277,7 +277,7 @@ impl Interpreter {
         let index = self
             .treesit_parsers
             .iter()
-            .position(|parser| parser.record_id == *record_id)
+            .position(|parser| parser.record_id == record_id.id)
             .ok_or_else(|| LispError::TypeError("treesit-parser-p".into(), value.type_name()))?;
         if self.treesit_parsers[index].deleted {
             return Err(treesit_signal("treesit-parser-deleted", [*value]));
@@ -300,7 +300,7 @@ impl Interpreter {
                     && parser.language == *language
                     && parser.tag == *tag
             })
-            .map(|parser| Value::Record(parser.record_id))
+            .map(|parser| self.record_value(parser.record_id))
     }
 
     pub(crate) fn create_treesit_parser(
@@ -328,7 +328,7 @@ impl Interpreter {
             unreachable!("Tree-sitter parsers use opaque record identities");
         };
         self.treesit_parsers.push(TreeSitterParserState {
-            record_id,
+            record_id: record_id.id,
             parser,
             tree: None,
             language,
@@ -406,7 +406,7 @@ impl Interpreter {
                     && language.is_none_or(|language| parser.language == *language)
                     && (*tag == Value::T || parser.tag == *tag)
             })
-            .map(|parser| Value::Record(parser.record_id))
+            .map(|parser| self.record_value(parser.record_id))
             .collect()
     }
 
@@ -465,7 +465,7 @@ impl Interpreter {
             unreachable!("Tree-sitter nodes use opaque record identities");
         };
         self.treesit_nodes.push(TreeSitterNodeState {
-            record_id,
+            record_id: record_id.id,
             parser_id,
             node_id,
             generation,
@@ -479,7 +479,7 @@ impl Interpreter {
         };
         self.treesit_nodes
             .iter()
-            .find(|node| node.record_id == *record_id)
+            .find(|node| node.record_id == record_id.id)
     }
 
     pub(crate) fn treesit_node_outdated(&self, value: &Value) -> Result<bool, LispError> {

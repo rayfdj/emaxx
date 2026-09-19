@@ -241,9 +241,10 @@ pub(crate) fn print_ref_key(
         // table that contains itself is labelled (or truncated) rather than
         // printed forever.
         Value::Record(id)
-            if record_prin1_fields(interp, *id).is_some() || json::is_hash_table(interp, value) =>
+            if record_prin1_fields(interp, id.id).is_some()
+                || json::is_hash_table(interp, value) =>
         {
-            Some(PrintRefKey::Record(*id))
+            Some(PrintRefKey::Record(id.id))
         }
         _ => None,
     }
@@ -418,7 +419,7 @@ fn walk_print_graph(
                 }
             }
             Value::Record(id) => {
-                if let Some(fields) = record_prin1_fields(interp, *id) {
+                if let Some(fields) = record_prin1_fields(interp, id.id) {
                     pending.extend(fields.into_iter().rev());
                 } else if let Some((_, entries)) = json::hash_table_entries(interp, &value) {
                     for (key, entry_value) in entries.into_iter().rev() {
@@ -1218,10 +1219,10 @@ pub(crate) fn render_prin1_body(
                 }
                 let rendered = match record.kind {
                     crate::lisp::eval::RecordKind::ModuleFunction => {
-                        crate::lisp::modules::print_function(interp, *id)
+                        crate::lisp::modules::print_function(interp, id.id)
                     }
                     crate::lisp::eval::RecordKind::UserPointer => {
-                        crate::lisp::modules::print_user_pointer(interp, *id)
+                        crate::lisp::modules::print_user_pointer(interp, id.id)
                     }
                     crate::lisp::eval::RecordKind::Closure => {
                         // GNU print.c writes PVEC_CLOSURE with its dedicated
@@ -1250,17 +1251,17 @@ pub(crate) fn render_prin1_body(
                     // address.  Emaxx has no addresses to quote, so it
                     // prints its own object identity in the same syntax.
                     crate::lisp::eval::RecordKind::Thread => interp
-                        .thread_name(*id)
+                        .thread_name(id.id)
                         .map(|name| format!("#<thread {name}>"))
-                        .unwrap_or_else(|| format!("#<thread 0x{id:x}>")),
+                        .unwrap_or_else(|| format!("#<thread 0x{:x}>", id.identity())),
                     crate::lisp::eval::RecordKind::Mutex => interp
-                        .mutex_name(*id)
+                        .mutex_name(id.id)
                         .map(|name| format!("#<mutex {name}>"))
-                        .unwrap_or_else(|| format!("#<mutex 0x{id:x}>")),
+                        .unwrap_or_else(|| format!("#<mutex 0x{:x}>", id.identity())),
                     crate::lisp::eval::RecordKind::ConditionVariable => interp
-                        .condition_variable_name(*id)
+                        .condition_variable_name(id.id)
                         .map(|name| format!("#<condvar {name}>"))
-                        .unwrap_or_else(|| format!("#<condvar 0x{id:x}>")),
+                        .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity())),
                     crate::lisp::eval::RecordKind::HashTable => {
                         render_hash_table_prin1(interp, value, env, context, depth)?
                     }
@@ -1275,8 +1276,8 @@ pub(crate) fn render_prin1_body(
                     // or as its bare name when `princ' clears escapeflag.
                     crate::lisp::eval::RecordKind::Process => {
                         let name = interp
-                            .process_name(*id)
-                            .unwrap_or_else(|| format!("0x{id:x}"));
+                            .process_name(id.id)
+                            .unwrap_or_else(|| format!("0x{:x}", id.identity()));
                         if context.options.escape {
                             format!("#<process {name}>")
                         } else {
@@ -1304,7 +1305,7 @@ pub(crate) fn render_prin1_body(
                         format!("#<obarray n={count}>")
                     }
                     _ => {
-                        let Some(fields) = record_prin1_fields(interp, *id) else {
+                        let Some(fields) = record_prin1_fields(interp, id.id) else {
                             return Ok(value.to_string());
                         };
                         let rendered_fields = fields
@@ -2160,8 +2161,8 @@ fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
         (Value::Marker(left), Value::Marker(right))
         | (Value::Overlay(left), Value::Overlay(right))
         | (Value::CharTable(left), Value::CharTable(right))
-        | (Value::Record(left), Value::Record(right))
         | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
+        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
         _ => false,
     }
 }
@@ -2292,11 +2293,18 @@ fn hash_table_from_literal_fields(
     };
     for (key, value) in entries {
         if matches!(test.as_str(), "eq" | "eql" | "equal") {
-            if !interp.equal_hash_put(id, key, value, env) {
+            if !interp.equal_hash_put(id.id, key, value, env) {
                 return Err(LispError::Signal("Invalid hash table test".into()));
             }
-        } else if !custom_hash_put_indexed(interp, &Value::Record(id), id, &test, key, value, env)?
-        {
+        } else if !custom_hash_put_indexed(
+            interp,
+            &Value::Record(id),
+            id.id,
+            &test,
+            key,
+            value,
+            env,
+        )? {
             return Err(LispError::Signal("Invalid hash table test".into()));
         }
     }

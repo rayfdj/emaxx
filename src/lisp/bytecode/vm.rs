@@ -748,7 +748,7 @@ pub fn execute_record(
     let index = (record_id as usize).saturating_sub(1);
     if let Some(Some(program)) = interp.bytecode_program_cache.get(index) {
         let program = std::rc::Rc::clone(program);
-        return run(interp, program, Value::Record(record_id), args, env);
+        return run(interp, program, interp.record_value(record_id), args, env);
     }
     let record = interp
         .find_record(record_id)
@@ -760,7 +760,7 @@ pub fn execute_record(
         .ok_or_else(|| {
             LispError::SignalValue(Value::list([
                 Value::Symbol("invalid-function".into()),
-                Value::Record(record_id),
+                interp.record_value(record_id),
             ]))
         })?;
     let program = std::rc::Rc::new(build_cached(&object)?);
@@ -768,7 +768,7 @@ pub fn execute_record(
         interp.bytecode_program_cache.resize(index + 1, None);
     }
     interp.bytecode_program_cache[index] = Some(std::rc::Rc::clone(&program));
-    run(interp, program, Value::Record(record_id), args, env)
+    run(interp, program, interp.record_value(record_id), args, env)
 }
 
 /// Execute OBJECT with ARGS, returning the value of Breturn.
@@ -1656,7 +1656,7 @@ fn run_frames(
                         interp.push_backtrace_frame_borrowed(
                             match &func {
                                 Value::Symbol(_) => func,
-                                _ => Value::Record(callee_id),
+                                _ => interp.record_value(callee_id),
                             },
                             call_args,
                         );

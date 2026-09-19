@@ -212,6 +212,17 @@ impl NativeRegistry {
             && self.function_c_names.is_empty()
     }
 
+    /// The records the loader holds by id: every unit's and every native
+    /// subr's (comp.c's `Vcomp_loaded_comp_units' and the subrs' unit
+    /// slots keep them reachable in GNU).
+    pub(crate) fn held_record_ids(&self) -> Vec<u64> {
+        self.units
+            .iter()
+            .map(|unit| unit.record_id)
+            .chain(self.functions.keys().copied())
+            .collect()
+    }
+
     fn unit(&self, record_id: u64) -> Option<Rc<LoadedUnit>> {
         self.units
             .iter()
@@ -559,7 +570,7 @@ fn comp_unit_relocations_match(
                 return false;
             };
             if interpreter
-                .equal_hash_lookup(*guard_id, &actual, environment)
+                .equal_hash_lookup(guard_id.id, &actual, environment)
                 .flatten()
                 .is_none()
             {
@@ -647,7 +658,7 @@ pub(super) fn load(
             return Err(inconsistent(filename));
         };
         let loaded = registry
-            .unit(record_id)
+            .unit(record_id.id)
             .ok_or_else(|| inconsistent(filename))?;
         loaded.loaded_once.set(true);
         let unit_file = interpreter
@@ -662,7 +673,7 @@ pub(super) fn load(
         };
         let top_level = unsafe { function_symbol(&library, top_level_name) }
             .map_err(|_| inconsistent(&unit_file))?;
-        (record_id, unit, top_level)
+        (record_id.id, unit, top_level)
     } else {
         first_load(
             registry,
@@ -911,7 +922,7 @@ fn first_load(
 
     registry.units.push(Rc::new(LoadedUnit {
         library,
-        record_id,
+        record_id: record_id.id,
         loaded_once: Cell::new(false),
         load_ongoing: Cell::new(false),
         _data: data,
@@ -924,7 +935,7 @@ fn first_load(
     }));
     runtime.register_permanent_root_range(saved_unit, 1);
     saved_unit_rollback.disarm();
-    Ok((record_id, unit, top_level))
+    Ok((record_id.id, unit, top_level))
 }
 
 /// Ephemeral data is read and installed on every non-recursive load; GNU
@@ -1083,7 +1094,7 @@ pub(super) fn register_with_state(
     };
 
     let registered = (|| {
-        let unit = registry.unit(unit_record_id).ok_or_else(|| {
+        let unit = registry.unit(unit_record_id.id).ok_or_else(|| {
             LispError::SignalValue(Value::list([Value::symbol("wrong-register-subr-call")]))
         })?;
         if matches!(kind, RegistrationKind::Lambda) && unit.loaded_once.get() {
@@ -1120,7 +1131,7 @@ pub(super) fn register_with_state(
             unreachable!("native function is a pseudovector")
         };
         registry.functions.insert(
-            function_record_id,
+            function_record_id.id,
             NativeFunction {
                 target,
                 convention,
@@ -1131,10 +1142,10 @@ pub(super) fn register_with_state(
         );
         registry
             .function_names
-            .insert(function_record_id, symbol_name.into_boxed_str());
+            .insert(function_record_id.id, symbol_name.into_boxed_str());
         registry
             .function_c_names
-            .insert(function_record_id, c_name.into_boxed_str());
+            .insert(function_record_id.id, c_name.into_boxed_str());
 
         if matches!(kind, RegistrationKind::Lambda) {
             let (lambda_guard, lambda_name_index) = {
@@ -1177,7 +1188,7 @@ pub(super) fn register_with_state(
                 .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
             let word = runtime.encode_relocations(std::slice::from_ref(&function))?[0];
             let unit = registry
-                .unit(unit_record_id)
+                .unit(unit_record_id.id)
                 .expect("unit checked before registration");
             if relocation >= unit.impure_relocation_count {
                 return Err(super::lisp::native_ice(
@@ -1346,18 +1357,18 @@ fn invoke_function(
                 .unwrap_or(parameter);
             let name = parameter
                 .as_symbol()
-                .map_err(|_| invalid_function(record_id))?;
+                .map_err(|_| invalid_function(interpreter.record_value(record_id)))?;
             match name {
                 "&rest" => {
                     if rest || previous_rest {
-                        return Err(invalid_function(record_id));
+                        return Err(invalid_function(interpreter.record_value(record_id)));
                     }
                     rest = true;
                     previous_rest = true;
                 }
                 "&optional" => {
                     if optional || rest || previous_rest {
-                        return Err(invalid_function(record_id));
+                        return Err(invalid_function(interpreter.record_value(record_id)));
                     }
                     optional = true;
                 }
@@ -1389,7 +1400,7 @@ fn invoke_function(
             }
         }
         if previous_rest {
-            return Err(invalid_function(record_id));
+            return Err(invalid_function(interpreter.record_value(record_id)));
         }
         if argument_index < arguments.len() {
             return Err(LispError::WrongNumberOfArgs(
@@ -1424,11 +1435,8 @@ fn invoke_function(
     }
 }
 
-fn invalid_function(record_id: u64) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::symbol("invalid-function"),
-        Value::Record(record_id),
-    ]))
+fn invalid_function(function: Value) -> LispError {
+    LispError::SignalValue(Value::list([Value::symbol("invalid-function"), function]))
 }
 
 fn check_arity(function: NativeFunction, count: usize) -> Result<(), LispError> {
@@ -1496,7 +1504,7 @@ pub(super) fn load_dumped_unit(
     execdir: &str,
     installation_state: &mut InstallationState,
 ) -> Result<(), LispError> {
-    let unit = Value::Record(record_id);
+    let unit = interpreter.record_value(record_id);
     let file = {
         let record = interpreter
             .find_record(record_id)
@@ -1782,7 +1790,7 @@ pub(super) fn resolve_dumped_function(
         .and_then(|file| string_like(file).map(|string| string.text))
         .unwrap_or_default();
     let unit = registry
-        .unit(unit_record_id)
+        .unit(unit_record_id.id)
         .ok_or_else(|| dump_load_error(format!("NULL handle in compilation unit {unit_file}")))?;
     let c_name = function.c_name.as_str();
     let target = unsafe { function_symbol(&unit.library, c_name) }.map_err(|_| {
@@ -1841,7 +1849,7 @@ pub(super) fn resolve_dumped_function(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));
         }
-        let subr = Value::Record(record_id);
+        let subr = interpreter.record_value(record_id);
         let word = runtime.encode_relocations(std::slice::from_ref(&subr))?[0];
         unsafe { std::ptr::write(unit.impure_relocations.add(index), word) };
         super::lisp::call_c_primitive(

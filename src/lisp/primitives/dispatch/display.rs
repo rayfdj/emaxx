@@ -773,7 +773,7 @@ fn set_window_slot_value(
 
 fn window_link(interp: &Interpreter, window_id: u64, slot: usize) -> Option<u64> {
     match window_slot_value(interp, window_id, slot) {
-        Value::Record(id) => Some(id),
+        Value::Record(id) => Some(id.id),
         _ => None,
     }
 }
@@ -882,7 +882,7 @@ fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
                     | INTERNAL_VERTICAL_WINDOW_KIND
                     | DELETED_WINDOW_KIND
             )
-    ) && window_buffer_id(interp, &Value::Record(id)).is_some()
+    ) && window_buffer_id(interp, &interp.record_value(id)).is_some()
 }
 
 /// Leaf windows of the frame's window tree in GNU's canonical order — a
@@ -972,7 +972,7 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
         .into_iter()
         .filter_map(|window_id| {
             let selected = window_id == selected_id;
-            let buffer_id = window_buffer_id(interp, &Value::Record(window_id))?;
+            let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))?;
             let (width, height, left, top) = window_geometry(interp, window_id);
             let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
             let clamp = |value: i64| value.clamp(point_min as i64, point_max as i64) as usize;
@@ -1590,7 +1590,8 @@ fn render_window_line_with_format(
     let saved_window = interp.selected_window_id();
     let saved_buffer = interp.current_buffer_id();
     let saved_metrics = interactive_window_metrics();
-    let buffer_id = window_buffer_id(interp, &Value::Record(window_id)).unwrap_or(saved_buffer);
+    let buffer_id =
+        window_buffer_id(interp, &interp.record_value(window_id)).unwrap_or(saved_buffer);
     interp.set_selected_window_id(window_id);
     let switched = buffer_id != saved_buffer && interp.set_current_buffer_id(buffer_id).is_ok();
     let saved_point = interp.buffer.point();
@@ -1722,7 +1723,7 @@ fn split_window_tree(
     let old_id = window_id_or_selected(interp, old)?;
     let kind = window_slot_value(interp, old_id, WINDOW_KIND_SLOT);
     if matches!(kind, Value::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND)
-        || window_buffer_id(interp, &Value::Record(old_id)).is_none()
+        || window_buffer_id(interp, &interp.record_value(old_id)).is_none()
     {
         return Err(LispError::Signal(
             "Attempt to split a non-live window".into(),
@@ -1742,7 +1743,7 @@ fn split_window_tree(
     let old_parent = window_link(interp, old_id, WINDOW_PARENT_SLOT);
     let outside_prev = window_link(interp, old_id, WINDOW_PREV_SIBLING_SLOT);
     let outside_next = window_link(interp, old_id, WINDOW_NEXT_SIBLING_SLOT);
-    let buffer_id = window_buffer_id(interp, &Value::Record(old_id))
+    let buffer_id = window_buffer_id(interp, &interp.record_value(old_id))
         .ok_or_else(|| LispError::Signal("Attempt to split a non-live window".into()))?;
     let start = window_slot_value(interp, old_id, WINDOW_START_SLOT)
         .as_integer()
@@ -1795,6 +1796,7 @@ fn split_window_tree(
     let Value::Record(parent_id) = parent else {
         unreachable!("window records use Value::Record");
     };
+    let parent_id = parent_id.id;
     let new = interp.create_pseudovector(
         crate::lisp::eval::RecordKind::Window,
         "window",
@@ -1803,24 +1805,31 @@ fn split_window_tree(
     let Value::Record(new_id) = new else {
         unreachable!("window records use Value::Record");
     };
+    let new_id = new_id.id;
 
     set_window_slot_value(
         interp,
         parent_id,
         WINDOW_PARENT_SLOT,
-        old_parent.map(Value::Record).unwrap_or(Value::Nil),
+        old_parent
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     set_window_slot_value(
         interp,
         parent_id,
         WINDOW_PREV_SIBLING_SLOT,
-        outside_prev.map(Value::Record).unwrap_or(Value::Nil),
+        outside_prev
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     set_window_slot_value(
         interp,
         parent_id,
         WINDOW_NEXT_SIBLING_SLOT,
-        outside_next.map(Value::Record).unwrap_or(Value::Nil),
+        outside_next
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     if let Some(parent) = old_parent
         && window_link(interp, parent, WINDOW_FIRST_CHILD_SLOT) == Some(old_id)
@@ -1829,7 +1838,7 @@ fn split_window_tree(
             interp,
             parent,
             WINDOW_FIRST_CHILD_SLOT,
-            Value::Record(parent_id),
+            interp.record_value(parent_id),
         )?;
     }
     if let Some(previous) = outside_prev {
@@ -1837,7 +1846,7 @@ fn split_window_tree(
             interp,
             previous,
             WINDOW_NEXT_SIBLING_SLOT,
-            Value::Record(parent_id),
+            interp.record_value(parent_id),
         )?;
     }
     if let Some(next) = outside_next {
@@ -1845,7 +1854,7 @@ fn split_window_tree(
             interp,
             next,
             WINDOW_PREV_SIBLING_SLOT,
-            Value::Record(parent_id),
+            interp.record_value(parent_id),
         )?;
     }
     for window_id in [old_id, new_id] {
@@ -1853,7 +1862,7 @@ fn split_window_tree(
             interp,
             window_id,
             WINDOW_PARENT_SLOT,
-            Value::Record(parent_id),
+            interp.record_value(parent_id),
         )?;
     }
     let (first, second) = if before {
@@ -1865,20 +1874,20 @@ fn split_window_tree(
         interp,
         parent_id,
         WINDOW_FIRST_CHILD_SLOT,
-        Value::Record(first),
+        interp.record_value(first),
     )?;
     set_window_slot_value(interp, first, WINDOW_PREV_SIBLING_SLOT, Value::Nil)?;
     set_window_slot_value(
         interp,
         first,
         WINDOW_NEXT_SIBLING_SLOT,
-        Value::Record(second),
+        interp.record_value(second),
     )?;
     set_window_slot_value(
         interp,
         second,
         WINDOW_PREV_SIBLING_SLOT,
-        Value::Record(first),
+        interp.record_value(first),
     )?;
     set_window_slot_value(interp, second, WINDOW_NEXT_SIBLING_SLOT, Value::Nil)?;
     set_window_slot_value(interp, new_id, WINDOW_NEW_NORMAL_SLOT, *normal_size)?;
@@ -1913,7 +1922,7 @@ fn split_window_tree(
             .expect("decoded frame has state")
             .root_window_id = parent_id;
     }
-    Ok(Value::Record(new_id))
+    Ok(interp.record_value(new_id))
 }
 
 fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(), LispError> {
@@ -1949,7 +1958,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
             interp,
             grandparent_id,
             WINDOW_FIRST_CHILD_SLOT,
-            Value::Record(sibling_id),
+            interp.record_value(sibling_id),
         )?;
     }
     if let Some(previous) = outside_prev {
@@ -1957,7 +1966,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
             interp,
             previous,
             WINDOW_NEXT_SIBLING_SLOT,
-            Value::Record(sibling_id),
+            interp.record_value(sibling_id),
         )?;
     }
     if let Some(next) = outside_next {
@@ -1965,26 +1974,32 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
             interp,
             next,
             WINDOW_PREV_SIBLING_SLOT,
-            Value::Record(sibling_id),
+            interp.record_value(sibling_id),
         )?;
     }
     set_window_slot_value(
         interp,
         sibling_id,
         WINDOW_PARENT_SLOT,
-        grandparent.map(Value::Record).unwrap_or(Value::Nil),
+        grandparent
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     set_window_slot_value(
         interp,
         sibling_id,
         WINDOW_PREV_SIBLING_SLOT,
-        outside_prev.map(Value::Record).unwrap_or(Value::Nil),
+        outside_prev
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     set_window_slot_value(
         interp,
         sibling_id,
         WINDOW_NEXT_SIBLING_SLOT,
-        outside_next.map(Value::Record).unwrap_or(Value::Nil),
+        outside_next
+            .map(|id| interp.record_value(id))
+            .unwrap_or(Value::Nil),
     )?;
     set_window_geometry(interp, sibling_id, parent_geometry)?;
     for deleted_id in [window_id, parent_id] {
@@ -2018,7 +2033,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
             return Ok(());
         }
         interp.set_selected_window_id(replacement_id);
-        if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(replacement_id)) {
+        if let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(replacement_id)) {
             interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
             interp.buffer.goto_char(point);
         }
@@ -2123,7 +2138,7 @@ fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id = match interp.root_window_value() {
-        Value::Record(id) => id,
+        Value::Record(id) => id.id,
         _ => window_id,
     };
     let (root_width, _, root_left, _) = window_geometry(interp, root_id);
@@ -2382,7 +2397,7 @@ fn window_list_value(
     if let Some(index) = ids.iter().position(|id| *id == start_id) {
         ids.rotate_left(index);
     }
-    Value::list(ids.into_iter().map(Value::Record))
+    Value::list(ids.into_iter().map(|id| interp.record_value(id)))
 }
 
 define_dispatch!(
@@ -3325,7 +3340,7 @@ define_dispatch!(
             "window-point" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .ok_or_else(|| LispError::TypeError("window".into(), "deleted".into()))?;
                 let point = if window_id == interp.selected_window_id() {
                     if buffer_id == interp.current_buffer_id() {
@@ -3412,10 +3427,10 @@ define_dispatch!(
                     candidate = live_ordinary_window_ids(interp)
                         .into_iter()
                         .find(|window_id| {
-                            window_buffer_id(interp, &Value::Record(*window_id))
+                            window_buffer_id(interp, &interp.record_value(*window_id))
                                 == Some(buffer_value.id)
                         })
-                        .map(Value::Record);
+                        .map(|id| interp.record_value(id));
                     if candidate.is_none() {
                         candidate = Some(call_function_value(
                             interp,
@@ -3446,14 +3461,14 @@ define_dispatch!(
                     let index = ids.iter().position(|id| *id == selected_id).unwrap_or(0);
                     ids.get((index + 1) % ids.len())
                         .copied()
-                        .map(Value::Record)
+                        .map(|id| interp.record_value(id))
                         .unwrap_or_else(|| interp.selected_window_value())
                 });
                 let candidate_id = live_window_id_or_selected(interp, Some(&candidate))?;
                 if candidate_id == selected_id {
                     return Err(LispError::Signal("There is no other window".into()));
                 }
-                Ok(Value::Record(candidate_id))
+                Ok(interp.record_value(candidate_id))
             }
             "set-window-margins" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -3498,7 +3513,7 @@ define_dispatch!(
                 }
                 let local_x = x - left;
                 let local_y = y - top;
-                let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .ok_or_else(|| wrong_type_argument("window-live-p", args[1]))?;
                 let tab_line = window_line_height(interp, buffer_id, "tab-line-format", env);
                 let header_line = window_line_height(interp, buffer_id, "header-line-format", env);
@@ -3901,7 +3916,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 7)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
-                let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .unwrap_or(interp.current_buffer_id());
                 let text = if buffer_id == interp.current_buffer_id() {
                     interp.buffer.buffer_string()
@@ -4272,7 +4287,7 @@ define_dispatch!(
             "frame-selected-window" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = frame_or_window_id(interp, args.first())?;
-                Ok(Value::Record(
+                Ok(interp.record_value(
                     interp
                         .frame_state(id)
                         .expect("decoded frame has state")
@@ -4286,7 +4301,7 @@ define_dispatch!(
                     .frame_state(id)
                     .expect("decoded frame has state")
                     .old_selected_window_id
-                    .map(Value::Record)
+                    .map(|id| interp.record_value(id))
                     .unwrap_or(Value::Nil))
             }
             "set-frame-selected-window" => {
@@ -4379,7 +4394,7 @@ define_dispatch!(
                         live_ordinary_window_ids(interp)
                             .into_iter()
                             .any(|window_id| {
-                                window_buffer_id(interp, &Value::Record(window_id))
+                                window_buffer_id(interp, &interp.record_value(window_id))
                                     == Some(buffer_id)
                             })
                     }) {
@@ -4401,7 +4416,7 @@ define_dispatch!(
                 let original_buffer = interp.current_buffer_id();
                 let mut result = Ok(());
                 for window_id in live_ordinary_window_ids(interp) {
-                    let Some(buffer_id) = window_buffer_id(interp, &Value::Record(window_id))
+                    let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window_id))
                     else {
                         continue;
                     };
@@ -4440,7 +4455,7 @@ define_dispatch!(
                 interp.set_selected_window_id(original_window);
                 if result.is_ok()
                     && let Some(selected_buffer) =
-                        window_buffer_id(interp, &Value::Record(original_window))
+                        window_buffer_id(interp, &interp.record_value(original_window))
                 {
                     result = interp.set_current_buffer_id(selected_buffer);
                 }
@@ -4665,7 +4680,7 @@ define_dispatch!(
                         if let Value::Frame(id) = &frame {
                             interp
                                 .frame_state(*id)
-                                .map(|f| Value::Record(f.selected_window_id))
+                                .map(|f| interp.record_value(f.selected_window_id))
                                 .unwrap_or_else(|| interp.selected_window_value())
                         } else {
                             interp.selected_window_value()
@@ -4728,7 +4743,7 @@ define_dispatch!(
             "frame-root-window" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = frame_or_window_id(interp, args.first())?;
-                Ok(Value::Record(
+                Ok(interp.record_value(
                     interp
                         .frame_state(id)
                         .expect("decoded frame has state")
@@ -4738,17 +4753,17 @@ define_dispatch!(
             "frame-first-window" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = frame_or_window_id(interp, args.first())?;
-                let mut window = Value::Record(
+                let mut window = interp.record_value(
                     interp
                         .frame_state(id)
                         .expect("decoded frame has state")
                         .root_window_id,
                 );
                 while let Value::Record(id) = window {
-                    let Some(child) = window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) else {
+                    let Some(child) = window_link(interp, id.id, WINDOW_FIRST_CHILD_SLOT) else {
                         return Ok(Value::Record(id));
                     };
-                    window = Value::Record(child);
+                    window = interp.record_value(child);
                 }
                 Ok(interp.selected_window_value())
             }
@@ -4851,7 +4866,7 @@ define_dispatch!(
                     _ => WINDOW_NEXT_SIBLING_SLOT,
                 };
                 if let Some(linked) = window_link(interp, window_id, slot) {
-                    return Ok(Value::Record(linked));
+                    return Ok(interp.record_value(linked));
                 }
                 // frame.c make_frame links a frame's root and its own
                 // minibuffer window as siblings (wset_next (rw, mini_window);
@@ -4861,8 +4876,8 @@ define_dispatch!(
                 let root = frame_root_window_value(interp);
                 let minibuffer = interp.minibuffer_window_value();
                 Ok(match name {
-                    "window-next-sibling" if root == Value::Record(window_id) => minibuffer,
-                    "window-prev-sibling" if minibuffer == Value::Record(window_id) => root,
+                    "window-next-sibling" if root == interp.record_value(window_id) => minibuffer,
+                    "window-prev-sibling" if minibuffer == interp.record_value(window_id) => root,
                     _ => Value::Nil,
                 })
             }
@@ -4882,7 +4897,7 @@ define_dispatch!(
                 );
                 Ok(if matching_orientation {
                     window_link(interp, window_id, WINDOW_FIRST_CHILD_SLOT)
-                        .map(Value::Record)
+                        .map(|id| interp.record_value(id))
                         .unwrap_or(Value::Nil)
                 } else {
                     Value::Nil
@@ -5191,9 +5206,9 @@ define_dispatch!(
                         let Value::Record(id) = window else {
                             return false;
                         };
-                        (is_live_ordinary_window(interp, *id)
+                        (is_live_ordinary_window(interp, id.id)
                             || (interp.active_minibuffer_buffer_id().is_some()
-                                && *id == interp.minibuffer_window_id()))
+                                && id.id == interp.minibuffer_window_id()))
                             && window_buffer_id(interp, window) == Some(buffer_id)
                     })
                     .unwrap_or(Value::Nil))
@@ -5201,7 +5216,7 @@ define_dispatch!(
             "minibuffer-window" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = super::frames::decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Record(
+                Ok(interp.record_value(
                     interp
                         .frame_state(id)
                         .expect("decoded frame has state")
@@ -5229,7 +5244,7 @@ define_dispatch!(
             }
             "minibuffer-selected-window" => Ok(interp
                 .minibuffer_selected_window_id()
-                .map(Value::Record)
+                .map(|id| interp.record_value(id))
                 .unwrap_or_else(|| interp.selected_window_value())),
             "active-minibuffer-window" => {
                 // Non-nil while a minibuffer-with-setup-hook hook runs (the
@@ -5255,7 +5270,7 @@ define_dispatch!(
                 // GNU: setting the selected window's point moves point in the
                 // window's buffer (emaxx has no separate window points).
                 if window_id == interp.selected_window_id() {
-                    let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                    let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                         .unwrap_or_else(|| interp.current_buffer_id());
                     if buffer_id == interp.current_buffer_id() {
                         interp.buffer.goto_char(pos);

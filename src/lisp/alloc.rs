@@ -30,8 +30,11 @@ mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
+pub(crate) use vectors::{
+    FreedRecord, live_record_census, live_string_object_census, live_vector_census, sweep_vectors,
+    take_freed_records,
+};
 pub use vectors::{VectorHeader, VectorRef, VectorlikeRef};
-pub(crate) use vectors::{live_string_object_census, live_vector_census, sweep_vectors};
 
 /// alloc.c's block geometry: the cells per block that its formulas give
 /// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'

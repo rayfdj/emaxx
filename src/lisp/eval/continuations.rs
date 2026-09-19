@@ -326,11 +326,11 @@ mod tests {
             interpreter
                 .new_thread_continuations
                 .threads
-                .insert(id, continuation);
+                .insert(id.id, continuation);
             interpreter
-                .step_thread(id, &mut Env::new())
+                .step_thread(id.id, &mut Env::new())
                 .expect("suspend original execution frames");
-            assert!(interpreter.thread_live(id));
+            assert!(interpreter.thread_live(id.id));
         }
         assert_eq!(interpreter.continuations.threads.len(), 2);
         assert_eq!(dropped.get(), 0);
@@ -385,7 +385,7 @@ mod tests {
             .expect("collect all suspended machine stacks");
             assert_eq!(
                 interpreter
-                    .hash_table_runtime_entries(table_id)
+                    .hash_table_runtime_entries(table_id.id)
                     .expect("table")
                     .len(),
                 roots
@@ -407,7 +407,7 @@ mod tests {
             .expect("collect after both native stacks return");
         assert!(
             interpreter
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("table")
                 .is_empty()
         );
@@ -435,7 +435,7 @@ mod tests {
             .expect("real GC while native code is suspended");
         assert_eq!(
             interpreter
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("table")
                 .len(),
             1,
@@ -467,7 +467,7 @@ mod tests {
             .expect("collect after native frame exits");
         assert!(
             interpreter
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("table")
                 .is_empty(),
             "completed native unwind roots must be removed"
@@ -558,13 +558,13 @@ mod tests {
             .slots[5] = Value::symbol("key");
         interpreter.set_global_binding("continuation-table", Value::Record(table_id));
         let payload = std::ptr::from_ref(&*interpreter) as usize;
-        drive(&mut interpreter, table_id, payload);
+        drive(&mut interpreter, table_id.id, payload);
         crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after the child frame and result are released");
         assert!(
             interpreter
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("live table")
                 .is_empty()
         );

@@ -107,6 +107,15 @@ impl ModuleState {
         }
     }
 
+    /// The record ids of every module function and user pointer held.
+    pub fn record_ids(&self) -> Vec<u64> {
+        self.functions
+            .keys()
+            .chain(self.pointers.keys())
+            .copied()
+            .collect()
+    }
+
     pub fn collect(&mut self, live: &MarkedIds) {
         let mut finalizers = Vec::new();
         self.functions.retain(|id, function| {
@@ -444,20 +453,23 @@ pub(crate) fn call(
         .modules
         .functions
         .get(&id)
-        .ok_or_else(|| condition("invalid-function", [Value::Record(id)]))?;
+        .ok_or_else(|| condition("invalid-function", [interpreter.record_value(id)]))?;
     if args.len() < function.min as usize
         || (function.max >= 0 && args.len() > function.max as usize)
     {
         return Err(condition(
             "wrong-number-of-arguments",
-            [Value::Record(id), Value::Integer(args.len() as i64)],
+            [
+                interpreter.record_value(id),
+                Value::Integer(args.len() as i64),
+            ],
         ));
     }
     let activation = Activation::new(interpreter, environment);
     // GNU's live C call frame keeps the function reachable. A named Lisp
     // backtrace alone cannot do that after its symbol is rebound, so root
     // the function with this activation until foreign execution returns.
-    Context(&activation).make(Value::Record(id));
+    Context(&activation).make(interpreter.record_value(id));
     let mut handles: Vec<_> = args
         .iter()
         .map(|arg| Context(&activation).make(*arg))

@@ -1771,7 +1771,7 @@ pub(crate) fn progress_async_gnutls(
     if stage == 0 {
         let result = gnutls_boot(
             interp,
-            &Value::Record(process_id),
+            &interp.record_value(process_id),
             credential_type,
             &parameter_list,
         )?;

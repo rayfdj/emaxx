@@ -213,7 +213,7 @@ impl Interpreter {
                 .iter()
                 .rev()
                 .filter(|process| Self::in_process_alist(process))
-                .map(|process| Value::Record(process.record_id)),
+                .map(|process| self.record_value(process.record_id)),
         )
     }
 
@@ -275,9 +275,10 @@ impl Interpreter {
         initstage: i64,
         peer_status: Value,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.session = Some(session);
         process.gnutls.initstage = initstage;
         process.gnutls.active = true;
@@ -289,9 +290,10 @@ impl Interpreter {
         &mut self,
         record_id: u64,
     ) -> Result<(std::ffi::c_int, *mut std::ffi::c_void), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let session = process
             .gnutls
             .session
@@ -306,9 +308,10 @@ impl Interpreter {
         record_id: u64,
         peer_status: Value,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.initstage = 9;
         process.gnutls.peer_status = Self::stored_value(peer_status);
         process.gnutls.boot_parameters = Value::Nil;
@@ -325,9 +328,10 @@ impl Interpreter {
         record_id: u64,
         continue_transport: bool,
     ) -> Result<std::ffi::c_int, LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let session = process
             .gnutls
             .session
@@ -345,7 +349,7 @@ impl Interpreter {
 
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         match process.network.as_ref() {
             Some(NetworkRuntime::Stream(stream)) => Ok(stream.as_raw_fd() as usize),
             Some(NetworkRuntime::UnixStream(stream)) => Ok(stream.as_raw_fd() as usize),
@@ -368,7 +372,7 @@ impl Interpreter {
                     .find_record(*id)
                     .is_some_and(|record| record.kind == RecordKind::Thread) =>
             {
-                Ok(*id)
+                Ok(id.id)
             }
             other => Err(wrong_type_argument("threadp", *other)),
         }
@@ -381,7 +385,7 @@ impl Interpreter {
                     .find_record(*id)
                     .is_some_and(|record| record.kind == RecordKind::Mutex) =>
             {
-                Ok(*id)
+                Ok(id.id)
             }
             other => Err(wrong_type_argument("mutexp", *other)),
         }
@@ -394,7 +398,7 @@ impl Interpreter {
                     .find_record(*id)
                     .is_some_and(|record| record.kind == RecordKind::ConditionVariable) =>
             {
-                Ok(*id)
+                Ok(id.id)
             }
             other => Err(wrong_type_argument("condition-variable-p", *other)),
         }
@@ -407,7 +411,7 @@ impl Interpreter {
                     .find_record(*id)
                     .is_some_and(|record| record.kind == RecordKind::Process) =>
             {
-                Ok(*id)
+                Ok(id.id)
             }
             other => Err(wrong_type_argument("processp", *other)),
         }
@@ -504,7 +508,7 @@ impl Interpreter {
         };
         let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
-            record_id,
+            record_id: record_id.id,
             kind,
             buffer_id,
             mark_marker_id,
@@ -584,7 +588,7 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
-            record_id,
+            record_id: record_id.id,
             kind: ProcessKind::Network,
             buffer_id,
             mark_marker_id,
@@ -655,7 +659,7 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
         let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
-            record_id,
+            record_id: record_id.id,
             kind: ProcessKind::Serial,
             buffer_id: Some(buffer_id),
             mark_marker_id,
@@ -952,9 +956,10 @@ impl Interpreter {
         record_id: u64,
         contact: Value,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.contact = contact;
         Ok(())
     }
@@ -1001,7 +1006,7 @@ impl Interpreter {
 
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         let Some(serial) = process.serial.as_ref() else {
             return Err(LispError::Signal("Not a serial process".into()));
         };
@@ -1014,7 +1019,7 @@ impl Interpreter {
     ) -> Result<Option<std::net::SocketAddr>, LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_ref() else {
             return Ok(None);
         };
@@ -1036,9 +1041,10 @@ impl Interpreter {
         record_id: u64,
         address: std::net::SocketAddr,
     ) -> Result<bool, LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_mut() else {
             return Ok(false);
         };
@@ -1191,7 +1197,10 @@ impl Interpreter {
 
     pub fn connection_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
         let Some(process) = self.find_process_state_mut(record_id) else {
-            return Err(wrong_type_argument("processp", Value::Record(record_id)));
+            return Err(wrong_type_argument(
+                "processp",
+                self.record_value(record_id),
+            ));
         };
         if let Some(session) = process.gnutls.session.as_mut() {
             return session.send_all(input);
@@ -1268,17 +1277,19 @@ impl Interpreter {
     }
 
     pub fn process_value_for_buffer(&mut self, buffer_id: u64) -> Option<Value> {
-        self.process_states.iter_mut().rev().find_map(|process| {
+        let record_id = self.process_states.iter_mut().rev().find_map(|process| {
             let _ = Self::refresh_process_state(process);
             (process.buffer_id == Some(buffer_id) && Self::in_process_alist(process))
-                .then_some(Value::Record(process.record_id))
-        })
+                .then_some(process.record_id)
+        })?;
+        Some(self.record_value(record_id))
     }
 
     pub(crate) fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         Self::refresh_process_state(process)
     }
 
@@ -1404,9 +1415,10 @@ impl Interpreter {
         record_id: u64,
         filter: Option<Value>,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.filter = filter;
         Ok(())
     }
@@ -1414,7 +1426,7 @@ impl Interpreter {
     pub fn process_coding_system(&self, record_id: u64) -> Result<Value, LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         Ok(Value::cons(process.decoding, process.encoding))
     }
 
@@ -1424,9 +1436,10 @@ impl Interpreter {
         decoding: Value,
         encoding: Value,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.decoding = decoding;
         process.encoding = encoding;
         Ok(())
@@ -1437,9 +1450,10 @@ impl Interpreter {
         record_id: u64,
         flag: bool,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.query_on_exit_flag = flag;
         Ok(())
     }
@@ -1447,7 +1461,7 @@ impl Interpreter {
     pub fn process_query_on_exit_flag(&self, record_id: u64) -> Result<bool, LispError> {
         self.find_process_state(record_id)
             .map(|process| process.query_on_exit_flag)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))
     }
 
     pub fn set_process_inherit_coding_system_flag(
@@ -1455,9 +1469,10 @@ impl Interpreter {
         record_id: u64,
         flag: bool,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.inherit_coding_system_flag = flag;
         Ok(())
     }
@@ -1465,13 +1480,13 @@ impl Interpreter {
     pub fn process_inherit_coding_system_flag(&self, record_id: u64) -> Result<bool, LispError> {
         self.find_process_state(record_id)
             .map(|process| process.inherit_coding_system_flag)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))
     }
 
     pub fn process_type_name(&self, record_id: u64) -> Result<&'static str, LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         Ok(match process.kind {
             ProcessKind::Real => "real",
             ProcessKind::Pipe => "pipe",
@@ -1486,9 +1501,10 @@ impl Interpreter {
         height: u16,
         width: u16,
     ) -> Result<bool, LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if process.kind != ProcessKind::Real {
             return Ok(false);
         }
@@ -1522,7 +1538,7 @@ impl Interpreter {
     pub fn process_running_child_value(&self, record_id: u64) -> Result<Value, LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         if process.kind != ProcessKind::Real {
             return Err(LispError::Signal(format!(
                 "Process {} is not a subprocess",
@@ -1585,9 +1601,10 @@ impl Interpreter {
         record_id: u64,
         stopped: bool,
     ) -> Result<bool, LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if process.kind == ProcessKind::Real {
             return Ok(false);
         }
@@ -1606,7 +1623,7 @@ impl Interpreter {
 
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         if process.kind != ProcessKind::Real {
             return Err(LispError::Signal(format!(
                 "Process {} is not a subprocess",
@@ -1662,9 +1679,10 @@ impl Interpreter {
     }
 
     pub fn delete_process(&mut self, record_id: u64) -> Result<(&'static str, bool), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let kind = process.kind;
         // `status_notify' claims a terminal transition before invoking its
         // sentinel.  A sentinel such as `compilation-sentinel' may then call
@@ -1741,9 +1759,10 @@ impl Interpreter {
         input: &[u8],
     ) -> Result<(Vec<u8>, Vec<u8>), LispError> {
         self.refresh_process_id(record_id)?;
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if !process.status.is_live() {
             return Err(LispError::Signal("Process is not running".into()));
         }
@@ -1761,9 +1780,10 @@ impl Interpreter {
         let mut offset = 0usize;
         while offset < input.len() {
             let write_result = {
+                let record_id_value = self.record_value(record_id);
                 let process = self
                     .find_process_state_mut(record_id)
-                    .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+                    .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
                 let Some(runtime) = process.runtime.as_mut() else {
                     return Ok((input[offset..].to_vec(), Vec::new()));
                 };
@@ -1801,9 +1821,10 @@ impl Interpreter {
             }
         }
         {
+            let record_id_value = self.record_value(record_id);
             let process = self
                 .find_process_state_mut(record_id)
-                .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+                .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
             if let Some(runtime) = process.runtime.as_mut() {
                 let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
                     Some(pty)
@@ -1855,12 +1876,13 @@ impl Interpreter {
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+        let record_id_value = self.record_value(record_id);
         // GNU reaps child status in its event loop.  Polling again here can
         // invalidate Eshell's immediately preceding `process-live-p' check
         // and turn normal pipeline teardown into a spurious race error.
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if !process.status.is_live() {
             return Err(LispError::Signal("Process is not running".into()));
         }
@@ -1905,9 +1927,10 @@ impl Interpreter {
     /// Non-blocking read of a live process's pipes; marks the process
     /// exited once the pipes are drained and the child has finished.
     pub fn poll_process_output(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if let Some((reader, _)) = process.module_pipe.as_mut() {
             let mut output = std::mem::take(&mut process.pending_stdout);
             read_nonblocking_pipe(reader, &mut output)?;
@@ -3194,7 +3217,7 @@ impl Interpreter {
     }
 
     pub fn current_thread_value(&self) -> Value {
-        Value::Record(self.active_thread_id)
+        self.record_value(self.active_thread_id)
     }
 
     pub(crate) fn make_thread(
@@ -3213,7 +3236,7 @@ impl Interpreter {
         };
         let buffer_id = self.current_buffer_id;
         self.thread_states.push(ThreadState {
-            record_id,
+            record_id: record_id.id,
             name,
             buffer_id,
             buffer_disposition: disposition,
@@ -3229,7 +3252,7 @@ impl Interpreter {
         });
         self.new_thread_continuations
             .threads
-            .insert(record_id, continuation);
+            .insert(record_id.id, continuation);
         Ok(Value::Record(record_id))
     }
 
@@ -3248,8 +3271,11 @@ impl Interpreter {
     pub fn process_thread_value(&self, record_id: u64) -> Result<Value, LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
-        Ok(process.thread_id.map(Value::Record).unwrap_or(Value::Nil))
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
+        Ok(process
+            .thread_id
+            .map(|id| self.record_value(id))
+            .unwrap_or(Value::Nil))
     }
 
     pub fn set_process_thread_id(
@@ -3257,9 +3283,10 @@ impl Interpreter {
         record_id: u64,
         thread_id: Option<u64>,
     ) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.thread_id = thread_id;
         Ok(())
     }
@@ -3267,7 +3294,7 @@ impl Interpreter {
     pub fn ensure_process_owned_by_current_thread(&self, record_id: u64) -> Result<(), LispError> {
         let process = self
             .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         let Some(thread_id) = process.thread_id else {
             return Ok(());
         };
@@ -3297,7 +3324,7 @@ impl Interpreter {
             unreachable!("mutex records are always record values");
         };
         self.mutex_states.push(MutexState {
-            record_id,
+            record_id: record_id.id,
             _name: name,
             owner: None,
             recursion_depth: 0,
@@ -3315,7 +3342,7 @@ impl Interpreter {
             unreachable!("condition variables are always record values");
         };
         self.condition_variables.push(ConditionVariableState {
-            record_id,
+            record_id: record_id.id,
             mutex_id,
             name,
         });
@@ -3352,7 +3379,7 @@ impl Interpreter {
 
     pub fn live_threads(&self) -> Vec<Value> {
         let mut threads = Vec::new();
-        threads.push(Value::Record(self.main_thread_id));
+        threads.push(self.record_value(self.main_thread_id));
         threads.extend(
             self.thread_states
                 .iter()
@@ -3360,7 +3387,7 @@ impl Interpreter {
                     thread.record_id != self.main_thread_id
                         && !matches!(thread.status, ThreadStatus::Finished)
                 })
-                .map(|thread| Value::Record(thread.record_id)),
+                .map(|thread| self.record_value(thread.record_id)),
         );
         threads
     }
@@ -3370,9 +3397,11 @@ impl Interpreter {
             .find_thread_state(record_id)
             .map(|thread| &thread.status)
         {
-            Some(ThreadStatus::Blocked(ThreadBlocker::Mutex(id))) => Value::Record(*id),
-            Some(ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))) => Value::Record(*id),
-            Some(ThreadStatus::Blocked(ThreadBlocker::Thread(id))) => Value::Record(*id),
+            Some(ThreadStatus::Blocked(ThreadBlocker::Mutex(id))) => self.record_value(*id),
+            Some(ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))) => {
+                self.record_value(*id)
+            }
+            Some(ThreadStatus::Blocked(ThreadBlocker::Thread(id))) => self.record_value(*id),
             _ => Value::Nil,
         }
     }
@@ -3411,7 +3440,7 @@ impl Interpreter {
     pub fn thread_buffer_disposition(&self, record_id: u64) -> Result<Value, LispError> {
         let thread = self
             .find_thread_state(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("threadp", self.record_value(record_id)))?;
         Ok(match thread.buffer_disposition {
             BufferDisposition::Default => Value::Nil,
             BufferDisposition::Preserve => Value::T,
@@ -3425,7 +3454,7 @@ impl Interpreter {
         value: &Value,
     ) -> Result<Value, LispError> {
         if record_id == self.main_thread_id {
-            return Err(wrong_type_argument("threadp", Value::Record(record_id)));
+            return Err(wrong_type_argument("threadp", self.record_value(record_id)));
         }
         let disposition = match value {
             Value::Nil => BufferDisposition::Default,
@@ -3435,9 +3464,10 @@ impl Interpreter {
                 return Err(wrong_type_argument("thread-buffer-disposition", *other));
             }
         };
+        let record_id_value = self.record_value(record_id);
         let thread = self
             .find_thread_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("threadp", record_id_value))?;
         thread.buffer_disposition = disposition;
         self.thread_buffer_disposition(record_id)
     }
@@ -3464,11 +3494,12 @@ impl Interpreter {
             self.deliver_signal_to_main_thread(self.active_thread_id, condition, data, env)?;
             return Ok(Value::Nil);
         }
+        let record_id_value = self.record_value(record_id);
         // thread.c:Fthread_signal stores even into a dead target. Delivery
         // occurs on the target's real stack at post_acquire_global_lock.
         let target = self
             .find_thread_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("threadp", record_id_value))?;
         // error_symbol and error_data are independent Lisp fields in GNU's
         // thread_state. A nil condition still retains DATA until overwritten
         // or until the thread object becomes unreachable.
@@ -3528,7 +3559,7 @@ impl Interpreter {
         // the eventual body error. Retain that real snapshot across GC/yields.
         let target = self
             .find_thread_state(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
+            .ok_or_else(|| wrong_type_argument("threadp", self.record_value(record_id)))?;
         let snapshot = (target.signal_condition, target.signal_data);
         let thread_id = self.active_thread_id;
         self.with_lisp_stack_roots(&snapshot, |interpreter| {
@@ -3750,7 +3781,7 @@ impl Interpreter {
         let mutex_id = self
             .condition_variable_mutex_id(condvar_id)
             .ok_or_else(|| {
-                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
+                wrong_type_argument("condition-variable-p", self.record_value(condvar_id))
             })?;
         let depth = self
             .mutex_states
@@ -3928,9 +3959,10 @@ impl Interpreter {
         // the input queue; read_char runs `special-event-map's binding
         // (thread-handle-event's message) when the main thread next reads.
         let _ = env;
+        let source_thread_id_value = self.record_value(source_thread_id);
         self.pending_thread_events.push(Value::list([
             Value::symbol("thread-event"),
-            Value::Record(source_thread_id),
+            source_thread_id_value,
             condition,
             data,
         ]));

@@ -131,7 +131,7 @@ fn tty_popup_menu(
         })
     {
         let layout = crate::lisp::primitives::window_render_layout(interp);
-        if let Some(info) = layout.iter().find(|info| info.window_id == window_id) {
+        if let Some(info) = layout.iter().find(|info| info.window_id == window_id.id) {
             x += info.left as i64;
             y += info.top as i64;
         }

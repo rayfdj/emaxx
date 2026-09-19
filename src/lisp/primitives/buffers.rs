@@ -429,7 +429,7 @@ pub(crate) fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Opt
     interp
         .find_record(*id)
         .filter(|record| record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE))
-        .map(|_| *id)
+        .map(|_| id.id)
 }
 
 pub(crate) fn is_abbrev_table_value(interp: &Interpreter, value: &Value) -> bool {
@@ -471,7 +471,7 @@ pub(crate) fn make_runtime_abbrev_table(
         ],
     );
     if let Value::Record(id) = table {
-        let symbol = abbrev_symbol_name(id, "");
+        let symbol = abbrev_symbol_name(id.id, "");
         interp.set_global_binding(&symbol, Value::Nil);
         let _ = interp.set_symbol_plist(&symbol, props);
     }

@@ -365,7 +365,7 @@ fn sqlite_version(args: &[Value]) -> Result<Value, LispError> {
 fn sqlitep(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
     need_args("sqlitep", args, 1, 1)?;
     Ok(match args[0] {
-        Value::Record(id) if interp.find_sqlite_handle(id).is_some() => Value::T,
+        Value::Record(id) if interp.find_sqlite_handle(id.id).is_some() => Value::T,
         _ => Value::Nil,
     })
 }
@@ -430,7 +430,7 @@ fn sqlite_errstr(code: i32) -> Option<String> {
 
 fn sqlite_id(value: &Value) -> Result<u64, LispError> {
     match value {
-        Value::Record(id) => Ok(*id),
+        Value::Record(id) => Ok(id.id),
         _ => Err(LispError::WrongTypeArgument("sqlitep".into(), *value)),
     }
 }
@@ -444,7 +444,7 @@ fn create_sqlite_handle(
     let Value::Record(id) = value else {
         return Err(LispError::Signal("sqlite record allocation failed".into()));
     };
-    interp.register_sqlite_handle(id, state);
+    interp.register_sqlite_handle(id.id, state);
     Ok(Value::Record(id))
 }
 

@@ -487,7 +487,7 @@ impl Loader<'_> {
                         type_tag,
                         vec![Value::Nil; nslots],
                     ));
-                    self.objects.insert(offset, Value::Record(id));
+                    self.objects.insert(offset, self.interp.record_value(id));
                     if kind == DumpType::Obarray {
                         obarray_records.push((offset, id, nslots));
                     }
@@ -863,7 +863,7 @@ impl Loader<'_> {
         let mut ids = Vec::with_capacity(size);
         for index in 0..size {
             match self.value_at(offset + 8 * (index as u32 + 1))? {
-                Value::Record(id) => ids.push(id),
+                Value::Record(id) => ids.push(id.id),
                 other => {
                     return Err(LoadError::Error(format!(
                         "hash list entry is not a hash table: {other:?}"
@@ -935,7 +935,9 @@ impl Loader<'_> {
                     .ok_or_else(|| LoadError::Error("subr name is not a string".into()))?;
                 Ok(Value::BuiltinFunc(SymbolName::intern_str(&name_text)))
             }
-            DumpType::MainThread => Ok(Value::Record(self.interp.main_thread_record_id())),
+            DumpType::MainThread => Ok(self
+                .interp
+                .record_value(self.interp.main_thread_record_id())),
             other => Err(LoadError::Error(format!(
                 "{other:?} is not an Emacs-image object kind"
             ))),
@@ -1159,7 +1161,7 @@ impl Loader<'_> {
             Value::symbol("bool-vector"),
             slots,
         ));
-        Ok(Value::Record(id))
+        Ok(self.interp.record_value(id))
     }
 
     /// A char-table record: id, subtype, default, parent, extra slots,

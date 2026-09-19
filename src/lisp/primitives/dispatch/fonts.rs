@@ -60,7 +60,7 @@ fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
             record.kind == crate::lisp::eval::RecordKind::Font
                 && record.has_symbol_type("font-spec")
         })
-        .map(|_| *id)
+        .map(|_| id.id)
         .ok_or_else(|| wrong_type_argument("font-spec-p", *value))
 }
 
@@ -441,7 +441,7 @@ fn put_font_property(
             return Err(wrong_type_argument("fontp", *font));
         };
         font_record(interp, font)?;
-        *id
+        id.id
     };
 
     if key == ":name" {
@@ -952,7 +952,7 @@ define_dispatch!(
                             .ok_or_else(|| wrong_type_argument("window-live-p", *window))?;
                         *window
                     }
-                    None => Value::Record(interp.selected_window_id()),
+                    None => interp.record_value(interp.selected_window_id()),
                 };
                 if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
                     let Value::Integer(position) = args[0] else {

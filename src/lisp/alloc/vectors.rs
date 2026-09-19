@@ -67,6 +67,9 @@ pub enum VectorTag {
     Bignum = 2,
     Buffer = 13,
     Closure = 31,
+    /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
+    /// implementation keeps as records (the kind is in the state).
+    Record = 34,
     StringObject = 40,
     ReaderForm = 41,
 }
@@ -78,6 +81,7 @@ impl VectorTag {
             2 => Self::Bignum,
             13 => Self::Buffer,
             31 => Self::Closure,
+            34 => Self::Record,
             40 => Self::StringObject,
             41 => Self::ReaderForm,
             _ => Self::Normal,
@@ -160,6 +164,49 @@ static LIVE_VECTOR_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
+/// The records' share of `total_vectors' and `total_vector_slots'
+/// (alloc.c counts a record as a vector of its slots).
+static LIVE_RECORDS: AtomicUsize = AtomicUsize::new(0);
+static LIVE_RECORD_SLOTS: AtomicUsize = AtomicUsize::new(0);
+
+/// The records the sweep freed, as (owner, id): the interpreter whose
+/// id space the record was in purges the side tables it keeps by that
+/// id after its sweep (`Interpreter::drain_freed_records').  A record is
+/// an object of the process, an id a name in one interpreter's tables.
+static FREED_RECORDS: std::sync::Mutex<Vec<FreedRecord>> = std::sync::Mutex::new(Vec::new());
+
+/// A record the sweep freed: whose id space, which id, and the symbol
+/// its type tag named (the type index's key), read before the drop.
+pub(crate) struct FreedRecord {
+    pub(crate) owner: u32,
+    pub(crate) id: u64,
+    /// The freed cell's address (its handle's `identity'): a registry
+    /// entry under the same id that names another cell (an image load
+    /// replaced the record) is left alone.
+    pub(crate) identity: usize,
+    pub(crate) type_name: Option<Box<str>>,
+}
+
+fn note_freed_record(owner: u32, id: u64, identity: usize, type_name: Option<Box<str>>) {
+    FREED_RECORDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(FreedRecord {
+            owner,
+            id,
+            identity,
+            type_name,
+        });
+}
+
+/// The records the sweeps freed since the last call.
+pub(crate) fn take_freed_records() -> Vec<FreedRecord> {
+    std::mem::take(
+        &mut *FREED_RECORDS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
 static LIVE_STRING_OBJECTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRING_OBJECT_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRING_OBJECT_SPANS: AtomicUsize = AtomicUsize::new(0);
@@ -417,6 +464,10 @@ impl Vectorlike for ReaderForm {
     const TAG: VectorTag = VectorTag::ReaderForm;
 }
 
+impl Vectorlike for crate::lisp::eval::RecordState {
+    const TAG: VectorTag = VectorTag::Record;
+}
+
 /// `Lisp_Object' for a pseudovector of kind T: the header's address.
 #[repr(transparent)]
 pub struct VectorlikeRef<T>(NonNull<VectorHeader>, PhantomData<T>);
@@ -456,6 +507,14 @@ impl<T> VectorlikeRef<T> {
     pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
         // SAFETY: the caller's contract.
         Self(unsafe { NonNull::new_unchecked(header) }, PhantomData)
+    }
+
+    /// The payload's address, for a caller that holds the object and
+    /// reads or writes its state in place.
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        // SAFETY: an allocated pseudovector of kind T (the handle's contract).
+        unsafe { payload(self.0.as_ptr()).cast::<T>() }
     }
 
     #[inline]
@@ -513,6 +572,14 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_CLOSURE_SLOTS, lambda.public_len() + 1);
             }
             VectorTag::Bignum => raise(&LIVE_BIGNUMS, 1),
+            VectorTag::Record => {
+                let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
+                let slots = record.gnu_vector_slots();
+                if slots != 0 {
+                    raise(&LIVE_RECORDS, 1);
+                    raise(&LIVE_RECORD_SLOTS, slots);
+                }
+            }
             VectorTag::StringObject => {
                 let state = (*payload(header).cast::<RefCell<SharedStringState>>()).borrow();
                 raise(&LIVE_STRING_OBJECTS, 1);
@@ -549,6 +616,18 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
+            VectorTag::Record => {
+                let record = body.cast::<crate::lisp::eval::RecordState>();
+                // The interpreter that owns the id purges its side tables
+                // for the record after its sweep (`drain_freed_records').
+                note_freed_record(
+                    (*record).owner,
+                    (*record).id,
+                    header as usize,
+                    (*record).symbol_type_name().map(Box::from),
+                );
+                std::ptr::drop_in_place(record);
+            }
         }
         if cfg!(debug_assertions) {
             let nbytes = (*header).nbytes();
@@ -565,6 +644,8 @@ struct SweepStats {
     closures: usize,
     closure_slots: usize,
     bignums: usize,
+    records: usize,
+    record_slots: usize,
     string_objects: usize,
     string_object_bytes: usize,
     string_object_spans: usize,
@@ -587,6 +668,14 @@ impl SweepStats {
                     self.closure_slots += lambda.public_len() + 1;
                 }
                 VectorTag::Bignum => self.bignums += 1,
+                VectorTag::Record => {
+                    let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
+                    let slots = record.gnu_vector_slots();
+                    if slots != 0 {
+                        self.records += 1;
+                        self.record_slots += slots;
+                    }
+                }
                 VectorTag::StringObject => {
                     self.string_objects += 1;
                     // A string object the collection found mutably borrowed
@@ -665,6 +754,8 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_CLOSURES.store(stats.closures, Ordering::Relaxed);
     LIVE_CLOSURE_SLOTS.store(stats.closure_slots, Ordering::Relaxed);
     LIVE_BIGNUMS.store(stats.bignums, Ordering::Relaxed);
+    LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
+    LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
     LIVE_STRING_OBJECTS.store(stats.string_objects, Ordering::Relaxed);
     LIVE_STRING_OBJECT_BYTES.store(stats.string_object_bytes, Ordering::Relaxed);
     LIVE_STRING_OBJECT_SPANS.store(stats.string_object_spans, Ordering::Relaxed);
@@ -680,6 +771,15 @@ pub(crate) fn live_vector_census() -> (usize, usize) {
         LIVE_VECTOR_SLOTS.load(Ordering::Relaxed)
             + LIVE_CLOSURE_SLOTS.load(Ordering::Relaxed)
             + bignums * 3,
+    )
+}
+
+/// The records' census: count and slots, as alloc.c counts a record
+/// among the vectors.
+pub(crate) fn live_record_census() -> (usize, usize) {
+    (
+        LIVE_RECORDS.load(Ordering::Relaxed),
+        LIVE_RECORD_SLOTS.load(Ordering::Relaxed),
     )
 }
 
@@ -764,6 +864,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Closure => Value::Lambda(VectorlikeRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
+            VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }

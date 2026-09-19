@@ -1,4 +1,5 @@
 use crate::file_system as fs;
+use crate::lisp::types::RecordRef;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -1550,9 +1551,16 @@ pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
     }
 }
 
+/// alloc.c's PVEC_RECORD (and the pseudovector kinds kept as records):
+/// the object in a vector block, reached through `RecordRef'.  The id
+/// is the name the owning interpreter's side tables know it by (the
+/// hash-table states, the type index, the caches), until those live in
+/// the object as C's do; the owner tells whose id space it is.
 #[derive(Clone, Debug)]
 pub struct RecordState {
     pub id: u64,
+    /// The interpreter whose id space `id' is in (`record_owner').
+    pub(crate) owner: u32,
     /// GNU stores the record type in slot zero and permits either a symbol or
     /// an arbitrary type descriptor there.  Keep the Lisp object itself as
     /// the single source of truth; host pseudovectors use symbol tags.
@@ -1561,7 +1569,38 @@ pub struct RecordState {
     pub(crate) kind: RecordKind,
 }
 
+/// The next id space for a state's records (`RecordState::owner').
+fn next_record_owner() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// After the sweeps: the records they freed leave every live state's
+/// registry and side tables.
+pub(crate) fn purge_freed_records_in_live_states() {
+    let freed = crate::lisp::alloc::take_freed_records();
+    if freed.is_empty() {
+        return;
+    }
+    for state in crate::lisp::alloc::live_states() {
+        // SAFETY: a registered state is a live boxed `InterpreterState'
+        // (see `weak_hash_reachability_with_native'); the shell only
+        // edits its tables and never drops the box.
+        let mut other = std::mem::ManuallyDrop::new(Interpreter {
+            state: Some(unsafe { Box::from_raw(state as *mut InterpreterState) }),
+            continuations: continuations::ThreadContinuations::default(),
+        });
+        other.purge_freed_records(&freed);
+    }
+}
+
 impl RecordState {
+    /// The vector slots alloc.c would count for this record (zero for a
+    /// kind GNU keeps outside the vectors).
+    pub(crate) fn gnu_vector_slots(&self) -> usize {
+        self.kind.gnu_vector_slots(self.slots.len())
+    }
+
     pub(crate) fn symbol_type_name(&self) -> Option<&str> {
         self.type_tag.as_symbol().ok()
     }
@@ -3004,16 +3043,21 @@ struct ImageGraphCopier {
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
     reader_forms: std::collections::HashMap<usize, Value>,
+    records: std::collections::HashMap<usize, Value>,
+    /// The clone's id space: its copies of the records carry it.
+    record_owner: u32,
 }
 
 impl ImageGraphCopier {
-    fn new() -> Self {
+    fn new(record_owner: u32) -> Self {
         Self {
             cons: Default::default(),
             vectors: Default::default(),
             strings: Default::default(),
             lambdas: Default::default(),
             reader_forms: Default::default(),
+            records: Default::default(),
+            record_owner,
         }
     }
 
@@ -3070,6 +3114,32 @@ impl ImageGraphCopier {
                 if let Value::StringObject(new_state) = &copied {
                     new_state.borrow_mut().props = copied_props;
                 }
+                copied
+            }
+            Value::Record(record) => {
+                // The clone's own record cell under the same id, in its
+                // id space; the slots copied after the cell is on record
+                // (a record can reach itself).
+                let key = record.identity();
+                if let Some(copied) = self.records.get(&key) {
+                    return *copied;
+                }
+                let copied_record = RecordRef::allocate(RecordState {
+                    id: record.id,
+                    owner: self.record_owner,
+                    type_tag: Value::Nil,
+                    slots: Vec::new(),
+                    kind: record.kind,
+                });
+                let copied = Value::Record(copied_record);
+                self.records.insert(key, copied);
+                let type_tag = self.copy(&record.type_tag);
+                let slots = record.slots.iter().map(|slot| self.copy(slot)).collect();
+                // SAFETY: the cell was allocated an instant ago and is
+                // reachable through the copier's map alone.
+                let state = unsafe { &mut *copied_record.as_ptr() };
+                state.type_tag = type_tag;
+                state.slots = slots;
                 copied
             }
             Value::Lambda(lambda) => {
@@ -3269,14 +3339,6 @@ pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 /// SipHash of every visited address made the mark phase a quarter hashing).
 pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
 
-/// How many objects of each kind the last collection reached: the mark
-/// sets of the next one are sized for it, so the mark phase grows no
-/// table (alloc.c's mark bit sits on the object and allocates nothing).
-#[derive(Clone, Copy, Default)]
-pub(crate) struct MarkSetSizes {
-    records: usize,
-}
-
 pub(crate) struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
@@ -3297,7 +3359,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     char_tables: MarkedIds,
     frames: MarkedIds,
     terminals: MarkedIds,
-    records: MarkedIds,
     finalizers: MarkedIds,
 }
 
@@ -3334,7 +3395,6 @@ impl LispReachability<'_, '_> {
             char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
             terminals: MarkedIds::default(),
-            records: MarkedIds::default(),
             finalizers: MarkedIds::default(),
         }
     }
@@ -3345,7 +3405,6 @@ pub(crate) struct WeakHashReachability {
     /// which the sweep tests.
     pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    pub(crate) live_records: MarkedIds,
     /// Finalizer objects the mark phase reached (alloc.c marks a reached
     /// `Lisp_Finalizer' as any pseudovector, and its function with it).
     pub(crate) live_finalizers: MarkedIds,
@@ -3381,7 +3440,7 @@ impl LispReachability<'_, '_> {
             Value::CharTable(id) => self.char_tables.contains(id),
             Value::Frame(id) => self.frames.contains(id),
             Value::Terminal(id) => self.terminals.contains(id),
-            Value::Record(id) => self.records.contains(id),
+            Value::Record(record) => record.mark_bit().is_marked(self.epoch),
             Value::Finalizer(id) => self.finalizers.contains(id),
             Value::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
@@ -3451,7 +3510,7 @@ impl LispReachability<'_, '_> {
             Value::CharTable(id) => self.char_tables.insert(*id),
             Value::Frame(id) => self.frames.insert(*id),
             Value::Terminal(id) => self.terminals.insert(*id),
-            Value::Record(id) => self.records.insert(*id),
+            Value::Record(record) => record.mark_bit().mark(self.epoch),
             Value::Finalizer(id) => self.finalizers.insert(*id),
             Value::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
@@ -3563,10 +3622,9 @@ impl LispReachability<'_, '_> {
                     }
                 }
             }
-            Value::Record(id) => {
-                let Some(record) = interp.find_record(*id) else {
-                    return;
-                };
+            Value::Record(record) => {
+                // alloc.c's mark_vectorlike: the slots in place.
+                let record: &RecordState = record;
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
                 // alloc.c's mark_vectorlike reads the slots in place.  A
@@ -3588,7 +3646,7 @@ impl LispReachability<'_, '_> {
                     self.enqueue(slot);
                 }
                 if record.kind == RecordKind::HashTable && (!weak_hash || self.retaining) {
-                    if let Some(entries) = interp.hash_table_runtime_entries(*id) {
+                    if let Some(entries) = interp.hash_table_runtime_entries(record.id) {
                         for (key, value) in entries {
                             self.enqueue(key);
                             self.enqueue(value);
@@ -3606,7 +3664,7 @@ impl LispReachability<'_, '_> {
                 // (thread.c:run_thread unlinks it). Its result and injected
                 // error still belong to the thread object when reachable.
                 if record.kind == RecordKind::Thread
-                    && let Some(thread) = interp.find_thread_state(*id)
+                    && let Some(thread) = interp.find_thread_state(record.id)
                 {
                     for value in thread.entry.iter() {
                         self.enqueue(value);
@@ -3726,7 +3784,7 @@ impl Interpreter {
 
     /// Vobarray: the initial obarray object.
     pub(crate) fn standard_obarray_value(&self) -> Value {
-        Value::Record(self.standard_obarray_id)
+        self.record_value(self.standard_obarray_id)
     }
 
     /// The running process's main thread object (thread.c:main_thread).
@@ -3738,9 +3796,10 @@ impl Interpreter {
     /// authority; an existing record with that id is replaced), keeping
     /// the type index and the id allocator ahead of it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_record(&mut self, state: RecordState) {
+    pub(crate) fn install_record(&mut self, mut state: RecordState) -> RecordRef {
         let index = self.record_index_for(state.id);
-        let previous_type = self.records[index].symbol_type_name().map(str::to_owned);
+        let previous_type =
+            self.records[index].and_then(|record| record.symbol_type_name().map(str::to_owned));
         if let Some(type_name) = previous_type
             && let Some(ids) = self.record_ids_by_type_index.get_mut(&type_name)
         {
@@ -3753,25 +3812,99 @@ impl Interpreter {
                 .insert(state.id);
         }
         self.next_record_id = self.next_record_id.max(state.id + 1);
-        self.records[index] = state;
+        state.owner = self.record_owner;
+        let record = RecordRef::allocate(state);
+        self.records[index] = Some(record);
+        record
     }
 
-    /// The record table is indexed by id (`find_record'): the slot for
-    /// ID, with any gap below it filled by empty records, as the image
-    /// installs records in image order and a remembered next id can
-    /// exceed the records the image carried.
+    /// The registry is indexed by id (`find_record'): the slot for ID,
+    /// with any gap below it left empty, as the image installs records
+    /// in image order and a remembered next id can exceed the records
+    /// the image carried.
     pub(crate) fn record_index_for(&mut self, id: u64) -> usize {
         let index = usize::try_from(id - 1).expect("record id fits");
-        while self.records.len() <= index {
-            let filler = self.records.len() as u64 + 1;
-            self.records.push(RecordState {
-                id: filler,
-                type_tag: Value::Nil,
-                slots: Vec::new(),
-                kind: RecordKind::Record,
-            });
+        if self.records.len() <= index {
+            self.records.resize(index + 1, None);
         }
         index
+    }
+
+    /// The record ID names in this state's id space, if the sweeps have
+    /// not freed it: the registry is not a root (alloc.c has no list of
+    /// records), and a freed record's slot is cleared after the sweep
+    /// (`purge_freed_records').
+    pub(crate) fn record_ref(&self, id: u64) -> Option<RecordRef> {
+        let index = usize::try_from(id.checked_sub(1)?).ok()?;
+        self.records.get(index).copied().flatten()
+    }
+
+    /// The record ID names, as a value: for the side tables that still
+    /// hold a record by id (a process's, a window's, a thread's) and hand
+    /// it back to Lisp.  Such a table holds a live record (it is a root
+    /// of it, or the record is reachable through the state), so a
+    /// missing one is a bug.
+    pub(crate) fn record_value(&self, id: u64) -> Value {
+        match self.record_ref(id) {
+            Some(record) => Value::Record(record),
+            None => panic!("record {id} is not in this state's registry"),
+        }
+    }
+
+    /// After a sweep: the records the sweeps freed leave the registry and
+    /// the side tables keyed by their ids, in every live state whose id
+    /// space they were in (alloc.c's `cleanup_vector' frees a hash
+    /// table's storage with the table; here the storage is in the
+    /// tables below).
+    pub(crate) fn purge_freed_records(&mut self, freed: &[crate::lisp::alloc::FreedRecord]) {
+        for record in freed {
+            if record.owner != self.record_owner {
+                continue;
+            }
+            let id = record.id;
+            let Some(index) = usize::try_from(id - 1).ok() else {
+                continue;
+            };
+            // The registry names the freed cell under this id, or it names
+            // the record an image load put in its place (whose side tables
+            // are its own): only the former leaves.
+            match self.records.get_mut(index) {
+                Some(slot) if slot.is_some_and(|held| held.identity() == record.identity) => {
+                    *slot = None;
+                }
+                _ => continue,
+            }
+            if let Some(type_name) = record.type_name.as_deref()
+                && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
+            {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.record_ids_by_type_index.remove(type_name);
+                }
+            }
+            self.equal_hash_tables.remove(&id);
+            self.custom_hash_tables.remove(&id);
+            self.immutable_hash_tables.remove(&id);
+            // The side tables that know an object by id go with it: the
+            // sqlite handle (sqlite.c's finalizer closes the database),
+            // the tree-sitter parser, node and query states, a finished
+            // thread's, a mutex's and a condition variable's.
+            self.sqlite_handles
+                .retain(|(record_id, _)| *record_id != id);
+            self.treesit_parsers.retain(|parser| parser.record_id != id);
+            self.treesit_nodes.retain(|node| node.record_id != id);
+            self.treesit_queries.retain(|query| query.record_id != id);
+            self.thread_states.retain(|thread| thread.record_id != id);
+            self.mutex_states.retain(|mutex| mutex.record_id != id);
+            self.condition_variables
+                .retain(|condvar| condvar.record_id != id);
+            if let Some(slot) = self.bytecode_program_cache.get_mut(index) {
+                *slot = None;
+            }
+            if let Some(slot) = self.keymap_bindings_cache.get_mut().get_mut(index) {
+                *slot = None;
+            }
+        }
     }
 
     /// Install a char-table with the id the image gave it.
@@ -4091,13 +4224,8 @@ impl Interpreter {
         native_roots: &[Value],
         native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
     ) -> WeakHashReachability {
-        let sizes = self.gc_mark_set_sizes.get();
-        fn sized<K>(count: usize) -> HashSet<K, crate::lisp::types::IdentityBuildHasher> {
-            HashSet::with_capacity_and_hasher(count, Default::default())
-        }
         let mut marked = LispReachability {
             native,
-            records: sized(sizes.records),
             ..LispReachability::default()
         };
         marked.mark_env(self, env);
@@ -4139,9 +4267,6 @@ impl Interpreter {
             let mut other_marked = LispReachability::with_epoch(marked.epoch);
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
-            for record in &other.records {
-                other_marked.mark(&other, &Value::Record(record.id));
-            }
         }
         // The thread's bytecode stack and its activations' specpdl entries
         // (alloc.c marks them with the thread).
@@ -4165,19 +4290,20 @@ impl Interpreter {
         let weak_tables = self
             .records
             .iter()
+            .flatten()
             .filter(|record| record.kind == RecordKind::HashTable)
             .filter_map(|record| {
                 let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
                 let entries =
-                    crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
-                Some((record.id, weakness, entries))
+                    crate::lisp::json::hash_table_entries(self, &Value::Record(*record))?.1;
+                Some((*record, weakness, entries))
             })
             .collect::<Vec<_>>();
 
         loop {
             let mut changed = false;
-            for (id, weakness, entries) in &weak_tables {
-                if !marked.records.contains(id) {
+            for (record, weakness, entries) in &weak_tables {
+                if !record.mark_bit().is_marked(marked.epoch) {
                     continue;
                 }
                 for (key, value) in entries {
@@ -4201,13 +4327,10 @@ impl Interpreter {
             }
         }
 
-        self.gc_mark_set_sizes.set(MarkSetSizes {
-            records: marked.records.len(),
-        });
         let tables = weak_tables
             .into_iter()
-            .map(|(id, _, entries)| {
-                let keep = if marked.records.contains(&id) {
+            .map(|(record, _, entries)| {
+                let keep = if record.mark_bit().is_marked(marked.epoch) {
                     entries
                         .iter()
                         .map(|(key, value)| marked.contains(key) && marked.contains(value))
@@ -4215,32 +4338,58 @@ impl Interpreter {
                 } else {
                     vec![false; entries.len()]
                 };
-                (id, entries, keep)
+                (record.id, entries, keep)
             })
             .collect();
-        let reachability = WeakHashReachability {
+        WeakHashReachability {
             epoch: marked.epoch,
             tables,
-            live_records: std::mem::take(&mut marked.records),
             live_finalizers: std::mem::take(&mut marked.finalizers),
             live_markers: std::mem::take(&mut marked.markers),
             live_overlays: std::mem::take(&mut marked.overlays),
-        };
-        // The records this interpreter keeps by id are never swept (the
-        // table is the pre-representation deviation the ledger records);
-        // a record the graph did not reach can still be read by its id, so
-        // the objects its slots hold stay allocated as long as it does.
-        // This retention runs after the live sets were taken, so the
-        // census, the weak tables and the finalizers see only the graph.
-        // It keeps storage; it is not reachability: the native heap's
-        // handles are not marked through it (a handle only the retention
-        // reaches is dead, and its record's storage stays anyway).
-        marked.native = None;
-        marked.retaining = true;
-        for record in &self.records {
-            marked.mark(self, &Value::Record(record.id));
         }
-        reachability
+    }
+
+    /// The records this state's C-side structures hold by id and that
+    /// the other loops of `mark_static_roots_into' do not reach (those
+    /// mark the process list, the live threads, the standard obarray, the
+    /// selected window and each live frame's windows, as process.c,
+    /// thread.c, lread.c and window.c mark theirs): the windows the
+    /// minibuffer state remembers (`minibuf_selected_window',
+    /// `Vminibuf_scroll_window'), the previously selected window, the
+    /// native compilation units and subrs the loader holds (comp.c's
+    /// loaded-units table and the subrs' unit slots), and the keymap
+    /// facade records (not C: the facade lives while the process does).
+    /// A mutex, a condition variable, a tree-sitter object or a module
+    /// function is not held here: C collects them when nothing reaches
+    /// them, and the side tables that know them by id are purged with
+    /// them.  An id the sweep already freed has no entry and is skipped.
+    fn mark_record_holders(&self, mark: &mut impl FnMut(&Value)) {
+        let mut hold = |id: u64| {
+            if let Some(record) = self.record_ref(id) {
+                mark(&Value::Record(record));
+            }
+        };
+        for frame in &self.frame_states {
+            if let Some(id) = frame.old_selected_window_id {
+                hold(id);
+            }
+        }
+        hold(self.old_selected_window_id);
+        if let Some(id) = self.minibuffer_selected_window_id {
+            hold(id);
+        }
+        if let Some(id) = self.minibuffer_runtime.active_window_id {
+            hold(id);
+        }
+        for id in self.native_compiler.held_record_ids() {
+            hold(id);
+        }
+        for record in self.records.iter().flatten() {
+            if record.kind == RecordKind::Keymap {
+                mark(&Value::Record(*record));
+            }
+        }
     }
 
     /// The staticpro'd roots of this state (pdumper.c:dump_roots' slots,
@@ -4259,6 +4408,7 @@ impl Interpreter {
         // marked here too, and rebuilt as string sets on every collection
         // in which a table had changed, for interned names only: the
         // obarray root's own members.
+        self.mark_record_holders(&mut mark);
         // An uninterned symbol whose value cell this state holds (the
         // cell lives in the table, not in the symbol as C's does): the
         // table kept the symbol alive through the reference count, and
@@ -4480,7 +4630,7 @@ impl Interpreter {
             mark(&Value::Marker(restriction.end_marker_id));
         }
         for process in &self.process_states {
-            mark(&Value::Record(process.record_id));
+            mark(&self.record_value(process.record_id));
             // process.c's Lisp_Process.mark slot: the process mark marker.
             mark(&Value::Marker(process.mark_marker_id));
             for value in [
@@ -4507,7 +4657,7 @@ impl Interpreter {
             .iter()
             .filter(|thread| !matches!(thread.status, ThreadStatus::Finished))
         {
-            mark(&Value::Record(thread.record_id));
+            mark(&self.record_value(thread.record_id));
         }
         for value in self.plain_quote_templates.values() {
             mark(&value.value);
@@ -4525,7 +4675,7 @@ impl Interpreter {
             buffer.visit_lisp_values(&mut visit_buffer);
         }
         for id in [self.standard_obarray_id, self.selected_window_id] {
-            mark(&Value::Record(id));
+            mark(&self.record_value(id));
         }
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
@@ -4537,7 +4687,7 @@ impl Interpreter {
                 frame.selected_window_id,
                 frame.minibuffer_window_id,
             ] {
-                mark(&Value::Record(id));
+                mark(&self.record_value(id));
             }
         }
     }
@@ -4562,12 +4712,6 @@ impl Interpreter {
             _ => 1,
         };
         self.set_symbol_value_cell("gcs-done", Value::Integer(done));
-    }
-
-    pub(crate) fn install_gc_record_census(&mut self, live_records: MarkedIds) {
-        self.gc_live_record_ids = live_records;
-        self.gc_record_high_water = self.next_record_id;
-        self.gc_has_record_census = true;
     }
 
     /// Assemble the live-object census from the allocation books (see
@@ -4618,17 +4762,11 @@ impl Interpreter {
             .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS))
             .saturating_add(live_overlays.saturating_mul(GNU_OVERLAY_VECTOR_SLOTS))
             .saturating_add(char_table_slots);
-        for record in self.records.iter().filter(|record| {
-            !self.gc_has_record_census
-                || record.id >= self.gc_record_high_water
-                || self.gc_live_record_ids.contains(&record.id)
-        }) {
-            let slots = record.kind.gnu_vector_slots(record.slots.len());
-            if slots != 0 {
-                vector_count += 1;
-                vector_slots = vector_slots.saturating_add(slots);
-            }
-        }
+        // The records are vectors of the sweep's count (alloc.c counts a
+        // record among the vectors).
+        let (record_count, record_slots) = crate::lisp::alloc::live_record_census();
+        vector_count = vector_count.saturating_add(record_count);
+        vector_slots = vector_slots.saturating_add(record_slots);
         let mut census = LiveObjectCensus {
             conses: crate::lisp::types::census_live_conses()
                 .saturating_sub(vectors.representation_conses),
@@ -4651,11 +4789,7 @@ impl Interpreter {
 
     fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
         let mut bytes = 0_usize;
-        for record in self.records.iter().filter(|record| {
-            !self.gc_has_record_census
-                || record.id >= self.gc_record_high_water
-                || self.gc_live_record_ids.contains(&record.id)
-        }) {
+        for record in self.records.iter().flatten() {
             match record.kind {
                 RecordKind::HashTable => {
                     let capacity = self.gnu_hash_table_capacity(record.id).unwrap_or(0);
@@ -4698,7 +4832,8 @@ impl Interpreter {
             "cannot clone an interpreter with live terminal devices"
         );
         let mut clone = self.clone();
-        let mut copier = ImageGraphCopier::new();
+        clone.record_owner = next_record_owner();
+        let mut copier = ImageGraphCopier::new(clone.record_owner);
         {
             let c = &mut copier;
             for value in clone.globals.values_mut() {
@@ -4787,10 +4922,12 @@ impl Interpreter {
             for program in clone.ccl_programs.iter_mut().flatten() {
                 program.1 = c.copy(&program.1.clone());
             }
-            for record in &mut clone.records {
-                record.type_tag = c.copy(&record.type_tag.clone());
-                for slot in &mut record.slots {
-                    *slot = c.copy(slot);
+            for slot in clone.records.iter_mut() {
+                if let Some(record) = *slot {
+                    let Value::Record(copied) = c.copy(&Value::Record(record)) else {
+                        unreachable!("a record copies to a record")
+                    };
+                    *slot = Some(copied);
                 }
             }
             for execution in &mut clone.kbd_macro_executions {
@@ -5395,7 +5532,11 @@ pub struct InterpreterState {
     /// Next char-table ID for identity tracking.
     next_char_table_id: u64,
     /// Allocated record objects.
-    records: Vec<RecordState>,
+    /// The records by id (`find_record'), a registry and not a root:
+    /// a record the sweep frees leaves it (`purge_freed_records').
+    records: Vec<Option<RecordRef>>,
+    /// This state's id space, for the records' `owner'.
+    record_owner: u32,
     /// Live record IDs grouped by their current type tag.  Records remain in
     /// dense ID order for identity lookup; this derived index avoids scanning
     /// every byte-code function, hash table, and EIEIO object when a caller
@@ -5406,14 +5547,9 @@ pub struct InterpreterState {
     /// host storage keeps IDs stable, but dead records must not contribute to
     /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
     /// were allocated after that collection and remain live until the next.
-    gc_live_record_ids: MarkedIds,
-    /// The last collection's mark counts, sizing the next one's mark sets.
-    gc_mark_set_sizes: Cell<MarkSetSizes>,
     /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
     /// variable is recomputed from after every collection.
     gc_elapsed_total: f64,
-    gc_record_high_water: u64,
-    gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
     /// dense and never freed, so the slot vector doubles as the cache map
     /// (see bytecode::vm).
@@ -5748,6 +5884,22 @@ impl Interpreter {
         primitives::install_user_signal_handlers();
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;
+        let record_owner = next_record_owner();
+        // alloc.c's allocate_record for the two records every state has.
+        let main_thread = RecordRef::allocate(RecordState {
+            id: main_thread_id,
+            owner: record_owner,
+            type_tag: Value::symbol("thread"),
+            slots: Vec::new(),
+            kind: RecordKind::Thread,
+        });
+        let standard_obarray = RecordRef::allocate(RecordState {
+            id: standard_obarray_id,
+            owner: record_owner,
+            type_tag: Value::symbol("obarray"),
+            slots: vec![Value::Nil],
+            kind: RecordKind::Obarray,
+        });
         let standard_syntax_table_id = 1u64;
         let local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
@@ -5777,8 +5929,8 @@ impl Interpreter {
             pending_thread_events: Vec::new(),
             pending_funcalls: Vec::new(),
             globals: SymbolCells::from_bindings(vec![
-                ("main-thread".into(), Value::Record(main_thread_id)),
-                ("obarray".into(), Value::Record(standard_obarray_id)),
+                ("main-thread".into(), Value::Record(main_thread)),
+                ("obarray".into(), Value::Record(standard_obarray)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
                 ("cl-old-struct-compat-mode".into(), Value::Nil),
                 // GNU frame.c defines this native variable before frame.el
@@ -6286,31 +6438,15 @@ impl Interpreter {
             ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
             next_char_table_id: 5,
-            records: vec![
-                RecordState {
-                    id: main_thread_id,
-                    type_tag: Value::symbol("thread"),
-                    slots: Vec::new(),
-                    kind: RecordKind::Thread,
-                },
-                RecordState {
-                    id: standard_obarray_id,
-                    type_tag: Value::symbol("obarray"),
-                    slots: vec![Value::Nil],
-                    kind: RecordKind::Obarray,
-                },
-            ],
+            records: vec![Some(main_thread), Some(standard_obarray)],
+            record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),
                 ("obarray".into(), BTreeSet::from([standard_obarray_id])),
             ]
             .into_iter()
             .collect(),
-            gc_live_record_ids: HashSet::default(),
-            gc_mark_set_sizes: Cell::new(MarkSetSizes::default()),
             gc_elapsed_total: 0.0,
-            gc_record_high_water: 0,
-            gc_has_record_census: false,
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
@@ -7628,9 +7764,9 @@ impl Interpreter {
         let Value::Record(selected_window_id) = selected_window else {
             unreachable!("window records use Value::Record");
         };
-        interp.set_selected_window_id(selected_window_id);
-        interp.set_root_window_id(selected_window_id);
-        interp.old_selected_window_id = selected_window_id;
+        interp.set_selected_window_id(selected_window_id.id);
+        interp.set_root_window_id(selected_window_id.id);
+        interp.old_selected_window_id = selected_window_id.id;
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
@@ -7654,7 +7790,7 @@ impl Interpreter {
         let Value::Record(minibuffer_window_id) = minibuffer_window else {
             unreachable!("window records use Value::Record");
         };
-        interp.set_minibuffer_window_id(minibuffer_window_id);
+        interp.set_minibuffer_window_id(minibuffer_window_id.id);
         // Interpreter::new also constructs several dumped values after the
         // base struct exists (keymaps, tables, and window objects).  Reconcile
         // the completed image through the same registry before exposing it;

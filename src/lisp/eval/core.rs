@@ -934,13 +934,13 @@ impl Interpreter {
             return self.call_function_value(*func, None, args, env);
         }
         match func {
-            Value::Record(id) if self.has_cached_bytecode_program(*id) => {
+            Value::Record(id) if self.has_cached_bytecode_program(id.id) => {
                 let id = *id;
                 self.begin_funcall(env)?;
                 let result = if let Some(termination) = self.pending_termination().cloned() {
                     Err(LispError::Terminate(termination))
                 } else {
-                    self.execute_bytecode_record_named(id, None, args, env)
+                    self.execute_bytecode_record_named(id.id, None, args, env)
                 };
                 self.end_funcall();
                 result
@@ -961,10 +961,10 @@ impl Interpreter {
                                 true,
                             ),
                         Ok(FunctionResolution::Resolved(Value::Record(id)))
-                            if self.has_cached_bytecode_program(id) =>
+                            if self.has_cached_bytecode_program(id.id) =>
                         {
                             self.execute_bytecode_record_named(
-                                id,
+                                id.id,
                                 Some(CallName::Symbol(name)),
                                 args,
                                 env,
@@ -1287,7 +1287,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
             .map(CallName::original_symbol_value)
-            .unwrap_or(Value::Record(record_id));
+            .unwrap_or(self.record_value(record_id));
         self.with_backtrace_frame(backtrace_function, args, |interp| {
             interp.capture_current_backtrace_context(
                 original_name.map(CallName::as_str),
@@ -1353,13 +1353,13 @@ impl Interpreter {
         }
         let program = self
             .bytecode_program_cache
-            .get((id as usize).checked_sub(1)?)?
+            .get((id.id as usize).checked_sub(1)?)?
             .as_ref()?;
         matches!(
             program.argspec,
             crate::lisp::bytecode::ArgSpec::Packed { .. }
         )
-        .then(|| (std::rc::Rc::clone(program), id))
+        .then(|| (std::rc::Rc::clone(program), id.id))
     }
 
     fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
@@ -1399,9 +1399,9 @@ impl Interpreter {
         // (only execute_record populates the cache), so skip the
         // lambda/autoload probes and the record-type guards below.
         if let Value::Record(id) = &func
-            && self.has_cached_bytecode_program(*id)
+            && self.has_cached_bytecode_program(id.id)
         {
-            return self.execute_bytecode_record_named(*id, original_name, args, env);
+            return self.execute_bytecode_record_named(id.id, original_name, args, env);
         }
         let mut owned_name: Option<SymbolName> = None;
         let func = match func {
@@ -1430,10 +1430,10 @@ impl Interpreter {
                     // funcall_general's COMPILEDP arm: the function cell
                     // holds a byte-code object already decoded once.
                     FunctionResolution::Resolved(Value::Record(id))
-                        if self.has_cached_bytecode_program(id) =>
+                        if self.has_cached_bytecode_program(id.id) =>
                     {
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
-                        return self.execute_bytecode_record_named(id, call_name, args, env);
+                        return self.execute_bytecode_record_named(id.id, call_name, args, env);
                     }
                     FunctionResolution::Resolved(value) => {
                         if original_name.is_none() {
@@ -1533,7 +1533,7 @@ impl Interpreter {
                         None,
                     );
                     crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = crate::lisp::native_comp::call_function(interp, env, id, args);
+                    let result = crate::lisp::native_comp::call_function(interp, env, id.id, args);
                     interp.settle_frame_result(result, env)
                 })
             }
@@ -1556,7 +1556,7 @@ impl Interpreter {
                         // module functions too. Keep the resolved function
                         // live if a finalizer rebinds its original symbol.
                         crate::lisp::native_comp::maybe_gc(interp, env);
-                        crate::lisp::modules::call(interp, env, id, args)
+                        crate::lisp::modules::call(interp, env, id.id, args)
                     });
                     interp.settle_frame_result(result, env)
                 })
@@ -1573,7 +1573,7 @@ impl Interpreter {
                     // A byte-code closure has a string code slot. Leave
                     // instruction validation to the VM, not this type check.
                     if record.slots.get(1).is_some_and(Value::is_string) {
-                        return self.execute_bytecode_record_named(id, original_name, args, env);
+                        return self.execute_bytecode_record_named(id.id, original_name, args, env);
                     }
                     let Some(inner) = record.slots.first().cloned() else {
                         return Err(LispError::SignalValue(Value::list([
@@ -1950,7 +1950,7 @@ mod eval_value_buffer_tests {
             let (_, entries, retained) = reachability
                 .tables
                 .iter()
-                .find(|(key, _, _)| *key == id)
+                .find(|(key, _, _)| *key == id.id)
                 .expect("weak table participates in root traversal");
             assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
             assert_eq!(retained.len(), 2);
@@ -1983,7 +1983,7 @@ mod eval_value_buffer_tests {
         let (_, _, retained) = reachability
             .tables
             .iter()
-            .find(|(key, _, _)| *key == id)
+            .find(|(key, _, _)| *key == id.id)
             .expect("weak table participates in root traversal");
         assert_eq!(retained.len(), 2);
         assert!(
@@ -2459,7 +2459,7 @@ mod eval_value_buffer_tests {
         let (_, entries, keep) = marked
             .tables
             .iter()
-            .find(|(id, _, _)| *id == table_id)
+            .find(|(id, _, _)| *id == table_id.id)
             .expect("marked weak table");
         assert_eq!(entries.len(), 9);
         for ((_, index), retained) in entries.iter().zip(keep) {
@@ -2477,7 +2477,7 @@ mod eval_value_buffer_tests {
         let (_, entries, keep) = marked
             .tables
             .iter()
-            .find(|(id, _, _)| *id == table_id)
+            .find(|(id, _, _)| *id == table_id.id)
             .expect("marked weak table");
         for ((_, index), retained) in entries.iter().zip(keep) {
             assert_eq!(

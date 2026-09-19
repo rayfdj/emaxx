@@ -143,8 +143,8 @@ pub(crate) fn keymap_records_equal(
         return true;
     }
 
-    let left_value = Value::Record(left_id);
-    let right_value = Value::Record(right_id);
+    let left_value = interp.record_value(left_id);
+    let right_value = interp.record_value(right_id);
     let Ok(Some(left_items)) = keymap_list_items(interp, &left_value) else {
         return false;
     };
@@ -235,7 +235,7 @@ pub(crate) fn keymap_record_equals_list(
     seen: &mut HashSet<(usize, usize)>,
     env: Option<&Env>,
 ) -> bool {
-    let keymap_value = Value::Record(keymap_id);
+    let keymap_value = interp.record_value(keymap_id);
     let Ok(Some(items)) = keymap_list_items(interp, &keymap_value) else {
         return false;
     };
@@ -373,24 +373,24 @@ fn values_equal_recursive_with_env(
                     .find_record(*right_id)
                     .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_records_equal(interp, *left_id, *right_id, seen, env)
+            keymap_records_equal(interp, left_id.id, right_id.id, seen, env)
         }
         (Value::Record(left_id), Value::Cons(_))
             if interp
                 .find_record(*left_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_record_equals_list(interp, *left_id, right, seen, env)
+            keymap_record_equals_list(interp, left_id.id, right, seen, env)
         }
         (Value::Cons(_), Value::Record(right_id))
             if interp
                 .find_record(*right_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_record_equals_list(interp, *right_id, left, seen, env)
+            keymap_record_equals_list(interp, right_id.id, left, seen, env)
         }
         (Value::Record(left_id), Value::Record(right_id)) => {
-            if left_id == right_id {
+            if left_id.ptr_eq(right_id) {
                 return true;
             }
             let (Some(left_record), Some(right_record)) =
@@ -433,7 +433,7 @@ fn values_equal_recursive_with_env(
                         && left.node_id == right.node_id);
             }
             // GNU `equal' compares real records element-wise like vectors.
-            let pair = (*left_id as usize, *right_id as usize);
+            let pair = (left_id.identity(), right_id.identity());
             if !seen.insert(pair) {
                 return true;
             }
@@ -453,10 +453,10 @@ fn values_equal_recursive_with_env(
                     })
         }
         (Value::Record(left_id), _) if record_literal_items(right).is_some() => {
-            record_equals_record_literal_form(interp, *left_id, right, seen, env)
+            record_equals_record_literal_form(interp, left_id.id, right, seen, env)
         }
         (_, Value::Record(right_id)) if record_literal_items(left).is_some() => {
-            record_equals_record_literal_form(interp, *right_id, left, seen, env)
+            record_equals_record_literal_form(interp, right_id.id, left, seen, env)
         }
         (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
@@ -526,8 +526,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         | (Value::CharTable(left_id), Value::CharTable(right_id))
         | (Value::Frame(left_id), Value::Frame(right_id))
         | (Value::Terminal(left_id), Value::Terminal(right_id))
-        | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
         // eql on non-numbers is eq; identity must be reflexive here too.
         (Value::ReaderForm(left), Value::ReaderForm(right)) => left.ptr_eq(right),
         _ => false,
@@ -597,8 +597,8 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         | (Value::CharTable(left_id), Value::CharTable(right_id))
         | (Value::Frame(left_id), Value::Frame(right_id))
         | (Value::Terminal(left_id), Value::Terminal(right_id))
-        | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
@@ -709,9 +709,9 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         Value::Lambda(lambda) => Ok(lambda.public_len() as i64),
         Value::Cons(_) => Ok(value.to_vec()?.len() as i64),
         Value::Record(id) => {
-            let record = interp
-                .find_record(*id)
-                .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
+            let record = interp.find_record(*id).ok_or_else(|| {
+                LispError::TypeError("record".into(), format!("record<{}>", id.id))
+            })?;
             match record.kind {
                 // GNU records carry their type tag in public slot zero;
                 // Emaxx stores that tag separately from `slots'.
@@ -846,7 +846,7 @@ pub(crate) fn values_equal_including_properties_recursive(
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Record(left_id), Value::Record(right_id)) => {
-            if left_id == right_id {
+            if left_id.ptr_eq(right_id) {
                 return true;
             }
             let (Some(left_record), Some(right_record)) =
@@ -890,7 +890,7 @@ pub(crate) fn values_equal_including_properties_recursive(
                         && left.generation == right.generation
                         && left.node_id == right.node_id);
             }
-            let pair = (*left_id as usize, *right_id as usize);
+            let pair = (left_id.identity(), right_id.identity());
             if !seen.insert(pair) {
                 return true;
             }
@@ -1102,10 +1102,14 @@ pub(crate) fn compare_record_values(
         return Err(type_mismatch_signal(left, right));
     };
     let Some(left_record) = interp.find_record(*left_id) else {
-        return Ok(Some(order_from_ordering(left_id.cmp(right_id))));
+        return Ok(Some(order_from_ordering(
+            left_id.identity().cmp(&right_id.identity()),
+        )));
     };
     let Some(right_record) = interp.find_record(*right_id) else {
-        return Ok(Some(order_from_ordering(left_id.cmp(right_id))));
+        return Ok(Some(order_from_ordering(
+            left_id.identity().cmp(&right_id.identity()),
+        )));
     };
 
     if left_record.kind != right_record.kind {
@@ -1129,8 +1133,8 @@ pub(crate) fn compare_record_values(
         }
         crate::lisp::eval::RecordKind::Process => Ok(Some(
             match (
-                interp.process_name(*left_id),
-                interp.process_name(*right_id),
+                interp.process_name(left_id.id),
+                interp.process_name(right_id.id),
             ) {
                 (Some(left), Some(right)) => compare_plain_symbol_names(&left, &right),
                 _ => ValueOrder::Unordered,
@@ -1851,7 +1855,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::Record(id) => {
             hash_mix(state, 12);
-            hash_mix(state, *id);
+            hash_mix(state, id.id);
         }
         Value::Finalizer(id) => {
             hash_mix(state, 13);
@@ -2068,7 +2072,7 @@ pub(crate) fn hash_value_equal_at(
             hash_record_equal(
                 interp,
                 state,
-                *id,
+                id.id,
                 include_properties,
                 depth,
                 remove_symbol_positions,
@@ -2177,7 +2181,7 @@ pub(crate) fn hash_record_equal(
     match record.kind {
         crate::lisp::eval::RecordKind::BoolVector => {
             hash_str(state, "bool-vector");
-            if let Ok(bits) = bool_vector_bits(interp, &Value::Record(id)) {
+            if let Ok(bits) = bool_vector_bits(interp, &interp.record_value(id)) {
                 hash_mix(state, bits.len() as u64);
                 for bit in bits {
                     hash_mix(state, u64::from(bit));
@@ -2430,7 +2434,7 @@ pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) 
         ],
     );
     if let Value::Record(id) = keymap {
-        refresh_runtime_keymap_public_view(interp, id)
+        refresh_runtime_keymap_public_view(interp, id.id)
             .expect("new runtime keymap has a valid public view");
         return interp
             .find_record(id)
@@ -2577,7 +2581,7 @@ pub(crate) fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u6
         Value::Record(id) => interp
             .find_record(*id)
             .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
-            .map(|_| *id),
+            .map(|_| id.id),
         Value::Cons(_) => interp.keymap_public_root_owner_id(value),
         _ => None,
     }

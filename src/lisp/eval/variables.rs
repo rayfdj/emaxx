@@ -64,7 +64,7 @@ impl Interpreter {
         self.minibuffer_runtime
             .active_window_id
             .filter(|window_id| self.find_record(*window_id).is_some())
-            .map(Value::Record)
+            .map(|id| self.record_value(id))
     }
 
     pub(crate) fn active_minibuffer_activation_id(&self) -> Option<u64> {
@@ -803,7 +803,7 @@ impl Interpreter {
         env: &Env,
     ) -> Result<Value, LispError> {
         let obarray = self.lookup_var("obarray", env).unwrap_or(Value::Nil);
-        if !matches!(&obarray, Value::Record(id) if !self.is_standard_obarray_id(*id)) {
+        if !matches!(&obarray, Value::Record(id) if !self.is_standard_obarray_id(id.id)) {
             self.intern_symbols_in_value(&value);
             return Ok(value);
         }

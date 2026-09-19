@@ -2200,7 +2200,7 @@ define_dispatch!(
                 let requested = string_text(&args[0])?;
                 Ok(interp
                     .find_process_id_by_name(&requested)
-                    .map(Value::Record)
+                    .map(|id| interp.record_value(id))
                     .unwrap_or(Value::Nil))
             }
             "process-contact" => {
@@ -2909,7 +2909,7 @@ fn process_designator_value(
             let name = string_text(value)?;
             interp
                 .find_process_id_by_name(&name)
-                .map(Value::Record)
+                .map(|id| interp.record_value(id))
                 .or_else(|| {
                     interp
                         .resolve_buffer_id(value)

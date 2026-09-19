@@ -29,11 +29,11 @@ pub(crate) fn call_hash_table_test_function(
     // fns.c's hash_table_user_defined_call makes only this table immutable
     // while the callback runs and inhibits collection because the table's
     // temporary probing state is not markable.
-    let entered = interp.enter_hash_table_test(*id);
+    let entered = interp.enter_hash_table_test(id.id);
     interp.inhibit_garbage_collection();
     let result = call_function_value(interp, function, args, env);
     interp.allow_garbage_collection();
-    interp.leave_hash_table_test(*id, entered);
+    interp.leave_hash_table_test(id.id, entered);
     result
 }
 
@@ -181,8 +181,20 @@ pub(crate) fn sweep_weak_hash_tables(
     }
     interp.sweep_unreached_markers(&reachability.live_markers);
     interp.sweep_unreached_overlays(&reachability.live_overlays);
-    interp.modules.collect(&reachability.live_records);
-    interp.install_gc_record_census(reachability.live_records);
+    // A module function or user pointer whose record the mark phase did
+    // not reach is collected with it (the sweep frees the record).
+    let epoch = reachability.epoch;
+    let live = interp
+        .modules
+        .record_ids()
+        .into_iter()
+        .filter(|id| {
+            interp
+                .record_ref(*id)
+                .is_some_and(|record| record.mark_bit().is_marked(epoch))
+        })
+        .collect::<crate::lisp::eval::MarkedIds>();
+    interp.modules.collect(&live);
 }
 
 pub(crate) fn hash_table_metadata_slot(
@@ -257,11 +269,11 @@ mod tests {
         let Value::Overlay(id) = overlay else {
             panic!("not an overlay");
         };
-        assert!(interp.equal_hash_put(table_id, overlay, Value::T, &env));
+        assert!(interp.equal_hash_put(table_id.id, overlay, Value::T, &env));
         call(&mut interp, "garbage-collect", &[], &mut env).expect("collect attached overlay");
         assert_eq!(
             interp
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("entries")
                 .len(),
             1
@@ -282,7 +294,7 @@ mod tests {
         assert!(interp.find_overlay(id).is_some());
         assert_eq!(
             interp
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("entries")
                 .len(),
             1
@@ -293,7 +305,7 @@ mod tests {
         assert!(interp.find_overlay(id).is_none());
         assert!(
             interp
-                .hash_table_runtime_entries(table_id)
+                .hash_table_runtime_entries(table_id.id)
                 .expect("entries")
                 .is_empty()
         );
@@ -321,14 +333,14 @@ mod tests {
             interp.set_global_binding("weak-key-root", Value::cons(rooted_key, Value::Nil));
             rooted_key
         }
-        let rooted_key = insert_keys(&mut interp, id, &env);
+        let rooted_key = insert_keys(&mut interp, id.id, &env);
         interp.set_global_binding("weak-table-root", table);
         crate::lisp::alloc::clobber_stack();
 
         crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
             .expect("collect weak table through the ordinary C-owned entry point");
         let entries = interp
-            .hash_table_runtime_entries(id)
+            .hash_table_runtime_entries(id.id)
             .expect("indexed hash table entries");
         assert_eq!(entries.len(), 1);
         assert!(crate::lisp::primitives::values_equal(
@@ -460,7 +472,7 @@ pub(crate) fn set_hash_table_entries(
     let Value::Record(id) = table else {
         return Err(LispError::WrongTypeArgument("hash-table-p".into(), *table));
     };
-    if !interp.hash_table_is_mutable(*id) {
+    if !interp.hash_table_is_mutable(id.id) {
         return Err(LispError::Signal("hash table test modifies table".into()));
     }
     let Some(test) = interp
@@ -485,7 +497,7 @@ pub(crate) fn set_hash_table_entries(
         record.slots.resize(2, Value::Nil);
     }
     record.slots[1] = stored_entries;
-    interp.replace_hash_table_runtime_entries(*id, &test, entries);
+    interp.replace_hash_table_runtime_entries(id.id, &test, entries);
     Ok(())
 }
 

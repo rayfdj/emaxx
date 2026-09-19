@@ -119,11 +119,18 @@ impl TraceLispRoots for WindowConfigurationSnapshot {
         {
             marker.value(&buffer);
         }
-        marker.value(&Value::Record(self.selected_window_id));
-        marker.value(&Value::Record(self.root_window_id));
+        // The windows by id (C's configuration holds the objects): a
+        // window the sweep freed has no entry and is skipped.
+        for id in [self.selected_window_id, self.root_window_id] {
+            if let Some(window) = marker.interpreter.record_ref(id) {
+                marker.value(&Value::Record(window));
+            }
+        }
         self.selected_window_slots.trace_lisp_roots(marker);
         for (window, slots) in &self.window_records {
-            marker.value(&Value::Record(*window));
+            if let Some(window) = marker.interpreter.record_ref(*window) {
+                marker.value(&Value::Record(window));
+            }
             slots.trace_lisp_roots(marker);
         }
     }
@@ -308,7 +315,7 @@ mod tests {
         primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect actual roots");
         interpreter
-            .hash_table_runtime_entries(*id)
+            .hash_table_runtime_entries(id.id)
             .expect("live weak table")
             .len()
     }
@@ -350,7 +357,7 @@ mod tests {
                     panic!("hash table must be a record");
                 };
                 let entries = active
-                    .hash_table_runtime_entries(*id)
+                    .hash_table_runtime_entries(id.id)
                     .expect("live weak table");
                 assert!(primitives::values_eq_in_env(
                     &active,

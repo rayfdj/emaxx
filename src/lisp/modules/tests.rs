@@ -227,47 +227,58 @@ fn module_environment_supports_reentry_and_gc_through_lisp() {
     let mut interpreter = Interpreter::new();
     let mut environment = Env::new();
     let finalized = Cell::new(false);
-    let outer = {
-        let activation = Activation::new(&mut interpreter, &mut environment);
-        // SAFETY: the function and environment live for the entire call.
-        let function = unsafe {
-            make_function(
-                activation.public_ptr(),
-                1,
-                1,
-                reenter,
-                std::ptr::null(),
-                (&finalized as *const Cell<bool>).cast_mut().cast(),
-            )
+    // The function object is made and called out of this frame, and the
+    // frames below are clobbered before the collection: the stack is
+    // scanned conservatively, and a `Value' left in a live frame would
+    // keep the record.
+    #[inline(never)]
+    fn call_through_lisp(
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        finalized: &Cell<bool>,
+    ) -> Value {
+        let outer = {
+            let activation = Activation::new(interpreter, environment);
+            // SAFETY: the function and environment live for the entire call.
+            let function = unsafe {
+                make_function(
+                    activation.public_ptr(),
+                    1,
+                    1,
+                    reenter,
+                    std::ptr::null(),
+                    (finalized as *const Cell<bool>).cast_mut().cast(),
+                )
+            };
+            unsafe {
+                set_function_finalizer(activation.public_ptr(), function, Some(mark_finalized))
+            };
+            Context(&activation).value(function)
         };
-        unsafe { set_function_finalizer(activation.public_ptr(), function, Some(mark_finalized)) };
-        Context(&activation).value(function)
-    };
-    let form = super::super::reader::Reader::new(
-        "(function (lambda (inner) (garbage-collect) (funcall inner)))",
-    )
-    .read()
-    .expect("reentrant callback should parse")
-    .expect("reentrant callback should contain a form");
-    let callback = interpreter
-        .eval(&form, &mut environment)
-        .expect("reentrant callback should evaluate");
-    let result = interpreter
-        // A named call's backtrace holds its symbol. Like an unbound or
-        // redefined symbol, it no longer keeps this function object alive.
-        .call_function_value(
-            outer,
-            Some("module-reentry-test"),
-            &[callback],
-            &mut environment,
+        let form = super::super::reader::Reader::new(
+            "(function (lambda (inner) (garbage-collect) (funcall inner)))",
         )
-        .expect("nested module invocation should survive collection");
+        .read()
+        .expect("reentrant callback should parse")
+        .expect("reentrant callback should contain a form");
+        let callback = interpreter
+            .eval(&form, environment)
+            .expect("reentrant callback should evaluate");
+        let result = interpreter
+            // A named call's backtrace holds its symbol. Like an unbound or
+            // redefined symbol, it no longer keeps this function object alive.
+            .call_function_value(outer, Some("module-reentry-test"), &[callback], environment)
+            .expect("nested module invocation should survive collection");
+        assert!(
+            interpreter.modules.values.is_empty(),
+            "local handles expire on return"
+        );
+        assert!(!finalized.get(), "an executing function must remain live");
+        result
+    }
+    let result = call_through_lisp(&mut interpreter, &mut environment, &finalized);
     assert_eq!(result, Value::symbol("module-reentered"));
-    assert!(
-        interpreter.modules.values.is_empty(),
-        "local handles expire on return"
-    );
-    assert!(!finalized.get(), "an executing function must remain live");
+    crate::lisp::alloc::clobber_stack();
     primitives::call(&mut interpreter, "garbage-collect", &[], &mut environment)
         .expect("collection after the foreign call");
     assert!(

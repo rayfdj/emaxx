@@ -81,7 +81,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Value::CharTable(id) => ObjectKey::CharTable(*id),
         Value::Frame(id) => ObjectKey::Frame(*id),
         Value::Terminal(id) => ObjectKey::Terminal(*id),
-        Value::Record(id) => ObjectKey::Record(*id),
+        Value::Record(record) => ObjectKey::Record(record.id),
         Value::Finalizer(id) => ObjectKey::Finalizer(*id),
         Value::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
@@ -530,7 +530,7 @@ impl DumpContext {
     fn in_emacs_image(&self, value: &Value) -> bool {
         match value {
             Value::BuiltinFunc(_) => true,
-            Value::Record(id) => *id == self.main_thread_id,
+            Value::Record(id) => id.id == self.main_thread_id,
             _ => false,
         }
     }
@@ -551,7 +551,7 @@ impl DumpContext {
             Value::BuiltinFunc(_) => DumpType::Subr,
             Value::Lambda(_) => DumpType::Closure,
             Value::CharTable(_) => DumpType::CharTable,
-            Value::Record(id) if *id == self.main_thread_id => DumpType::MainThread,
+            Value::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
             Value::Buffer(_) => DumpType::Buffer,
             Value::Marker(_) => DumpType::Marker,
             Value::Overlay(_) => DumpType::Overlay,
@@ -1055,7 +1055,7 @@ impl DumpContext {
                 self.dump_char_table(interp, *id, object)?,
                 DumpType::CharTable,
             ),
-            Value::Record(id) => self.dump_record(interp, *id, object)?,
+            Value::Record(id) => self.dump_record(interp, id.id, object)?,
             Value::Nil | Value::T | Value::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
@@ -2473,6 +2473,7 @@ pub(crate) fn record_state_for_load(
     slots: Vec<Value>,
 ) -> RecordState {
     RecordState {
+        owner: 0,
         id,
         type_tag,
         slots,

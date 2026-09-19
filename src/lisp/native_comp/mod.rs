@@ -191,11 +191,13 @@ pub(crate) fn function_documentation(
         .cloned()
         .ok_or_else(|| lisp::native_ice("native function compilation unit is missing"))?;
     let docs = if docs.is_nil() {
-        if let Some(result) = loader::active_unit_documentation(interpreter, environment, unit_id) {
+        if let Some(result) =
+            loader::active_unit_documentation(interpreter, environment, unit_id.id)
+        {
             result?
         } else {
             let state = std::mem::take(&mut interpreter.native_compiler);
-            let result = state.unit_documentation(interpreter, environment, unit_id);
+            let result = state.unit_documentation(interpreter, environment, unit_id.id);
             interpreter.native_compiler = state;
             result?
         }

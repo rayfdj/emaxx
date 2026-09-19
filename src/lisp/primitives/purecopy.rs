@@ -4,7 +4,7 @@ fn purify_table(interp: &Interpreter, env: &Env) -> Option<u64> {
     let Value::Record(id) = interp.lookup_var("purify-flag", env)? else {
         return None;
     };
-    json::is_hash_table(interp, &Value::Record(id)).then_some(id)
+    json::is_hash_table(interp, &Value::Record(id)).then_some(id.id)
 }
 
 fn hash_cons_lookup(
@@ -84,7 +84,7 @@ fn purecopy_hash_table(
     table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let source = Value::Record(id);
+    let source = interp.record_value(id);
     let record = interp
         .find_record(id)
         .cloned()
@@ -113,7 +113,7 @@ fn purecopy_hash_table(
     let Value::Record(copied_id) = copied else {
         unreachable!("copy_record preserves the hash-table representation")
     };
-    interp.mark_hash_table_immutable(copied_id);
+    interp.mark_hash_table_immutable(copied_id.id);
     Ok(hash_cons_insert(
         interp,
         table,
@@ -128,7 +128,7 @@ fn purecopy_record(
     table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let source = Value::Record(id);
+    let source = interp.record_value(id);
     if let Some(cached) = hash_cons_lookup(interp, table, &source, env) {
         return Ok(cached);
     }
@@ -161,7 +161,7 @@ fn purecopy_record(
         unreachable!("copy_record preserves the record representation")
     };
     if record.kind == crate::lisp::eval::RecordKind::Record {
-        interp.retag_record(copied_id, type_tag)?;
+        interp.retag_record(copied_id.id, type_tag)?;
     }
     interp
         .find_record_mut(copied_id)
@@ -242,7 +242,7 @@ fn purecopy_inner(
             }
             interp.make_interpreted_closure_value(&copied_slots)?
         }
-        Value::Record(id) => return purecopy_record(interp, *id, table, env),
+        Value::Record(id) => return purecopy_record(interp, id.id, table, env),
         Value::Buffer(_)
         | Value::CharTable(_)
         | Value::Frame(_)

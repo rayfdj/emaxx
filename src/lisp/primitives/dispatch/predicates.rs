@@ -168,7 +168,7 @@ define_dispatch!(
                 // data.c:Fbyte_code_function_p checks CLOSUREP and the
                 // code slot's STRINGP tag, never names or parameter lists.
                 Ok(
-                    if matches!(args[0], Value::Record(id) if interp.is_genuine_bytecode_function(id))
+                    if matches!(args[0], Value::Record(id) if interp.is_genuine_bytecode_function(id.id))
                     {
                         Value::T
                     } else {

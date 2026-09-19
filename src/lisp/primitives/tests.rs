@@ -1589,7 +1589,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::Marker(1),
         Value::Overlay(1),
         Value::CharTable(1),
-        Value::Record(1),
+        interp.create_record("representative", Vec::new()),
         Value::Finalizer(1),
         Value::Unbound,
     ];
@@ -23179,7 +23179,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
         (bottom.left, bottom.top, bottom.width, bottom.height),
         (0, 12, 80, 11)
     );
-    assert_eq!(bottom.window_id, lower_id);
+    assert_eq!(bottom.window_id, lower_id.id);
     assert!(!bottom.selected);
     assert_eq!(
         top.buffer_id, bottom.buffer_id,
@@ -23319,7 +23319,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id,
+        lower_id.id,
         9,
         metrics,
     )
@@ -23366,7 +23366,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id,
+        lower_id.id,
         9,
         metrics,
     )
@@ -23382,7 +23382,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id,
+        lower_id.id,
         9,
         metrics,
     )

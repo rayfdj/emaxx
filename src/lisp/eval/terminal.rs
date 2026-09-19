@@ -596,9 +596,9 @@ impl Interpreter {
                 id,
                 terminal_id,
                 face_hash_table: None,
-                root_window_id: root,
-                selected_window_id: root,
-                minibuffer_window_id: mini,
+                root_window_id: root.id,
+                selected_window_id: root.id,
+                minibuffer_window_id: mini.id,
                 old_selected_window_id: None,
                 tty_sized: true,
                 name: Value::string(&format!("F{id}")),
@@ -662,10 +662,13 @@ impl Interpreter {
 
     pub(crate) fn retire_frame(&mut self, id: u64) {
         use crate::lisp::primitives as p;
-        for record in self.records.iter_mut().filter(|record| {
-            record.kind == super::RecordKind::Window
-                && record.slots.get(p::WINDOW_FRAME_SLOT) == Some(&Value::Frame(id))
-        }) {
+        let windows = self.records_of_kind(super::RecordKind::Window, |record| {
+            record.slots.get(p::WINDOW_FRAME_SLOT) == Some(&Value::Frame(id))
+        });
+        for window in windows {
+            let Some(record) = self.find_record_mut(window) else {
+                continue;
+            };
             record.slots[p::WINDOW_BUFFER_SLOT] = Value::Nil;
             record.slots[p::WINDOW_KIND_SLOT] = Value::symbol(p::DELETED_WINDOW_KIND);
             for slot in [

@@ -73,6 +73,11 @@ impl NativeCompilerState {
     }
 
     /// The counter as the image load begins.
+    /// The records the loader holds by id (see `NativeRegistry').
+    pub(crate) fn held_record_ids(&self) -> Vec<u64> {
+        self.registry.held_record_ids()
+    }
+
     pub(crate) fn garbage_collection_note_image_load_start(&mut self) {
         self.runtime.garbage_collection_note_image_load_start()
     }

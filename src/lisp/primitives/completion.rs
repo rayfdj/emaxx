@@ -108,7 +108,7 @@ pub(crate) fn obarray_symbols(
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    if interp.is_standard_obarray_id(*id) {
+    if interp.is_standard_obarray_id(id.id) {
         return Ok(interp
             .known_symbols_shared()
             .iter()
@@ -125,11 +125,11 @@ pub(crate) fn obarray_symbols(
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         return abbrev_table_entries(interp, obarray).map(|entries| {
-            std::iter::once(Value::Symbol(abbrev_symbol_name(*id, "").into()))
+            std::iter::once(Value::Symbol(abbrev_symbol_name(id.id, "").into()))
                 .chain(
                     entries
                         .into_iter()
-                        .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name).into())),
+                        .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(id.id, &name).into())),
                 )
                 .collect()
         });
@@ -197,7 +197,7 @@ pub(crate) fn intern_in_obarray_with_name(
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    if interp.is_standard_obarray_id(*id) {
+    if interp.is_standard_obarray_id(id.id) {
         if !interp.standard_obarray_contains_symbol(symbol_name) {
             let name = make_name(interp)?;
             crate::lisp::types::SymbolName::intern_with_lisp_name(
@@ -215,7 +215,7 @@ pub(crate) fn intern_in_obarray_with_name(
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         if symbol_name.is_empty() {
-            let symbol = abbrev_symbol_name(*id, "");
+            let symbol = abbrev_symbol_name(id.id, "");
             interp.set_global_binding(&symbol, Value::Nil);
             return Ok(Value::Symbol(symbol.into()));
         }
@@ -223,10 +223,10 @@ pub(crate) fn intern_in_obarray_with_name(
             .iter()
             .any(|(existing, _, _)| existing == symbol_name)
         {
-            return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
+            return Ok(Value::Symbol(abbrev_symbol_name(id.id, symbol_name).into()));
         }
         define_abbrev_entry(interp, obarray, symbol_name, Value::Nil, Value::Nil)?;
-        return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
+        return Ok(Value::Symbol(abbrev_symbol_name(id.id, symbol_name).into()));
     }
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
@@ -246,7 +246,7 @@ pub(crate) fn intern_in_obarray_with_name(
     }
     let name = make_name(interp)?;
     let symbol = Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
-        crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, *id),
+        crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, id.id),
         Some(name),
     ));
     symbols.push(symbol);
@@ -264,7 +264,7 @@ pub(crate) fn intern_soft_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
-    if matches!(obarray, Value::Record(id) if interp.is_standard_obarray_id(*id)) {
+    if matches!(obarray, Value::Record(id) if interp.is_standard_obarray_id(id.id)) {
         return Ok(if interp.standard_obarray_contains_symbol(symbol_name) {
             crate::lisp::types::interned_symbol_value(symbol_name.to_string())
         } else {
@@ -287,7 +287,7 @@ pub(crate) fn unintern_from_obarray(
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
-    if interp.is_standard_obarray_id(*id) {
+    if interp.is_standard_obarray_id(id.id) {
         let symbol_name = match target {
             Value::Nil => "nil".to_string(),
             Value::T => "t".to_string(),
@@ -361,8 +361,8 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
-        | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
         _ => false,
     }
 }
@@ -372,7 +372,7 @@ pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
         Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
         Value::Vector(vector) => Some((4, vector.identity())),
         Value::StringObject(state) => Some((1, state.identity())),
-        Value::Record(id) => Some((2, *id as usize)),
+        Value::Record(id) => Some((2, id.identity())),
         Value::CharTable(id) => Some((3, *id as usize)),
         _ => None,
     }
@@ -1369,7 +1369,7 @@ pub(crate) fn activate_minibuffer(
     // Select the minibuffer window for the read, GNU's read_minibuf: the
     // minibuffer buffer shows there, never in the entry window.
     if let Value::Record(minibuffer_window_id) = interp.minibuffer_window_value() {
-        interp.set_selected_window_id(minibuffer_window_id);
+        interp.set_selected_window_id(minibuffer_window_id.id);
         interp.set_selected_window_buffer_id(buffer_id);
     }
 

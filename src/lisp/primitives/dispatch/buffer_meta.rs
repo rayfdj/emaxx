@@ -859,7 +859,7 @@ define_dispatch!(
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        let name = crate::lisp::native_comp::function_name(interp, *id)
+                        let name = crate::lisp::native_comp::function_name(interp, id.id)
                             .ok_or_else(|| {
                                 LispError::Signal("native subr is not registered".into())
                             })?;

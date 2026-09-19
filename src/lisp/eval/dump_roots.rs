@@ -25,10 +25,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
     ),
     (
-        "gc_mark_set_sizes",
-        "alloc.c: gcstat is a file-static struct, zero in a fresh process and rewritten by each garbage_collect; the mark phase reads the previous collection's sizes only to size its mark sets, and pdumper.c does not write it",
-    ),
-    (
         "buffer_mark_marker_ids",
         "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
     ),
@@ -309,8 +305,11 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("buffer_case_tables", "written per buffer record"),
     ("next_char_table_id", "carried in the remembered scalars"),
     ("records", "installed per record"),
+    (
+        "record_owner",
+        "this state's id space for its records, a new state's own",
+    ),
     ("record_ids_by_type_index", "the index install_record keeps"),
-    ("gc_live_record_ids", "the last collection's census"),
     ("gc_elapsed_total", "alloc.c's private gc_elapsed total"),
     (
         "known_symbols_cache",
@@ -320,8 +319,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "obarray_epoch",
         "a removal counter the enumeration cache keys on",
     ),
-    ("gc_record_high_water", "the last collection's census"),
-    ("gc_has_record_census", "the last collection's census"),
     (
         "sqlite_handles",
         "sqlite objects are refused by the writer (OS handles)",
@@ -812,8 +809,9 @@ impl Interpreter {
             Value::list(
                 self.records
                     .iter()
+                    .flatten()
                     .filter(|record| record.kind == RecordKind::Keymap)
-                    .map(|record| Value::Record(record.id))
+                    .map(|record| Value::Record(*record))
                     .collect::<Vec<_>>(),
             ),
         ));

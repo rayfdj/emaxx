@@ -690,7 +690,7 @@ define_dispatch!(
                     // can be returned immediately for every obarray.
                     Value::Nil => return Ok(Value::Nil),
                     Value::T if obarray.is_none() => return Ok(Value::T),
-                    Value::T if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(*id)) =>
+                    Value::T if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(id.id)) =>
                     {
                         return Ok(if interp.standard_obarray_contains_symbol("t") {
                             Value::T
@@ -707,7 +707,7 @@ define_dispatch!(
                         });
                     }
                     Value::Symbol(symbol)
-                        if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(*id))
+                        if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(id.id))
                             && crate::lisp::types::visible_symbol_name(symbol) == symbol =>
                     {
                         // An ordinary symbol object read by Lisp is already a
@@ -771,7 +771,7 @@ define_dispatch!(
                 if let Some(obarray) = obarray {
                     let interned = intern_soft_in_obarray(interp, &obarray, &symbol_name)?;
                     if interned.is_nil()
-                        && matches!(&obarray, Value::Record(id) if interp.is_standard_obarray_id(*id))
+                        && matches!(&obarray, Value::Record(id) if interp.is_standard_obarray_id(id.id))
                     {
                         // Built-in loaddefs entries are part of the standard
                         // obarray even before their libraries are loaded.  The
@@ -1423,8 +1423,8 @@ define_dispatch!(
                     | (Value::CharTable(left), Value::CharTable(right))
                     | (Value::Frame(left), Value::Frame(right))
                     | (Value::Terminal(left), Value::Terminal(right))
-                    | (Value::Record(left), Value::Record(right))
                     | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
+                    (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
                     _ => false,
                 };
                 Ok(if same { Value::T } else { Value::Nil })
@@ -1549,7 +1549,7 @@ define_dispatch!(
                 // not see, as GNU's walk need not) instead of copying every
                 // symbol into a vector first -- a quarter of a walk's cost.
                 if let Value::Record(id) = &obarray
-                    && interp.is_standard_obarray_id(*id)
+                    && interp.is_standard_obarray_id(id.id)
                 {
                     let symbols = interp.known_symbols_shared();
                     // nil and t are told apart by symbol id (one per name
@@ -2039,7 +2039,7 @@ fn internal_subr_documentation(
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
             }) =>
         {
-            crate::lisp::native_comp::function_documentation(interp, env, *id)
+            crate::lisp::native_comp::function_documentation(interp, env, id.id)
         }
         _ => Ok(Value::T),
     }

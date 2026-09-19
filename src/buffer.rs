@@ -2664,8 +2664,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         | (Value::CharTable(left), Value::CharTable(right))
         | (Value::Frame(left), Value::Frame(right))
         | (Value::Terminal(left), Value::Terminal(right))
-        | (Value::Record(left), Value::Record(right))
         | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
+        (Value::Record(left), Value::Record(right)) => left.ptr_eq(right),
         (Value::Unbound, Value::Unbound) => true,
         _ => false,
     }

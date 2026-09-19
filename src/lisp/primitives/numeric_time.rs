@@ -307,8 +307,8 @@ pub(crate) fn function_arity_value(
             let record = interp.find_record(*id).expect("record checked above");
             Ok(Value::cons(record.slots[1], record.slots[2]))
         }
-        Value::Record(id) if interp.modules.functions.contains_key(id) => {
-            let function = &interp.modules.functions[id];
+        Value::Record(id) if interp.modules.functions.contains_key(&id.id) => {
+            let function = &interp.modules.functions[&id.id];
             Ok(Value::cons(
                 Value::Integer(function.min as i64),
                 if function.max == -2 {

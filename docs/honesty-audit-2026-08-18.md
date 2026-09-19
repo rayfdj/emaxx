@@ -13222,3 +13222,155 @@ and 1 in 25 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
 in 280 s), 2,718 scheduled and observed; fmt and strict clippy exit 0
 before and after.  First run; the next checkpoint's edits were being
 written in another worktree beside it, nothing built.
+
+## 2026-09-19 Checkpoint 20m: records in alloc.c's vector blocks (PVEC_RECORD)
+
+*What prompted it.*  The standing list after 20l: a record was an id
+into the interpreter's table, an object the conservative stack scan
+could not see, so no record was ever freed and every collection ran a
+second traversal from every record, dead or alive (the retention
+pass), to keep what a dead record's slots still named.  A record here
+is more than a `cl-defstruct' instance: every pseudovector kind this
+implementation keeps as a record -- byte-code functions, hash tables,
+obarrays, windows, processes, threads, mutexes, condition variables,
+fonts, module functions, tree-sitter objects, sqlite handles, the
+keymap facade -- so the retention pass walked most of the heap, and
+the id-addressed kinds were the precondition of the tagged word
+(phase D), which has no room for an id.
+
+*Done.*
+
+1. **The record as a vectorlike.**  `RecordState' is allocated in the
+   vector blocks with lisp.h's `PVEC_RECORD' tag (34), through the
+   same `allocate_pseudovector' path as closures, buffers and string
+   objects; `Value::Record' is the cell's address, copied as a word.
+   `mem_find' and `live_vector_pointer' see it from the stack, the
+   mark phase marks the object (`mark_vectorlike': the type tag and
+   the slots in place, the hash-table entries through the table's
+   state), the sweep frees an unreached one through `cleanup_vector',
+   and the census counts a record as alloc.c does, among the vectors,
+   from the sweep's totals rather than a set of live ids.  The
+   retention pass, the records' mark set and the live-id census are
+   gone; the other live states' records are reached through their
+   roots like everything else.
+
+2. **The id, kept as a name.**  A record's id stays on it as the key
+   the owning interpreter's side tables know it by -- the hash-table
+   states, the type index, the byte-code program and keymap binding
+   caches, the sqlite, tree-sitter, thread, mutex and condition
+   variable states -- until those live in the object as C's do.  The
+   registry of records by id is a `Vec<Option<RecordRef>>' that is not
+   a root (alloc.c has no list of records); `find_record' takes the
+   object or an id (`RecordKey').  The sweep notes each freed record's
+   owner, id, cell address and type name before the drop, and after
+   the sweeps every live state purges the registry entry and the side
+   tables of its own freed records, when the entry still names that
+   cell (an image load replaces the constructor's thread and obarray
+   records under the same ids, and the replaced cells are freed
+   later).  Each state has an id space of its own (`record_owner'); a
+   template clone copies its records into its own, as it copies
+   vectors.
+
+3. **The holders, as C marks its object lists.**  A record C reaches
+   from a C structure is marked from that structure here: the process
+   list, the live threads, the standard obarray, the selected window
+   and each live frame's windows were marked before; the windows the
+   minibuffer state remembers, the previously selected window, the
+   native compilation units and subrs the loader holds, and the keymap
+   facade records (not C) join them.  A mutex, a condition variable, a
+   tree-sitter object, a module function or a sqlite handle is not
+   held: C collects them when nothing reaches them, and the side table
+   that knew one by id is purged with it (sqlite.c's finalizer closes
+   the database; thread.c unlinks a finished thread).  A window
+   configuration reaches its windows through the registry and skips a
+   freed one.
+
+4. **Tests.**  The native-handle test hides the record's address and
+   clobbers the stack, as the other conservative-collector tests do;
+   the reset-root list names the fields that exist; the records'
+   equality is the cell's.
+
+*Measured.*  Wall clock, three interleaved rounds with nothing
+else on the machine, seconds (min / median); w25 is checkpoint 20l,
+w26 this one, GNU on the same machine; the probes are `tools/perf/'.
+The host ran faster in this hour than in 20l's table (GNU's lexical
+loop 0.89 s here, 1.12 there), so only the columns of one table
+compare.
+
+| probe | w25 (20l) | w26 (20m) | GNU |
+|---|---|---|---|
+| interpreted lexical loop, 2 M | 2.709 / 2.871 | 2.527 / 2.679 | 0.893 / 0.941 |
+| interpreted dynamic loop, 2 M | 1.023 / 1.053 | 1.014 / 1.023 | 0.395 / 0.412 |
+| 1 M interpreted defun calls | 2.037 / 2.050 | 1.835 / 1.875 | 0.624 / 0.638 |
+| byte-code call loop, 10 M | 0.484 / 0.487 | 0.493 / 0.507 | 0.193 / 0.193 |
+| 300 k conses pushed | 0.398 / 0.400 | 0.363 / 0.368 | 0.084 / 0.090 |
+| the collection after them | 0.069 / 0.071 | 0.061 / 0.063 | 0.010 / 0.011 |
+| ten collections of the idle booted heap | 0.233 / 0.244 | 0.167 / 0.181 | 0.055 / 0.058 |
+| mapcar over 100 k, twenty times | 1.249 / 1.364 | 1.081 / 1.233 | 0.180 / 0.184 |
+| six million conses (`gcs-per-conses.el') | 120 collections, 5.58 / 5.70 s | 120 collections, 4.72 / 5.03 s | 120 collections, 1.54 / 1.56 s |
+
+A collection of the idle booted heap 24 to 17 ms (GNU 5.5): no second
+traversal from every record, no id sets; six million conses 5.6 to
+4.7 s (GNU 1.5), the lexical loop 2.71 to 2.53 (0.89), the
+interpreted defun calls 2.04 to 1.84 (0.62), `mapcar' 1.25 to 1.08
+(0.18); the loops that allocate nothing unchanged.  Callgrind: one
+collection 91 M instructions to 67 M; the lexical loop 10,478 an
+iteration to 10,067 (GNU 5,477), the dynamic 6,499 to 6,464 (3,234).
+The corpus rows (two rounds, the minimum): ucs-names GNU 1.97 s, 20l
+7.66, 20m 7.42; fns-tests-sort 1.14, 5.63, 4.82; pcase-tests-macro
+0.08, 0.51, 0.48; undo-test4 0.89, 5.83, 5.24.  The byte-code call
+probe in `tools/perf/' (cg-call-loop.el) had lost its
+`lexical-binding' cookie when it was copied in at 20k, and measured a
+dynamic loop at 5,554 an iteration; with the cookie back it reads 889
+(GNU 330), the number the 20k and 20l tables took from the original
+file.
+
+*What did not move, and what was learned.*  The collection is still three times GNU's,
+and the allocating probes two to three times, for the reason 20l
+gave: the mark phase is bound by cache misses over cells several
+times C's size, and the sweep walks the image's objects.  What this
+step bought is the end of the second traversal, a quarter of the
+collection, and a heap in which a record dies -- 14 k byte-code
+functions and hash tables of the booted heap are no longer retained
+by their table but by what names them, as in C.  What was learned
+about the transition: a registry keyed by id needs the cell's
+identity to purge safely (an image load puts a new record under an
+old id, and the old cell dies later), and a test written when records
+were never freed can hold one in a local and keep it through a
+collection now that the stack is the root it always was in C; three
+tests were restated that way, none weakened.  Next in this line: the
+other id-addressed kinds -- markers, overlays, char-tables, frames,
+terminals, finalizers -- each the same shape (a vectorlike or, for
+markers, a block of their own, a side table keyed by id to purge, the
+C-side holders as roots), and then the tagged word.
+
+*Which of these mirror C, and which do not.*  C: the record as
+`PVEC_RECORD' in the vector blocks, marked and swept as a vector, the
+census among the vectors, the holders marked from the structures that
+hold them.  Not C: the id on the record and the side tables keyed by
+it (the hash table's storage is inside `Lisp_Hash_Table'; the process,
+window and thread state is inside the pseudovector), the registry and
+the purge after the sweep that keep them consistent, the keymap facade
+as a root; the other id-addressed kinds still ids -- markers,
+overlays, char-tables, frames, terminals, finalizers -- each with the
+same retention problem records had (a finalizer is a vectorlike in
+alloc.c, a marker in its own block, a frame and a terminal
+pseudovectors), next.  The standing list from 20l otherwise unchanged:
+the image's objects in the swept blocks, the stack zeroed after a
+collection, the native heap as a second representation and its
+handles as roots, the symbol's cells outside the symbol, the
+uninterned symbol's book, the sweep order, no global lock, the subr's
+minimum arity policed after evaluation, a borrowed string object's
+bytes uncounted by the sweep.
+
+*Verified.*  The full library suite on the gate build,
+2,713 of 2,718 passing with the three tests that need a non-root user
+failing as they do for root and two ignored; the focused groups after
+each change (collection, census, roots, symbol, gc, record, hash,
+window, thread, process, keymap, finalizer, module, continuation,
+tree-sitter, mutex, condition variable, sqlite, pdumper, native
+runtime, bytecode); `cargo clippy --all-targets -- -D warnings' and
+`cargo fmt --check' clean; the probes above on the release build,
+three rounds interleaved with GNU and checkpoint 20l's binary.
+
+*Gate.*  GATE-PLACEHOLDER

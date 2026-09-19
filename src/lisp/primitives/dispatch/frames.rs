@@ -478,8 +478,8 @@ define_dispatch!(
                                         .frame_state(*candidate)
                                         .expect("decoded frame has state")
                                         .minibuffer_window_id
-                                        == *window
-                                        || interp.window_frame_id(*window) == Some(*candidate)
+                                        == window.id
+                                        || interp.window_frame_id(window.id) == Some(*candidate)
                                 }
                                 _ => true,
                             }
@@ -765,7 +765,7 @@ pub(super) fn select_frame(
         interp,
         "select-window",
         &[
-            Value::Record(window),
+            interp.record_value(window),
             if norecord { Value::T } else { Value::Nil },
         ],
         env,

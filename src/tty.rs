@@ -1254,7 +1254,7 @@ fn synthesize_mouse_event(
                 .unwrap_or(1)
         };
         Value::list([
-            Value::Record(window.window_id),
+            interpreter.record_value(window.window_id),
             Value::Integer(pos as i64),
             Value::cons(
                 Value::Integer(col - window.left as i64),

@@ -31,7 +31,7 @@ pub(crate) fn copy_sequence_value(
                 matches!(record.kind, RecordKind::Record | RecordKind::BoolVector)
             }) =>
         {
-            interp.copy_record(*id)
+            interp.copy_record(id.id)
         }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }

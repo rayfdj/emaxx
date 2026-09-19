@@ -1092,9 +1092,9 @@ fn copy_runtime_keymap(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let (name, parent, bindings, char_table) = {
-        let record = interp
-            .find_record(id)
-            .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), Value::Record(id)))?;
+        let record = interp.find_record(id).ok_or_else(|| {
+            LispError::WrongTypeArgument("keymapp".into(), interp.record_value(id))
+        })?;
         (
             record.slots.first().cloned().unwrap_or(Value::Nil),
             record

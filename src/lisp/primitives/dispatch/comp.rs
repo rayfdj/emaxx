@@ -504,7 +504,7 @@ define_dispatch!(
                 crate::lisp::native_comp::install_trampoline(
                     interp,
                     subroutine_index,
-                    trampoline_id,
+                    trampoline_id.id,
                 )?;
                 let installed = interp
                     .lookup_var("comp-installed-trampolines-h", env)

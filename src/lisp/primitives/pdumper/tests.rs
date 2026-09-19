@@ -653,7 +653,10 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     // The main thread is the restoring process's own.  (The standard
     // obarray reaches every symbol's value, hash tables included: it joins
     // the controls with D10.)
-    assert_eq!(slots[4], Value::Record(target.main_thread_record_id()));
+    assert_eq!(
+        slots[4],
+        target.record_value(target.main_thread_record_id())
+    );
     assert!(image.obarray.is_empty());
     assert_eq!(image.builtin_cells.len(), 2);
     assert_eq!(image.builtin_cells[0].symbol.as_str(), "nil");
@@ -801,7 +804,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         panic!("hash table")
     };
     let keys = target
-        .hash_table_runtime_entries(equal_id)
+        .hash_table_runtime_entries(equal_id.id)
         .expect("thawed runtime entries")
         .iter()
         .map(|(key, _)| string_like(key).map(|s| s.text).unwrap_or_default())
@@ -810,7 +813,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     // the compact contents (hash_table_contents) walk k3 before k2.
     assert_eq!(keys, vec!["k3".to_owned(), "k2".to_owned()]);
     // hash_table_thaw: the allocation is minimal, count entries.
-    assert_eq!(target.gnu_hash_table_capacity(equal_id), Some(2));
+    assert_eq!(target.gnu_hash_table_capacity(equal_id.id), Some(2));
 }
 
 #[test]
