@@ -13845,4 +13845,10 @@ cons, setcar, setcdr, nconc, mutation, reader); `cargo clippy
 probes above on the release build, three rounds interleaved with GNU
 and checkpoint 20o's binary.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  The full grouped gate on the committed tree (run
+1789857854519210361-31776, as user `emaxx'): fmt and clippy clean
+before and after; eval_01 375, eval_02 285, eval_03 320, eval_04 254,
+eval_05 351, primitives 495 with 2 ignored, tty 56 with 2 ignored,
+compat_runtime 84, batch 50, lightweight 445 -- 2,715 of the 2,719
+scheduled passing and 4 ignored, no failures; bins 57, 2, 0 and 1
+passed; integration 23, 6, 3, 1, 1 and 5 passed; GATE-EXIT=0.
