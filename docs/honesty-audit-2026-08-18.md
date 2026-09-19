@@ -12773,4 +12773,19 @@ exit 0.  The controls (checkpoints 19z3, 20a, 20e) print their
 expected output from the release build; the stress boot boots; the
 corpus rows above all pass, fns-tests-sort four runs in four.
 
-*Gate.*  GATE-PLACEHOLDER
+*Gate.*  Grouped gate run-1789818201852942305-17022 on the tree as
+committed (7e3b762e; the working tree differed by the oracle lock
+alone), as the unprivileged user `emaxx', launched without `nohup':
+the ten library groups (batch 50, compat_runtime 84, eval_01 374,
+eval_02 285, eval_03 320, eval_04 254, eval_05 351, lightweight 444,
+primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
+and 1 in 22 s) and the six integration binaries (23, 6, 3, 1, 1 and 5
+in 308 s), 2,717 scheduled and observed; fmt and strict clippy exit 0
+before and after.  One run before it, on the checkpoint as first
+committed (bcd151ec) with the two stress hours running beside it on
+two of the four cores, failed two tests of the primitives group:
+`suspended_bytecode_retains_operand_and_unwind_roots' (the stale
+interior pointer of item 12, fixed) and
+`process_send_string_and_region_route_output_to_the_process_buffer',
+a process-output timing test that passed twice alone and passes in
+the run above (the load beside the gate, not the code).
