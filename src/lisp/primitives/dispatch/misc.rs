@@ -428,17 +428,7 @@ define_dispatch!(
                 let slice: String = chars[start..end].iter().collect();
                 match read_one_form_in_env(interp, &slice, env) {
                     Ok((val, consumed)) => {
-                        // The full object materializer, as `read' and the
-                        // load path use: byte-code literals and labeled
-                        // references included.  Interning runs on the
-                        // materialized value so symbols inside expanded
-                        // literals (byte-code constant vectors) are covered.
-                        let materialized = interp.materialize_read_object_literals(val, env)?;
-                        interp.intern_symbols_in_value(&materialized);
-                        Ok(Value::cons(
-                            materialized,
-                            Value::Integer((start + consumed) as i64),
-                        ))
+                        Ok(Value::cons(val, Value::Integer((start + consumed) as i64)))
                     }
                     Err(error) => Err(error),
                 }
@@ -856,9 +846,16 @@ define_dispatch!(
             "autoload-do-load" => {
                 need_arg_range(name, args, 1, 3)?;
                 let fundef = args[0];
-                let Some((file, _, kind)) = autoload_parts(&fundef) else {
+                if !matches!(
+                    fundef.cons_values().map(|(head, _)| head.kind()),
+                    Some(Kind::Symbol(head)) if head == "autoload"
+                ) {
                     return Ok(fundef);
-                };
+                }
+                // eval.c:Fautoload_do_load reads the stub with ordinary
+                // nth/car/cdr operations.  A malformed autoload must signal,
+                // rather than be mistaken for a non-autoload and retried.
+                let kind = super::lists::direct_nth(interp, &[Value::Integer(4), fundef], env)?;
                 let funname = args.get(1).cloned().unwrap_or(Value::Nil);
                 let macro_only = args.get(2).cloned().unwrap_or(Value::Nil);
                 let loads_macro = matches!(kind.kind(), Kind::T)
@@ -868,6 +865,11 @@ define_dispatch!(
                 {
                     return Ok(fundef);
                 }
+                checked_symbol_name(interp, &funname, env)?;
+                let file_value = fundef.cdr()?.car()?;
+                let file = string_like(&file_value)
+                    .ok_or_else(|| wrong_type_argument("stringp", file_value))?
+                    .text;
                 let ignore_errors = !loads_macro && macro_only.is_truthy();
                 match interp.load_autoload_target(&file, env) {
                     Ok(_) => {}
@@ -1317,31 +1319,13 @@ define_dispatch!(
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
-                let mut slots = vec![args[0], args[1], args[2]];
-                let documentation = args.get(3).filter(|value| !value.is_nil()).cloned();
-                let interactive = match args.get(4).filter(|value| !value.is_nil()) {
-                    Some(iform) => {
-                        let items = iform.to_vec()?;
-                        Some(
-                            crate::lisp::types::LambdaValue::interactive_slot_from_iform_items(
-                                &items,
-                            ),
-                        )
-                    }
-                    None => None,
-                };
-                // Slot 3 is the bytecode stack-depth position and is unused
-                // by interpreted closures.  GNU chooses the public size from
-                // the values, not from whether optional arguments were
-                // syntactically supplied.
-                if interactive.is_some() || documentation.is_some() {
-                    slots.push(Value::Nil);
-                    slots.push(documentation.unwrap_or(Value::Nil));
-                }
-                if let Some(interactive) = interactive {
-                    slots.push(interactive);
-                }
-                interp.make_interpreted_closure_value(&slots)
+                interp.make_interpreted_closure(
+                    args[0],
+                    args[1],
+                    args[2],
+                    args.get(3).copied().unwrap_or(Value::Nil),
+                    args.get(4).copied().unwrap_or(Value::Nil),
+                )
             }
             "getenv-internal" => {
                 need_args(name, args, 1)?;
@@ -1412,28 +1396,20 @@ define_dispatch!(
             }
             "function-equal" => {
                 need_args(name, args, 2)?;
-                let same = match (args[0].kind(), args[1].kind()) {
-                    (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-                    (Kind::Integer(left), Kind::Integer(right)) => left == right,
-                    (Kind::Symbol(left), Kind::Symbol(right))
-                    | (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
-                    (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-                    (Kind::Cons(left), Kind::Cons(right)) => {
-                        crate::lisp::types::SharedCons::ptr_eq(&left, &right)
+                // profiler.c:Ffunction_equal first compares the objects,
+                // then CLOSURE_CODE by identity for either closure kind.
+                let code = |function: Value| match function.kind() {
+                    Kind::Lambda(lambda) => Some(lambda.body()),
+                    Kind::Record(record)
+                        if record.kind == crate::lisp::eval::RecordKind::Closure =>
+                    {
+                        record.slots.get(1).copied()
                     }
-                    (Kind::Lambda(left), Kind::Lambda(right)) => {
-                        Rc::ptr_eq(&left.body, &right.body)
-                    }
-                    (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
-                    (Kind::Marker(left), Kind::Marker(right))
-                    | (Kind::Overlay(left), Kind::Overlay(right))
-                    | (Kind::CharTable(left), Kind::CharTable(right))
-                    | (Kind::Frame(left), Kind::Frame(right))
-                    | (Kind::Terminal(left), Kind::Terminal(right))
-                    | (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
-                    (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
-                    _ => false,
+                    _ => None,
                 };
+                let same = values_eq_in_env(interp, &args[0], &args[1], env)
+                    || matches!((code(args[0]), code(args[1])), (Some(left), Some(right))
+                        if values_eq_in_env(interp, &left, &right, env));
                 Ok(if same { Value::T } else { Value::Nil })
             }
             "get-internal-run-time" => {

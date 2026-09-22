@@ -404,6 +404,7 @@ pub(crate) fn eval_region_impl(
             // let-bound private obarray owns the parsed symbols; evaluation
             // still happens in the fresh readevalloop environment.
             let form = interp.intern_read_symbols_in_value(form, eval_env)?;
+            let form = interp.materialize_read_object_literals(form, eval_env)?;
             result = eager_expand_eval(interp, &form, eval_env)?;
             if !print_flag.is_nil() {
                 let _ = crate::lisp::primitives::call(

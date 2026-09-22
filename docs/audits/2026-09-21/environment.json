@@ -1,0 +1,14 @@
+{
+  "remote_revision": "45eb1531caabb35b816fc83e2e8a5b88090dae4e",
+  "oracle_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+  "oracle_binary": "/Users/rayd/projects/emacs/src/emacs",
+  "oracle_sha256": "12c762a0768f17c2b9779302cf98bc143c49ac7548c9b0412f17e38a967d19f1",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "host": [
+    "Darwin",
+    "Rays-MacBook-Air.local",
+    "25.6.0",
+    "Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:20 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T8142",
+    "arm64"
+  ]
+}

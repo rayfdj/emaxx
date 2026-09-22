@@ -825,8 +825,7 @@ define_dispatch!(
             "find-file-name-handler" => {
                 need_args(name, args, 2)?;
                 let file = string_text(&args[0])?;
-                let operation = args[1].as_symbol()?;
-                Ok(find_file_name_handler(interp, env, &file, operation)?.unwrap_or(Value::Nil))
+                Ok(find_file_name_handler(interp, env, &file, args[1])?.unwrap_or(Value::Nil))
             }
             "unhandled-file-name-directory" => {
                 need_args(name, args, 1)?;
@@ -1511,7 +1510,7 @@ define_dispatch!(
                 #[cfg(target_os = "macos")]
                 if !remote_watch {
                     let descriptor =
-                        interp.register_kqueue_file_notify_watch(path, flags, args[2].clone())?;
+                        interp.register_kqueue_file_notify_watch(path, flags, args[2])?;
                     return Ok(Value::Integer(descriptor));
                 }
                 let descriptor =
@@ -2957,9 +2956,12 @@ fn make_process_value(
             .lookup_var("default-directory", env)
             .and_then(|value| string_like(&value).map(|string| string.text))
             .unwrap_or_default();
-        if let Some(handler) =
-            find_file_name_handler(interp, env, &default_directory, "make-process")?
-        {
+        if let Some(handler) = find_file_name_handler(
+            interp,
+            env,
+            &default_directory,
+            Value::symbol("make-process"),
+        )? {
             let handler_args = std::iter::once(Value::symbol("make-process"))
                 .chain(args.iter().cloned())
                 .collect::<Vec<_>>();

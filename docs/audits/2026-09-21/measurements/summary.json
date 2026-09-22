@@ -1,0 +1,205 @@
+{
+  "bytecode-calls": {
+    "oracle": {
+      "median_seconds": 0.033119,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "baseline": {
+      "median_seconds": 0.107862,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "current": {
+      "median_seconds": 0.113297,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "current_over_oracle": 3.4209064283341886,
+    "baseline_over_oracle": 3.2568012319212536,
+    "improvement_percent": -5.038845932765934
+  },
+  "conses-6m": {
+    "oracle": {
+      "median_seconds": 2.399522,
+      "collections": [
+        163,
+        163,
+        163
+      ]
+    },
+    "baseline": {
+      "median_seconds": 8.075929,
+      "collections": [
+        359,
+        359,
+        359
+      ]
+    },
+    "current": {
+      "median_seconds": 6.104017,
+      "collections": [
+        359,
+        359,
+        359
+      ]
+    },
+    "current_over_oracle": 2.543847066207353,
+    "baseline_over_oracle": 3.3656407401140727,
+    "improvement_percent": 24.417153741693376
+  },
+  "gc-idle-10": {
+    "oracle": {
+      "median_seconds": 0.079394,
+      "collections": [
+        10,
+        10,
+        10
+      ]
+    },
+    "baseline": {
+      "median_seconds": 0.152277,
+      "collections": [
+        10,
+        10,
+        10
+      ]
+    },
+    "current": {
+      "median_seconds": 0.108265,
+      "collections": [
+        10,
+        10,
+        10
+      ]
+    },
+    "current_over_oracle": 1.3636420888228329,
+    "baseline_over_oracle": 1.9179912839761188,
+    "improvement_percent": 28.902591986971103
+  },
+  "interpreted-calls": {
+    "oracle": {
+      "median_seconds": 0.698555,
+      "collections": [
+        62,
+        62,
+        62
+      ]
+    },
+    "baseline": {
+      "median_seconds": 1.785452,
+      "collections": [
+        80,
+        80,
+        80
+      ]
+    },
+    "current": {
+      "median_seconds": 1.303644,
+      "collections": [
+        80,
+        80,
+        80
+      ]
+    },
+    "current_over_oracle": 1.866200943375969,
+    "baseline_over_oracle": 2.5559218672831774,
+    "improvement_percent": 26.985211587878034
+  },
+  "interpreted-dynamic": {
+    "oracle": {
+      "median_seconds": 0.410486,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "baseline": {
+      "median_seconds": 0.894334,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "current": {
+      "median_seconds": 0.786323,
+      "collections": [
+        0,
+        0,
+        0
+      ]
+    },
+    "current_over_oracle": 1.9155903002782066,
+    "baseline_over_oracle": 2.1787198588989636,
+    "improvement_percent": 12.07725525363007
+  },
+  "interpreted-lexical": {
+    "oracle": {
+      "median_seconds": 0.980093,
+      "collections": [
+        62,
+        62,
+        62
+      ]
+    },
+    "baseline": {
+      "median_seconds": 2.271468,
+      "collections": [
+        80,
+        80,
+        80
+      ]
+    },
+    "current": {
+      "median_seconds": 1.77965,
+      "collections": [
+        80,
+        80,
+        80
+      ]
+    },
+    "current_over_oracle": 1.8157970723186472,
+    "baseline_over_oracle": 2.317604553853563,
+    "improvement_percent": 21.651988934028566
+  },
+  "mapcar-2m": {
+    "oracle": {
+      "median_seconds": 0.175664,
+      "collections": [
+        10,
+        10,
+        10
+      ]
+    },
+    "baseline": {
+      "median_seconds": 1.03594,
+      "collections": [
+        41,
+        41,
+        41
+      ]
+    },
+    "current": {
+      "median_seconds": 0.770943,
+      "collections": [
+        41,
+        41,
+        41
+      ]
+    },
+    "current_over_oracle": 4.388736451407232,
+    "baseline_over_oracle": 5.897281173148739,
+    "improvement_percent": 25.58034249087785
+  }
+}

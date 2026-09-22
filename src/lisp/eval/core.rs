@@ -147,34 +147,6 @@ macro_rules! define_native_forms {
     };
 }
 
-impl NativeForm {
-    /// The subr's `min_args' (eval.c's DEFUNs): eval_sub signals
-    /// wrong-number-of-arguments below it before the form runs.
-    fn min_args(self) -> usize {
-        match self {
-            Self::Quote
-            | Self::Prog1
-            | Self::Let
-            | Self::LetStar
-            | Self::Defvar
-            | Self::Function
-            | Self::While
-            | Self::UnwindProtect
-            | Self::Catch => 1,
-            Self::If | Self::Defconst | Self::ConditionCase => 2,
-            Self::And
-            | Self::Or
-            | Self::Cond
-            | Self::Progn
-            | Self::Setq
-            | Self::Interactive
-            | Self::SaveCurrentBuffer
-            | Self::SaveExcursion
-            | Self::SaveRestriction => 0,
-        }
-    }
-}
-
 define_native_forms! {
     Quote => "quote";
     If => "if";
@@ -220,13 +192,6 @@ pub(super) fn list_forms(list: &Value) -> ListForms {
         Kind::Cons(cell) => Some(cell),
         _ => None,
     })
-}
-
-impl ListForms {
-    #[inline]
-    pub(super) fn from_cell(cell: Option<SharedCons>) -> Self {
-        Self(cell)
-    }
 }
 
 impl Iterator for ListForms {
@@ -279,27 +244,6 @@ pub(super) fn list_nth(list: &Value, n: usize) -> Value {
     list_car(&tail)
 }
 
-/// Whether LIST has at least N cells: eval_sub's `numargs < min_args'
-/// test, walking no further than N cells (by their shared pointers, no
-/// element copied).
-#[inline]
-pub(super) fn list_has_at_least(list: &Value, n: usize) -> bool {
-    if n == 0 {
-        return true;
-    }
-    let Kind::Cons(first) = list.kind() else {
-        return false;
-    };
-    let mut cur = first;
-    for _ in 1..n {
-        match next_cons(&cur) {
-            Some(next) => cur = next,
-            None => return false,
-        }
-    }
-    true
-}
-
 /// The number of conses in LIST (list_length without the circularity
 /// check; the walks here read what they count).
 pub(super) fn list_cons_count(list: &Value) -> usize {
@@ -310,24 +254,6 @@ pub(super) fn list_cons_count(list: &Value) -> usize {
         tail = next;
     }
     count
-}
-
-/// The elements of a proper list as a vector (apply1's spread of an
-/// argument list); a dotted tail signals listp.
-pub(super) fn list_to_vector(list: &Value) -> Result<smallvec::SmallVec<[Value; 8]>, LispError> {
-    let mut items = smallvec::SmallVec::new();
-    let mut tail = *list;
-    loop {
-        match tail.kind() {
-            Kind::Nil => return Ok(items),
-            Kind::Cons(cell) => {
-                items.push(cell.car.get());
-                let next = cell.cdr.get();
-                tail = next;
-            }
-            other => return Err(LispError::WrongTypeArgument("listp".into(), other.value())),
-        }
-    }
 }
 
 pub(crate) fn is_special_form_name(name: &str) -> bool {
@@ -492,12 +418,9 @@ impl Interpreter {
             | Kind::Float(_)
             | Kind::StringObject(_) => Ok(*expr),
 
-            // GNU has already constructed every nested reader object by the
-            // time eval_sub sees a vector.  Emaxx's parser is deliberately
-            // interpreter-free, so finish that existing reader contract at
-            // the evaluation boundary before returning this self-evaluating
-            // object.
-            Kind::Vector(_) => self.materialize_read_object_literals(*expr, env),
+            // lread.c constructs every nested object before eval_sub.
+            // A vector is self-evaluating and keeps its reader identity.
+            Kind::Vector(_) => Ok(*expr),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
@@ -567,139 +490,53 @@ impl Interpreter {
                     None => head_symbol,
                     Some(value) => self.callable_symbol_name(value, env),
                 };
-                if let Some(ref name) = callable_name {
-                    // The subr whose max_args is UNEVALLED, by the symbol.
-                    // A function alias of a special form (GNU's `(defalias
-                    // 'inline 'progn)') keeps the target's calling
-                    // convention: a cell holding a symbol (or a subr) is
-                    // followed to the target.
-                    let effective_native_form = self
-                        .globals
-                        .native_form_or(name, || native_form_for_symbol(name))
-                        .or_else(|| {
-                            if !matches!(
-                                self.globals.function(name).map(|v| v.kind()),
-                                Some(Kind::Symbol(_) | Kind::BuiltinFunc(_))
-                            ) {
-                                return None;
-                            }
-                            let Kind::BuiltinFunc(target) =
-                                (self.lookup_function_symbol(name, env).ok()?).kind()
-                            else {
-                                return None;
-                            };
-                            // The target's arm by its symbol (every special
-                            // form has one; the manifest was searched by
-                            // name per call through an alias before).
-                            self.globals
-                                .native_form_or(&target, || native_form_for_symbol(&target))
-                        });
-                    if let Some(native_form) = effective_native_form {
-                        let args_value = match &args_cell {
-                            Some(args) => Value::Cons(*args),
-                            None => Value::Nil,
-                        };
-                        let args = &args_value;
-                        // eval_sub's `numargs < XSUBR (fun)->min_args' for
-                        // the UNEVALLED subr: the list walked only as far as
-                        // min_args (the count itself only when it signals).
-                        let min_args = native_form.min_args();
-                        if !list_has_at_least(args, min_args) {
-                            return Err(LispError::WrongNumberOfArgs(
-                                name.as_str().to_string(),
-                                list_cons_count(args),
-                            ));
-                        }
-                        match native_form {
-                            NativeForm::Quote => return self.sf_quote(args, env),
-                            NativeForm::If => return self.sf_if(args, env),
-                            NativeForm::And => return self.sf_and(args, env),
-                            NativeForm::Or => return self.sf_or(args, env),
-                            NativeForm::Cond => {
-                                self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_cond(args, env);
-                                let result = self.settle_frame_result(result, env);
-                                self.pop_backtrace_frame();
-                                return result;
-                            }
-                            NativeForm::Progn => return self.progn_list(args, env),
-                            NativeForm::Prog1 => return self.sf_prog1(args, env),
-                            NativeForm::Let => {
-                                self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_let(args, env);
-                                let result = self.settle_frame_result(result, env);
-                                self.pop_backtrace_frame();
-                                return result;
-                            }
-                            NativeForm::LetStar => {
-                                self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_letstar(args, env);
-                                let result = self.settle_frame_result(result, env);
-                                self.pop_backtrace_frame();
-                                return result;
-                            }
-                            NativeForm::Setq => {
-                                self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_setq(args, env);
-                                let result = self.settle_frame_result(result, env);
-                                self.pop_backtrace_frame();
-                                return result;
-                            }
-                            NativeForm::Defvar => return self.sf_defvar(args, env),
-                            NativeForm::Defconst => return self.sf_defconst(args, env),
-                            NativeForm::Function => return self.sf_function(args, env),
-                            NativeForm::Interactive => return Ok(Value::Nil),
-                            NativeForm::While => {
-                                self.push_unevaluated_backtrace_frame(expr);
-                                let result = self.sf_while(args, env);
-                                let result = self.settle_frame_result(result, env);
-                                self.pop_backtrace_frame();
-                                return result;
-                            }
-                            NativeForm::UnwindProtect => {
-                                return self.sf_unwind_protect(args, env);
-                            }
-                            NativeForm::ConditionCase => {
-                                return self.sf_condition_case(args, env);
-                            }
-                            NativeForm::Catch => return self.sf_catch(args, env),
-                            NativeForm::SaveCurrentBuffer => {
-                                return self.sf_save_current_buffer(args, env);
-                            }
-                            NativeForm::SaveExcursion => {
-                                return self.sf_save_excursion(args, env);
-                            }
-                            NativeForm::SaveRestriction => {
-                                return self.sf_save_restriction(args, env);
-                            }
-                        }
-                    }
-
-                    // eval_sub's macro arm: the function cell holds
-                    // `(macro . EXPANDER)', an alias to one, or an autoload
-                    // of one -- read by id; a void cell (a builtin's, or
-                    // an undefined name's) is no macro.  The expander runs
-                    // on every evaluation: it can inspect state, perform
-                    // side effects, or create fresh uninterned symbols.
-                    if matches!(
-                        self.globals.function(name).map(|v| v.kind()),
-                        Some(Kind::Cons(_) | Kind::Symbol(_))
-                    ) {
-                        // apply1's spread of the unevaluated forms.
-                        let args_value = match &args_cell {
-                            Some(args) => Value::Cons(*args),
-                            None => Value::Nil,
-                        };
-                        let args = list_to_vector(&args_value)?;
-                        if let Some(expanded) = self.try_macroexpand(name, &args, env)? {
-                            return self.eval(&expanded, env);
-                        }
-                    }
-                }
-
                 // Regular function call
                 self.eval_call(expr, head_value.as_ref(), callable_name, args_cell, env)
             }
+        }
+    }
+
+    /// fns.c:list_length, including lisp.h:FOR_EACH_TAIL's cycle and
+    /// quit checks.  No array of forms is allocated while counting.
+    pub(super) fn eval_list_length(
+        &mut self,
+        mut tail: Value,
+        env: &mut Env,
+    ) -> Result<usize, LispError> {
+        let mut length = 0;
+        let mut tortoise = tail;
+        let mut maximum = 2usize;
+        let mut remaining = 0isize;
+        let mut quit_count = 2u16;
+        while let Kind::Cons(cell) = tail.kind() {
+            length += 1;
+            tail = cell.cdr.get();
+            quit_count = quit_count.wrapping_sub(1);
+            let compare = if quit_count != 0 {
+                true
+            } else {
+                self.maybe_quit(env)?;
+                remaining -= 1;
+                remaining > 0
+            };
+            if compare {
+                if tail.word() == tortoise.word() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("circular-list"),
+                        tail,
+                    ])));
+                }
+            } else {
+                maximum <<= 1;
+                quit_count = maximum as u16;
+                remaining = (maximum >> u16::BITS) as isize;
+                tortoise = tail;
+            }
+        }
+        if tail.is_nil() {
+            Ok(length)
+        } else {
+            Err(LispError::WrongTypeArgument("listp".into(), tail))
         }
     }
 
@@ -725,85 +562,225 @@ impl Interpreter {
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
-        let prepared = if let Some(name) = callable_name.as_ref() {
-            match self.resolve_symbol_call_with_frame_state(name, env, false) {
-                Ok(prepared) => prepared,
+        let original_function = source_form.cons_values().expect("a call is a cons").0;
+        let original_args = args_list.map_or(Value::Nil, Value::Cons);
+        let prepared = loop {
+            let resolution = if let Some(name) = callable_name.as_ref() {
+                self.resolve_symbol_call_with_frame_state(name, env, false)
+            } else {
+                // eval_sub quotes a non-symbol function with Ffunction;
+                // evaluating an arbitrary form here would execute code in
+                // function position that GNU never executes.
+                let head = head.expect("a callee that is no symbol is held as a value");
+                self.sf_function(&Value::list([*head]), env)
+                    .map(FunctionResolution::Resolved)
+            };
+            let resolution = match resolution {
+                Ok(resolution) => resolution,
                 Err(error) => {
-                    let result = self.settle_frame_result(Err(error), env);
-                    self.pop_backtrace_frame();
-                    return result;
-                }
-            }
-        } else {
-            let head = head.expect("a callee that is no symbol is held as a value");
-            FunctionResolution::Resolved(self.eval(head, env)?)
-        };
-        // eval_sub's argvals[8]: the evaluated arguments on the stack for
-        // up to eight, the forms read off the list cell by cell; past
-        // eight, SAFE_ALLOCA_LISP's array, which the collector scans (a
-        // heap vector the stack scan cannot see lost a fresh argument to
-        // the collection a later argument's evaluation ran).  The count
-        // is `list_length (args_left)' taken first, for every callee, as
-        // eval_sub takes it (a fixed-arity subr's count was skipped
-        // before, and nine arguments to it wrote past the array).
-        let argnum = ListForms::from_cell(args_list).count();
-        // eval_sub's SUBRP arm signals `wrong-number-of-arguments' on the
-        // count before any argument is evaluated.
-        if let FunctionResolution::DirectBuiltin(facts) = &prepared
-            && !facts.special_form
-            && facts
-                .max_args
-                .is_some_and(|maximum| usize::from(maximum) < argnum)
-        {
-            let name = callable_name.expect("a direct subr verdict names its symbol");
-            let error = LispError::WrongNumberOfArgs(name.as_str().to_owned(), argnum);
-            let result = self.settle_frame_result(Err(error), env);
-            self.pop_backtrace_frame();
-            return result;
-        }
-        if argnum > 8 {
-            return self.eval_call_rooted(
-                depth,
-                unevald_frame,
-                callable_name,
-                prepared,
-                args_list,
-                env,
-            );
-        }
-        // The array's storage is zeroed before use (one small memset): the
-        // conservative scan reads every word of a live frame, and a stale
-        // pointer left there by an earlier, deeper call would keep its
-        // object (C's argvals is uninitialized; its frames are smaller).
-        // Only the ARGNUM values written are ever read or dropped.
-        let mut argvals = std::mem::MaybeUninit::<[Value; 8]>::zeroed();
-        let base = argvals.as_mut_ptr().cast::<Value>();
-        let mut argnum = 0usize;
-        // SAFETY: BASE addresses eight slots on this frame; ARGNUM counts
-        // the slots written, which are the only ones read or dropped.
-        let drop_written = |count: usize| unsafe {
-            for index in 0..count {
-                base.add(index).drop_in_place();
-            }
-        };
-        for form in ListForms::from_cell(args_list) {
-            match self.eval(&form, env) {
-                // SAFETY: as above; ARGNUM < 8 by the count taken.
-                Ok(value) => unsafe {
-                    base.add(argnum).write(value);
-                    argnum += 1;
-                },
-                Err(error) => {
-                    drop_written(argnum);
                     return self.eval_call_argument_error(depth, unevald_frame, error, env);
                 }
+            };
+            let FunctionResolution::Resolved(function) = resolution else {
+                break resolution;
+            };
+            // eval_sub classifies the resolved function BEFORE list_length
+            // or any argument evaluation.  Invalid function cells report
+            // the original callee, not the object found in that cell.
+            match function.kind() {
+                Kind::BuiltinFunc(_) | Kind::Lambda(_) => break resolution,
+                Kind::Record(id)
+                    if self.find_record(id).is_some_and(|record| {
+                        matches!(
+                            record.kind,
+                            RecordKind::Closure
+                                | RecordKind::NativeCompiledFunction
+                                | RecordKind::ModuleFunction
+                        )
+                    }) =>
+                {
+                    break resolution;
+                }
+                Kind::Cons(cell) => match cell.car.get().kind() {
+                    Kind::Symbol(name) if name == "lambda" => break resolution,
+                    Kind::Symbol(name) if name == "autoload" => {
+                        let result = primitives::call(
+                            self,
+                            "autoload-do-load",
+                            &[function, original_function, Value::Nil],
+                            env,
+                        );
+                        if let Err(error) = result {
+                            return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                        }
+                        // GNU retries the original callee after loading:
+                        // the file can define a subr alias, lambda or macro.
+                    }
+                    Kind::Symbol(name) if name == "macro" => {
+                        let result = self.with_macro_lexical_binding(
+                            super::macros::MacroCaller::EvalSub,
+                            env,
+                            |interp, env| {
+                                // apply1 spreads the unevaluated forms only
+                                // after the macro's dynamic bindings exist.
+                                let nargs = interp.eval_list_length(original_args, env)?;
+                                let args: smallvec::SmallVec<[Value; 8]> =
+                                    list_forms(&original_args).take(nargs).collect();
+                                interp.call_function_value(cell.cdr.get(), None, &args, env)
+                            },
+                        );
+                        let result = result.and_then(|expanded| self.eval(&expanded, env));
+                        let result = self.settle_frame_result(result, env);
+                        self.truncate_backtrace_frames(depth);
+                        return result;
+                    }
+                    _ => {
+                        return self.eval_call_argument_error(
+                            depth,
+                            unevald_frame,
+                            invalid_function(original_function),
+                            env,
+                        );
+                    }
+                },
+                Kind::Nil => {
+                    let error = LispError::SignalValue(Value::list([
+                        Value::symbol("void-function"),
+                        original_function,
+                    ]));
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                }
+                _ => {
+                    return self.eval_call_argument_error(
+                        depth,
+                        unevald_frame,
+                        invalid_function(original_function),
+                        env,
+                    );
+                }
             }
+        };
+        let mut args_left = original_args;
+        let nargs = match self.eval_list_length(args_left, env) {
+            Ok(count) => count,
+            Err(error) => {
+                return self.eval_call_argument_error(depth, unevald_frame, error, env);
+            }
+        };
+        let subr = match &prepared {
+            FunctionResolution::DirectBuiltin(facts) => Some(*facts),
+            FunctionResolution::Resolved(func) => match func.kind() {
+                Kind::BuiltinFunc(name) => Some(primitives::name_facts_symbol(&name)),
+                _ => None,
+            },
+        };
+        // eval_sub checks both bounds before evaluating a subr's arguments.
+        if let Some(facts) = subr
+            && (nargs < usize::from(facts.min_args)
+                || facts
+                    .max_args
+                    .is_some_and(|maximum| usize::from(maximum) < nargs))
+        {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, unevald_frame, error, env);
         }
-        // SAFETY: the ARGNUM slots written, read in place for the call.
-        let args = unsafe { std::slice::from_raw_parts(base, argnum) };
-        let result = self.finish_eval_call(depth, callable_name, prepared, args, env);
-        drop_written(argnum);
-        result
+        if let FunctionResolution::Resolved(function) = &prepared
+            && let Kind::BuiltinFunc(name) = function.kind()
+            && let Some(native_form) = self
+                .globals
+                .native_form_or(&name, || native_form_for_symbol(&name))
+        {
+            let result = self.eval_native_form(native_form, &original_args, env);
+            let result = self.settle_frame_result(result, env);
+            self.truncate_backtrace_frames(depth);
+            return result;
+        }
+        let fixed_max = subr
+            .and_then(|facts| facts.max_args)
+            .filter(|maximum| *maximum <= 8);
+        if nargs > 8 {
+            return self.eval_call_rooted(depth, callable_name, prepared, args_list, nargs, env);
+        }
+        // eval_sub has eight stack slots for fixed subrs; apply_lambda and
+        // MANY subrs are bounded by the count taken before evaluation.  All
+        // slots are initialized, and mutable source lists cannot grow this
+        // storage.  Values in the array remain visible to the stack scan.
+        let mut argvals = [Value::Nil; 8];
+        let limit = fixed_max.map_or(nargs, usize::from);
+        let mut argnum = 0usize;
+        for slot in &mut argvals[..limit] {
+            let cell = match args_left.kind() {
+                Kind::Cons(cell) => Some(cell),
+                _ if subr.is_some() && fixed_max.is_none() => break,
+                Kind::Nil => None,
+                _ => {
+                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                }
+            };
+            let form = cell.map_or(Value::Nil, |cell| cell.car.get());
+            // MANY and apply_lambda advance before evaluation.  Fixed
+            // subrs advance afterwards and evaluate all optional positions.
+            if fixed_max.is_none() {
+                args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
+            }
+            *slot = match self.eval(&form, env) {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                }
+            };
+            if fixed_max.is_some() {
+                args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
+            }
+            argnum += 1;
+        }
+        let backtrace_argc = if fixed_max.is_some() { nargs } else { argnum };
+        self.finish_eval_call(
+            depth,
+            callable_name,
+            prepared,
+            &argvals[..argnum],
+            backtrace_argc,
+            env,
+        )
+    }
+
+    /// eval_sub's UNEVALLED subr branch.  The caller has already recorded
+    /// the frame and checked the complete argument list and minimum arity.
+    fn eval_native_form(
+        &mut self,
+        form: NativeForm,
+        args: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match form {
+            NativeForm::Quote => self.sf_quote(args, env),
+            NativeForm::If => self.sf_if(args, env),
+            NativeForm::And => self.sf_and(args, env),
+            NativeForm::Or => self.sf_or(args, env),
+            NativeForm::Cond => self.sf_cond(args, env),
+            NativeForm::Progn => self.progn_list(args, env),
+            NativeForm::Prog1 => self.sf_prog1(args, env),
+            NativeForm::Let => self.sf_let(args, env),
+            NativeForm::LetStar => self.sf_letstar(args, env),
+            NativeForm::Setq => self.sf_setq(args, env),
+            NativeForm::Defvar => self.sf_defvar(args, env),
+            NativeForm::Defconst => self.sf_defconst(args, env),
+            NativeForm::Function => self.sf_function(args, env),
+            NativeForm::Interactive => Ok(Value::Nil),
+            NativeForm::While => self.sf_while(args, env),
+            NativeForm::UnwindProtect => self.sf_unwind_protect(args, env),
+            NativeForm::ConditionCase => self.sf_condition_case(args, env),
+            NativeForm::Catch => self.sf_catch(args, env),
+            NativeForm::SaveCurrentBuffer => self.sf_save_current_buffer(args, env),
+            NativeForm::SaveExcursion => self.sf_save_excursion(args, env),
+            NativeForm::SaveRestriction => self.sf_save_restriction(args, env),
+        }
     }
 
     /// `eval_call' past eight arguments: SAFE_ALLOCA_LISP's array.
@@ -811,15 +788,32 @@ impl Interpreter {
     fn eval_call_rooted(
         &mut self,
         depth: usize,
-        unevald_frame: bool,
         callable_name: Option<SymbolName>,
         prepared: FunctionResolution,
         args_list: Option<SharedCons>,
+        nargs: usize,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let mut args =
-            crate::lisp::alloc::RootedVec::with_capacity(ListForms::from_cell(args_list).count());
-        for form in ListForms::from_cell(args_list) {
+        let unevald_frame = callable_name.is_some();
+        let many = match &prepared {
+            FunctionResolution::DirectBuiltin(_) => true,
+            FunctionResolution::Resolved(func) => matches!(func.kind(), Kind::BuiltinFunc(_)),
+        };
+        let mut args = crate::lisp::alloc::RootedVec::with_capacity(nargs);
+        let mut args_left = args_list.map_or(Value::Nil, Value::Cons);
+        for _ in 0..nargs {
+            let form = match args_left.kind() {
+                Kind::Cons(cell) => {
+                    args_left = cell.cdr.get();
+                    cell.car.get()
+                }
+                _ if many => break,
+                Kind::Nil => Value::Nil,
+                _ => {
+                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+                    return self.eval_call_argument_error(depth, unevald_frame, error, env);
+                }
+            };
             match self.eval(&form, env) {
                 Ok(value) => args.push(value),
                 Err(error) => {
@@ -827,7 +821,7 @@ impl Interpreter {
                 }
             }
         }
-        self.finish_eval_call(depth, callable_name, prepared, &args, env)
+        self.finish_eval_call(depth, callable_name, prepared, &args, args.len(), env)
     }
 
     /// An argument's evaluation signaled: the frame recorded before the
@@ -855,23 +849,38 @@ impl Interpreter {
         callable_name: Option<SymbolName>,
         prepared: FunctionResolution,
         args: &[Value],
+        backtrace_argc: usize,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        match (callable_name.as_ref(), prepared) {
-            (Some(name), FunctionResolution::DirectBuiltin(facts)) => {
-                // eval_sub's SUBRP arm: the frame recorded before the
-                // arguments were evaluated names the subr and holds them
-                // now (set_backtrace_args), and the subr runs under that
-                // one frame -- a second frame was pushed and popped around
-                // every primitive call before.
-                self.set_backtrace_args(Value::Symbol(*name), args);
-                self.capture_current_backtrace_context(Some(name.as_str()), env, None);
-                let result = primitives::call_with_facts(self, name, facts, args, env)
-                    .map_err(|error| Self::builtin_call_error(name, args.len(), false, error));
-                let result = self.settle_frame_result(result, env);
-                self.truncate_backtrace_frames(depth);
-                result
+        let builtin = match &prepared {
+            FunctionResolution::DirectBuiltin(facts) => {
+                Some((callable_name.expect("a direct subr is named"), *facts))
             }
+            FunctionResolution::Resolved(func) => match func.kind() {
+                Kind::BuiltinFunc(name) => Some((name, primitives::name_facts_symbol(&name))),
+                _ => None,
+            },
+        };
+        if let Some((name, facts)) = builtin {
+            let original_name = callable_name.unwrap_or(name);
+            if callable_name.is_some() {
+                self.set_backtrace_args(Value::Symbol(original_name), &args[..backtrace_argc]);
+            } else {
+                self.push_backtrace_frame_borrowed(
+                    Value::BuiltinFunc(name),
+                    &args[..backtrace_argc],
+                );
+            }
+            self.capture_current_backtrace_context(Some(original_name.as_str()), env, None);
+            let result =
+                primitives::call_with_facts(self, &name, facts, args, env).map_err(|error| {
+                    Self::builtin_call_error(&original_name, backtrace_argc, false, error)
+                });
+            let result = self.settle_frame_result(result, env);
+            self.truncate_backtrace_frames(depth);
+            return result;
+        }
+        match (callable_name.as_ref(), prepared) {
             (Some(name), FunctionResolution::Resolved(func)) => {
                 self.pop_backtrace_frame();
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, false)
@@ -879,8 +888,8 @@ impl Interpreter {
             (None, FunctionResolution::Resolved(func)) => {
                 self.call_function_value_named(func, None, args, env, false)
             }
-            (None, FunctionResolution::DirectBuiltin(_)) => {
-                unreachable!("only a symbol callee can have a direct native verdict")
+            (_, FunctionResolution::DirectBuiltin(_)) => {
+                unreachable!("subrs were dispatched above")
             }
         }
     }
@@ -1455,14 +1464,6 @@ impl Interpreter {
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
         let func = match func.kind() {
             Kind::Cons(_) => {
-                let func = if is_lambda_form(self, &func, env) {
-                    let mut lambda = func.to_vec()?;
-                    lambda[0] = Value::symbol("lambda");
-                    let source = Value::list(lambda.clone());
-                    self.sf_lambda_from_source(&source, &lambda, env)?
-                } else {
-                    func
-                };
                 if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
                     let Some(name) = original_name.map(CallName::as_str) else {
                         return Err(LispError::SignalValue(Value::list([
@@ -1601,158 +1602,9 @@ impl Interpreter {
                     self.call_function_value_named(inner, original_name, args, env, funcall)
                 }
             }
-            Kind::Lambda(ref lambda) => {
-                let params = &lambda.params;
-                let body = &lambda.body;
-                let wrong_arity = || {
-                    LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-number-of-arguments".into()),
-                        func,
-                        Value::Integer(args.len() as i64),
-                    ]))
-                };
-                // funcall_lambda signals the arity error after Ffuncall has
-                // recorded the frame, so the offending call is the
-                // innermost frame the handlers and backtraces see.
-                let signal_arity = |this: &mut Self, env: &mut Env| -> LispError {
-                    let function = original_name
-                        .map(CallName::original_symbol_value)
-                        .unwrap_or_else(|| func);
-                    this.with_backtrace_frame(function, args, |interp| {
-                        interp
-                            .settle_frame_result(Err(wrong_arity()), env)
-                            .err()
-                            .unwrap_or_else(wrong_arity)
-                    })
-                };
-                if params.len() != args.len() {
-                    let min_params = params
-                        .iter()
-                        .position(|p| p == "&optional" || p == "&rest")
-                        .unwrap_or(params.len());
-                    if args.len() < min_params {
-                        if std::env::var_os("EMAXX_DBG_ARITY").is_some() {
-                            eprintln!(
-                                "EMAXX-DBG arity: params={params:?} args={args:?} name={original_name:?} body_head={:?}",
-                                body.first()
-                            );
-                        }
-                        return Err(signal_arity(self, env));
-                    }
-                    // GNU also signals on EXCESS arguments (no &rest and more
-                    // args than fixed + optional parameters).
-                    if !params.iter().any(|p| p == "&rest") {
-                        let max_params = params.iter().filter(|p| *p != "&optional").count();
-                        if args.len() > max_params {
-                            if std::env::var_os("EMAXX_DBG_ARITY").is_some() {
-                                eprintln!(
-                                    "EMAXX-DBG arity-excess: params={params:?} args={args:?} name={original_name:?}",
-                                );
-                            }
-                            return Err(signal_arity(self, env));
-                        }
-                    }
-                }
-
-                // GNU binds an interpreted function's arguments LEXICALLY
-                // even when a variable of the same name is special: in
-                // lexical-binding code, "function arguments are always
-                // statically scoped" (bug#47552).
-                let mut frame = Vec::new();
-                let mut arg_idx = 0;
-                let mut optional = false;
-                let mut rest = false;
-
-                for param in params.iter() {
-                    if param == "&optional" {
-                        optional = true;
-                        continue;
-                    }
-                    if param == "&rest" {
-                        rest = true;
-                        continue;
-                    }
-                    if rest {
-                        let rest_args: Vec<Value> = args.get(arg_idx..).unwrap_or(&[]).to_vec();
-                        frame.push((*param, Self::stored_value(Value::list(rest_args))));
-                        break;
-                    }
-                    let consumed_arg = arg_idx < args.len();
-                    let val = if consumed_arg {
-                        args[arg_idx]
-                    } else if optional {
-                        Value::Nil
-                    } else {
-                        return Err(signal_arity(self, env));
-                    };
-                    frame.push((*param, Self::stored_value(val)));
-                    if consumed_arg {
-                        arg_idx += 1;
-                    }
-                }
-                let backtrace_function = original_name
-                    .map(CallName::original_symbol_value)
-                    .unwrap_or_else(|| func);
-                self.with_backtrace_frame(backtrace_function, args, |interp| {
-                    // funcall_lambda: a closure's arguments are consed onto
-                    // its environment (lexically, whatever the names'
-                    // flags) and the result installed as one frame; a
-                    // dynamic lambda's are specbound under a nil frame, so
-                    // its body sees no caller's lexical binding.  The
-                    // context stack keeps the dialect for the `let's and
-                    // lambdas of the body.
-                    let lexical_closure = lambda.environment().is_some();
-                    let call_capture_override = (interp.lambda_capture_override()
-                        != Some(lexical_closure))
-                    .then_some(lexical_closure);
-                    if let Some(capture) = call_capture_override {
-                        interp.push_lambda_eval_context(capture);
-                    }
-                    let depth = env.len();
-                    let count = interp.specpdl_index();
-                    let setup = match lambda.environment() {
-                        Some(closure_env) => {
-                            let mut lexenv = *closure_env;
-                            for (name, value) in &frame {
-                                lexenv = Self::cons_binding(*name, *value, lexenv);
-                            }
-                            env.push(EnvFrame::from_alist(lexenv));
-                            Ok(())
-                        }
-                        None => {
-                            env.push(EnvFrame::dynamic());
-                            frame.iter().try_for_each(|(name, value)| {
-                                interp.specbind_symbol(name, *value, env)
-                            })
-                        }
-                    };
-                    interp
-                        .backtrace_frames
-                        .last_mut()
-                        .expect("just pushed frame")
-                        .detail_mut()
-                        .locals = frame;
-                    interp.capture_current_backtrace_context(
-                        original_name.map(CallName::as_str),
-                        env,
-                        None,
-                    );
-                    crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = match setup {
-                        Ok(()) => interp.sf_progn(function_executable_body(body), env),
-                        Err(error) => Err(error),
-                    };
-                    env.truncate(depth);
-                    let unbind = interp.unbind_to(count, env);
-                    let result = match result {
-                        Ok(value) => unbind.map(|()| value),
-                        Err(error) => Err(error),
-                    };
-                    if call_capture_override.is_some() {
-                        interp.pop_lambda_capture_override();
-                    }
-                    interp.settle_frame_result(result, env)
-                })
+            Kind::Lambda(_) => self.funcall_interpreted_lambda(func, original_name, args, env),
+            Kind::Cons(_) if is_lambda_form(self, &func, env) => {
+                self.funcall_interpreted_lambda(func, original_name, args, env)
             }
             Kind::Nil => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("void-function".into()),
@@ -1763,6 +1615,140 @@ impl Interpreter {
                 other.value(),
             ]))),
         }
+    }
+
+    /// eval.c:funcall_lambda walks the stored parameter list once, binds
+    /// arguments as it encounters them, and executes the stored body list.
+    /// No arity prepass or cached parameter/body vector intervenes.
+    fn funcall_interpreted_lambda(
+        &mut self,
+        function: Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let backtrace_function = original_name
+            .map(CallName::original_symbol_value)
+            .unwrap_or(function);
+        self.with_backtrace_frame(backtrace_function, args, |interp| {
+            let (mut parameters, mut lexical_environment) = match function.kind() {
+                Kind::Lambda(lambda) => (lambda.parameters(), lambda.environment_value()),
+                Kind::Cons(cell) => match cell.cdr.get().kind() {
+                    Kind::Cons(tail) => (tail.car.get(), Value::Nil),
+                    _ => return interp.settle_frame_result(Err(invalid_function(function)), env),
+                },
+                _ => unreachable!("an interpreted lambda was selected"),
+            };
+            let lexical = !lexical_environment.is_nil();
+            let override_capture = interp.lambda_capture_override() != Some(lexical);
+            if override_capture {
+                interp.push_lambda_eval_context(lexical);
+            }
+            let depth = env.len();
+            let count = interp.specpdl_index();
+            let result = (|| {
+                let mut index = 0;
+                let mut optional = false;
+                let mut rest = false;
+                let mut previous_rest = false;
+                while let Kind::Cons(cell) = parameters.kind() {
+                    interp.maybe_quit(env)?;
+                    let value = cell.car.get();
+                    let parameter = match value.kind() {
+                        Kind::Nil => SymbolName::intern_str("nil"),
+                        Kind::T => SymbolName::intern_str("t"),
+                        _ => interp
+                            .callable_symbol_name(&value, env)
+                            .ok_or_else(|| invalid_function(function))?,
+                    };
+                    if parameter == "&rest" {
+                        if rest || previous_rest {
+                            return Err(invalid_function(function));
+                        }
+                        rest = true;
+                        previous_rest = true;
+                    } else if parameter == "&optional" {
+                        if optional || rest || previous_rest {
+                            return Err(invalid_function(function));
+                        }
+                        optional = true;
+                    } else {
+                        let argument = if rest {
+                            let remaining = Value::list(args[index..].iter().copied());
+                            index = args.len();
+                            remaining
+                        } else if let Some(argument) = args.get(index) {
+                            index += 1;
+                            *argument
+                        } else if optional {
+                            Value::Nil
+                        } else {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::symbol("wrong-number-of-arguments"),
+                                function,
+                                Value::Integer(args.len() as i64),
+                            ])));
+                        };
+                        // Dynamic specbind can run variable watchers. Bind
+                        // immediately, retaining GNU's order and the live
+                        // parameter cell until its cdr is read below.
+                        interp
+                            .backtrace_frames
+                            .last_mut()
+                            .expect("active call frame")
+                            .detail_mut()
+                            .locals
+                            .push((parameter, argument));
+                        if lexical {
+                            lexical_environment =
+                                Self::cons_binding(parameter, argument, lexical_environment);
+                        } else {
+                            interp.specbind_symbol(&parameter, argument, env)?;
+                        }
+                        previous_rest = false;
+                    }
+                    parameters = cell.cdr.get();
+                }
+                if !parameters.is_nil() || previous_rest {
+                    return Err(invalid_function(function));
+                }
+                if index < args.len() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("wrong-number-of-arguments"),
+                        function,
+                        Value::Integer(args.len() as i64),
+                    ])));
+                }
+                if crate::lisp::types::current_environment_value(env).word()
+                    != lexical_environment.word()
+                {
+                    env.push(EnvFrame::from_alist(lexical_environment));
+                }
+                interp.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    None,
+                );
+                crate::lisp::native_comp::maybe_gc(interp, env);
+                let body = match function.kind() {
+                    Kind::Lambda(lambda) => lambda.body(),
+                    _ => function.cdr()?.cdr()?,
+                };
+                interp.progn_list(&body, env)
+            })();
+            // GNU signals before unbinding: handlers can inspect partial
+            // dynamic argument bindings and the signaling call's frame.
+            let result = interp.settle_frame_result(result, env);
+            env.truncate(depth);
+            let unbind = interp.unbind_to(count, env);
+            if override_capture {
+                interp.pop_lambda_capture_override();
+            }
+            match result {
+                Ok(value) => unbind.map(|()| value),
+                Err(error) => Err(error),
+            }
+        })
     }
 
     // ── Special forms ──
@@ -2095,7 +2081,7 @@ mod eval_value_buffer_tests {
         );
         assert!(marked.contains(&lisp_name), "alloc.c marks SYMBOL_NAME");
 
-        let function = Value::lambda(vec![name].into(), vec![Value::Nil].into(), Value::Nil);
+        let function = Value::lambda(vec![name], vec![Value::Nil], Value::Nil);
         let mut marked = LispReachability::default();
         marked.mark(&interpreter, &function);
         assert!(

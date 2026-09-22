@@ -1102,14 +1102,15 @@ pub(crate) fn expand_file_name_runtime(
         )?);
     }
     let base = resolved_base.as_deref();
-    let handler =
-        if let Some(handler) = find_file_name_handler(interp, env, path, "expand-file-name")? {
-            Some(handler)
-        } else if let Some(base) = base {
-            find_file_name_handler(interp, env, base, "expand-file-name")?
-        } else {
-            None
-        };
+    let handler = if let Some(handler) =
+        find_file_name_handler(interp, env, path, Value::symbol("expand-file-name"))?
+    {
+        Some(handler)
+    } else if let Some(base) = base {
+        find_file_name_handler(interp, env, base, Value::symbol("expand-file-name"))?
+    } else {
+        None
+    };
     if let Some(handler) = handler {
         let function = match handler.kind() {
             Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
@@ -1555,155 +1556,74 @@ pub(crate) fn find_file_name_handler(
     interp: &mut Interpreter,
     env: &Env,
     file: &str,
-    operation: &str,
+    operation: Value,
 ) -> Result<Option<Value>, LispError> {
-    let handlers = interp
+    // fileio.c:Ffind_file_name_handler walks the current alist. There is
+    // no derived match inventory or mutation watch to maintain on stores.
+    let mut chain = interp
         .lookup_var("file-name-handler-alist", env)
         .unwrap_or(Value::Nil);
-    let operation = Value::Symbol(operation.to_string().into());
-    let inhibited = if interp
+    let inhibited_operation = interp
         .lookup_var("inhibit-file-name-operation", env)
-        .as_ref()
-        == Some(&operation)
-    {
+        .unwrap_or(Value::Nil);
+    let inhibited = if values_eq_in_env(interp, &inhibited_operation, &operation, env) {
         interp
             .lookup_var("inhibit-file-name-handlers", env)
             .unwrap_or(Value::Nil)
-            .to_vec()?
     } else {
-        Vec::new()
+        Value::Nil
     };
-    let cache_key = (file.to_string(), operation.as_symbol()?.to_string());
-    let handler_alist_id = handlers.cons_id();
-    let cached_matches = interp
-        .file_name_handler_match_cache
-        .get(&cache_key)
-        .filter(|entry| entry.watch.is_current(interp, handler_alist_id))
-        .map(|entry| entry.matches.clone());
-    let matches = if let Some(matches) = cached_matches {
-        matches
-    } else {
-        #[cfg(test)]
-        FILE_NAME_HANDLER_SCAN_COUNT.with(|count| count.set(count.get() + 1));
-        // A watch made for this alist state serves every scan of it; the
-        // authorities are collected only when a new watch is needed.
-        let shared_watch = interp
-            .file_name_handler_alist_watch
-            .clone()
-            .filter(|watch| watch.is_current(interp, handler_alist_id));
-        let collect_authorities = shared_watch.is_none();
-        let generation_before_scan = interp.current_definition_generation();
-        let entries = handlers.to_vec()?;
-        let mut regexp_env = env.clone();
-        Interpreter::push_bindings(
-            &mut regexp_env,
-            vec![("case-fold-search".into(), Value::Nil)],
-        );
-        let mut cacheable = handler_alist_id.is_some();
-        let mut pattern_snapshots = Vec::new();
-        let mut plist_snapshots: Vec<(String, Value)> = Vec::new();
-        let mut matches = Vec::new();
-        for entry in entries {
-            let Some((pattern, handler)) = (entry).cons_cells() else {
-                continue;
-            };
-            let pattern = pattern.get();
-            let handler = handler.get();
-            let Some(pattern_text) = string_like(&pattern) else {
-                continue;
-            };
-            if collect_authorities {
-                // A pattern that reads the syntax or category table has an
-                // authority no watch here covers: such an alist is scanned
-                // on every call, as GNU scans every alist.
-                cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text)
-                    && !regexp::pattern_depends_on_category_table(&pattern_text.text);
-                pattern_snapshots.push((pattern, pattern_text.text.clone()));
-                if let Kind::Symbol(symbol) = handler.kind() {
-                    plist_snapshots.push((symbol.to_string(), interp.symbol_plist(&symbol)));
-                }
-            }
-            if let Kind::Symbol(symbol) = handler.kind()
-                && let Some(operations) = interp.get_symbol_property(&symbol, "operations")
-                && !operations.is_nil()
-                && !operations.to_vec()?.contains(&operation)
-            {
-                continue;
-            }
-            let regexp = regexp::compile_elisp_regex(interp, &pattern_text, &regexp_env, "", true)?;
-            let Some(captures) = regexp
-                .captures(file)
-                .map_err(|error| LispError::Signal(error.to_string()))?
-            else {
-                continue;
-            };
-            let position = captures
-                .get(0)
-                .expect("a successful regexp match has group zero")
-                .start();
-            matches.push((position, handler));
-        }
-        // Regexp compilation may lazily initialize Lisp-visible tables.
-        // The watch describes the alist graph after that work, including
-        // writes made directly by native code: a shared watch is kept only
-        // if it is still current, a new one is built now.
-        let watch = if let Some(watch) = shared_watch {
-            watch.is_current(interp, handler_alist_id).then_some(watch)
-        } else if cacheable {
-            let mut cons_mutations = crate::lisp::types::ConsMutationSnapshot::tree(&handlers);
-            for (_, plist) in &plist_snapshots {
-                cons_mutations.include_tree(plist);
-            }
-            let watch = std::rc::Rc::new(crate::lisp::eval::FileNameHandlerAlistWatch {
-                handler_alist: handlers,
-                cons_mutations,
-                pattern_snapshots,
-                plist_snapshots,
-                plists_checked_at: std::cell::Cell::new(generation_before_scan),
-            });
-            interp.file_name_handler_alist_watch = Some(watch.clone());
-            Some(watch)
-        } else {
-            None
-        };
-        if let Some(watch) = watch {
-            if interp.file_name_handler_match_cache.len() >= 4096 {
-                interp.file_name_handler_match_cache.clear();
-            }
-            interp.file_name_handler_match_cache.insert(
-                cache_key,
-                crate::lisp::eval::FileNameHandlerMatchCacheEntry {
-                    watch,
-                    matches: matches.clone(),
-                },
-            );
-        }
-        matches
-    };
+    let mut regexp_env = env.clone();
+    Interpreter::push_bindings(
+        &mut regexp_env,
+        vec![("case-fold-search".into(), Value::Nil)],
+    );
     let mut best = None;
     let mut result = None;
-    for (position, handler) in matches {
-        if best.is_none_or(|current| position > current) && !inhibited.contains(&handler) {
-            best = Some(position);
-            result = Some(handler);
+    while let Kind::Cons(cell) = chain.kind() {
+        let entry = cell.car.get();
+        if let Kind::Cons(entry) = entry.kind() {
+            let pattern = entry.car.get();
+            let handler = entry.cdr.get();
+            let operations = if handler.is_symbol()
+                || (symbols_with_pos_enabled(interp, env)
+                    && symbol_with_pos_parts(interp, &handler).is_some())
+            {
+                let property = cached_symbol!("operations").with(|symbol| Value::Symbol(*symbol));
+                super::call(interp, "get", &[handler, property], &mut regexp_env)?
+            } else {
+                Value::Nil
+            };
+            if let Some(pattern) = string_like(&pattern) {
+                let regexp = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
+                let captures = regexp
+                    .captures(file)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                if let Some(position) =
+                    captures.and_then(|captures| captures.get(0).map(|m| m.start()))
+                    && best.is_none_or(|current| position > current)
+                    && (operations.is_nil()
+                        || super::call(interp, "memq", &[operation, operations], &mut regexp_env)?
+                            .is_truthy())
+                {
+                    // GNU rereads the handler after matching and tests
+                    // inhibition with identity-based Fmemq. Neither list
+                    // is validated before this short-circuit reaches it.
+                    let handler = entry.cdr.get();
+                    if super::call(interp, "memq", &[handler, inhibited], &mut regexp_env)?.is_nil()
+                    {
+                        best = Some(position);
+                        result = Some(handler);
+                    }
+                }
+            }
         }
+        interp.maybe_quit(&mut regexp_env)?;
+        chain = cell.cdr.get();
     }
-    Ok(result)
-}
-
-#[cfg(test)]
-thread_local! {
-    static FILE_NAME_HANDLER_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_file_name_handler_scan_count() {
-    FILE_NAME_HANDLER_SCAN_COUNT.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn file_name_handler_scan_count() -> usize {
-    FILE_NAME_HANDLER_SCAN_COUNT.with(std::cell::Cell::get)
+    // A selected nil handler can set the best match position, but the
+    // caller must still take its ordinary no-handler path, as NILP does.
+    Ok(result.filter(Value::is_truthy))
 }
 
 #[derive(Clone, Copy)]
@@ -1955,7 +1875,8 @@ pub(crate) fn dispatch_file_name_handler(
     }
 
     for file in candidates {
-        let Some(handler) = find_file_name_handler(interp, env, &file, operation)? else {
+        let Some(handler) = find_file_name_handler(interp, env, &file, Value::symbol(operation))?
+        else {
             continue;
         };
         let (function, original_name) = match handler.kind() {

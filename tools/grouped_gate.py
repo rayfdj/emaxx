@@ -48,15 +48,6 @@ ALLOWED_IGNORED_TESTS = frozenset(
         "encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars",
         "tty::tty_differential_end_to_end",
         "tty::tty_smoke_end_to_end",
-        # Checkpoint 20o: a reachability contract whose outcome depends on
-        # the frame layout under the native heap's conservative word scan
-        # (a stale interior pointer in a live frame above the collection's
-        # stack top); recorded as a weakening in
-        # docs/honesty-audit-2026-08-18.md.
-        "lisp::primitives::tests::"
-        "suspended_bytecode_retains_operand_and_unwind_roots",
-        "lisp::primitives::tests::"
-        "threads_retain_lexical_caller_roots_across_separate_callee_environments",
     }
 )
 

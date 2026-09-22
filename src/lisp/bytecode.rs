@@ -683,13 +683,13 @@ fn decoded_code(
 #[derive(Clone, Debug)]
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
+    #[cfg(test)]
     pub code: Vec<u8>,
     /// The code decoded, shared with the other closures of its prototype.
     pub decoded: Rc<DecodedCode>,
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
     pub constants: VectorRef,
     pub stack_depth: usize,
-    pub doc: Option<Value>,
     pub interactive: Option<Value>,
 }
 
@@ -771,20 +771,21 @@ impl ByteCodeObject {
                 "negative stack depth {depth}"
             )));
         }
-        let decoded = decoded_code(&slots[1], &code, constants.slots().len())?;
+        let decoded = decoded_code(&slots[1], &code, constants.len())?;
         Ok(Some(ByteCodeObject {
             argspec,
+            #[cfg(test)]
             code,
             decoded,
             constants,
             stack_depth: depth as usize,
-            doc: slots.get(4).cloned(),
             interactive: slots.get(5).cloned(),
         }))
     }
 }
 
 /// How an `.elc` payload should be treated by the loader.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElcKind {
     /// No ELC header: ordinary Lisp source.
@@ -800,6 +801,7 @@ pub enum ElcKind {
 }
 
 /// Classify raw `.elc` file bytes by header alone.
+#[cfg(test)]
 pub fn classify_elc_header(bytes: &[u8]) -> ElcKind {
     if bytes.starts_with(b";ELC\x1e") {
         ElcKind::GnuVersioned
@@ -1086,7 +1088,7 @@ pub(crate) mod tests {
                 .expect("oracle objects are genuine bytecode");
             assert!(matches!(object.argspec, ArgSpec::Packed { .. }));
             assert!(object.stack_depth > 0);
-            let instrs = decode_program(&object.code, object.constants.slots().len()).unwrap();
+            let instrs = decode_program(&object.code, object.constants.len()).unwrap();
             assert!(matches!(
                 instrs.last().map(|instr| instr.op),
                 Some(Op::Return)
@@ -1107,7 +1109,7 @@ pub(crate) mod tests {
     fn from_slots_ignores_emaxx_facade_objects() {
         // Emaxx facade: slot 0 is an executable lambda, not an argspec.
         let slots = [
-            Value::lambda(Vec::new().into(), std::rc::Rc::new(Vec::new()), Value::Nil),
+            Value::lambda(Vec::new(), Vec::new(), Value::Nil),
             Value::Nil,
             Value::Nil,
             Value::Nil,
@@ -1152,10 +1154,11 @@ pub(crate) mod tests {
         let Kind::Vector(vector) = constants.kind() else {
             panic!("constant vector")
         };
-        // STRINGP and VECTORP inspect tags, not payloads. Exclusive payload
-        // borrows expose even an otherwise invisible clone/read in the check.
+        // STRINGP and VECTORP inspect tags. The string is mutably borrowed
+        // and the constants contain themselves: neither payload needs to
+        // be inspected to classify a bytecode object.
+        vector.set(0, constants);
         let _code_payload = string.borrow_mut();
-        let _constant_payload = vector.slots_mut();
         assert!(slots_are_genuine_bytecode(&[
             Value::Integer(0),
             code,

@@ -155,19 +155,6 @@ impl Interpreter {
         self.mirror_insert_to_related_buffers(&related, pos, s, None, false);
     }
 
-    pub fn insert_current_buffer_with_properties(
-        &mut self,
-        s: &str,
-        props: Option<Vec<(String, Value)>>,
-    ) {
-        let pos = self.buffer.point();
-        let nchars = s.chars().count();
-        let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.insert_with_properties(s, props.clone());
-        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, props, false);
-    }
-
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
@@ -266,28 +253,6 @@ impl Interpreter {
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);
         Ok(deleted)
-    }
-
-    pub fn delete_char_current_buffer(
-        &mut self,
-        n: isize,
-    ) -> Result<String, crate::buffer::BufferError> {
-        if n >= 0 {
-            let from = self.buffer.point();
-            let to = from + n as usize;
-            if to > self.buffer.point_max() {
-                return Err(crate::buffer::BufferError::EndOfBuffer);
-            }
-            self.delete_region_current_buffer(from, to)
-        } else {
-            let count = (-n) as usize;
-            let to = self.buffer.point();
-            if to < self.buffer.point_min() + count {
-                return Err(crate::buffer::BufferError::BeginningOfBuffer);
-            }
-            let from = to - count;
-            self.delete_region_current_buffer(from, to)
-        }
     }
 
     pub(super) fn affected_markers_for_delete(

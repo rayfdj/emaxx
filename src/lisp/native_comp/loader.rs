@@ -510,8 +510,6 @@ unsafe fn read_static_object(
     crate::lisp::types::note_string_allocation(len);
     let text = decode_utf8_bytes(bytes);
     let (value, _) = read_one_form_in_env(interpreter, &text, environment)?;
-    let value = interpreter.materialize_read_object_literals(value, environment)?;
-    interpreter.intern_symbols_in_value(&value);
     Ok(value)
 }
 

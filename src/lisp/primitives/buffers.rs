@@ -301,7 +301,7 @@ pub(crate) fn marker_target(
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     if let Kind::Vector(vector) = value.kind() {
-        Ok(vector.slots().to_vec())
+        Ok(vector.slots().collect::<Vec<_>>())
     } else {
         Err(LispError::WrongTypeArgument("vectorp".into(), *value))
     }
@@ -332,7 +332,7 @@ pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
     let Kind::Vector(vector) = value.kind() else {
         return None;
     };
-    vector.slots().get(index).cloned()
+    vector.get(index)
 }
 
 /// O(1) element write for the VM's Baset, same contract as
@@ -341,9 +341,10 @@ pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -
     let Kind::Vector(vector) = value.kind() else {
         return None;
     };
-    let slots = vector.slots_mut();
-    let slot = slots.get_mut(index)?;
-    *slot = *new_value;
+    if index >= vector.len() {
+        return None;
+    }
+    vector.set(index, *new_value);
     Some(())
 }
 
@@ -351,7 +352,7 @@ pub(crate) fn vector_slot_value(value: &Value, index: usize) -> Result<Value, Li
     let Kind::Vector(vector) = value.kind() else {
         return Err(LispError::WrongTypeArgument("vectorp".into(), *value));
     };
-    vector.slots().get(index).cloned().ok_or_else(|| {
+    vector.get(index).ok_or_else(|| {
         LispError::SignalValue(Value::list([
             Value::Symbol("args-out-of-range".into()),
             *value,

@@ -486,16 +486,9 @@ fn values_equal_recursive_with_env(
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
                 return true;
             }
-            let left_slots = interp.interpreted_closure_slots(&left);
-            let right_slots = interp.interpreted_closure_slots(&right);
-            if left_slots.len() != right_slots.len() {
-                return false;
-            }
-            left_slots
-                .iter()
-                .zip(right_slots.iter())
-                .all(|(left, right)| {
-                    values_equal_recursive_with_env(interp, left, right, seen, env)
+            left.public_len() == right.public_len()
+                && left.slots().zip(right.slots()).all(|(left, right)| {
+                    values_equal_recursive_with_env(interp, &left, &right, seen, env)
                 })
         }
         _ => left == right,
@@ -681,7 +674,10 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
                 steps += 1;
                 current = cdr.get();
             }
-            other => return Err(wrong_type_argument("listp", other.value())),
+            // Fnthcdr's CHECK_LIST_END reports the original list.  If
+            // the requested count stops exactly at an improper tail,
+            // it returns that tail above without this error.
+            _ => return Err(wrong_type_argument("listp", *list)),
         }
     }
 }
@@ -701,7 +697,7 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         Kind::Nil => Ok(0),
         // fns.c:Flength reads ASIZE directly; taking the size must not
         // clone or traverse the vector's elements.
-        Kind::Vector(vector) => Ok(vector.slots().len() as i64),
+        Kind::Vector(vector) => Ok(vector.len() as i64),
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
         Kind::CharTable(_) => Ok(0x3f_ffff),
@@ -1974,11 +1970,11 @@ pub(crate) fn hash_value_equal_at(
         }
         Kind::Vector(vector) => {
             hash_mix(state, 40);
-            for slot in vector.slots().iter().take(SXHASH_MAX_LEN) {
+            for slot in vector.slots().take(SXHASH_MAX_LEN) {
                 hash_value_equal_at(
                     interp,
                     state,
-                    slot,
+                    &slot,
                     include_properties,
                     depth + 1,
                     remove_symbol_positions,
@@ -2026,11 +2022,7 @@ pub(crate) fn hash_value_equal_at(
         Kind::Lambda(lambda_value) => {
             hash_mix(state, 40);
             // `sxhash_vector' (fns.c:5447) bounds a closure the same way.
-            for slot in interp
-                .interpreted_closure_slots(&lambda_value)
-                .into_iter()
-                .take(SXHASH_MAX_LEN)
-            {
+            for slot in lambda_value.slots().take(SXHASH_MAX_LEN) {
                 hash_value_equal_at(
                     interp,
                     state,

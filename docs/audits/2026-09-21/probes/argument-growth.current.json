@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/argument-growth.el"
+  ],
+  "returncode": 0,
+  "stdout": "(1 2 3)\n",
+  "stderr": ""
+}

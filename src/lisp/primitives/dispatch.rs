@@ -153,6 +153,8 @@ pub(crate) struct NameFacts {
     module: DispatchModule,
     /// The body as a function pointer, for the names that have one.
     direct: Option<DirectPrimitive>,
+    /// The GNU subr's minimum, checked before source arguments are evaluated.
+    pub(crate) min_args: u16,
     /// The GNU subr's declared maximum argument count; None for MANY,
     /// UNEVALLED, and names outside the generated C manifest.
     pub(crate) max_args: Option<u16>,
@@ -298,11 +300,14 @@ fn compute_name_facts(name: &str) -> NameFacts {
     // the selected host C contract for the runtime maximum as well; this
     // supplies Linux-only primitives such as inotify without reviving
     // Darwin-only kqueue cells.
-    let max_args = crate::lisp::primitives::GNU_C_PRIMITIVES
+    let arity = crate::lisp::primitives::GNU_C_PRIMITIVES
         .binary_search_by_key(&name, |contract| contract.name)
         .ok()
-        .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity)
-        .and_then(|(_, maximum)| u16::try_from(maximum).ok());
+        .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity);
+    let min_args = arity.map_or(0, |(minimum, _)| {
+        u16::try_from(minimum).expect("a GNU subr has a nonnegative minimum arity")
+    });
+    let max_args = arity.and_then(|(_, maximum)| u16::try_from(maximum).ok());
     // The facts are cached and copied into the frame of every call: the
     // bytes no field's value covers (the padding, the words a `None'
     // leaves unspecified) are zero, not what the frame that computed
@@ -321,6 +326,7 @@ fn compute_name_facts(name: &str) -> NameFacts {
         (&raw mut (*facts_ptr).file_name_handler).write(file_name_handler_operation(name));
         (&raw mut (*facts_ptr).module).write(module);
         (&raw mut (*facts_ptr).direct).write(direct);
+        (&raw mut (*facts_ptr).min_args).write(min_args);
         (&raw mut (*facts_ptr).max_args).write(max_args);
         facts.assume_init()
     }
@@ -426,13 +432,12 @@ pub(crate) fn call_with_facts(
     if !facts.builtin && !facts.special_form {
         return Err(LispError::Signal(format!("Unknown function: {name}")));
     }
-    // eval.c's funcall_subr rejects a call beyond the subr's declared
-    // maximum before the primitive body runs; the per-impl need_args
-    // checks only police the minimum, which let extra arguments slip
-    // through (and even get const-folded away by the byte optimizer).
+    // eval.c's funcall_subr checks both arity bounds before the body runs.
     if !facts.special_form
-        && let Some(maximum) = facts.max_args
-        && args.len() > usize::from(maximum)
+        && (args.len() < usize::from(facts.min_args)
+            || facts
+                .max_args
+                .is_some_and(|maximum| args.len() > usize::from(maximum)))
     {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }

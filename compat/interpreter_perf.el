@@ -1,15 +1,8 @@
 ;;; interpreter_perf.el --- Shared source-evaluator benchmarks  -*- lexical-binding: t; -*-
 
 ;; This file is deliberately loaded as source by both GNU Emacs and Emaxx.
-;; Keep setup outside the timed calls in the runners.  Each case validates its
-;; own checksum so a faster, semantically wrong implementation cannot produce
-;; an accepted performance sample.
-
-(defalias 'emaxx-perf-interpreted--check
-  #'(lambda (case actual expected)
-     (if (= actual expected)
-         t
-       (error "%s produced %S; expected %S" case actual expected))))
+;; The shared runner times these bodies and validates their returned checksums
+;; after timing.  Neither editor substitutes host-language loops for them.
 
 (defalias 'emaxx-perf-interpreted-list-walk
   #'(lambda (n)
@@ -38,8 +31,7 @@
                           value))))
              (setq cursor (cdr cursor))))
          (setq iteration (1+ iteration)))
-       (emaxx-perf-interpreted--check
-        'list-walk total (* n 139)))))
+       total)))
 
 (defalias 'emaxx-perf-interpreted-cons-allocation
   #'(lambda (n)
@@ -58,14 +50,7 @@
                     (cdr entry)
                     (if (eq (car entry) 'even) 3 7))))
          (setq rows (cdr rows)))
-       (let ((even-count (/ (+ n 1) 2))
-             (odd-count (/ n 2)))
-         (emaxx-perf-interpreted--check
-          'cons-allocation
-          total
-          (+ (/ (* n (1- n)) 2)
-             (* even-count 3)
-             (* odd-count 7)))))))
+       total)))
 
 (defalias 'emaxx-perf-interpreted--invoke
   #'(lambda (function value side)
@@ -87,14 +72,7 @@
                     (emaxx-perf-interpreted--invoke
                      step index (if (= (mod index 2) 0) 'left 'right))))
            (setq index (1+ index))))
-       (let ((left-count (/ (+ n 1) 2))
-             (right-count (/ n 2)))
-         (emaxx-perf-interpreted--check
-          'function-calls
-          total
-          (+ (* 3 (/ (* n (1- n)) 2))
-             (* left-count left-bias)
-             (* right-count right-bias)))))))
+       total)))
 
 (provide 'interpreter_perf)
 

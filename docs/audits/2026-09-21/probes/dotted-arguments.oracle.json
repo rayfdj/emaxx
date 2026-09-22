@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/dotted-arguments.el"
+  ],
+  "returncode": 0,
+  "stdout": "(wrong-type-argument listp 2)\n",
+  "stderr": ""
+}

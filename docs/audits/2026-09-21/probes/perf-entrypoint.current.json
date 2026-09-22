@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(emaxx-perf-run-batch \"interpreter/source-eval-suite\" 16 1 1)"
+  ],
+  "returncode": 255,
+  "stdout": "\nError: void-function (emaxx-perf-run-batch)\n  (emaxx-perf-run-batch \"interpreter/source-eval-suite\" 16 1 1)\n  eval((emaxx-perf-run-batch \"interpreter/source-eval-suite\" 16 1 1) t)\n  command-line-1((\"--eval\" \"(emaxx-perf-run-batch \\\"interpreter/source-eval-suite\\\" 16 1 1)\"))\n  command-line()\n  normal-top-level()\n",
+  "stderr": "Symbol's function definition is void: emaxx-perf-run-batch\n"
+}

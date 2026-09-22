@@ -4,6 +4,24 @@
 
 It is intentionally separate from `cargo test` and from the authoritative correctness runner in `compat-harness`.
 
+The 2026-09-22 repair makes both editor commands load the same Lisp helper
+and workload source through ordinary startup. The former private batch
+interception and Rust benchmark loops are removed. Source workload checks run
+after timing; the common Lisp runner records actual GC statistics and prints
+every completed sample to the process log. Workload errors fail the process.
+
+The host accepts a report only after a successful process, exact workload
+identity and inventory checks, complete sample counts, and recomputation of
+summary statistics. Rejected child reports remain unchanged beside a separate
+`*.validation.json` rejection. GNU's repeated NOC benchmark is executed twice
+and its second occurrence is labeled `#2`; neither invocation is discarded.
+
+Historical results below describe their recorded revisions. They do not
+certify the repaired harness or current runtime. The broader runtime goal
+requires a separately locked, calibrated suite with interleaved runs,
+execution-mode checks, allocation/memory data, and startup/body separation;
+the existing scoreboard alone does not satisfy that performance contract.
+
 ## Purpose
 
 The performance harness exists to:
@@ -152,8 +170,8 @@ The initial scenario catalog lives in [`compat/perf_scenarios.json`](../compat/p
 It currently includes:
 
 - a shared, source-loaded interpreter suite covering list traversal, cons
-  allocation/drop, and lexical function dispatch; every timed invocation
-  verifies a semantic checksum
+  allocation/drop, and lexical function dispatch; the runner verifies each
+  result outside its timed interval
 - noverlay marker microbenchmarks
 - noverlay insert/delete microbenchmarks
 - provisional real-world noverlay suites

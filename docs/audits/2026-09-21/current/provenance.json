@@ -1,0 +1,4 @@
+{
+  "revision": "45eb1531caabb35b816fc83e2e8a5b88090dae4e",
+  "qualification": "Diagnostic macOS build: remove three cfg(target_os=\"linux\") arms that dispatch_table incorrectly lifts without cfg. No evaluator/allocator/timing changes. Not an unmodified remote build."
+}

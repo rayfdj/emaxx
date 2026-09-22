@@ -39,7 +39,7 @@ pub(crate) fn load_file(
 ) -> Result<(Value, Value), LispError> {
     let mut request = LoadRequest::new(args)?;
     let original = string_text(&request.file)?;
-    if let Some(handler) = find_file_name_handler(interp, env, &original, "load")? {
+    if let Some(handler) = find_file_name_handler(interp, env, &original, Value::symbol("load"))? {
         let result = interp.call_function_value(
             handler,
             None,
@@ -117,9 +117,9 @@ pub(crate) fn load_file(
     }
     if found.file.is_none() {
         let operation = if values_equal(interp, &found.name, &request.file) {
-            "load"
+            Value::symbol("load")
         } else {
-            "t"
+            Value::T
         };
         if let Some(handler) =
             find_file_name_handler(interp, env, &string_text(&found.name)?, operation)?

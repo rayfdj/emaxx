@@ -13,7 +13,6 @@ use super::image::*;
 use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
 use crate::lisp::types::{ConsCell, Kind, SymbolName};
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 
 /// pdumper.c:link_weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -473,11 +472,6 @@ pub(crate) struct DumpContext {
     /// The running process's main thread (dump_object_emacs_ptr's
     /// main_thread_p): an object of the Emacs image, not the heap.
     main_thread_id: u64,
-    /// Objects dumped outside the queue by their Rust pointer: closure
-    /// parameter and body vectors, lexical environments and frames
-    /// (GNU's interval trees, blvs and fwds are dumped the same way,
-    /// through raw-pointer fixups).
-    aux_dumped: HashMap<usize, u32>,
     /// The dump type each dumped object got, for the relocations that
     /// name it later (a record's type depends on its kind).
     object_types: HashMap<ObjectKey, DumpType>,
@@ -518,7 +512,6 @@ impl DumpContext {
             referrers: track_referrers.then(HashMap::new),
             current_referrer: None,
             main_thread_id,
-            aux_dumped: HashMap::new(),
             object_types: HashMap::new(),
         }
     }
@@ -1227,7 +1220,7 @@ impl DumpContext {
 
     /// dump_vectorlike_generic for an ordinary vector: size, then slots.
     fn dump_vector(&mut self, vector: &crate::lisp::types::VectorRef) -> Result<u32, DumpError> {
-        let slots = vector.slots().to_vec();
+        let slots = vector.slots().collect::<Vec<_>>();
         let start = self.object_start()?;
         let mut words = vec![slots.len() as u64];
         words.resize(slots.len() + 1, 0);
@@ -1510,93 +1503,12 @@ impl DumpContext {
     /// fixups, as intervals are.
     fn dump_closure(&mut self, lambda: &crate::lisp::types::LambdaRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
-        // The environment (CLOSURE_CONSTANTS) is a value field: the alist
-        // whose conses the closure shares with every closure made under
-        // the same scope.
-        let mut words = [
-            FIXUP_PLACEHOLDER,
-            WORD_UNBOUND,
-            FIXUP_PLACEHOLDER,
-            0,
-            WORD_UNBOUND,
-            WORD_UNBOUND,
-        ];
-        self.field_lv(
-            start,
-            &mut words,
-            3,
-            &lambda.environment_value(),
-            WEIGHT_NORMAL,
-        );
-        for (index, value) in [
-            (1, lambda.public_parameters.as_ref()),
-            (4, lambda.documentation.as_ref()),
-            (5, lambda.interactive.as_ref()),
-        ] {
-            if let Some(value) = value {
-                self.field_lv(start, &mut words, index, value, WEIGHT_NORMAL);
-            }
+        let mut words = vec![0; lambda.public_len() + 1];
+        words[0] = lambda.public_len() as u64;
+        for (index, value) in lambda.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 1, &value, WEIGHT_NORMAL);
         }
-        let offset = self.object_finish(&words)?;
-        let params = self.dump_lambda_params(&lambda.params)?;
-        self.remember_fixup_ptr_raw(offset, params);
-        let body = self.dump_lambda_body(&lambda.body)?;
-        self.remember_fixup_ptr_raw(offset + 16, body);
-        Ok(offset)
-    }
-
-    fn aux_start(&mut self, pointer: usize) -> Option<u32> {
-        self.aux_dumped.get(&pointer).copied()
-    }
-
-    fn aux_finish(
-        &mut self,
-        pointer: usize,
-        words: &[u64],
-        kind: DumpType,
-    ) -> Result<u32, DumpError> {
-        let offset = self.object_finish(words)?;
-        if self.flags.dump_object_contents {
-            self.aux_dumped.insert(pointer, offset);
-            if self.flags.record_object_starts {
-                self.object_starts.push((offset, kind));
-            }
-        }
-        Ok(offset)
-    }
-
-    fn dump_lambda_params(&mut self, params: &Rc<Vec<SymbolName>>) -> Result<u32, DumpError> {
-        let pointer = Rc::as_ptr(params) as usize;
-        if let Some(offset) = self.aux_start(pointer) {
-            return Ok(offset);
-        }
-        let start = self.object_start()?;
-        let mut words = vec![params.len() as u64];
-        words.resize(params.len() + 1, 0);
-        for (index, symbol) in params.iter().enumerate() {
-            self.field_lv(
-                start,
-                &mut words,
-                index + 1,
-                &Value::Symbol(*symbol),
-                WEIGHT_STRONG,
-            );
-        }
-        self.aux_finish(pointer, &words, DumpType::LambdaParams)
-    }
-
-    fn dump_lambda_body(&mut self, body: &Rc<Vec<Value>>) -> Result<u32, DumpError> {
-        let pointer = Rc::as_ptr(body) as usize;
-        if let Some(offset) = self.aux_start(pointer) {
-            return Ok(offset);
-        }
-        let start = self.object_start()?;
-        let mut words = vec![body.len() as u64];
-        words.resize(body.len() + 1, 0);
-        for (index, form) in body.iter().enumerate() {
-            self.field_lv(start, &mut words, index + 1, form, WEIGHT_STRONG);
-        }
-        self.aux_finish(pointer, &words, DumpType::LambdaBody)
+        self.object_finish(&words)
     }
 
     /// A char-table as Emaxx keeps it: id, subtype, default, parent,

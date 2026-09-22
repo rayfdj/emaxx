@@ -1,6 +1,23 @@
 use super::*;
 use crate::lisp::types::Kind;
+#[cfg(test)]
 use crate::lisp::types::LispErrorKind;
+
+#[cfg(test)]
+fn unquote(value: &Value) -> Value {
+    match value.kind() {
+        Kind::Cons(_) => {
+            if let Ok(items) = value.to_vec()
+                && items.len() == 2
+                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "quote")
+            {
+                return items[1];
+            }
+            *value
+        }
+        _ => *value,
+    }
+}
 
 impl Interpreter {
     // ── ERT support ──
@@ -46,6 +63,7 @@ impl Interpreter {
         Ok(*test)
     }
 
+    #[cfg(test)]
     fn set_ert_test_most_recent_result(&mut self, test: &Value, result: Value) {
         let Kind::Record(record_id) = test.kind() else {
             return;
@@ -60,6 +78,7 @@ impl Interpreter {
         }
     }
 
+    #[cfg(test)]
     fn make_ert_test_result(
         &mut self,
         type_name: &str,
@@ -84,11 +103,13 @@ impl Interpreter {
     }
 
     /// Run all collected ERT tests. Returns (passed, failed, total).
+    #[cfg(test)]
     pub fn run_ert_tests(&mut self) -> (usize, usize, usize) {
         let summary = self.run_ert_tests_with_selector(None);
         (summary.passed, summary.failed, summary.total)
     }
 
+    #[cfg(test)]
     pub fn run_ert_tests_with_selector(&mut self, selector: Option<&Value>) -> BatchSummary {
         let mut tests: Vec<ErtTestDefinition> = self
             .ert_tests
@@ -320,6 +341,7 @@ impl Interpreter {
     }
 }
 
+#[cfg(test)]
 fn selector_atom(value: &Value) -> String {
     match unquote(value).kind() {
         Kind::Symbol(name) => name.to_string(),
@@ -328,6 +350,7 @@ fn selector_atom(value: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
     match unquote(selector).kind() {
         Kind::Nil => false,

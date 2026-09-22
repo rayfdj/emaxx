@@ -1366,27 +1366,6 @@ impl Interpreter {
         self.note_function_binding_changed();
     }
 
-    pub fn function_binding_name(&self, function: &Value) -> Option<String> {
-        match function.kind() {
-            Kind::Symbol(name) | Kind::BuiltinFunc(name) => Some(name.to_string()),
-            other => self
-                .functions
-                .iter()
-                .rev()
-                .find(|(_, value)| *value == other.value())
-                .map(|(name, _)| name.clone()),
-        }
-    }
-
-    pub fn pop_function_binding(&mut self, name: &str) {
-        if let Some(index) = self.functions_position.remove(name) {
-            self.functions.remove(index);
-            self.note_obarray_removal();
-            self.reposition_function_bindings_from(index);
-            self.reindex_function_binding(name);
-        }
-    }
-
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         if let Some(index) = self.functions_position.remove(name) {
             self.functions.remove(index);

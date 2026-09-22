@@ -376,16 +376,6 @@ impl Interpreter {
     pub fn terminal_live(&self) -> bool {
         self.decode_terminal_id(&Value::Nil).is_some()
     }
-    pub fn terminal_parameter(&self, parameter: &Value) -> Option<Value> {
-        self.terminal_state(self.selected_terminal_id())?
-            .parameters
-            .iter()
-            .rfind(|(key, _)| key == parameter)
-            .map(|(_, value)| *value)
-    }
-    pub fn set_terminal_parameter(&mut self, parameter: Value, value: Value) -> Value {
-        self.set_terminal_parameter_on(self.selected_terminal_id(), parameter, value)
-    }
     pub(crate) fn set_terminal_parameter_on(
         &mut self,
         id: u64,
@@ -409,9 +399,6 @@ impl Interpreter {
             terminal.parameters.push((parameter, value));
             Value::Nil
         }
-    }
-    pub fn terminal_parameters(&self) -> Value {
-        self.terminal_parameters_on(self.selected_terminal_id())
     }
     pub(crate) fn terminal_parameters_on(&self, id: u64) -> Value {
         Value::list(

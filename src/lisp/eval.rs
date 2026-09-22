@@ -5,17 +5,20 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
     ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, LispErrorKind,
-    ReaderClosureKind, ReaderForm, SymbolName, Value, WeakConsSlot,
+    ReaderClosureKind, ReaderForm, SymbolName, Value,
 };
-use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
+use crate::compat::DiscoveredTest;
+#[cfg(test)]
+use crate::compat::{BatchSummary, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
+#[cfg(test)]
 use regex::Regex;
 
 mod bindings;
@@ -1577,19 +1580,27 @@ fn next_record_owner() -> u32 {
 
 /// After the sweeps: the records they freed leave every live state's
 /// registry and side tables.
-pub(crate) fn purge_freed_records_in_live_states() {
+pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
     let freed = crate::lisp::alloc::take_freed_records();
     if freed.is_empty() {
         return;
     }
+    // Reborrow the collecting interpreter through its actual owner. Only
+    // other, parked states need a registered view during sweep cleanup.
+    active.purge_freed_records(&freed);
+    let active_state = active
+        .state
+        .as_ref()
+        .expect("active interpreter state")
+        .0
+        .as_ptr() as usize;
     for state in crate::lisp::alloc::live_states() {
-        // SAFETY: a registered state is a live boxed `InterpreterState'
-        // (see `weak_hash_reachability_with_native'); the shell only
-        // edits its tables and never drops the box.
-        let mut other = std::mem::ManuallyDrop::new(Interpreter {
-            state: Some(unsafe { Box::from_raw(state as *mut InterpreterState) }),
-            continuations: continuations::ThreadContinuations::default(),
-        });
+        if state == active_state {
+            continue;
+        }
+        // SAFETY: the registered allocation remains alive during this
+        // serialized sweep cleanup. Only its freed-record indexes change.
+        let mut other = unsafe { Interpreter::registered_gc_view(state) };
         other.purge_freed_records(&freed);
     }
 }
@@ -2806,62 +2817,6 @@ struct PendingFileNotification {
     raw_event: Option<Value>,
 }
 
-/// Every authority a scan of `file-name-handler-alist' reads, as of one
-/// state of the alist: its identity, every cons cell of the alist and of the
-/// handlers' plists (a mutation watch), each pattern's text (a mutable string
-/// can change without replacing its cell), and each handler symbol's plist
-/// slot (`setplist' or a first `put' replace the slot without mutating a
-/// watched cell).  The scanned plists are held so their cells' identities
-/// cannot be reused while the watch lives.  One watch serves every cached
-/// scan of the same alist state; the interpreter keeps the latest one.
-pub(crate) struct FileNameHandlerAlistWatch {
-    pub(crate) handler_alist: Value,
-    pub(crate) cons_mutations: crate::lisp::types::ConsMutationSnapshot,
-    pub(crate) pattern_snapshots: Vec<(Value, String)>,
-    pub(crate) plist_snapshots: Vec<(String, Value)>,
-    /// The definition generation at which the plist slots were last seen
-    /// in place.  Every slot replacement (`put', `setplist', the removal
-    /// of a property) advances that generation, so an unchanged generation
-    /// stands for the slot comparisons.
-    pub(crate) plists_checked_at: std::cell::Cell<u64>,
-}
-
-impl FileNameHandlerAlistWatch {
-    /// Whether a scan made under this watch would read the same alist,
-    /// patterns and handler plists now.
-    pub(crate) fn is_current(&self, interp: &Interpreter, handler_alist_id: Option<usize>) -> bool {
-        self.handler_alist.cons_id() == handler_alist_id
-            && self.cons_mutations.is_current()
-            && self.pattern_snapshots.iter().all(|(pattern, snapshot)| {
-                crate::lisp::primitives::string_like(pattern)
-                    .is_some_and(|pattern| pattern.text == *snapshot)
-            })
-            && self.plist_slots_in_place(interp)
-    }
-
-    fn plist_slots_in_place(&self, interp: &Interpreter) -> bool {
-        let generation = interp.current_definition_generation();
-        if self.plists_checked_at.get() == generation {
-            return true;
-        }
-        let in_place = self
-            .plist_snapshots
-            .iter()
-            .all(|(symbol, plist)| interp.symbol_plist(symbol).cons_id() == plist.cons_id());
-        if in_place {
-            self.plists_checked_at.set(generation);
-        }
-        in_place
-    }
-}
-
-/// One scan of `file-name-handler-alist' for a (file, operation) pair.
-#[derive(Clone)]
-pub(crate) struct FileNameHandlerMatchCacheEntry {
-    pub(crate) watch: std::rc::Rc<FileNameHandlerAlistWatch>,
-    pub(crate) matches: Vec<(usize, Value)>,
-}
-
 #[derive(Clone, Debug)]
 struct ScheduledTimer {
     function: Value,
@@ -2891,7 +2846,6 @@ pub(crate) struct CompositionState {
 }
 
 pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
-pub(crate) const LFACE_INHERIT_INDEX: usize = 16;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LispFaceState {
@@ -3046,6 +3000,7 @@ pub(crate) struct MinibufferRuntimeState {
 /// copier rebuilds each mutable node once (memo per Rc identity, so
 /// sharing *inside* the clone is preserved) and leaves immutable
 /// representations (interned strings, big integers, symbols) shared.
+#[cfg(test)]
 struct ImageGraphCopier {
     cons: std::collections::HashMap<usize, Value>,
     vectors: std::collections::HashMap<usize, Value>,
@@ -3057,6 +3012,7 @@ struct ImageGraphCopier {
     record_owner: u32,
 }
 
+#[cfg(test)]
 impl ImageGraphCopier {
     fn new(record_owner: u32) -> Self {
         Self {
@@ -3074,21 +3030,20 @@ impl ImageGraphCopier {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
             Kind::Vector(vector) => {
-                if vector.slots().is_empty() {
+                if vector.len() == 0 {
                     return *value;
                 }
                 let key = vector.identity();
                 if let Some(copied) = self.vectors.get(&key) {
                     return *copied;
                 }
-                let source_slots = vector.slots().to_vec();
-                let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
+                let copied = Value::vector(std::iter::repeat_n(Value::Nil, vector.len()));
                 self.vectors.insert(key, copied);
                 let Kind::Vector(copied_vector) = copied.kind() else {
                     unreachable!("nonempty vector copy has vector storage")
                 };
-                for (index, slot) in source_slots.iter().enumerate() {
-                    copied_vector.slots_mut()[index] = self.copy(slot);
+                for (index, slot) in vector.slots().enumerate() {
+                    copied_vector.set(index, self.copy(&slot));
                 }
                 copied
             }
@@ -3156,31 +3111,15 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.lambdas.get(&key) {
                     return *copied;
                 }
-                // The environment is copied after the closure is on
-                // record: a closure can reach itself through it.
-                let copied = Value::allocated_lambda(crate::lisp::types::LambdaValue {
-                    params: lambda.params.clone(),
-                    public_parameters: lambda
-                        .public_parameters
-                        .as_ref()
-                        .map(|parameters| self.copy(parameters)),
-                    body: std::rc::Rc::new(
-                        lambda.body.iter().map(|form| self.copy(form)).collect(),
-                    ),
-                    env: std::cell::OnceCell::new(),
-                    documentation: lambda
-                        .documentation
-                        .as_ref()
-                        .map(|documentation| self.copy(documentation)),
-                    interactive: lambda
-                        .interactive
-                        .as_ref()
-                        .map(|interactive| self.copy(interactive)),
-                });
+                // Publish identity before copying any slot: every slot
+                // can reach this closure through the stored Lisp graph.
+                let copied = Value::allocated_lambda(&vec![Value::Nil; lambda.public_len()]);
                 self.lambdas.insert(key, copied);
-                let environment = self.copy(&lambda.environment_value());
-                if let Kind::Lambda(copied) = copied.kind() {
-                    let _ = copied.env.set(environment);
+                let Kind::Lambda(destination) = copied.kind() else {
+                    unreachable!()
+                };
+                for (index, value) in lambda.slots().enumerate() {
+                    destination.initialize_slot(index, self.copy(&value));
                 }
                 copied
             }
@@ -3569,29 +3508,13 @@ impl LispReachability<'_, '_> {
             }
             Kind::Vector(vector) => {
                 // Slot by slot, in place.
-                let slots = vector.slots();
-                for child in slots.iter() {
-                    self.enqueue(child);
+                for child in vector.slots() {
+                    self.enqueue(&child);
                 }
             }
             Kind::Lambda(lambda) => {
-                for symbol in lambda.params.iter() {
-                    self.enqueue(&Value::Symbol(*symbol));
-                }
-                if let Some(value) = &lambda.public_parameters {
-                    self.enqueue(value);
-                }
-                for value in lambda.body.iter() {
-                    self.enqueue(value);
-                }
-                if let Some(environment) = lambda.env.get() {
-                    self.enqueue(environment);
-                }
-                for value in [lambda.documentation.as_ref(), lambda.interactive.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    self.enqueue(value);
+                for value in lambda.slots() {
+                    self.enqueue(&value);
                 }
             }
             Kind::Buffer(buffer) => {
@@ -4255,13 +4178,9 @@ impl Interpreter {
             if state == this_state {
                 continue;
             }
-            // SAFETY: a registered state is a live boxed `InterpreterState'
-            // (registered when boxed, unregistered in its drop); the
-            // temporary shell only reads it and never drops the box.
-            let other = std::mem::ManuallyDrop::new(Interpreter {
-                state: Some(unsafe { Box::from_raw(state as *mut InterpreterState) }),
-                continuations: continuations::ThreadContinuations::default(),
-            });
+            // SAFETY: the registered allocation stays alive and parked
+            // while this collection reads its roots. The view owns no box.
+            let other = unsafe { Interpreter::registered_gc_view(state) };
             // Its own marker for the kinds marked by id (a record id names
             // a different object in each state), this collection's epoch
             // on the objects; every record it keeps is retained as this
@@ -4664,9 +4583,6 @@ impl Interpreter {
         {
             mark(&self.record_value(thread.record_id));
         }
-        for value in self.plain_quote_templates.values() {
-            mark(&value.value);
-        }
         // buffer.c's BVAR (b, mark): each buffer's mark marker is a slot of
         // the buffer object, reached whenever the buffer is.
         for id in self.buffer_mark_marker_ids.values() {
@@ -4697,10 +4613,14 @@ impl Interpreter {
         }
     }
 
-    /// The boxed state is a root set for every collection in the process
+    /// The allocated state is a root set for every collection in the process
     /// while it lives (`alloc::LIVE_STATES').
     pub(crate) fn register_state_as_root(&self) {
-        crate::lisp::alloc::register_state(std::ptr::from_ref::<InterpreterState>(self) as usize);
+        // Preserve the allocation's original writable pointer provenance.
+        // Deriving this from an &InterpreterState would only grant shared
+        // access, while the sweep must later clean up freed-record indexes.
+        let state = self.state.as_ref().expect("active interpreter state");
+        crate::lisp::alloc::register_state(state.0.as_ptr() as usize);
     }
 
     /// alloc.c:garbage_collect's tail: `Vgc_elapsed' accumulates the
@@ -4832,6 +4752,7 @@ impl Interpreter {
     /// variable assignment, puthash) can never leak back into the
     /// template.  Identity-keyed caches are dropped because the copied
     /// cells have new identities; they repopulate on use.
+    #[cfg(test)]
     pub fn deep_clone_image(&self) -> Interpreter {
         assert!(
             self.terminals
@@ -5115,10 +5036,6 @@ impl Interpreter {
         // Identity-keyed caches: the copied cells have fresh identities, so
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
-        clone.plain_quote_templates.clear();
-        clone.lambda_source_bodies.clear();
-        clone.file_name_handler_match_cache.clear();
-        clone.file_name_handler_alist_watch = None;
         crate::lisp::primitives::forget_buffer_views();
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
@@ -5197,8 +5114,73 @@ impl Drop for ImageTemplateToken {
 /// ownership to another shell without aliasing the parked shell's mutable
 /// references. A parked shell must not be dereferenced until its state returns.
 pub struct Interpreter {
-    state: Option<Box<InterpreterState>>,
+    state: Option<InterpreterStateOwner>,
     continuations: continuations::ThreadContinuations,
+}
+
+/// Own one stable state allocation while the root registry and suspended
+/// continuations retain raw pointers into it. Moving this owner makes no
+/// uniqueness assertion about the pointed-to state. Only its final Drop
+/// restores the Box, after execution and borrowed GC views have ended.
+struct InterpreterStateOwner(std::ptr::NonNull<InterpreterState>);
+
+impl InterpreterStateOwner {
+    fn new(state: InterpreterState) -> Self {
+        Self(std::ptr::NonNull::new(Box::into_raw(Box::new(state))).expect("allocated state"))
+    }
+}
+
+impl Clone for InterpreterStateOwner {
+    fn clone(&self) -> Self {
+        Self::new((**self).clone())
+    }
+}
+
+impl std::ops::Deref for InterpreterStateOwner {
+    type Target = InterpreterState;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the active owner or a scoped GC view keeps the allocation
+        // alive. Callers must finish field borrows before resuming execution.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl std::ops::DerefMut for InterpreterStateOwner {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: execution is serialized; ownership transfers leave the
+        // old shell parked. GC's mutable view is restricted to sweep cleanup.
+        unsafe { self.0.as_mut() }
+    }
+}
+
+impl Drop for InterpreterStateOwner {
+    fn drop(&mut self) {
+        // SAFETY: new consumes exactly one Box. Continuations transfer this
+        // owner, Clone allocates a distinct state, and GC views never drop it.
+        unsafe { drop(Box::from_raw(self.0.as_ptr())) };
+    }
+}
+
+impl Interpreter {
+    /// Borrow a registered state for the collector without creating a second
+    /// Box or transferring ownership from its execution shell.
+    ///
+    /// # Safety
+    /// STATE must remain registered and allocated for the entire view. The
+    /// caller may only read roots or perform serialized sweep cleanup, must
+    /// respect outstanding field borrows, and must not take or drop the state.
+    unsafe fn registered_gc_view(state: usize) -> std::mem::ManuallyDrop<Self> {
+        let pointer = std::ptr::NonNull::new(state as *mut InterpreterState)
+            .expect("registered state is non-null");
+        // Construct all potentially fallible fields before the non-owning
+        // owner-shaped reference, so unwinding cannot drop the live state.
+        let continuations = continuations::ThreadContinuations::default();
+        std::mem::ManuallyDrop::new(Self {
+            state: Some(InterpreterStateOwner(pointer)),
+            continuations,
+        })
+    }
 }
 
 impl Clone for Interpreter {
@@ -5291,7 +5273,6 @@ pub struct InterpreterState {
     special_variables: Vec<String>,
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
-    local_special_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     pub(crate) lisp_eval_depth: usize,
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
@@ -5661,7 +5642,6 @@ pub struct InterpreterState {
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
-    lambda_source_bodies: HashMap<usize, ConsMutationStamped<LambdaSourceBodyCacheEntry>>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
@@ -5674,13 +5654,17 @@ pub struct InterpreterState {
     // File the currently-running ERT test was defined in; used by
     // `ert-resource-directory' without making `load-file-name' non-nil
     // during test bodies (it is nil there in GNU).
+    #[cfg(test)]
     pub(crate) ert_test_source_file: Option<String>,
+    #[cfg(test)]
     pub(crate) current_ert_test_name: Option<String>,
     /// Collected ERT test definitions.
     pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
+    #[cfg(test)]
     pub test_results: Vec<TestOutcome>,
     /// Selected test names from the most recent ERT run.
+    #[cfg(test)]
     pub last_selected_tests: Vec<String>,
     /// A `kill-emacs` request waiting for the process-owning batch boundary.
     /// Keeping it explicit prevents an internal error-demotion path from
@@ -5754,24 +5738,12 @@ pub struct InterpreterState {
     /// returns, matching calls that GNU compiled inline into the callback.
     timer_callback_depth: usize,
     deferred_defsubst_unbindings: Vec<(String, Value)>,
-    /// Quoted templates already scanned and found free of reader marker
-    /// forms; `quote' returns them as-is (keyed by car-cell address, the
-    /// stored Value keeps the template alive so keys stay unique).
-    plain_quote_templates: HashMap<usize, ConsMutationStamped<Value>>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     #[cfg(target_os = "macos")]
     file_notify_kqueue: Option<FileNotifyHostQueue>,
     #[cfg(target_os = "linux")]
     file_notify_inotify: Option<FileNotifyHostQueue>,
-    pub(crate) file_name_handler_match_cache: HashMap<
-        (String, String),
-        FileNameHandlerMatchCacheEntry,
-        crate::lisp::primitives::FnvBuildHasher,
-    >,
-    /// The watch the next cached handler scan shares when the alist state
-    /// it describes is still current.
-    pub(crate) file_name_handler_alist_watch: Option<std::rc::Rc<FileNameHandlerAlistWatch>>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -5814,36 +5786,6 @@ pub(crate) enum ActiveHandler {
     Bind(Vec<String>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
     Case(Vec<Value>),
-}
-
-impl<T: Clone> Clone for ConsMutationStamped<T> {
-    fn clone(&self) -> Self {
-        Self {
-            mutations: self.mutations.clone(),
-            value: self.value.clone(),
-        }
-    }
-}
-
-struct ConsMutationStamped<T> {
-    mutations: crate::lisp::types::ConsMutationSnapshot,
-    value: T,
-}
-
-impl<T> ConsMutationStamped<T> {
-    fn new(mutations: crate::lisp::types::ConsMutationSnapshot, value: T) -> Self {
-        Self { mutations, value }
-    }
-
-    fn current(&self) -> Option<&T> {
-        self.mutations.is_current().then_some(&self.value)
-    }
-}
-
-#[derive(Clone)]
-struct LambdaSourceBodyCacheEntry {
-    source: WeakConsSlot,
-    body: Weak<Vec<Value>>,
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
@@ -6106,7 +6048,6 @@ impl Interpreter {
             debug_on_next_call: false,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
-            local_special_names: HashSet::default(),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
             kbd_macro_executions: Vec::new(),
@@ -6488,17 +6429,20 @@ impl Interpreter {
             definition_generation: 0,
             function_binding_generation: 0,
             not_macro_names: HashMap::default(),
-            lambda_source_bodies: HashMap::new(),
             provided_features: STARTUP_FEATURES
                 .iter()
                 .map(|feature| feature.name.to_string())
                 .collect(),
             current_load_file: None,
             load_source_provenance_remap: None,
+            #[cfg(test)]
             ert_test_source_file: None,
+            #[cfg(test)]
             current_ert_test_name: None,
             ert_tests: Vec::new(),
+            #[cfg(test)]
             test_results: Vec::new(),
+            #[cfg(test)]
             last_selected_tests: Vec::new(),
             pending_termination: None,
             last_match_data: None,
@@ -6565,15 +6509,12 @@ impl Interpreter {
             pending_timers: Vec::new(),
             timer_callback_depth: 0,
             deferred_defsubst_unbindings: Vec::new(),
-            plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
             #[cfg(target_os = "macos")]
             file_notify_kqueue: None,
             #[cfg(target_os = "linux")]
             file_notify_inotify: None,
-            file_name_handler_match_cache: HashMap::default(),
-            file_name_handler_alist_watch: None,
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -6588,7 +6529,7 @@ impl Interpreter {
             face_change_count: 0,
         };
         let mut interp = Interpreter {
-            state: Some(Box::new(state)),
+            state: Some(InterpreterStateOwner::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
         interp.register_state_as_root();
@@ -7936,29 +7877,10 @@ impl Interpreter {
         self.lambda_capture_overrides.last().copied()
     }
 
-    /// Materialize the six GNU-visible interpreted-closure slots from the
-    /// typed runtime representation.  Every Lisp-facing consumer (`aref',
-    /// equality, hashing, documentation, and interactive metadata) must use
-    /// this owner rather than reconstructing a partial slot layout.
+    /// Snapshot stored slots for consumers that need an owned sequence.
+    /// Ordinary closure access reads the inline slot directly.
     pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        // Slot two is the environment itself: the alist whose conses are
-        // the closure's storage, `nil' for a dynamic lambda.
-        let environment = lambda.environment_value();
-        let mut slots = vec![
-            lambda.public_parameters.unwrap_or_else(|| {
-                Value::list(lambda.params.iter().map(|param| Value::Symbol(*param)))
-            }),
-            Value::list(lambda.body.as_ref().clone()),
-            environment,
-        ];
-        if lambda.interactive.is_some() || lambda.documentation.is_some() {
-            slots.push(Value::Nil);
-            slots.push(lambda.documentation.unwrap_or(Value::Nil));
-        }
-        if let Some(interactive) = &lambda.interactive {
-            slots.push(*interactive);
-        }
-        slots
+        lambda.slots().collect()
     }
 
     /// Register TAG as an active `catch' target for the extent of a native
@@ -8008,49 +7930,6 @@ fn symbol_name(value: &Value) -> Option<String> {
     match value.kind() {
         Kind::Symbol(name) => Some(name.to_string()),
         _ => None,
-    }
-}
-
-fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
-    match value.kind() {
-        Kind::Cons(_) => {
-            let items = value.to_vec()?;
-            if items.len() == 2
-                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "setf")
-            {
-                let target = function_name_from_binding_form(&items[1])?;
-                return Ok(format!("(setf {target})"));
-            }
-            if items.len() == 2
-                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "function" || name == "function-quote" || name == "quote")
-            {
-                return function_name_from_binding_form(&items[1]);
-            }
-            let other = unquote(value);
-            Err(LispError::WrongTypeArgument("symbolp".into(), other))
-        }
-        _ => match unquote(value).kind() {
-            Kind::Symbol(name) => Ok(name.to_string()),
-            other => Err(LispError::WrongTypeArgument(
-                "symbolp".into(),
-                other.value(),
-            )),
-        },
-    }
-}
-
-fn unquote(value: &Value) -> Value {
-    match value.kind() {
-        Kind::Cons(_) => {
-            if let Ok(items) = value.to_vec()
-                && items.len() == 2
-                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "quote")
-            {
-                return items[1];
-            }
-            *value
-        }
-        _ => *value,
     }
 }
 
@@ -8140,24 +8019,6 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
     }
 }
 
-fn function_executable_body(body: &[Value]) -> &[Value] {
-    let mut start = 0usize;
-    if body.len() > 1
-        && matches!(
-            body.first().map(|v| v.kind()),
-            Some(Kind::String(_) | Kind::StringObject(_))
-        )
-    {
-        start = 1;
-    }
-    while start < body.len()
-        && (is_function_declare_form(&body[start]) || is_function_interactive_form(&body[start]))
-    {
-        start += 1;
-    }
-    &body[start..]
-}
-
 /// Whether VALUE is a proper list whose head is the symbol NAME.  The
 /// head is read in place; the list is walked only when the head matches
 /// (these checks run on every function call and `let', and used to copy
@@ -8168,14 +8029,6 @@ fn proper_list_headed_by(value: &Value, name: &str) -> bool {
     };
     let head_matches = matches!(car.get().kind(), Kind::Symbol(head) if head == name);
     head_matches && value.to_vec().is_ok()
-}
-
-fn is_function_declare_form(form: &Value) -> bool {
-    proper_list_headed_by(form, "declare")
-}
-
-fn is_function_interactive_form(form: &Value) -> bool {
-    proper_list_headed_by(form, "interactive")
 }
 
 fn is_vector_literal(value: &Value) -> bool {
@@ -8208,48 +8061,6 @@ fn invalid_function(value: Value) -> LispError {
         Value::Symbol("invalid-function".into()),
         value,
     ]))
-}
-
-fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> {
-    let mut seen_optional = false;
-    let mut seen_rest = false;
-    let mut needs_rest_arg = false;
-    let mut rest_arg_seen = false;
-
-    for item in items {
-        let Kind::Symbol(symbol) = item.kind() else {
-            return Err(invalid_function(*spec));
-        };
-        match symbol.as_str() {
-            "&optional" => {
-                if seen_optional || seen_rest {
-                    return Err(invalid_function(*spec));
-                }
-                seen_optional = true;
-            }
-            "&rest" => {
-                if seen_rest {
-                    return Err(invalid_function(*spec));
-                }
-                seen_rest = true;
-                needs_rest_arg = true;
-            }
-            _ => {
-                if needs_rest_arg {
-                    needs_rest_arg = false;
-                    rest_arg_seen = true;
-                } else if rest_arg_seen {
-                    return Err(invalid_function(*spec));
-                }
-            }
-        }
-    }
-
-    if needs_rest_arg {
-        return Err(invalid_function(*spec));
-    }
-
-    Ok(())
 }
 
 // GNU pcase--funcall for `app' patterns: a call form may name the object

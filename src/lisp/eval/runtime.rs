@@ -84,10 +84,6 @@ impl Interpreter {
         std::mem::replace(&mut self.current_load_file, path)
     }
 
-    pub fn current_load_file(&self) -> Option<&str> {
-        self.current_load_file.as_deref()
-    }
-
     pub(crate) fn set_load_source_provenance_remap(
         &mut self,
         physical_root: PathBuf,
@@ -126,6 +122,7 @@ impl Interpreter {
         crate::lisp::primitives::resolve_load_target_in_env(self, target, &Env::new())
     }
 
+    #[cfg(test)]
     pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
         self.load_target_with_env(target, &Env::new())
     }
@@ -604,14 +601,6 @@ impl Interpreter {
             .and_then(|value| value.as_integer().ok())
             .map(|value| value.max(0) as u64)
             .unwrap_or(self.current_buffer_id)
-    }
-
-    pub fn selected_window_previous_buffer_id(&self) -> Option<u64> {
-        self.find_record(self.selected_window_id)
-            .and_then(|record| record.slots.get(2))
-            .and_then(|value| value.as_integer().ok())
-            .map(|value| value.max(0) as u64)
-            .filter(|id| self.has_buffer_id(*id))
     }
 
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
@@ -2490,6 +2479,7 @@ impl Interpreter {
         Ok(Value::CharTable(copy_id))
     }
 
+    #[cfg(test)]
     pub fn create_record(&mut self, type_name: &str, slots: Vec<Value>) -> Value {
         self.create_record_with_type(Value::symbol(type_name), slots)
     }
@@ -3086,16 +3076,6 @@ impl Interpreter {
         });
         history.insert(0, Value::list(entry));
         self.set_global_binding("load-history", Value::list(history));
-    }
-
-    pub fn unprovide_feature(&mut self, feature: &str) {
-        let features = self
-            .provided_features
-            .iter()
-            .filter(|name| name.as_str() != feature)
-            .cloned()
-            .map(|value| Value::Symbol(value.into()));
-        self.set_global_binding("features", Value::list(features));
     }
 
     pub(crate) fn provide_feature_with_after_load(

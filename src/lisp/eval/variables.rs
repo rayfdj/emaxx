@@ -446,23 +446,13 @@ impl Interpreter {
             Some(frame) => frame.set_environment(declared),
             None => env.push(EnvFrame::from_alist(declared)),
         }
-        self.local_special_names.insert(name.to_string());
-    }
-
-    /// A bare-symbol entry of a closure's environment declares NAME
-    /// locally special within it; note the name so the `let' check runs.
-    pub(crate) fn note_captured_local_special(&mut self, name: &str) {
-        self.local_special_names.insert(name.to_string());
     }
 
     /// Flet's `!NILP (Fmemq (var, Vinternal_interpreter_environment))':
     /// whether NAME is declared locally special in the current
-    /// environment.  The process-wide set of names ever declared is a
-    /// filter in front of the walk (a name never declared skips it).
+    /// environment. The Lisp environment itself is authoritative, including
+    /// bare symbols installed or mutated after a closure was constructed.
     pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
-        if !self.local_special_names.contains(name) {
-            return false;
-        }
         crate::lisp::types::current_environment(env).is_some_and(|environment| {
             crate::lisp::types::environment_declares_special(environment, name)
         })
@@ -496,13 +486,9 @@ impl Interpreter {
     /// directly by FORM are dynamic even for undeclared symbols.  Existing
     /// lexical functions called by FORM mask this override at their boundary.
     pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
-        // The name-keyed tables are probed only when they hold anything
-        // (each probe hashed the name per `let' binding of interpreted
-        // code, over tables that are nearly always empty).
         self.lambda_capture_override() == Some(false)
             || self.is_special_variable_symbol(symbol)
-            || (!self.local_special_names.is_empty()
-                && self.local_special_active(symbol.as_str(), env))
+            || self.local_special_active(symbol.as_str(), env)
     }
 
     /// Whether SYMBOL names a C-owned value cell (`builtin_var_value'
@@ -553,6 +539,7 @@ impl Interpreter {
             || self.builtin_var_value(&resolved).is_some()
     }
 
+    #[cfg(test)]
     pub fn special_variable_names(&self) -> Vec<String> {
         self.special_variables.clone()
     }
@@ -745,10 +732,8 @@ impl Interpreter {
 
         while let Some(current) = pending.pop() {
             match current.kind() {
-                Kind::Symbol(name) => {
-                    if crate::lisp::types::visible_symbol_name(&name) == name {
-                        self.intern_symbol_name(&name);
-                    }
+                Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
+                    self.intern_symbol_name(&name);
                 }
                 Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
@@ -759,7 +744,7 @@ impl Interpreter {
                     }
                 }
                 Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
-                    pending.extend(vector.slots().iter().cloned());
+                    pending.extend(vector.slots());
                 }
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
@@ -840,9 +825,11 @@ impl Interpreter {
             }
             Kind::Vector(vector) => {
                 if seen.vectors.insert(vector.identity()) {
-                    let slots = vector.slots().to_vec();
+                    let slots = vector.slots().collect::<Vec<_>>();
                     let mapped = self.intern_read_symbol_fields(&slots, obarray, seen)?;
-                    vector.slots_mut().clone_from_slice(&mapped);
+                    for (index, value) in mapped.into_iter().enumerate() {
+                        vector.set(index, value);
+                    }
                 }
                 Ok(Value::Vector(vector))
             }
@@ -919,42 +906,6 @@ impl Interpreter {
 
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {
         id == self.standard_obarray_id
-    }
-
-    pub fn remove_symbol_property(&mut self, name: &str, property: &str) {
-        let Some(index) = self.symbol_property_index(name) else {
-            return;
-        };
-        let mut tail = self.symbol_properties[index].1;
-        let mut previous_value_cell: Option<Value> = None;
-        let mut seen = HashSet::new();
-        while let Kind::Cons(cell) = tail.kind() {
-            if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
-                return;
-            }
-            let rest = cell.cdr.get();
-            let Some((_, next_cell)) = rest.cons_cells() else {
-                return;
-            };
-            let next = next_cell.get();
-            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
-                self.note_definition_changed();
-                if let Some(previous) = previous_value_cell {
-                    previous
-                        .set_cdr(next)
-                        .expect("a tracked plist value cell is a cons");
-                } else if next.is_nil() {
-                    self.symbol_properties.remove(index);
-                    self.rebuild_symbol_properties_index();
-                    self.note_obarray_removal();
-                } else {
-                    self.symbol_properties[index].1 = next;
-                }
-                return;
-            }
-            previous_value_cell = Some(rest);
-            tail = next;
-        }
     }
 
     pub fn symbol_plist(&self, name: &str) -> Value {
@@ -1272,6 +1223,7 @@ impl Interpreter {
             .any(|restore| restore.name == name)
     }
 
+    #[cfg(test)]
     pub fn remove_variable_alias(&mut self, name: &str) -> bool {
         if let Some(index) = self
             .variable_aliases
@@ -1721,23 +1673,6 @@ impl Interpreter {
         true
     }
 
-    pub(super) fn set_active_buffer_local_toplevel_value(
-        &mut self,
-        buffer_id: u64,
-        name: &str,
-        value: Option<Value>,
-    ) -> bool {
-        let Some(index) = self.active_special_restores.iter().position(|restore| {
-            !restore.local_binding_killed
-                && restore.name == name
-                && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
-        }) else {
-            return false;
-        };
-        self.active_special_restores[index].previous = value.map(Self::stored_value);
-        true
-    }
-
     /// Whether NAME has a real global default binding, ignoring the
     /// synthesized builtin fallback table.  `defvar' consults this: a table
     /// answer is not a binding and must not suppress a loaded file's
@@ -1780,15 +1715,6 @@ impl Interpreter {
             return previous;
         }
         self.buffer_local_value(buffer_id, &resolved)
-    }
-
-    pub fn set_buffer_local_toplevel_value(&mut self, buffer_id: u64, name: &str, value: Value) {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        if !self.set_active_buffer_local_toplevel_value(buffer_id, &resolved, Some(value)) {
-            self.set_buffer_local_value(buffer_id, &resolved, value);
-        }
     }
 
     pub(super) fn assignment_scope(&self, name: &str) -> Option<SpecialBindingScope> {
@@ -2763,6 +2689,7 @@ impl Interpreter {
             .is_some_and(|frame| frame.debug_on_exit)
     }
 
+    #[cfg(test)]
     pub fn current_backtrace_frame(&self) -> Option<(bool, Value, Vec<Value>, bool)> {
         self.backtrace_frames.last().map(|frame| {
             (
@@ -2824,17 +2751,6 @@ impl Interpreter {
 
     pub(crate) fn clear_batch_error_backtrace(&mut self) {
         self.batch_error_backtrace = None;
-    }
-
-    pub fn backtrace_frame_locals_snapshot(
-        &self,
-        index: usize,
-    ) -> Option<Vec<(SymbolName, Value)>> {
-        self.backtrace_frames
-            .iter()
-            .rev()
-            .nth(index)
-            .map(|frame| frame.locals().to_vec())
     }
 
     pub fn backtrace_frame_locals_snapshot_with_base(

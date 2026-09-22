@@ -2414,51 +2414,52 @@ pub(super) fn direct_member_family(
         "memql" => MemTest::Eql,
         _ => MemTest::Eq,
     };
-    let mut current = args[1];
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        let next = match current.kind() {
-            Kind::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                if seen.step(crate::lisp::types::ConsCell::identity(&cons_cell)) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("circular-list".into()),
-                        Value::String("Circular list".into()),
-                    ])));
-                }
-                let matches = {
-                    let item = car.get();
-                    match test {
-                        MemTest::Equal => values_equal_in_env(interp, &item, &args[0], env),
-                        MemTest::Eql => values_eql(&item, &args[0]),
-                        MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
-                    }
-                };
-                if matches {
-                    return Ok(current);
-                }
-                cdr.get()
-            }
-            Kind::Nil => return Ok(Value::Nil),
-            other => {
-                let matches = match name {
-                    "member" => values_equal_in_env(interp, &other.value(), &args[0], env),
-                    "memql" => values_eql(&other.value(), &args[0]),
-                    _ => values_eq_in_env(interp, &other.value(), &args[0], env),
-                };
-                if matches {
-                    return Ok(other.value());
-                }
+    let mut tail = args[1];
+    let mut tortoise = tail;
+    let mut maximum = 2_isize;
+    let mut remaining = 0_isize;
+    let mut quit_count = 2_u16;
+    while let Kind::Cons(cell) = tail.kind() {
+        let item = cell.car.get();
+        let matches = match test {
+            MemTest::Equal => values_equal_in_env(interp, &item, &args[0], env),
+            MemTest::Eql => values_eql(&item, &args[0]),
+            MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
+        };
+        if matches {
+            return Ok(tail);
+        }
+        // lisp.h:FOR_EACH_TAIL advances after the comparison, then checks
+        // quit and Brent's tortoise at the same points as the native walk.
+        tail = cell.cdr.get();
+        quit_count = quit_count.wrapping_sub(1);
+        let compare = if quit_count != 0 {
+            true
+        } else {
+            interp.maybe_quit(env)?;
+            remaining = remaining.wrapping_sub(1);
+            remaining > 0
+        };
+        if compare {
+            if tail.word() == tortoise.word() {
                 return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("wrong-type-argument".into()),
-                    Value::Symbol("listp".into()),
-                    other.value(),
+                    Value::symbol("circular-list"),
+                    tail,
                 ])));
             }
-        };
-        current = next;
+        } else {
+            maximum = maximum.wrapping_shl(1);
+            quit_count = maximum as u16;
+            remaining = maximum >> u16::BITS;
+            tortoise = tail;
+        }
     }
+    // CHECK_LIST_END(tail, list) reports the original list. An improper
+    // tail is never an element, even when it equals the sought value.
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", args[1]));
+    }
+    Ok(Value::Nil)
 }
 
 pub(super) fn direct_memq(

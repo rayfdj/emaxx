@@ -1102,9 +1102,7 @@ fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
     let mut env = crate::lisp::types::Env::new();
     Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
     let captured = crate::lisp::types::current_environment_value(&env);
-    let Kind::Lambda(lambda) =
-        Value::lambda(Vec::new().into(), vec![Value::Nil].into(), captured).kind()
-    else {
+    let Kind::Lambda(lambda) = Value::lambda(Vec::new(), vec![Value::Nil], captured).kind() else {
         unreachable!("Value::lambda constructs a lambda");
     };
 
@@ -7277,7 +7275,7 @@ fn builtin_alias_calls_invalidate_on_every_redefinition() {
 }
 
 #[test]
-fn named_lisp_calls_share_immutable_function_code() {
+fn named_lisp_calls_share_the_stored_function_body() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let definition =
@@ -7300,8 +7298,8 @@ fn named_lisp_calls_share_immutable_function_code() {
         panic!("named definition should remain a Lisp lambda");
     };
     assert!(
-        std::rc::Rc::ptr_eq(&first_lambda.body, &second_lambda.body),
-        "function lookup must share immutable code rather than cloning its AST"
+        first_lambda.body().word() == second_lambda.body().word(),
+        "function lookup must retain the stored body list"
     );
 
     let call = Reader::new("(emaxx-test-shared-function-code 41)")

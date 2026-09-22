@@ -727,16 +727,6 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn coding_system_priority_rank(&self, name: &str) -> usize {
-        let canonical = self
-            .coding_system_canonical_name(name)
-            .unwrap_or_else(|| name.to_string());
-        self.coding_priority
-            .iter()
-            .position(|existing| existing == &canonical)
-            .unwrap_or(usize::MAX)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn define_coding_system(
         &mut self,
@@ -985,6 +975,7 @@ impl Interpreter {
             })
     }
 
+    #[cfg(test)]
     pub fn set_terminal_coding_system(&mut self, coding: Option<String>) {
         let id = self.selected_terminal_id();
         self.terminals
@@ -992,20 +983,6 @@ impl Interpreter {
             .find(|terminal| terminal.id == id)
             .expect("decoded terminal has state")
             .terminal_coding = coding;
-    }
-
-    pub fn keyboard_coding_system(&self) -> Option<String> {
-        self.terminal_state(self.selected_terminal_id())
-            .and_then(|terminal| terminal.keyboard_coding.clone())
-    }
-
-    pub fn set_keyboard_coding_system(&mut self, coding: Option<String>) {
-        let id = self.selected_terminal_id();
-        self.terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == id)
-            .expect("decoded terminal has state")
-            .keyboard_coding = coding;
     }
 
     pub fn input_interrupt_mode(&self) -> bool {
@@ -1144,18 +1121,6 @@ impl Interpreter {
         self.standard_syntax_table_id
     }
 
-    /// The static GNU lisp-data-mode-syntax-table built at interpreter
-    /// startup (see Interpreter::new).
-    pub fn lisp_data_syntax_table_id(&self) -> u64 {
-        3
-    }
-
-    /// The dumped GNU emacs-lisp-mode-syntax-table child, whose `@' entry
-    /// differs from lisp-data-mode until syntax-propertize sees `,@'.
-    pub fn emacs_lisp_mode_syntax_table_id(&self) -> u64 {
-        4
-    }
-
     pub fn current_syntax_table_id(&self) -> u64 {
         self.buffer_syntax_tables
             .iter()
@@ -1192,10 +1157,6 @@ impl Interpreter {
 
     pub fn is_syntax_word_char(&self, code: u32) -> bool {
         self.syntax_word_chars.contains(&code)
-    }
-
-    pub fn syntax_word_chars(&self) -> Vec<u32> {
-        self.syntax_word_chars.clone()
     }
 
     pub fn category_docstring(&self, id: u64, category: u32) -> Option<String> {

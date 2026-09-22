@@ -1,0 +1,15 @@
+{
+  "round": 1,
+  "runner": "current",
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+  ],
+  "returncode": 0,
+  "process_seconds": 11.295598415999997,
+  "stdout": "interpreted-lexical 1.780405 80 2000000\ninterpreted-dynamic 0.772031 0 2000000\ninterpreted-calls 1.303644 80 1000000\nbytecode-calls 0.113297 0 1999999000000\nconses-6m 6.104017 359 done\nmapcar-2m 0.770943 41 (100000 2 100001)\ngc-idle-10 0.114691 10 done\ngc-settings 800000 1.0\n",
+  "stderr": ""
+}

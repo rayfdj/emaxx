@@ -1882,7 +1882,14 @@ pub(crate) fn ensure_no_supersession_threat(
     // Running the native check for handled files silently re-stamped the
     // visited modtime through `userlock--check-content-unchanged' and
     // suppressed the handler's prompt.
-    if super::system::find_file_name_handler(interp, env, &logical_path, "lock-file")?.is_some() {
+    if super::system::find_file_name_handler(
+        interp,
+        env,
+        &logical_path,
+        Value::symbol("lock-file"),
+    )?
+    .is_some()
+    {
         return Ok(());
     }
     let path = resolve_file_name_in_env(interp, env, &logical_path);

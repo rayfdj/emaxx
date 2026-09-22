@@ -403,12 +403,12 @@ pub(crate) fn substitute_object_recurse(
 
     match subtree.kind() {
         Kind::Vector(vector) => {
-            let slot_count = vector.slots().len();
+            let slot_count = vector.len();
             for index in 0..slot_count {
-                let current = vector.slots()[index];
+                let current = vector.get(index).expect("in-range vector index");
                 let updated =
                     substitute_object_recurse(interp, object, placeholder, &current, seen)?;
-                vector.slots_mut()[index] = updated;
+                vector.set(index, updated);
             }
             Ok(*subtree)
         }

@@ -302,6 +302,13 @@ impl TtyState {
 }
 
 pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Result<i32, String> {
+    crate::lisp::runtime::with_runtime(|| run_owned(command_line_args, options))
+}
+
+fn run_owned(
+    command_line_args: &[String],
+    options: &batch::BatchRunOptions,
+) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter(options)?;
     let mut env: Env = crate::lisp::types::Env::new();
     // emacs.c:init_display establishes the terminal before keyboard.c

@@ -334,6 +334,66 @@ mod tests {
     }
 
     #[test]
+    fn alternate_stacks_preserve_parent_roots_and_release_regions_after_panic() {
+        use super::super::continuations::on_stack;
+        use corosensei::stack::DefaultStack;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        #[inline(never)]
+        fn nested(interpreter: &mut Interpreter, table: &Value, panic: bool) {
+            let os_roots = [Value::list([Value::Integer(1)])];
+            insert_weak_key(interpreter, table, &os_roots[0]);
+            let outer = DefaultStack::new(128 * 1024 * 1024).expect("outer stack");
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                on_stack(outer, || {
+                    let outer_roots = [Value::list([Value::Integer(2)])];
+                    insert_weak_key(interpreter, table, &outer_roots[0]);
+                    let inner = DefaultStack::new(128 * 1024 * 1024).expect("inner stack");
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        on_stack(inner, || {
+                            assert_eq!(
+                                weak_entries(interpreter, table),
+                                2,
+                                "both waiting stacks keep their own keys alive"
+                            );
+                            if panic {
+                                panic!("unwind the inner stack");
+                            }
+                        });
+                    }));
+                    assert_eq!(outcome.is_err(), panic);
+                    assert_eq!(weak_entries(interpreter, table), 2);
+                    // Neither key is captured by the inner closure. These
+                    // uses keep each array on its own waiting stack.
+                    std::hint::black_box(&outer_roots);
+                    if panic {
+                        panic!("unwind the outer stack");
+                    }
+                });
+            }));
+            assert_eq!(outcome.is_err(), panic);
+            assert_eq!(
+                weak_entries(interpreter, table),
+                1,
+                "the alternate stacks have returned; only the OS caller owns a key"
+            );
+            std::hint::black_box(&os_roots);
+        }
+
+        let mut interpreter = Interpreter::new();
+        let table = weak_key_table(&mut interpreter, "alternate-stack-weak-table");
+        for panic in [false, true] {
+            nested(&mut interpreter, &table, panic);
+            crate::lisp::alloc::clobber_stack();
+            assert_eq!(
+                weak_entries(&mut interpreter, &table),
+                0,
+                "no region or key remains after its caller frame ends"
+            );
+        }
+    }
+
+    #[test]
     fn scoped_stack_roots_follow_the_owned_payload_between_shells() {
         #[inline(never)]
         fn scoped(interpreter: &mut Interpreter, table: &Value, payload: usize) {

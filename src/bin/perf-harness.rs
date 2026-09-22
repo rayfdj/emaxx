@@ -102,7 +102,9 @@ fn run_perf(args: RunArgs) -> Result<u8, String> {
     let artifact_root = perf::make_artifact_root()?;
     let emaxx_binary = match args.runner {
         RunnerArg::Oracle => None,
-        RunnerArg::Both => Some(perf::ensure_release_emaxx_binary()?),
+        RunnerArg::Both => Some(perf::ensure_release_emaxx_binary(
+            &context.local.emacs_repo,
+        )?),
     };
 
     let mut run_summary = perf::PerfRunSummary::default();
@@ -119,7 +121,9 @@ fn run_perf(args: RunArgs) -> Result<u8, String> {
         let oracle = run_oracle_scenario(&context.local, &scenario, &scenario_dir, &home, timeout)?;
         write_run_artifacts(&scenario_dir.join("oracle.log"), &oracle.process)?;
 
-        if oracle.process.as_ref().is_some_and(process_failed) {
+        if oracle.report.status == perf::PerfRunStatus::Failed
+            || oracle.process.as_ref().is_some_and(process_failed)
+        {
             had_process_failure = true;
         }
 
@@ -154,8 +158,8 @@ fn run_perf(args: RunArgs) -> Result<u8, String> {
                         process: None,
                     },
                 };
-                if let Some(process) = &result.process
-                    && process_failed(process)
+                if result.report.status == perf::PerfRunStatus::Failed
+                    || result.process.as_ref().is_some_and(process_failed)
                 {
                     had_process_failure = true;
                 }
@@ -259,35 +263,14 @@ fn run_oracle_scenario(
     timeout: Option<Duration>,
 ) -> Result<RunArtifacts, String> {
     let result_path = scenario_dir.join("oracle.json");
-    let helper_path = compat::compat_path("compat/emacs_perf_runner.el");
-    let test_directory = local.emacs_repo.join("test");
-    let mut command = Command::new(&local.emacs_binary);
-    compat::configure_upstream_like_env_with_home(&mut command, &test_directory, home);
-    command.env(perf::PERF_RESULT_FILE_ENV, &result_path);
-    command.arg("--no-init-file");
-    command.arg("--no-site-file");
-    command.arg("--no-site-lisp");
-    command.arg("--batch");
-    command.arg("-L");
-    command.arg(&test_directory);
-    command.arg("-l");
-    command.arg(&helper_path);
-    for load_file in &scenario.load_files {
-        command.arg("-l");
-        command.arg(perf::resolve_scenario_load_file(
-            &local.emacs_repo,
-            load_file,
-        )?);
-    }
-    command.arg("--eval");
-    command.arg(format!(
-        "(emaxx-perf-run-scenario {} {} {} {})",
-        lisp_string_literal(&scenario.id),
-        scenario.param_u64("n").unwrap_or(4096),
-        scenario.warmup,
-        scenario.samples
-    ));
-
+    let command = scenario_command(
+        &local.emacs_binary,
+        &local.emacs_repo,
+        scenario,
+        &result_path,
+        home,
+        "oracle",
+    )?;
     let process = run_command(command, timeout)?;
     let report = load_or_synthesize_report("oracle", scenario, &result_path, &process)?;
     Ok(RunArtifacts {
@@ -305,25 +288,14 @@ fn run_emaxx_scenario(
     timeout: Option<Duration>,
 ) -> Result<RunArtifacts, String> {
     let result_path = scenario_dir.join("emaxx.json");
-    let test_directory = emacs_repo.join("test");
-    let mut command = Command::new(emaxx_binary);
-    compat::configure_upstream_like_env_with_home(&mut command, &test_directory, home);
-    command.env(perf::PERF_RESULT_FILE_ENV, &result_path);
-    command.arg("--no-init-file");
-    command.arg("--no-site-file");
-    command.arg("--no-site-lisp");
-    command.arg("--batch");
-    command.arg("-L");
-    command.arg(&test_directory);
-    command.arg("--eval");
-    command.arg(format!(
-        "(emaxx-perf-run-batch {} {} {} {})",
-        lisp_string_literal(&scenario.id),
-        scenario.param_u64("n").unwrap_or(4096),
-        scenario.warmup,
-        scenario.samples
-    ));
-
+    let command = scenario_command(
+        emaxx_binary,
+        emacs_repo,
+        scenario,
+        &result_path,
+        home,
+        "emaxx",
+    )?;
     let process = run_command(command, timeout)?;
     let report = load_or_synthesize_report("emaxx", scenario, &result_path, &process)?;
     Ok(RunArtifacts {
@@ -332,38 +304,77 @@ fn run_emaxx_scenario(
     })
 }
 
+fn scenario_command(
+    binary: &Path,
+    emacs_repo: &Path,
+    scenario: &PerfScenario,
+    result_path: &Path,
+    home: &Path,
+    runner: &str,
+) -> Result<Command, String> {
+    if result_path.exists() {
+        fs::remove_file(result_path)
+            .map_err(|error| format!("remove stale performance result: {error}"))?;
+    }
+    let test_directory = emacs_repo.join("test");
+    let mut command = Command::new(binary);
+    compat::configure_upstream_like_env_with_home(&mut command, &test_directory, home);
+    command.env(perf::PERF_RESULT_FILE_ENV, result_path);
+    command.env("EMAXX_PERF_RUNNER", runner);
+    command.args([
+        "--no-init-file",
+        "--no-site-file",
+        "--no-site-lisp",
+        "--batch",
+        "-L",
+    ]);
+    command.arg(&test_directory);
+    command
+        .arg("-l")
+        .arg(compat::compat_path("compat/emacs_perf_runner.el"));
+    for load_file in &scenario.load_files {
+        command
+            .arg("-l")
+            .arg(perf::resolve_scenario_load_file(emacs_repo, load_file)?);
+    }
+    command.arg("--eval").arg(format!(
+        "(emaxx-perf-run-scenario {} {} {} {})",
+        lisp_string_literal(&scenario.id),
+        scenario.param_u64("n").unwrap_or(4096),
+        scenario.warmup,
+        scenario.samples,
+    ));
+    Ok(command)
+}
+
 fn load_or_synthesize_report(
     runner: &str,
     scenario: &PerfScenario,
     result_path: &Path,
     process: &ProcessResult,
 ) -> Result<PerfRunReport, String> {
-    if result_path.exists() {
-        return PerfRunReport::read_json(result_path);
-    }
-    let report = if process.timed_out {
-        PerfRunReport::failed(runner, scenario, "process timed out")
-    } else {
-        let detail = if process.stderr.trim().is_empty() {
-            process.stdout.trim()
-        } else {
-            process.stderr.trim()
-        };
-        PerfRunReport::failed(
-            runner,
-            scenario,
-            format!(
-                "process exited {:?}: {}",
-                process.exit_code,
-                if detail.is_empty() {
-                    "no structured perf result produced"
-                } else {
-                    detail
-                }
-            ),
+    let failure = if process.timed_out {
+        "process timed out".to_string()
+    } else if process.exit_code != Some(0) {
+        format!(
+            "process exited {:?}; see retained process log",
+            process.exit_code
         )
+    } else if !result_path.is_file() {
+        "process produced no structured performance report".to_string()
+    } else {
+        match PerfRunReport::read_json(result_path) {
+            Ok(report) => match report.validate_completed(runner, scenario) {
+                Ok(()) => return Ok(report),
+                Err(error) => error,
+            },
+            Err(error) => error,
+        }
     };
-    report.write_json(result_path)?;
+    let report = PerfRunReport::failed(runner, scenario, failure);
+    // A child's raw report remains untouched, even if it claims success
+    // after an unsuccessful process.  The host's rejection is separate.
+    report.write_json(&result_path.with_extension("validation.json"))?;
     Ok(report)
 }
 
@@ -483,6 +494,102 @@ fn tier_label(tier: PerfTier) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_processes_and_incomplete_reports_cannot_claim_completed_runs() {
+        let manifest = PerfScenarioManifest::load().expect("performance manifest");
+        let scenario = manifest
+            .find("interpreter/source-eval-suite")
+            .expect("source workload");
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-perf-rejection-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("evidence directory");
+        let path = root.join("emaxx.json");
+        let report = PerfRunReport {
+            runner: "emaxx".into(),
+            scenario_id: scenario.id.clone(),
+            tier: scenario.tier,
+            status: perf::PerfRunStatus::Completed,
+            cases: perf::expand_scenario_cases(scenario)
+                .into_iter()
+                .map(|name| {
+                    perf::PerfCaseReport::completed(
+                        name,
+                        "seconds",
+                        vec![0.25; scenario.samples as usize],
+                        3,
+                        0.02,
+                        None,
+                    )
+                })
+                .collect(),
+            metadata: std::collections::BTreeMap::from([
+                ("n".into(), "4096".into()),
+                ("warmup".into(), scenario.warmup.to_string()),
+                ("samples".into(), scenario.samples.to_string()),
+            ]),
+        };
+        report.write_json(&path).expect("synthetic child report");
+        let raw = fs::read(&path).expect("raw child bytes");
+        for (exit_code, timed_out, expected) in [
+            (Some(1), false, perf::PerfRunStatus::Failed),
+            (Some(0), true, perf::PerfRunStatus::Failed),
+            (Some(0), false, perf::PerfRunStatus::Completed),
+        ] {
+            let process = ProcessResult {
+                exit_code,
+                timed_out,
+                stdout: String::new(),
+                stderr: String::new(),
+            };
+            let checked = load_or_synthesize_report("emaxx", scenario, &path, &process)
+                .expect("host validation");
+            assert_eq!(checked.status, expected);
+            assert_eq!(fs::read(&path).expect("raw report preserved"), raw);
+        }
+        let process = ProcessResult {
+            exit_code: Some(0),
+            timed_out: false,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        fs::remove_file(&path).expect("simulate missing report");
+        assert_eq!(
+            load_or_synthesize_report("emaxx", scenario, &path, &process)
+                .expect("missing result")
+                .status,
+            perf::PerfRunStatus::Failed
+        );
+        assert!(
+            !path.exists(),
+            "a host rejection must not masquerade as a child report"
+        );
+        let mut incomplete = report;
+        incomplete.cases.pop();
+        incomplete
+            .write_json(&path)
+            .expect("incomplete child report");
+        assert_eq!(
+            load_or_synthesize_report("emaxx", scenario, &path, &process)
+                .expect("incomplete result")
+                .status,
+            perf::PerfRunStatus::Failed
+        );
+        fs::write(&path, "{broken").expect("malformed child report");
+        assert_eq!(
+            load_or_synthesize_report("emaxx", scenario, &path, &process)
+                .expect("malformed result")
+                .status,
+            perf::PerfRunStatus::Failed
+        );
+        fs::remove_dir_all(root).expect("remove test evidence");
+    }
     use std::collections::BTreeMap;
 
     #[test]

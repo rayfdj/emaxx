@@ -2,6 +2,21 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::StringPropertySpan;
 
+/// lread.c:bytecode_from_rev_list, after resolving circular reader labels.
+fn validate_interpreted_closure_literal(slots: &[Value]) -> Result<(), LispError> {
+    if !(3..=6).contains(&slots.len())
+        || !matches!(
+            slots[0].kind(),
+            Kind::Integer(_) | Kind::Cons(_) | Kind::Nil
+        )
+        || !matches!(slots[1].kind(), Kind::Cons(_))
+        || !matches!(slots[2].kind(), Kind::Cons(_) | Kind::Nil)
+    {
+        return Err(LispError::ReadError("Invalid byte-code object".into()));
+    }
+    Ok(())
+}
+
 struct CircularReadMaterializer<'a> {
     interpreter: &'a mut Interpreter,
     environment: &'a mut Env,
@@ -68,21 +83,12 @@ impl CircularReadMaterializer<'_> {
             return Ok(Some(record));
         }
 
-        let (slots, ordinary_record) = match form.as_ref() {
-            ReaderForm::Record { slots }
-                if !matches!(
-                    slots.first(),
-                    Some(kind) if kind.as_symbol().ok() == Some("interpreted-function")
-                ) =>
-            {
-                (slots, true)
-            }
-            ReaderForm::Closure {
-                kind: ReaderClosureKind::ByteCode,
-                slots,
-            } => (slots, false),
+        let (slots, closure_kind) = match form.as_ref() {
+            ReaderForm::Record { slots } => (slots, None),
+            ReaderForm::Closure { kind, slots } => (slots, Some(*kind)),
             _ => return Ok(None),
         };
+        let ordinary_record = closure_kind.is_none();
         if ordinary_record && slots.is_empty() {
             return Err(LispError::ReadError("empty record literal".into()));
         }
@@ -91,7 +97,12 @@ impl CircularReadMaterializer<'_> {
         // before reading its fields.  Allocate the Rust arena object first
         // for the same reason: comp.el's serialized IR contains records whose
         // predecessor/successor slots point back to the record itself.
-        let placeholder = if ordinary_record {
+        let placeholder = if closure_kind == Some(ReaderClosureKind::Interpreted) {
+            if !(3..=6).contains(&slots.len()) {
+                return Err(LispError::ReadError("Invalid byte-code object".into()));
+            }
+            Value::allocated_lambda(&[Value::Nil; 6][..slots.len()])
+        } else if ordinary_record {
             self.interpreter.create_record_with_type(
                 Value::Nil,
                 vec![Value::Nil; slots.len().saturating_sub(1)],
@@ -129,6 +140,13 @@ impl CircularReadMaterializer<'_> {
             resolved.push(slot);
         }
 
+        if let Kind::Lambda(closure) = placeholder.kind() {
+            validate_interpreted_closure_literal(&resolved)?;
+            for (index, value) in resolved.into_iter().enumerate() {
+                closure.initialize_slot(index, value);
+            }
+            return Ok(Some(placeholder));
+        }
         let Kind::Record(record_id) = placeholder.kind() else {
             unreachable!("record placeholder allocation returns a record")
         };
@@ -172,6 +190,13 @@ impl CircularReadMaterializer<'_> {
                 return Ok(record);
             }
 
+            if matches!(template.kind(), Kind::Vector(_)) {
+                // The inline slots can already refer to this very vector.
+                // Publish the existing identity before filling those slots.
+                self.labels.insert(id, template);
+                return self.resolve(&template);
+            }
+
             // The parser has already allocated the cons tree.  GNU's reader
             // installs that object's address in the #N= table before filling
             // it, so use the existing cons as the placeholder instead of
@@ -194,26 +219,33 @@ impl CircularReadMaterializer<'_> {
         }
 
         match value.kind() {
-            Kind::Cons(cell) => {
-                if !self.resolved_cons.insert(ConsCell::identity(&cell)) {
-                    return Ok(*value);
+            Kind::Cons(_) => {
+                // Walk ordinary list spines without one Rust frame per
+                // element. Labels still enter through resolve, so shared
+                // and cyclic tails keep their already-published identity.
+                let mut cursor = *value;
+                while let Kind::Cons(cell) = cursor.kind() {
+                    if !self.resolved_cons.insert(ConsCell::identity(&cell)) {
+                        break;
+                    }
+                    cell.car.set(self.resolve(&cell.car.get())?);
+                    let tail = cell.cdr.get();
+                    if matches!(tail.kind(), Kind::Cons(_)) {
+                        cursor = tail;
+                    } else {
+                        cell.cdr.set(self.resolve(&tail)?);
+                        break;
+                    }
                 }
-                let Some((car_cell, cdr_cell)) = value.cons_cells() else {
-                    return Err(Self::invalid());
-                };
-                let car = car_cell.get();
-                car_cell.set(self.resolve(&car)?);
-                let cdr = cdr_cell.get();
-                cdr_cell.set(self.resolve(&cdr)?);
                 Ok(*value)
             }
             Kind::Vector(vector) => {
                 if !self.resolved_vectors.insert(vector.identity()) {
                     return Ok(*value);
                 }
-                let slots = vector.slots().to_vec();
+                let slots = vector.slots().collect::<Vec<_>>();
                 for (index, slot) in slots.iter().enumerate() {
-                    vector.slots_mut()[index] = self.resolve(slot)?;
+                    vector.set(index, self.resolve(slot)?);
                 }
                 Ok(*value)
             }
@@ -293,15 +325,14 @@ impl Interpreter {
     ///
     /// Emaxx deliberately parses without an Interpreter, so circular labels
     /// and identity-bearing `#s(...)' literals remain explicit reader forms
-    /// until the object crosses into evaluation.  Keep the allocation order
-    /// in one place so quoted data, directly evaluated vectors, and future
-    /// reader entry points cannot materialize different object graphs.
+    /// until the reader entry point finishes the object. Keep that allocation
+    /// here so every read constructs one shared graph before evaluation.
     pub(crate) fn materialize_read_object_literals(
         &mut self,
         value: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if !crate::lisp::reader::quote_template_needs_resolution(&value) {
+        if !crate::lisp::reader::read_object_needs_resolution(&value) {
             return Ok(value);
         }
         let value = if crate::lisp::reader::contains_circular_read_syntax(&value) {
@@ -385,6 +416,18 @@ impl Interpreter {
                 ReaderForm::Closure { kind, slots } => (slots, Some(*kind)),
                 _ => unreachable!(),
             };
+            // Install the real closure before descending into its slots.
+            // A reader label can lead back through any of those objects.
+            let closure = if closure_kind == Some(ReaderClosureKind::Interpreted) {
+                if !(3..=6).contains(&slots.len()) {
+                    return Err(LispError::ReadError("Invalid byte-code object".into()));
+                }
+                let value = Value::allocated_lambda(&[Value::Nil; 6][..slots.len()]);
+                records.insert(identity, value);
+                Some(value)
+            } else {
+                None
+            };
             let mut materialized = Vec::with_capacity(slots.len());
             for slot in slots {
                 let value = self.materialize_read_record_literals_inner(
@@ -405,7 +448,15 @@ impl Interpreter {
             }
             let record = match closure_kind {
                 Some(ReaderClosureKind::Interpreted) => {
-                    self.make_interpreted_closure_value(&materialized)?
+                    validate_interpreted_closure_literal(&materialized)?;
+                    let value = closure.expect("allocated interpreted closure");
+                    let Kind::Lambda(closure) = value.kind() else {
+                        unreachable!()
+                    };
+                    for (index, slot) in materialized.into_iter().enumerate() {
+                        closure.initialize_slot(index, slot);
+                    }
+                    value
                 }
                 Some(ReaderClosureKind::ByteCode) => self.create_pseudovector(
                     RecordKind::Closure,
@@ -416,11 +467,7 @@ impl Interpreter {
                     let Some(kind) = materialized.first() else {
                         return Err(LispError::ReadError("empty record literal".into()));
                     };
-                    if kind.as_symbol().ok() == Some("interpreted-function") {
-                        self.make_interpreted_closure_value(&materialized[1..])?
-                    } else {
-                        self.create_record_with_type(*kind, materialized[1..].to_vec())
-                    }
+                    self.create_record_with_type(*kind, materialized[1..].to_vec())
                 }
             };
             active_reader_forms.remove(&identity);
@@ -431,9 +478,9 @@ impl Interpreter {
             if !seen_vectors.insert(vector.identity()) {
                 return Ok(*value);
             }
-            let slots = vector.slots().to_vec();
+            let slots = vector.slots().collect::<Vec<_>>();
             for (index, slot) in slots.iter().enumerate() {
-                vector.slots_mut()[index] = self.materialize_read_record_literals_inner(
+                let materialized = self.materialize_read_record_literals_inner(
                     slot,
                     env,
                     seen_cons,
@@ -441,6 +488,7 @@ impl Interpreter {
                     active_reader_forms,
                     records,
                 )?;
+                vector.set(index, materialized);
             }
             return Ok(*value);
         }
@@ -472,50 +520,54 @@ impl Interpreter {
         Ok(*value)
     }
 
-    /// Construct GNU's interpreted `#[ARGS BODY ENV ...]' closure object.
-    ///
-    /// GNU serializes both compiled and interpreted closures with `#[...]'.
-    /// Emaxx stores interpreted closures directly as `Value::Lambda', so the
-    /// reader materialization boundary translates the pseudovector slots into
-    /// the native representation while retaining lexical bindings and local
-    /// special declarations from ENV.
+    /// Store the reader's interpreted-closure slots verbatim. Parameter
+    /// validation belongs to funcall_lambda, not object reconstruction.
     pub(crate) fn make_interpreted_closure_value(
         &mut self,
         slots: &[Value],
     ) -> Result<Value, LispError> {
-        if !(3..=6).contains(&slots.len()) {
-            return Err(LispError::Signal("Invalid interpreted closure".into()));
+        if !(3..=6).contains(&slots.len()) || !matches!(slots[1].kind(), Kind::Cons(_)) {
+            return Err(LispError::ReadError("Invalid byte-code object".into()));
         }
-        let params = self.parse_params(&slots[0])?;
-        let body = slots[1].to_vec()?;
-        if body.is_empty() {
-            return Err(LispError::Signal("Invalid interpreted closure body".into()));
-        }
+        Ok(Value::allocated_lambda(slots))
+    }
 
-        // Fmake_interpreted_closure: ENV is the closure's environment as
-        // given; a bare symbol in it declares that name locally special
-        // for the closure's body (noted so `let' runs Flet's Fmemq).
-        let environment = slots[2];
-        let mut cursor = environment;
-        let mut seen = std::collections::HashSet::new();
-        while let Kind::Cons(list_cell) = cursor.kind() {
-            if !seen.insert(ConsCell::identity(&list_cell)) {
-                break;
-            }
-            if let Kind::Symbol(name) = list_cell.car.get().kind() {
-                self.note_captured_local_special(name.as_str());
-            }
-            cursor = list_cell.cdr.get();
+    /// eval.c:Fmake_interpreted_closure: validate only the outer kinds,
+    /// then retain the given argument, body and environment objects.
+    pub(crate) fn make_interpreted_closure(
+        &mut self,
+        arguments: Value,
+        body: Value,
+        environment: Value,
+        documentation: Value,
+        iform: Value,
+    ) -> Result<Value, LispError> {
+        if !matches!(body.kind(), Kind::Cons(_)) {
+            return Err(LispError::WrongTypeArgument("consp".into(), body));
         }
-
-        Ok(Value::lambda_with_public_parameters(
-            params.into(),
-            slots[0],
-            body.into(),
+        if !matches!(arguments.kind(), Kind::Nil | Kind::Cons(_)) {
+            return Err(LispError::WrongTypeArgument("listp".into(), arguments));
+        }
+        if !matches!(iform.kind(), Kind::Nil | Kind::Cons(_)) {
+            return Err(LispError::WrongTypeArgument("listp".into(), iform));
+        }
+        let interactive = crate::lisp::types::LambdaValue::interactive_slot_from_iform(iform)?;
+        let length = if !iform.is_nil() {
+            6
+        } else if !documentation.is_nil() {
+            5
+        } else {
+            3
+        };
+        let slots = [
+            arguments,
+            body,
             environment,
-            slots.get(4).cloned(),
-            slots.get(5).cloned(),
-        ))
+            Value::Nil,
+            documentation,
+            interactive,
+        ];
+        Ok(Value::allocated_lambda(&slots[..length]))
     }
 
     // ── Macros ──
@@ -563,15 +615,6 @@ impl Interpreter {
             self.put_symbol_property(&name, "function-documentation", docstring);
         }
         Ok(args[0])
-    }
-
-    pub(super) fn try_macroexpand(
-        &mut self,
-        name: &str,
-        args: &[Value],
-        env: &mut Env,
-    ) -> Result<Option<Value>, LispError> {
-        self.try_macroexpand_with_environment(name, args, None, MacroCaller::EvalSub, env)
     }
 
     /// Invoke a macro-environment expander (from cl-flet/cl-labels/
@@ -630,7 +673,7 @@ impl Interpreter {
     /// GNU resolves and autoloads a function cell before establishing this
     /// special binding. Restricting the scope likewise keeps ordinary
     /// non-macro probes free of buffer-local writes and watcher events.
-    fn with_macro_lexical_binding<T>(
+    pub(super) fn with_macro_lexical_binding<T>(
         &mut self,
         caller: MacroCaller,
         env: &mut Env,

@@ -103,6 +103,7 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
         r#"(progn
             (require 'comp)
             (let* ((source (make-temp-file "native-vector-symbols-" nil ".el"))
+                   (output (make-temp-file "native-vector-output-" t))
                    (name (concat "native-vector-" "fresh-symbol"))
                    (comp-no-spawn nil)
                    (comp-running-batch-compilation t)
@@ -113,7 +114,8 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
                     (with-temp-file source
                       (insert ";;; -*- lexical-binding: t -*-\n"
                               "(defun native-vector-symbol-reader () '[" name "])"))
-                    (setq eln (native-compile source))
+                    (setq eln (native-compile source
+                                              (expand-file-name "relocation.eln" output)))
                     (unintern name)
                     (native-elisp-load eln)
                     (list (native-comp-function-p
@@ -121,7 +123,7 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
                           (eq (aref (native-vector-symbol-reader) 0)
                               (intern-soft name))))
                 (delete-file source)
-                (when (and eln (file-exists-p eln)) (delete-file eln)))))"#,
+                (delete-directory output t))))"#,
         "(t t)",
         "native relocation vectors register their read symbols",
     );
@@ -470,10 +472,9 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
     let Kind::Vector(vector_storage) = vector.kind() else {
         panic!("vector syntax must construct a GNU-class vector object")
     };
-    let _exclusive_slots_borrow = vector_storage.slots_mut();
-
-    // Holding the slots exclusively makes any attempted traversal panic.
-    // Record detection must reject the vector solely from its object class.
+    // Even a cyclic payload leaves the object class unchanged. The former
+    // raw mutable slice did not enforce a borrow or detect traversal.
+    vector_storage.set(0, vector);
     assert!(record_literal_items(&vector).is_none());
 }
 
@@ -588,10 +589,7 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
     );
 
     let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
-    let macro_function = Value::cons(
-        macro_tag,
-        Value::lambda(Vec::new().into(), Vec::new().into(), Value::Nil),
-    );
+    let macro_function = Value::cons(macro_tag, Value::lambda(Vec::new(), Vec::new(), Value::Nil));
     assert_eq!(
         call(&mut interp, "func-arity", &[macro_function], &mut env)
             .expect("unwrap a positioned macro tag"),
@@ -934,9 +932,13 @@ fn subr_frontier_recordp_does_not_expose_hash_table_runtime_storage() {
         .read()
         .expect("record predicate contract should parse")
         .expect("record predicate contract should contain a form");
+    let mut env = crate::lisp::types::Env::new();
+    let form = interp
+        .materialize_read_object_literals(form, &mut env)
+        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
-            .eval(&form, &mut crate::lisp::types::Env::new())
+            .eval(&form, &mut env)
             .expect("record predicate contract should evaluate"),
         Value::list([Value::Nil, Value::T])
     );
@@ -957,9 +959,13 @@ fn subr_frontier_direct_vector_evaluation_materializes_nested_record_literals() 
         .read()
         .expect("nested record vector contract should parse")
         .expect("nested record vector contract should contain a form");
+    let mut env = crate::lisp::types::Env::new();
+    let form = interp
+        .materialize_read_object_literals(form, &mut env)
+        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
-            .eval(&form, &mut crate::lisp::types::Env::new())
+            .eval(&form, &mut env)
             .expect("nested record vector contract should evaluate")
             .to_string(),
         r#"(t "[#s(sample value)]")"#
@@ -1436,20 +1442,13 @@ fn redisplay_defaults_match_native_terminal_and_input_state() {
 }
 
 #[test]
-fn sort_recognizes_an_evaluated_numeric_lambda_without_interpreting_each_comparison() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = crate::lisp::types::Env::new();
-    let form = Reader::new("(lambda (x y) (< x y))")
-        .read()
-        .expect("the comparator should parse")
-        .expect("the comparator form should be present");
-    let comparator = interp
-        .eval(&form, &mut env)
-        .expect("the comparator should evaluate");
-
-    assert!(
-        direct_sort_comparator(&interp, &comparator, &env).is_some(),
-        "ordinary numeric comparator was not recognized: {comparator:?}"
+fn sort_calls_the_numeric_lambda_with_its_arguments_bound() {
+    // GNU sort.c calls the predicate. The old local test instead required
+    // body recognition that skipped the call and broke its semantics.
+    assert_oracle_contract_matches_interpreter(
+        "(let ((seen nil)) (list (sort (list 3 1 2) (lambda (left right) (setq seen (+ left right)) (< left right))) (numberp seen)))",
+        "((1 2 3) t)",
+        "numeric sort comparator argument binding",
     );
 }
 
@@ -8555,7 +8554,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let callback = Value::lambda(
-        Vec::new().into(),
+        Vec::new(),
         vec![
             Value::list([
                 Value::Symbol("setq".into()),
@@ -8563,8 +8562,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
                 Value::T,
             ]),
             Value::T,
-        ]
-        .into(),
+        ],
         Value::Nil,
     );
 
@@ -8588,7 +8586,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let callback = Value::lambda(
-        Vec::new().into(),
+        Vec::new(),
         vec![
             Value::list([
                 Value::Symbol("setq".into()),
@@ -8596,8 +8594,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
                 Value::T,
             ]),
             Value::T,
-        ]
-        .into(),
+        ],
         Value::Nil,
     );
 
@@ -9228,13 +9225,12 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     )
     .expect("server should expose its port");
     let sentinel = Value::lambda(
-        vec!["process".into(), "event".into()].into(),
+        vec!["process".into(), "event".into()],
         vec![Value::list([
             Value::Symbol("setq".into()),
             Value::Symbol("nowait-event".into()),
             Value::Symbol("event".into()),
-        ])]
-        .into(),
+        ])],
         Value::Nil,
     );
     let client = call(
@@ -12164,7 +12160,7 @@ fn network_interface_info_reports_the_real_interface() {
         .expect("read interface-info program")
         .remove(0);
     let rendered = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut Env::new())
         .expect("evaluate interface-info program");
     let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
 
@@ -12563,7 +12559,7 @@ fn kqueue_directory_watch_reports_external_child_creation() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut Env::new())
             .expect("evaluate external kqueue directory program")
             .to_string(),
         expected
@@ -12636,11 +12632,16 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
         .read_all()
         .unwrap_or_else(|_| panic!("read {label} program"))
         .remove(0);
+    let mut env = crate::lisp::types::Env::new();
+    let form = interp
+        .intern_read_symbols_in_value(form, &env)
+        .and_then(|form| interp.materialize_read_object_literals(form, &mut env))
+        .unwrap_or_else(|error| panic!("finish reading {label} program: {error:?}"));
     // Compare through the interpreter's own printer, as the oracle side is
     // compared through GNU's: the Rust Display form is not print.c (it
     // renders a shared sublist as circular and does not escape quotes).
     let result = interp
-        .eval(&form, &mut crate::lisp::types::Env::new())
+        .eval(&form, &mut env)
         .unwrap_or_else(|error| panic!("evaluate {label} program: {error:?}"));
     let printed = call(
         &mut interp,
@@ -24325,9 +24326,46 @@ fn terminal_frames_isolate_faces_keyboards_and_saved_configurations() {
     );
 }
 
+/// Run the complete contract in its own process, including GNU's control.
+/// Reusing an allocator address after an earlier Rust test can make an old
+/// conservative stack word retain the new object. A fresh process removes
+/// that unrelated history while preserving both the suspended live roots and
+/// the assertion that the same objects are reclaimed after the thread exits.
+/// No production path reads this test-only environment variable.
+fn reclamation_contract_runs_in_fresh_process(name: &str) -> bool {
+    const CHILD: &str = "EMAXX_RECLAMATION_CONTRACT_CHILD";
+    let module = module_path!()
+        .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+        .expect("test module starts with its crate name");
+    let test_name = format!("{module}::{name}");
+    if std::env::var(CHILD).as_deref() == Ok(test_name.as_str()) {
+        return false;
+    }
+    crate::test_support::mark_process_test();
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current reclamation contract executable"),
+    )
+    .args(["--exact", &test_name, "--test-threads=1", "--nocapture"])
+    .env(CHILD, &test_name)
+    .output()
+    .expect("run the selected reclamation contract in a fresh process");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success()
+            && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+        "{test_name} did not execute and pass in its child process\n{stdout}\n{stderr}"
+    );
+    true
+}
+
 #[test]
-#[ignore = "layout-dependent: passes alone and fails in the full run; a stale word in a frame above the collection's stack top keeps the key under the conservative scans (checkpoint 20o); the register-sized result restored the uninterned-symbol contract"]
 fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
+    if reclamation_contract_runs_in_fresh_process(
+        "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    ) {
+        return;
+    }
     // GNU marks all live thread stacks, including an interpreted caller's
     // lexical cells which its independently scoped callee cannot access.
     // Neither backtrace display nor a captured lambda owns KEY here.
@@ -24367,8 +24405,12 @@ fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
 }
 
 #[test]
-#[ignore = "layout-dependent: the native heap's conservative word scan finds a stale interior pointer in a frame above the collection's stack top and marks the mirrored cons (checkpoint 20o); the register-sized result restored the other two"]
 fn suspended_bytecode_retains_operand_and_unwind_roots() {
+    if reclamation_contract_runs_in_fresh_process(
+        "suspended_bytecode_retains_operand_and_unwind_roots",
+    ) {
+        return;
+    }
     // GNU bytecode.c:mark_bytecode marks the live operand stack, and the
     // specpdl marks pending cleanup functions. The keys are allocated at
     // runtime, not held by bytecode constants or a test-owned strong root.
@@ -25056,5 +25098,193 @@ fn equal_hash_table_answers_survive_removals_and_slot_reuse() {
     assert_eq!(
         printed,
         "(nil nil nil nil nil nil nil nil nil nil nil nil nil nil 26 (missing 4 -2 missing) (nil nil replaced) ((1 . 1) (2 . 2) (4 . 4) (5 . replaced) (7 . 7) (8 . 8) (10 . 10) (11 . 11) (13 . 13) (14 . 14) (16 . 16) (17 . 17) (\"fresh-7\" . -7) (19 . 19) (20 . 20) (\"fresh-6\" . -6) (22 . 22) (23 . 23) (\"fresh-5\" . -5) (25 . 25) (26 . 26) (\"fresh-4\" . -4) (28 . 28) (29 . 29) (\"fresh-3\" . -3) (31 . 31) (32 . 32) (\"fresh-2\" . -2) (34 . 34) (35 . 35) (37 . 37) (38 . 38) (\"fresh-0\" . 0)) 33)"
+    );
+}
+
+#[test]
+fn quoted_objects_survive_only_while_reachable() {
+    if reclamation_contract_runs_in_fresh_process("quoted_objects_survive_only_while_reachable") {
+        return;
+    }
+    // eval.c:Fquote adds no root. One freshly read quoted graph is held
+    // in a Lisp variable; the other is held only by a weak key. Both
+    // must be collectible after the variable is cleared. The same
+    // program and post-load observer run in GNU and in this runtime.
+    let program = r#"(progn
+  (setq quote-retention-table (make-hash-table :test 'eq :weakness 'key))
+  (setq quote-retention-result nil)
+  (defun quote-retention-create ()
+    (let* ((form (read "'(freshly-read unretained graph)"))
+           (object (eval form)))
+      (puthash object t quote-retention-table))
+    nil)
+  (quote-retention-create)
+  (setq quote-retention-live (eval (read "'(live shared graph)")))
+  (puthash quote-retention-live t quote-retention-table))"#;
+    let observer = r#"(progn
+  (dotimes (index 4096) (cons index index))
+  (garbage-collect)
+  (setq quote-retention-result
+        (list (hash-table-count quote-retention-table)
+              (gethash quote-retention-live quote-retention-table)))
+  (setq quote-retention-live nil)
+  (dotimes (index 4096) (cons index index))
+  (garbage-collect)
+  (garbage-collect)
+  (setq quote-retention-result
+        (append quote-retention-result
+                (list (hash-table-count quote-retention-table))))
+  (prin1 quote-retention-result))"#;
+    assert_oracle_file_contract_with_observer(
+        program,
+        Some(observer),
+        "quote-retention-result",
+        "(1 t 0)",
+    );
+}
+
+#[test]
+fn interpreted_closures_keep_their_argument_body_and_environment_objects() {
+    let source = include_str!("../../../tests/fixtures/closure-object-sharing.el");
+    assert_oracle_contract_matches_interpreter(
+        source,
+        "(((t t t t 19) 73) (t 73 73) (4 73 19) t t 73 (constructed invalid-function t) ((19 73) nil) 73 (wrong-number-of-arguments t (let unlet)) 73 (t 19) (wrong-number-of-arguments function 2))",
+        "authoritative closure objects",
+    );
+    let renamed = source
+        .replace("closure-audit", "alternate-check")
+        .replace("parameter", "fruit")
+        .replace("replacement", "substitute")
+        .replace("19", "41")
+        .replace("73", "101");
+    assert_oracle_contract_matches_interpreter(
+        &renamed,
+        "(((t t t t 41) 101) (t 101 101) (4 101 41) t t 101 (constructed invalid-function t) ((41 101) nil) 101 (wrong-number-of-arguments t (let unlet)) 101 (t 41) (wrong-number-of-arguments function 2))",
+        "renamed authoritative closure objects",
+    );
+}
+
+#[test]
+fn interpreted_closure_bodies_survive_only_while_reachable() {
+    if reclamation_contract_runs_in_fresh_process(
+        "interpreted_closure_bodies_survive_only_while_reachable",
+    ) {
+        return;
+    }
+    let setup = r#"(progn
+      (setq closure-retention-table (make-hash-table :test 'eq :weakness 'key))
+      (setq closure-retention-result nil)
+      (defun closure-retention-create ()
+        (let* ((body (list 73))
+               (closure (make-interpreted-closure nil body '(t))))
+          (puthash body t closure-retention-table)
+          closure))
+      (setq closure-retention-live (closure-retention-create))
+      (closure-retention-create)
+      nil)"#;
+    let observer = r#"(progn
+      (dotimes (index 4096) (cons index index))
+      (garbage-collect)
+      (setq closure-retention-result
+            (list (hash-table-count closure-retention-table)
+                  (gethash (aref closure-retention-live 1) closure-retention-table)
+                  (funcall closure-retention-live)))
+      (setq closure-retention-live nil)
+      (dotimes (index 4096) (cons index index))
+      (garbage-collect)
+      (garbage-collect)
+      (setq closure-retention-result
+            (append closure-retention-result (list (hash-table-count closure-retention-table))))
+      (prin1 closure-retention-result))"#;
+    assert_oracle_file_contract_with_observer(
+        setup,
+        Some(observer),
+        "closure-retention-result",
+        "(1 t 73 0)",
+    );
+}
+
+#[test]
+fn interpreted_closure_reader_preserves_gnu_slot_and_record_types() {
+    let source = r##"(list (mapcar (lambda (text) (condition-case err
+ (let ((object (read text)))
+  (list (type-of object) (recordp object) (interpreted-function-p object) (length object)))
+ (error (car err))))
+ '("#[(parameter) (parameter) (t)]" "#[(parameter) (parameter) (t) 73]"
+   "#[17 (73) (t)]" "#[bad (73) (t)]" "#[nil (73) bad]"
+   "#s(interpreted-function nil (73) (t))"))
+ (let ((object (read "#1=#s(interpreted-function #1#)")))
+  (list (recordp object) (interpreted-function-p object) (eq (aref object 1) object))))"##;
+    assert_oracle_contract_matches_interpreter(
+        source,
+        "(((interpreted-function nil t 3) (interpreted-function nil t 4) (interpreted-function nil t 3) invalid-read-syntax invalid-read-syntax (interpreted-function t nil 4)) (t nil t))",
+        "closure reader slot and record types",
+    );
+}
+
+#[test]
+fn reader_entrypoints_preserve_cyclic_object_identity_through_gc() {
+    let source = r##"(mapcar
+ (lambda (text)
+   (mapcar
+    (lambda (reader)
+      (let ((object (funcall reader text)))
+        (garbage-collect)
+        (cond ((vectorp object) (eq object (aref object 0)))
+              ((recordp object) (eq object (aref object 1)))
+              ((interpreted-function-p object) (eq object (funcall object)))
+              (t 'wrong-object-type))))
+    (list #'read
+          (lambda (text) (car (read-from-string text)))
+          #'read-positioning-symbols
+          (lambda (text)
+            (with-temp-buffer (insert text) (goto-char (point-min))
+                              (read (current-buffer))))
+          (lambda (text)
+            (let ((characters (string-to-list text)))
+              (read (lambda (&optional unread)
+                      (if unread (push unread characters)
+                        (prog1 (car characters)
+                          (setq characters (cdr characters)))))))))))
+ '("#9=[#9#]" "#23=#s(reader-audit #23#)"
+   "#41=#[nil ((quote #41#)) (t)]"))"##;
+    assert_oracle_contract_matches_interpreter(
+        source,
+        "((t t t t t) (t t t t t) (t t t t t))",
+        "cyclic object identity at every reader entry point",
+    );
+}
+
+#[test]
+fn closure_body_identity_and_text_property_identity_match_gnu() {
+    // profiler.c compares CLOSURE_CODE; intervals.c compares the closure
+    // object itself. Bytecode constants and closure metadata do not change
+    // code identity, and equal but separately allocated bodies stay distinct.
+    let source = r#"(let* ((body (list 73))
+       (first (make-interpreted-closure nil body '(t)))
+       (second (make-interpreted-closure nil body '(t)))
+       (copied (make-interpreted-closure nil (copy-sequence body) '(t)))
+       (text (copy-sequence "ab"))
+       (code (unibyte-string 192 135))
+       (byte-first (make-byte-code 0 code [19] 1))
+       (byte-second (make-byte-code 0 code [73] 1))
+       (byte-copy (make-byte-code 0 (copy-sequence code) [19] 1))
+       (float-object (float 19)) (vector-object (vector 19))
+       (string-object (copy-sequence "payload")))
+  (put-text-property 0 1 'closure-check first text)
+  (put-text-property 1 2 'closure-check second text)
+  (list (eq first second) (function-equal first second)
+        (function-equal first copied) (equal first copied)
+        (next-single-property-change 0 'closure-check text)
+        (eq (get-text-property 1 'closure-check text) second)
+        (function-equal byte-first byte-second)
+        (function-equal byte-first byte-copy)
+        (function-equal float-object float-object)
+        (function-equal vector-object vector-object)
+        (function-equal string-object string-object)))"#;
+    assert_oracle_contract_matches_interpreter(
+        source,
+        "(nil t nil t 1 t t nil t t t)",
+        "closure code and interval object identity",
     );
 }

@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/minimum-arity.el"
+  ],
+  "returncode": 0,
+  "stdout": "(wrong-number-of-arguments t)\n",
+  "stderr": ""
+}

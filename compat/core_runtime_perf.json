@@ -1,0 +1,175 @@
+{
+  "format_version": 1,
+  "status": "locked_before_optimization",
+  "warmup": 1,
+  "samples_per_process": 3,
+  "rounds": 9,
+  "timeout_seconds": 600,
+  "minimum_body_seconds": 0.1,
+  "parity_ratio_limit": 1.03,
+  "confidence": 0.95,
+  "bootstrap_resamples": 20000,
+  "bootstrap_seed": 20260922,
+  "gc_cons_threshold": 800000,
+  "gc_cons_percentage": 1.0,
+  "cases": [
+    {
+      "id": "interpreted-lexical",
+      "n": 1000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-lexical-loop": "interpreted"
+      },
+      "result": "1000000"
+    },
+    {
+      "id": "interpreted-dynamic",
+      "n": 1500000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-dynamic-loop": "interpreted"
+      },
+      "result": "1500000"
+    },
+    {
+      "id": "interpreted-calls",
+      "n": 1000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-add": "interpreted",
+        "core-perf-calls": "interpreted"
+      },
+      "result": "499999500000"
+    },
+    {
+      "id": "bytecode-calls",
+      "n": 12000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-byte-calls": "bytecode",
+        "core-perf-byte-add": "bytecode"
+      },
+      "result": "71999994000000"
+    },
+    {
+      "id": "native-execution",
+      "n": 32,
+      "modes": {
+        "driver": "interpreted",
+        "comp-tests-fib-f": "native"
+      },
+      "result": "10169952"
+    },
+    {
+      "id": "interpreted-to-native",
+      "n": 2000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-byte-native": "interpreted",
+        "comp-tests-fixnum-1-plus-f": "native"
+      },
+      "result": "2000001000000"
+    },
+    {
+      "id": "bytecode-to-native",
+      "n": 16000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-byte-native": "bytecode",
+        "comp-tests-fixnum-1-plus-f": "native"
+      },
+      "result": "128000008000000"
+    },
+    {
+      "id": "native-to-interpreted",
+      "n": 1000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-callback": "interpreted",
+        "comp-tests-catch-f": "native"
+      },
+      "result": "43000000"
+    },
+    {
+      "id": "native-to-bytecode",
+      "n": 1000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-callback": "bytecode",
+        "comp-tests-catch-f": "native"
+      },
+      "result": "43000000"
+    },
+    {
+      "id": "cons-allocation",
+      "n": 2000000,
+      "modes": {
+        "driver": "interpreted",
+        "core-perf-conses": "interpreted"
+      },
+      "result": "descending-cons-chain/2000000"
+    },
+    {
+      "id": "list-traversal",
+      "n": 30000,
+      "modes": {
+        "driver": "interpreted",
+        "body": "interpreted"
+      },
+      "result": "247680000"
+    },
+    {
+      "id": "mapcar",
+      "n": 64,
+      "modes": {
+        "driver": "interpreted",
+        "mapcar": "primitive"
+      },
+      "result": "ascending-mapcar-chain/100000"
+    },
+    {
+      "id": "explicit-gc",
+      "n": 32,
+      "modes": {
+        "driver": "interpreted",
+        "garbage-collect": "primitive"
+      },
+      "result": "live-cons-chain/100000"
+    },
+    {
+      "id": "upstream-sort",
+      "n": 32,
+      "modes": {
+        "driver": "interpreted",
+        "sort-tests--insert-words-sort-and-compare": "interpreted",
+        "sort-lines": "interpreted"
+      },
+      "result": "64"
+    },
+    {
+      "id": "upstream-undo",
+      "n": 1000,
+      "modes": {
+        "driver": "interpreted",
+        "undo-test0": "interpreted",
+        "undo-test1": "interpreted",
+        "undo-test2": "interpreted",
+        "undo-test5": "interpreted",
+        "undo": "bytecode",
+        "undo-more": "bytecode",
+        "primitive-undo": "bytecode"
+      },
+      "result": "passed/4000"
+    },
+    {
+      "id": "upstream-bindat",
+      "n": 3000,
+      "modes": {
+        "driver": "interpreted",
+        "bindat-pack": "interpreted",
+        "bindat-unpack": "interpreted"
+      },
+      "result": "((header (dest-ip . [192 168 1 100]) (src-ip . [192 168 1 101]) (dest-port . 284) (src-port . 5408)) (items . 2) (item ((type . 2) (opcode . 3) (length . 5) (id . \"ABCDEF\") (data . [1 2 3 4 5])) ((type . 1) (opcode . 4) (length . 7) (id . \"BCDEFG\") (data . [6 7 8 9 10 11 12]))))"
+    }
+  ]
+}

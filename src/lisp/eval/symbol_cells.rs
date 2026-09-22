@@ -285,6 +285,7 @@ impl SymbolCells {
             .flat_map(|cell| cell.symbol.iter().chain(cell.alias.iter()))
     }
 
+    #[cfg(test)]
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
         self.cells
             .iter_mut()
@@ -354,6 +355,7 @@ impl SymbolCells {
     }
 
     /// Every function cell, for the image copier.
+    #[cfg(test)]
     pub(crate) fn functions_mut(&mut self) -> impl Iterator<Item = &mut Value> {
         self.cells
             .iter_mut()
@@ -394,6 +396,7 @@ impl SymbolCells {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn clear_alias_by_name(&mut self, name: &str) -> bool {
         let Some(id) = SymbolName::id_of(name) else {
             return false;

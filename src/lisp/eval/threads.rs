@@ -2,9 +2,6 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-/// (host, service, remote-peer, is-server) for `process-contact'.
-pub(crate) type ProcessContactInfo = (Option<String>, Option<i64>, Option<String>, bool);
-
 /// Drain a non-blocking stream: bytes read plus whether the peer closed.
 fn drain_nonblocking<R: std::io::Read>(stream: &mut R) -> (Vec<u8>, bool) {
     let mut out = Vec::new();
@@ -836,10 +833,6 @@ impl Interpreter {
         })
     }
 
-    pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
-        self.take_pending_subprocess_exit_events_for(None)
-    }
-
     /// Restricted form used by `accept-process-output's JUST-THIS-ONE mode.
     /// Status changes remain recorded on every process, but only the selected
     /// process may run its sentinel during that wait.
@@ -905,28 +898,9 @@ impl Interpreter {
         events
     }
 
-    pub fn process_contact_info(&self, record_id: u64) -> Option<ProcessContactInfo> {
-        self.find_process_state(record_id).map(|process| {
-            (
-                process.contact_host.clone(),
-                process.contact_service,
-                process.remote.clone(),
-                matches!(
-                    process.network,
-                    Some(NetworkRuntime::Listener(_)) | Some(NetworkRuntime::UnixListener(_))
-                ),
-            )
-        })
-    }
-
     pub fn process_log_function(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
             .and_then(|process| process.log)
-    }
-
-    pub fn process_parent_server(&self, record_id: u64) -> Option<u64> {
-        self.find_process_state(record_id)
-            .and_then(|process| process.parent_server_id)
     }
 
     pub fn is_network_process(&self, record_id: u64) -> bool {
@@ -1378,6 +1352,7 @@ impl Interpreter {
         true
     }
 
+    #[cfg(test)]
     pub fn process_is_live(&self, record_id: u64) -> bool {
         // GNU `process-live-p' observes the status last delivered by the
         // process event loop; it does not reap a fast child itself.  Eager
@@ -1997,36 +1972,6 @@ impl Interpreter {
         Ok((stdout, stderr))
     }
 
-    /// Cancel the timer matching both FUNCTION and ARGS (GNU cancel-timer
-    /// removes one specific timer object; several timers often share a
-    /// function and differ only in their arguments).  Match args by
-    /// IDENTITY (`eq'), not `equal': erc-d schedules per-exchange
-    /// `erc-d--expire' timers whose args are dialog/exchange RECORDS, and
-    /// two sibling dialogs can be structurally `equal' while distinct —
-    /// deep matching would cancel the wrong dialog's linger timer.  When no
-    /// match exists the timer already fired or was cancelled, and GNU's
-    /// cancel-timer is a harmless no-op — never fall back to function-only
-    /// matching, which would cancel an unrelated timer (another buffer's
-    /// pending `erc-server-send-queue' drain).
-    pub fn unschedule_timer_by_function_and_args(&mut self, function: &Value, args: &[Value]) {
-        let candidates: Vec<(Value, Vec<Value>)> = self
-            .pending_timers
-            .iter()
-            .map(|timer| (timer.function, timer.args.clone()))
-            .collect();
-        let empty_env = crate::lisp::types::Env::new();
-        if let Some(index) = candidates.iter().position(|(candidate, timer_args)| {
-            crate::lisp::primitives::values_eq_in_env(self, candidate, function, &empty_env)
-                && timer_args.len() == args.len()
-                && timer_args
-                    .iter()
-                    .zip(args)
-                    .all(|(a, b)| crate::lisp::primitives::values_eq_in_env(self, a, b, &empty_env))
-        }) {
-            self.pending_timers.remove(index);
-        }
-    }
-
     /// Put the still-unfired tail of a due-timer batch back before timers
     /// scheduled by callbacks from that batch.  A timer callback can perform
     /// a nonlocal exit (`throw'); GNU leaves every other timer active, while
@@ -2037,12 +1982,9 @@ impl Interpreter {
         self.pending_timers = unfired;
     }
 
-    pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
-        self.schedule_timer_after(function, args, 0.0, None);
-    }
-
     /// Schedule a timer to become due DELAY_SECS from now, optionally
     /// repeating every REPEAT_SECS (GNU run-at-time).
+    #[cfg(test)]
     pub fn schedule_timer_after(
         &mut self,
         function: Value,
@@ -2746,8 +2688,8 @@ impl Interpreter {
                 (
                     watch.active,
                     watch.path.clone(),
-                    watch.descriptor.clone(),
-                    watch.callback.clone(),
+                    watch.descriptor,
+                    watch.callback,
                     watch.fingerprint.clone(),
                     watch.directory_snapshot.clone(),
                     watch.flags.clone(),
@@ -2788,7 +2730,7 @@ impl Interpreter {
                             &event_path,
                             &action,
                             secondary_path.as_deref(),
-                            vec![callback.clone()],
+                            vec![callback],
                         );
                     }
                 }
@@ -2827,7 +2769,7 @@ impl Interpreter {
                 }
                 if !actions.is_empty() {
                     let raw_event = Value::list([
-                        callback.0.clone(),
+                        callback.0,
                         Value::list(actions),
                         Value::String(path.clone().into()),
                     ]);
@@ -2836,7 +2778,7 @@ impl Interpreter {
                             path: String::new(),
                             secondary_path: None,
                             action: String::new(),
-                            callbacks: vec![callback.clone()],
+                            callbacks: vec![callback],
                             raw_event: Some(raw_event),
                         });
                 }
@@ -3438,44 +3380,6 @@ impl Interpreter {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    pub fn thread_buffer_disposition(&self, record_id: u64) -> Result<Value, LispError> {
-        let thread = self
-            .find_thread_state(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", self.record_value(record_id)))?;
-        Ok(match thread.buffer_disposition {
-            BufferDisposition::Default => Value::Nil,
-            BufferDisposition::Preserve => Value::T,
-            BufferDisposition::Silently => Value::Symbol("silently".into()),
-        })
-    }
-
-    pub fn set_thread_buffer_disposition(
-        &mut self,
-        record_id: u64,
-        value: &Value,
-    ) -> Result<Value, LispError> {
-        if record_id == self.main_thread_id {
-            return Err(wrong_type_argument("threadp", self.record_value(record_id)));
-        }
-        let disposition = match value.kind() {
-            Kind::Nil => BufferDisposition::Default,
-            Kind::T => BufferDisposition::Preserve,
-            Kind::Symbol(symbol) if symbol == "silently" => BufferDisposition::Silently,
-            other => {
-                return Err(wrong_type_argument(
-                    "thread-buffer-disposition",
-                    other.value(),
-                ));
-            }
-        };
-        let record_id_value = self.record_value(record_id);
-        let thread = self
-            .find_thread_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", record_id_value))?;
-        thread.buffer_disposition = disposition;
-        self.thread_buffer_disposition(record_id)
     }
 
     pub fn thread_last_error(&mut self, cleanup: bool) -> Value {

@@ -213,33 +213,8 @@ impl Interpreter {
         id
     }
 
-    pub(crate) fn lisp_face_attribute(
-        &self,
-        name: &str,
-        index: usize,
-        global: bool,
-    ) -> Option<Value> {
-        self.lisp_face_vector(name, global)
-            .and_then(|vector| vector_slot_value(&vector, index).ok())
-    }
-
     pub(crate) fn face_definitions_generation(&self) -> u64 {
         self.face_change_count
-    }
-
-    pub(crate) fn set_lisp_face_attribute(
-        &mut self,
-        name: &str,
-        index: usize,
-        value: Value,
-        global: bool,
-    ) -> Result<Value, LispError> {
-        self.set_lisp_face_attribute_on(
-            name,
-            index,
-            value,
-            (!global).then_some(self.selected_frame_id),
-        )
     }
 
     pub(crate) fn set_lisp_face_attribute_on(
@@ -274,50 +249,6 @@ impl Interpreter {
             aset_vector_value(&target, index, vector_slot_value(&source, index)?)?;
         }
         Ok(())
-    }
-
-    pub fn face_inherit_target(&self, face: &str) -> Option<String> {
-        self.lisp_face_attribute(face, LFACE_INHERIT_INDEX, false)
-            .and_then(|value| match value.kind() {
-                Kind::Symbol(symbol) if symbol != "unspecified" => Some(symbol.to_string()),
-                _ => None,
-            })
-    }
-
-    pub fn set_face_inherit_target(
-        &mut self,
-        face: &str,
-        inherit: Option<String>,
-    ) -> Result<(), LispError> {
-        if let Some(target) = inherit.as_ref()
-            && self.face_inheritance_creates_cycle(face, target)
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("error".into()),
-                Value::String("Face inheritance results in inheritance cycle".into()),
-                Value::Symbol(target.clone().into()),
-            ])));
-        }
-        let value = inherit
-            .map(|value| Value::Symbol(value.into()))
-            .unwrap_or(Value::Nil);
-        self.set_lisp_face_attribute(face, LFACE_INHERIT_INDEX, value, false)?;
-        Ok(())
-    }
-
-    pub(super) fn face_inheritance_creates_cycle(&self, face: &str, target: &str) -> bool {
-        let mut visited = HashSet::new();
-        let mut current = Some(target.to_string());
-        while let Some(name) = current {
-            if name == face {
-                return true;
-            }
-            if !visited.insert(name.clone()) {
-                return false;
-            }
-            current = self.face_inherit_target(&name);
-        }
-        false
     }
 }
 

@@ -1,0 +1,493 @@
+{
+  "qualification": "Both Rust builds have only the documented macOS build repair. Local GNU source revision matches the pinned revision; its binary hash differs from the tracked oracle lock. Diagnostic, not frozen certification.",
+  "host": {
+    "system": "Darwin",
+    "node": "Rays-MacBook-Air.local",
+    "release": "25.6.0",
+    "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:20 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T8142",
+    "machine": "arm64"
+  },
+  "input_sha256": {
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el": "5816bd3ee61dba02fa36e8f3f65cef5590ed8ec5e108cd318e8887070da2e0f2",
+    "/Users/rayd/projects/emacs/src/emacs": "12c762a0768f17c2b9779302cf98bc143c49ac7548c9b0412f17e38a967d19f1",
+    "/Users/rayd/projects/emacs/src/emacs.pdmp": "773d5af8b498aa032c4e4951d700be39d3a361374ea913f1ad6b20996c898f04",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx": "e80afb85d240711ceacece4e1d8744bcd4b8ef1b1a1c0abe0948c80caff38f00",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx.pdmp": "52704ccde568e1cfbe375b1bd8e25091a5921ccc660a0ecc399a67051b4057c2",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx": "ce60811f87ed155d41d540dcf8985a786edf6c755a0c03d5dbdc20d4c802af79",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx.pdmp": "7d1edfb27dacc0cb51d441de434aef2a42ac5b4f36a7f66b8ead98d3df694c23"
+  },
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C"
+  },
+  "runs": [
+    {
+      "round": 1,
+      "runner": "oracle",
+      "command": [
+        "/Users/rayd/projects/emacs/src/emacs",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 5.331062042,
+      "stdout": "interpreted-lexical 0.980093 62 2000000\ninterpreted-dynamic 0.412753 0 2000000\ninterpreted-calls 0.704400 62 1000000\nbytecode-calls 0.034176 0 1999999000000\nconses-6m 2.399522 163 done\nmapcar-2m 0.176016 10 (100000 2 100001)\ngc-idle-10 0.079394 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 0.980093,
+          "collections": 62,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.412753,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 0.7044,
+          "collections": 62,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.034176,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 2.399522,
+          "collections": 163,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.176016,
+          "collections": 10,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.079394,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 1,
+      "runner": "baseline",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 15.628751458,
+      "stdout": "interpreted-lexical 2.278035 80 2000000\ninterpreted-dynamic 0.894334 0 2000000\ninterpreted-calls 1.782616 80 1000000\nbytecode-calls 0.109894 0 1999999000000\nconses-6m 8.159662 359 done\nmapcar-2m 1.274274 41 (100000 2 100001)\ngc-idle-10 0.152277 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 2.278035,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.894334,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.782616,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.109894,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 8.159662,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 1.274274,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.152277,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 1,
+      "runner": "current",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 11.295598415999997,
+      "stdout": "interpreted-lexical 1.780405 80 2000000\ninterpreted-dynamic 0.772031 0 2000000\ninterpreted-calls 1.303644 80 1000000\nbytecode-calls 0.113297 0 1999999000000\nconses-6m 6.104017 359 done\nmapcar-2m 0.770943 41 (100000 2 100001)\ngc-idle-10 0.114691 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 1.780405,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.772031,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.303644,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.113297,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 6.104017,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.770943,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.114691,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "runner": "current",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 11.217506749999998,
+      "stdout": "interpreted-lexical 1.779650 80 2000000\ninterpreted-dynamic 0.791627 0 2000000\ninterpreted-calls 1.288235 80 1000000\nbytecode-calls 0.113694 0 1999999000000\nconses-6m 6.106513 359 done\nmapcar-2m 0.772562 41 (100000 2 100001)\ngc-idle-10 0.107815 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 1.77965,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.791627,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.288235,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.113694,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 6.106513,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.772562,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.107815,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "runner": "oracle",
+      "command": [
+        "/Users/rayd/projects/emacs/src/emacs",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 5.278147709000002,
+      "stdout": "interpreted-lexical 0.982227 62 2000000\ninterpreted-dynamic 0.410486 0 2000000\ninterpreted-calls 0.698555 62 1000000\nbytecode-calls 0.033005 0 1999999000000\nconses-6m 2.412371 163 done\nmapcar-2m 0.175664 10 (100000 2 100001)\ngc-idle-10 0.079026 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 0.982227,
+          "collections": 62,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.410486,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 0.698555,
+          "collections": 62,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.033005,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 2.412371,
+          "collections": 163,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.175664,
+          "collections": 10,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.079026,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "runner": "baseline",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 14.750434083999998,
+      "stdout": "interpreted-lexical 2.264964 80 2000000\ninterpreted-dynamic 0.892210 0 2000000\ninterpreted-calls 1.785452 80 1000000\nbytecode-calls 0.107644 0 1999999000000\nconses-6m 8.075929 359 done\nmapcar-2m 1.033381 41 (100000 2 100001)\ngc-idle-10 0.161954 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 2.264964,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.89221,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.785452,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.107644,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 8.075929,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 1.033381,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.161954,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 3,
+      "runner": "baseline",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 14.657034416999991,
+      "stdout": "interpreted-lexical 2.271468 80 2000000\ninterpreted-dynamic 0.895816 0 2000000\ninterpreted-calls 1.792105 80 1000000\nbytecode-calls 0.107862 0 1999999000000\nconses-6m 8.026586 359 done\nmapcar-2m 1.035940 41 (100000 2 100001)\ngc-idle-10 0.150595 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 2.271468,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.895816,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.792105,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.107862,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 8.026586,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 1.03594,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.150595,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 3,
+      "runner": "current",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 11.171654791999998,
+      "stdout": "interpreted-lexical 1.778831 80 2000000\ninterpreted-dynamic 0.786323 0 2000000\ninterpreted-calls 1.321288 80 1000000\nbytecode-calls 0.113235 0 1999999000000\nconses-6m 5.964677 359 done\nmapcar-2m 0.750298 41 (100000 2 100001)\ngc-idle-10 0.108265 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 1.778831,
+          "collections": 80,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.786323,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 1.321288,
+          "collections": 80,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.113235,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 5.964677,
+          "collections": 359,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.750298,
+          "collections": 41,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.108265,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    },
+    {
+      "round": 3,
+      "runner": "oracle",
+      "command": [
+        "/Users/rayd/projects/emacs/src/emacs",
+        "-Q",
+        "--batch",
+        "-l",
+        "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+      ],
+      "returncode": 0,
+      "process_seconds": 5.19009324999999,
+      "stdout": "interpreted-lexical 0.976034 62 2000000\ninterpreted-dynamic 0.406610 0 2000000\ninterpreted-calls 0.679739 62 1000000\nbytecode-calls 0.033119 0 1999999000000\nconses-6m 2.364352 163 done\nmapcar-2m 0.175509 10 (100000 2 100001)\ngc-idle-10 0.079610 10 done\ngc-settings 800000 1.0\n",
+      "stderr": "",
+      "cases": {
+        "interpreted-lexical": {
+          "seconds": 0.976034,
+          "collections": 62,
+          "result": "2000000"
+        },
+        "interpreted-dynamic": {
+          "seconds": 0.40661,
+          "collections": 0,
+          "result": "2000000"
+        },
+        "interpreted-calls": {
+          "seconds": 0.679739,
+          "collections": 62,
+          "result": "1000000"
+        },
+        "bytecode-calls": {
+          "seconds": 0.033119,
+          "collections": 0,
+          "result": "1999999000000"
+        },
+        "conses-6m": {
+          "seconds": 2.364352,
+          "collections": 163,
+          "result": "done"
+        },
+        "mapcar-2m": {
+          "seconds": 0.175509,
+          "collections": 10,
+          "result": "(100000 2 100001)"
+        },
+        "gc-idle-10": {
+          "seconds": 0.07961,
+          "collections": 10,
+          "result": "done"
+        }
+      }
+    }
+  ]
+}

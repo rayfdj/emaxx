@@ -587,8 +587,8 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let mut environment = Env::new();
     let lambda = Value::lambda(
-        std::rc::Rc::new(["vals", "start", "end"].map(Into::into).to_vec()),
-        std::rc::Rc::new(Vec::new()),
+        ["vals", "start", "end"].map(Into::into).to_vec(),
+        Vec::new(),
         Value::Nil,
     );
     let vector = Value::vector([
@@ -1787,6 +1787,10 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
 /// a thin `#[test]' wrapper below, so `cargo test anti_cheat' behaves as
 /// before.
 pub fn enforce_all() -> Result<(), Vec<String>> {
+    crate::lisp::runtime::with_runtime(enforce_all_owned)
+}
+
+fn enforce_all_owned() -> Result<(), Vec<String>> {
     let gates: &[(&str, fn())] = &[
         (
             "repo_does_not_define_batch_report_delegation",

@@ -7,7 +7,6 @@ use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
 use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, LispErrorKind, Value};
-use crate::perf::{self, PERF_RESULT_FILE_ENV, PerfRunReport};
 
 #[derive(Clone, Debug, Default)]
 pub struct BatchRunOptions {
@@ -67,14 +66,6 @@ impl From<EmacsTermination> for BatchRunOutcome {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PerfRequest {
-    scenario_id: String,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-}
-
 /// Run the batch interpreter on a guarded stack on the calling OS thread.
 pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
     with_batch_stack(|| run_batch(options))?
@@ -89,17 +80,19 @@ pub fn run_batch_process_with_large_stack(
     options: BatchRunOptions,
     finish: impl FnOnce(BatchRunOutcome) -> Result<u8, String>,
 ) -> Result<u8, String> {
-    with_batch_stack(|| {
-        let actions = batch_actions(&options);
-        let mut interpreter = initialize_batch_interpreter(&options)?;
-        let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
-        interpreter.release_external_resources_for_exit();
-        crate::lisp::flush_batch_stdout();
-        finish(outcome)
+    lisp::runtime::with_runtime(|| {
+        with_batch_stack(|| {
+            let actions = batch_actions(&options);
+            let mut interpreter = initialize_batch_interpreter(&options)?;
+            let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
+            interpreter.release_external_resources_for_exit();
+            crate::lisp::flush_batch_stdout();
+            finish(outcome)
+        })
     })?
 }
 
-fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
+pub(crate) fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
     // Cons chains are released iteratively, so list length no longer dictates
     // stack capacity. Use the same guarded reservation as Lisp threads; Rust
     // evaluator frames still need more room than GNU's C frames. Keep GNU's
@@ -134,8 +127,10 @@ pub fn run_batch_with_actions(
     options: BatchRunOptions,
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
-    let mut interpreter = initialize_batch_interpreter(&options)?;
-    run_initialized_batch(&mut interpreter, &options, &actions)
+    lisp::runtime::with_runtime(|| {
+        let mut interpreter = initialize_batch_interpreter(&options)?;
+        run_initialized_batch(&mut interpreter, &options, &actions)
+    })
 }
 
 fn run_initialized_batch(
@@ -149,14 +144,6 @@ fn run_initialized_batch(
     if let Some(command_line_args) = &options.startup_command_line_args {
         return run_batch_through_normal_top_level(interpreter, command_line_args);
     }
-    let eval_expressions = actions
-        .iter()
-        .filter_map(|action| match action {
-            BatchAction::Eval(expression) => Some(expression.clone()),
-            BatchAction::Load(_) | BatchAction::Funcall(_) => None,
-        })
-        .collect::<Vec<_>>();
-    let perf_request = parse_perf_request(&eval_expressions)?;
     // The compat helper's load-error reports record the harness-provided
     // selector; mirror GNU's `emaxx-compat--selector' environment contract.
     let selector_string =
@@ -211,9 +198,6 @@ fn run_initialized_batch(
                     .read_all()
                     .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
                 for form in forms {
-                    if extract_perf_request_from_form(&form).is_some() {
-                        continue;
-                    }
                     // GNU's reader interns as it reads, so `--eval' leaves
                     // every symbol in the form it evaluates in the obarray.
                     // (Not every symbol in the STRING: startup.el:2669 reads
@@ -230,7 +214,8 @@ fn run_initialized_batch(
                     // symbols as well as keywords.
                     interpreter.intern_symbols_in_value(&form);
                     match interpreter
-                        .eval(&form, &mut eval_env)
+                        .materialize_read_object_literals(form, &mut eval_env)
+                        .and_then(|form| interpreter.eval(&form, &mut eval_env))
                         .map_err(LispError::into_kind)
                     {
                         Ok(_) => {}
@@ -271,21 +256,6 @@ fn run_initialized_batch(
                 }
             }
         }
-    }
-
-    if let Some(request) = perf_request {
-        let report = perf::run_emaxx_batch_scenario(
-            &request.scenario_id,
-            request.n,
-            request.warmup,
-            request.samples,
-        )?;
-        emit_perf_artifacts(&report)?;
-        emit_perf_human_log(&report);
-        return Ok(BatchRunOutcome::Exit(match report.status {
-            perf::PerfRunStatus::Completed | perf::PerfRunStatus::Unsupported => 0,
-            perf::PerfRunStatus::Failed => 1,
-        }));
     }
 
     // The measured ERT path is Lisp-driven: real ert.el (or the shared
@@ -525,8 +495,11 @@ pub(crate) fn initialize_interactive_interpreter(
 /// `<name>.pdmp' beside it).  A named image that cannot be loaded is
 /// fatal there, as in GNU.
 pub fn startup_image_loads(dump_file: Option<&Path>) -> bool {
-    let mut interpreter = Interpreter::new();
-    crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file).is_some()
+    lisp::runtime::with_runtime(|| {
+        let mut interpreter = Interpreter::new();
+        crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
+            .is_some()
+    })
 }
 
 /// pdumper.c:dump_fingerprint with an empty label: the executable's
@@ -544,6 +517,10 @@ pub fn executable_fingerprint_hex() -> String {
 /// (temacs) reports the C constants.  An unusable variable is the
 /// message GNU writes to stderr before exiting with status 1.
 pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
+    lisp::runtime::with_runtime(|| version_banner_owned(dump_file))
+}
+
+fn version_banner_owned(dump_file: Option<&Path>) -> Result<String, String> {
     let mut interpreter = Interpreter::new();
     let initialized =
         crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
@@ -1411,58 +1388,6 @@ fn format_backtrace_frames(frames: Vec<(bool, Value, Vec<Value>, bool)>) -> Stri
         .join(" <- ")
 }
 
-fn parse_perf_request(expressions: &[String]) -> Result<Option<PerfRequest>, String> {
-    let mut request = None;
-    for expression in expressions {
-        let forms = Reader::new(expression)
-            .read_all()
-            .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
-        for form in forms {
-            if let Some(found) = extract_perf_request_from_form(&form) {
-                request = Some(found);
-            }
-        }
-    }
-    Ok(request)
-}
-
-fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
-    let items = form.to_vec().ok()?;
-    let head = items.first()?.as_symbol().ok()?;
-    if head != "emaxx-perf-run-batch" {
-        return None;
-    }
-    let scenario_id = match (items.get(1)?).kind() {
-        Kind::String(value) => value.to_string(),
-        Kind::StringObject(state) => state.borrow().text.clone(),
-        Kind::Symbol(value) => value.to_string(),
-        _ => return None,
-    };
-    let n = value_to_usize(items.get(2)).unwrap_or(4096);
-    let warmup = value_to_u32(items.get(3)).unwrap_or(1);
-    let samples = value_to_u32(items.get(4)).unwrap_or(5);
-    Some(PerfRequest {
-        scenario_id,
-        n,
-        warmup,
-        samples,
-    })
-}
-
-fn value_to_usize(value: Option<&Value>) -> Option<usize> {
-    match (value?).kind() {
-        Kind::Integer(number) if number >= 0 => usize::try_from(number).ok(),
-        _ => None,
-    }
-}
-
-fn value_to_u32(value: Option<&Value>) -> Option<u32> {
-    match (value?).kind() {
-        Kind::Integer(number) if number >= 0 => u32::try_from(number).ok(),
-        _ => None,
-    }
-}
-
 fn report_file_name(path: &Path) -> String {
     match env::var("EMACS_TEST_DIRECTORY") {
         Ok(test_directory) => {
@@ -1477,13 +1402,6 @@ fn report_file_name(path: &Path) -> String {
 
 fn emit_artifacts(report: &BatchReport) -> Result<(), String> {
     if let Ok(result_file) = env::var(compat::BATCH_RESULT_FILE_ENV) {
-        report.write_json(Path::new(&result_file))?;
-    }
-    Ok(())
-}
-
-fn emit_perf_artifacts(report: &PerfRunReport) -> Result<(), String> {
-    if let Ok(result_file) = env::var(PERF_RESULT_FILE_ENV) {
         report.write_json(Path::new(&result_file))?;
     }
     Ok(())
@@ -1520,26 +1438,6 @@ fn emit_human_log(report: &BatchReport) {
         report.summary.skipped,
         report.summary.unexpected
     );
-}
-
-fn emit_perf_human_log(report: &PerfRunReport) {
-    if !verbose_mode() {
-        return;
-    }
-    eprintln!("runner: {}", report.runner);
-    eprintln!("scenario: {}", report.scenario_id);
-    eprintln!("status: {:?}", report.status);
-    for case in &report.cases {
-        eprintln!(
-            "{:?}: {}{}",
-            case.status,
-            case.case_id,
-            case.notes
-                .as_ref()
-                .map(|notes| format!(" -- {notes}"))
-                .unwrap_or_default()
-        );
-    }
 }
 
 fn verbose_mode() -> bool {
@@ -1870,15 +1768,30 @@ mod tests {
     }
 
     #[test]
-    fn extracts_perf_request_from_eval_form() {
-        let forms = Reader::new("(emaxx-perf-run-batch \"noverlay/perf-marker-suite\" 2048 1 5)")
-            .read_all()
-            .expect("read perf eval");
-        let request = extract_perf_request_from_form(&forms[0]).expect("perf request");
-        assert_eq!(request.scenario_id, "noverlay/perf-marker-suite");
-        assert_eq!(request.n, 2048);
-        assert_eq!(request.warmup, 1);
-        assert_eq!(request.samples, 5);
+    fn batch_evaluates_perf_named_forms_as_ordinary_lisp() {
+        // A benchmark's spelling must not select a second evaluator or
+        // bypass its Lisp definition, including through the embedded API.
+        let mut interpreter = Interpreter::new();
+        let actions = vec![
+            BatchAction::Eval(
+                "(defalias 'emaxx-perf-run-batch
+                   #'(lambda (&rest args) (setq perf-call-arguments args)))"
+                    .into(),
+            ),
+            BatchAction::Eval("(emaxx-perf-run-batch \"arbitrary/workload\" 37 2 9)".into()),
+        ];
+        assert_eq!(
+            run_initialized_batch(&mut interpreter, &BatchRunOptions::default(), &actions)
+                .expect("ordinary Lisp evaluation"),
+            BatchRunOutcome::Exit(0)
+        );
+        assert_eq!(
+            interpreter
+                .lookup_var("perf-call-arguments", &Env::new())
+                .expect("the function body executed")
+                .to_string(),
+            "(\"arbitrary/workload\" 37 2 9)"
+        );
     }
 
     #[test]

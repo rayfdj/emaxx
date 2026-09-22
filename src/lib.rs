@@ -55,11 +55,11 @@ pub fn tune_allocator() {
 pub fn tune_allocator() {}
 
 pub mod batch;
-pub mod buffer;
+pub(crate) mod buffer;
 pub mod compat;
 pub(crate) mod file_system;
 pub mod lisp;
-pub mod overlay;
+pub(crate) mod overlay;
 pub mod perf;
 mod startup;
 pub mod tty;

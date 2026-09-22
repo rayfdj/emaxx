@@ -4,7 +4,7 @@
 //! payload. A resume transfers that actual payload to the child shell; a
 //! suspension transfers it back without aliasing the parked shell.
 
-use super::{Env, Interpreter, InterpreterState, LispError, Value};
+use super::{Env, Interpreter, InterpreterState, InterpreterStateOwner, LispError, Value};
 use corosensei::stack::{DefaultStack, Stack};
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use std::any::Any;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
-type EditorState = Box<InterpreterState>;
+type EditorState = InterpreterStateOwner;
 type ThreadYielder = Yielder<EditorState, EditorState>;
 
 // Rust evaluator frames are larger than GNU's C frames. Reserve address space
@@ -59,20 +59,46 @@ impl Drop for StackBaseGuard {
     }
 }
 
+/// The caller's actual stack remains live during either an on-stack call
+/// or a coroutine resume. Nested calls can have an alternate stack as their
+/// caller, so pthread's OS-stack bound is only the outermost fallback.
+/// Remove the range on return and panic before its stack can be released.
+#[inline]
+fn with_driving_stack<R>(body: impl FnOnce() -> R) -> R {
+    struct DriverRegionGuard;
+    impl Drop for DriverRegionGuard {
+        fn drop(&mut self) {
+            crate::lisp::alloc::pop_driver_region();
+        }
+    }
+
+    let base = CURRENT_STACK_BASE
+        .get()
+        .map(|base| base as usize)
+        .or_else(crate::lisp::alloc::os_stack_base)
+        .unwrap_or(0);
+    // alloc.c:flush_stack_call_func: expose the callee-saved registers
+    // inside the region before the switch saves them below its boundary.
+    let mut spill = [0usize; 16];
+    crate::lisp::alloc::spill_registers(&mut spill);
+    crate::lisp::alloc::push_driver_region(crate::lisp::alloc::approximate_stack_pointer(), base);
+    let guard = DriverRegionGuard;
+    let result = body();
+    std::hint::black_box(&spill);
+    drop(guard);
+    result
+}
+
 /// Run on an owned stack while publishing its physical upper bound to native
 /// collection. The OS thread's pthread stack attributes describe its original
 /// stack, so they cannot be used while an alternate stack is active.
 pub(crate) fn on_stack<R>(stack: DefaultStack, body: impl FnOnce() -> R) -> R {
     let base = stack.base().get();
-    // The OS stack region the trampoline's caller keeps using: from here
-    // up to the thread's stack base, scanned by the collector with the
-    // coroutine's stack (alloc.c's stack_bottom for the main thread).
-    if let Some(os_base) = crate::lisp::alloc::os_stack_base() {
-        crate::lisp::alloc::note_os_stack(crate::lisp::alloc::approximate_stack_pointer(), os_base);
-    }
-    corosensei::on_stack(stack, || {
-        let _guard = StackBaseGuard::enter(base);
-        body()
+    with_driving_stack(|| {
+        corosensei::on_stack(stack, || {
+            let _guard = StackBaseGuard::enter(base);
+            body()
+        })
     })
 }
 
@@ -129,29 +155,11 @@ impl ThreadContinuation {
             yielder: Rc::clone(&self.yielder),
         };
         let _guard = ResumeGuard(CURRENT_RESUME.replace(std::ptr::from_ref(&context)));
-        // The driving stack's frames from here to its base stay live while
-        // the coroutine runs (the collector scans them as another thread's
-        // stack); the coroutine's own stack is no longer parked.
-        let driver_base = CURRENT_STACK_BASE
-            .get()
-            .map(|base| base as usize)
-            .or_else(crate::lisp::alloc::os_stack_base)
-            .unwrap_or(0);
-        // flush_stack_call_func's spill: the callee-saved registers into
-        // this frame, inside the region, before the switch saves them
-        // below the top recorded here.
-        let mut spill = [0usize; 16];
-        crate::lisp::alloc::spill_registers(&mut spill);
-        crate::lisp::alloc::push_driver_region(
-            crate::lisp::alloc::approximate_stack_pointer(),
-            driver_base,
-        );
-        crate::lisp::alloc::forget_parked_stack(self.stack_base);
-        let _stack_guard = StackBaseGuard::enter(self.stack_base);
-        let result = self.coroutine.resume(state);
-        crate::lisp::alloc::pop_driver_region();
-        std::hint::black_box(&spill);
-        result
+        with_driving_stack(|| {
+            crate::lisp::alloc::forget_parked_stack(self.stack_base);
+            let _stack_guard = StackBaseGuard::enter(self.stack_base);
+            self.coroutine.resume(state)
+        })
     }
 
     pub(super) fn done(&self) -> bool {

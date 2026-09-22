@@ -100,8 +100,11 @@ fn eval_str_bare(src: &str) -> Value {
         // GNU's reader interns every symbol it reads, so `intern-soft'
         // must hit symbols that only occur in test source.
         interp.intern_symbols_in_value(form);
+        let form = interp
+            .materialize_read_object_literals(*form, &mut env)
+            .expect("finish reader object allocation");
         result = interp
-            .eval(form, &mut env)
+            .eval(&form, &mut env)
             .unwrap_or_else(|error| panic_eval_error(&mut interp, error));
     }
     result
@@ -124,8 +127,11 @@ fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
         // GNU's reader interns every symbol it reads, so `intern-soft'
         // must hit symbols that only occur in test source.
         interp.intern_symbols_in_value(form);
+        let form = interp
+            .materialize_read_object_literals(*form, &mut env)
+            .expect("finish reader object allocation");
         result = interp
-            .eval(form, &mut env)
+            .eval(&form, &mut env)
             .unwrap_or_else(|error| panic_eval_error(interp, error));
     }
     result

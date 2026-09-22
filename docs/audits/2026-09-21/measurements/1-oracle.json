@@ -1,0 +1,15 @@
+{
+  "round": 1,
+  "runner": "oracle",
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/checked-performance.el"
+  ],
+  "returncode": 0,
+  "process_seconds": 5.331062042,
+  "stdout": "interpreted-lexical 0.980093 62 2000000\ninterpreted-dynamic 0.412753 0 2000000\ninterpreted-calls 0.704400 62 1000000\nbytecode-calls 0.034176 0 1999999000000\nconses-6m 2.399522 163 done\nmapcar-2m 0.176016 10 (100000 2 100001)\ngc-idle-10 0.079394 10 done\ngc-settings 800000 1.0\n",
+  "stderr": ""
+}

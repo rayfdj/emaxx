@@ -1,3 +1,14 @@
+//! Owned host entry points for the process-wide Lisp runtime.
+//!
+//! GC objects cannot escape an editor call or be retained while another OS
+//! thread collects the heap. Raw interpreter and value APIs are internal:
+//!
+//! ```compile_fail
+//! use emaxx::lisp::{eval::Interpreter, types::Value};
+//! let mut interpreter = Interpreter::new();
+//! let retained = Value::cons(Value::Nil, Value::Nil);
+//! ```
+
 /// Define a primitive dispatcher and derive its name probe from the same arms.
 ///
 /// Dispatch routing and implementation must share one inventory: otherwise a
@@ -24,13 +35,20 @@ macro_rules! dispatch_handles {
     ($name:ident; , $($rest:tt)*) => {
         dispatch_handles!($name; $($rest)*)
     };
+    ($name:ident; #[dispatch($($property:ident),+)] $($rest:tt)*) => {
+        dispatch_handles!($name; $($rest)*)
+    };
     (
         $name:ident;
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {
-        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+        match $name {
+            $(#[$attribute])*
+            $pattern => true,
+            _ => dispatch_handles!($name; $($rest)*),
+        }
     };
     (
         $name:ident;
@@ -38,7 +56,11 @@ macro_rules! dispatch_handles {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {
-        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+        match $name {
+            $(#[$attribute])*
+            $pattern => true,
+            _ => dispatch_handles!($name; $($rest)*),
+        }
     };
 }
 
@@ -50,12 +72,16 @@ macro_rules! dispatch_visit_patterns {
     ($visitor:ident; , $($rest:tt)*) => {
         dispatch_visit_patterns!($visitor; $($rest)*)
     };
+    ($visitor:ident; #[dispatch($($property:ident),+)] $($rest:tt)*) => {
+        dispatch_visit_patterns!($visitor; $($rest)*)
+    };
     (
         $visitor:ident;
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {{
+        $(#[$attribute])*
         $visitor(stringify!($pattern));
         dispatch_visit_patterns!($visitor; $($rest)*)
     }};
@@ -65,6 +91,7 @@ macro_rules! dispatch_visit_patterns {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {{
+        $(#[$attribute])*
         $visitor(stringify!($pattern));
         dispatch_visit_patterns!($visitor; $($rest)*)
     }};
@@ -96,8 +123,11 @@ macro_rules! dispatch_property {
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {
-        $selector!($name, $pattern => $($property),+)
-            || dispatch_property!($selector, $name; $($rest)*)
+        (match $name {
+            $(#[$attribute])*
+            $pattern => $selector!($name, $pattern => $($property),+),
+            _ => false,
+        }) || dispatch_property!($selector, $name; $($rest)*)
     };
     (
         $selector:ident, $name:ident;
@@ -106,8 +136,11 @@ macro_rules! dispatch_property {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {
-        $selector!($name, $pattern => $($property),+)
-            || dispatch_property!($selector, $name; $($rest)*)
+        (match $name {
+            $(#[$attribute])*
+            $pattern => $selector!($name, $pattern => $($property),+),
+            _ => false,
+        }) || dispatch_property!($selector, $name; $($rest)*)
     };
     (
         $selector:ident, $name:ident;
@@ -140,6 +173,12 @@ macro_rules! dispatch_table {
     (($($argument:ident),*) [$($entries:tt)*] , $($rest:tt)*) => {
         dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
     };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        #[dispatch($($property:ident),+)] $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
     // A guarded literal arm is not lifted.
     (
         ($($argument:ident),*) [$($entries:tt)*]
@@ -157,14 +196,39 @@ macro_rules! dispatch_table {
     ) => {
         dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
     };
+    // Split alternations before lifting so each element retains the arm's
+    // attributes, including cfg/cfg_attr.  Applying them only to the residual
+    // match would still compile unavailable platform bodies into this table.
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $first:literal | $($other:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*]
+            $(#[$attribute])* $first => $body
+            $(#[$attribute])* $($other)|+ => $body
+            $($rest)*)
+    };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $first:literal | $($other:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*]
+            $(#[$attribute])* $first => { $body }
+            $(#[$attribute])* $($other)|+ => { $body }
+            $($rest)*)
+    };
     // (interp, name, args, env)
     (
         ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -175,15 +239,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -194,16 +258,16 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // (interp, name, args)
     (
         ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -214,15 +278,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -233,16 +297,16 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // (name, args)
     (
         ($name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 _interp: &mut crate::lisp::eval::Interpreter,
@@ -253,15 +317,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 _interp: &mut crate::lisp::eval::Interpreter,
@@ -272,7 +336,7 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // Any other arm or shape: not lifted.
     (
@@ -434,27 +498,24 @@ macro_rules! define_dispatch {
     };
 }
 
-pub mod alloc;
-pub mod bytecode;
-pub mod eval;
-pub mod json;
+pub(crate) mod alloc;
+pub(crate) mod bytecode;
+pub(crate) mod eval;
+pub(crate) mod json;
 pub(crate) mod modules;
 pub(crate) mod native_comp;
-pub mod primitives;
-pub mod reader;
-pub mod sqlite;
-pub mod types;
+pub(crate) mod primitives;
+pub(crate) mod reader;
+pub(crate) mod runtime;
+pub(crate) mod sqlite;
+pub(crate) mod types;
 
 pub use primitives::{DaemonState, set_build_details, set_daemon_state};
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::compat::TestStatus;
 use crate::lisp::types::LispError;
-
-/// One test's outcome: name, passed, optional error message.
-pub type TestResult = (String, bool, Option<String>);
 
 /// EMAXX_TRACE_LOAD_ERRORS, latched once.  main() latches it at startup
 /// and then SCRUBS the variable from the environment: the compat harness
@@ -996,10 +1057,6 @@ fn decode_source_bytes(path: &Path, bytes: Vec<u8>) -> Result<String, types::Lis
     }
 }
 
-fn read_source(path: &Path) -> Result<String, types::LispError> {
-    decode_source_bytes(path, read_source_bytes(path)?)
-}
-
 fn read_source_bytes(path: &Path) -> Result<Vec<u8>, types::LispError> {
     crate::file_system::read(path).map_err(|error| {
         types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
@@ -1125,17 +1182,14 @@ fn read_symbol_shorthands_value(shorthands: &[(String, String)]) -> types::Value
     }))
 }
 
-pub fn read_forms(path: &Path) -> Result<alloc::RootedVec<types::Value>, types::LispError> {
-    let source = read_source(path)?;
-    read_source_forms(&source)
-}
-
+#[cfg(test)]
 pub(crate) fn read_source_forms(
     source: &str,
 ) -> Result<alloc::RootedVec<types::Value>, types::LispError> {
     read_source_forms_with_unescaped_literals(source).map(|(forms, _)| forms)
 }
 
+#[cfg(test)]
 pub(crate) fn read_source_forms_with_unescaped_literals(
     source: &str,
 ) -> Result<(alloc::RootedVec<types::Value>, types::Value), types::LispError> {
@@ -1147,7 +1201,7 @@ pub(crate) fn read_source_forms_with_unescaped_literals(
     Ok((forms, literals))
 }
 
-pub fn load_file_strict(
+pub(crate) fn load_file_strict(
     interp: &mut eval::Interpreter,
     path: &Path,
 ) -> Result<(), types::LispError> {
@@ -1470,85 +1524,74 @@ fn restore_special_dynamic_bindings(
     Ok(())
 }
 
-/// Load and run an ERT test file, returning (passed, failed, total) and
-/// detailed results for each test.
-pub fn run_ert_file(
+/// Load and run a complete ERT file through initialized GNU Lisp and the
+/// same reporter used by the compatibility CLI. Only owned host data leaves
+/// the runtime; load failures are errors, and individual outcomes remain in
+/// the returned report (including skips and unexpected failures).
+/// `executable` is the editor binary GNU comp.el can launch for compiler
+/// children. An embedding application's executable need not implement the
+/// editor CLI, so its path must be supplied explicitly.
+pub fn run_ert_file(path: &Path, executable: &Path) -> Result<crate::compat::BatchReport, String> {
+    runtime::with_runtime(|| {
+        crate::batch::with_batch_stack(|| run_ert_file_owned(path, executable))
+    })?
+}
+
+fn run_ert_file_owned(
     path: &Path,
-) -> Result<(usize, usize, usize, Vec<TestResult>), types::LispError> {
-    let source = read_source(path)?;
-    let settings = source_settings(&source)?;
-    let mut interp = eval::Interpreter::new();
-    let previous = interp.set_current_load_file(Some(path.display().to_string()));
-    let mut env = types::Env::new();
-    let mut dynamic_restores = Vec::with_capacity(3);
-    for (name, value) in [
-        (
-            "lexical-binding",
-            if settings.lexical_binding {
-                types::Value::T
-            } else {
-                types::Value::Nil
-            },
-        ),
-        (
-            "read-symbol-shorthands",
-            read_symbol_shorthands_value(&settings.read_symbol_shorthands),
-        ),
-        (
-            "current-load-list",
-            types::Value::list([types::Value::String(path.display().to_string().into())]),
-        ),
-    ] {
-        match interp.bind_special_dynamic(name, value, &mut env) {
-            Ok(restore) => dynamic_restores.push(restore),
-            Err(error) => {
-                let _ =
-                    restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        }
-    }
-    let forms = match reader::Reader::with_symbol_shorthands(
-        &source,
-        settings.read_symbol_shorthands.clone(),
+    executable: &Path,
+) -> Result<crate::compat::BatchReport, String> {
+    let executable = executable
+        .canonicalize()
+        .map_err(|error| format!("resolve editor executable: {error}"))?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| "editor executable has no parent directory".to_string())?;
+    let name = executable
+        .file_name()
+        .ok_or_else(|| "editor executable has no file name".to_string())?;
+    let options = crate::batch::BatchRunOptions {
+        no_site_lisp: true,
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)?;
+    // comp.el's comp--final uses these ordinary GNU variables. Keep the
+    // compiler enabled and let its normal child process report any failure.
+    interp.set_global_binding(
+        "invocation-name",
+        types::Value::string(&name.to_string_lossy()),
+    );
+    interp.set_global_binding(
+        "invocation-directory",
+        types::Value::string(&format!("{}/", directory.display())),
+    );
+    let helper = crate::compat::compat_path("compat/emacs_compat_runner.el");
+    load_file_strict(&mut interp, &helper).map_err(|error| error.to_string())?;
+    load_file_strict(&mut interp, path).map_err(|error| error.to_string())?;
+    let forms = reader::Reader::new(
+        "(json-encode
+           (emaxx-compat--call-with-batch-environment
+            (lambda () (emaxx-compat--report t))))",
     )
     .read_all()
-    {
-        Ok(forms) => forms,
-        Err(error) => {
-            let _ = restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env);
-            interp.set_current_load_file(previous);
-            return Err(error);
-        }
-    };
-
-    // Evaluate all top-level forms (this collects ert-deftest definitions)
-    for form in &forms {
-        interp.intern_symbols_in_value(form);
+    .map_err(|error| error.to_string())?;
+    let mut env = types::Env::new();
+    let value = interp
+        .eval(&forms[0], &mut env)
+        .map_err(|error| error.to_string())?;
+    let json = primitives::string_like(&value)
+        .ok_or_else(|| "ERT reporter did not return JSON text".to_string())?;
+    let mut report: crate::compat::BatchReport =
+        serde_json::from_str(&json.text).map_err(|error| format!("decode ERT report: {error}"))?;
+    // Host provenance for this library call, which has no harness-supplied
+    // runner/file environment variables. Preserve every Lisp outcome.
+    report.runner = "emaxx".into();
+    report.file = path.display().to_string();
+    let issues = crate::compat::report_integrity_issues(&report);
+    if !issues.is_empty() {
+        return Err(format!("inconsistent ERT report: {issues:?}"));
     }
-    for form in &forms {
-        // Ignore errors in top-level forms (e.g. require of missing features)
-        let _ = interp.eval(form, &mut env);
-    }
-    restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env)?;
-    interp.set_current_load_file(previous);
-
-    // Run the collected tests
-    let (passed, failed, total) = interp.run_ert_tests();
-    let results = interp
-        .test_results
-        .iter()
-        .map(|result| {
-            (
-                result.name.clone(),
-                result.status == TestStatus::Passed,
-                result.message.clone(),
-            )
-        })
-        .collect();
-
-    Ok((passed, failed, total, results))
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1558,6 +1601,69 @@ mod tests {
         preprocess_lazy_doc_source, read_source_forms, source_settings,
     };
     use std::path::Path;
+
+    #[test]
+    fn primitive_dispatch_preserves_platform_cfg() {
+        use crate::lisp::{
+            eval::Interpreter,
+            types::{LispError, Value},
+        };
+
+        define_dispatch! {
+            fn call(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
+                match name {
+                    #[cfg(any())]
+                    "unavailable-a" | "unavailable-b" => {
+                        unavailable_platform_function(interp, args)
+                    }
+                    #[cfg_attr(all(), cfg(any()))]
+                    "unavailable-expression" => unavailable_platform_function(interp, args),
+                    #[dispatch(builtin_override)]
+                    #[cfg(any())]
+                    "unavailable-override" => {
+                        unavailable_platform_function(interp, args)
+                    }
+                    #[cfg(all())]
+                    "first" | "second" => {
+                        Ok(Value::Integer(if name == "first" { 1 } else { 2 }))
+                    }
+                    #[dispatch(builtin_override)]
+                    #[cfg(all())]
+                    "third" => Ok(Value::Integer(3)),
+                }
+            }
+        }
+
+        assert_eq!(
+            LIFTED_PRIMITIVES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        for name in [
+            "unavailable-a",
+            "unavailable-b",
+            "unavailable-expression",
+            "unavailable-override",
+        ] {
+            assert!(!handles(name));
+            assert!(!prefer_builtin(name));
+        }
+        assert!(prefer_builtin("third"));
+        let mut patterns = Vec::new();
+        visit_handled_patterns(&mut |pattern| patterns.push(pattern));
+        assert_eq!(patterns, ["\"first\" | \"second\"", "\"third\""]);
+
+        let mut interp = Interpreter::new();
+        for (name, expected) in [("first", 1), ("second", 2), ("third", 3)] {
+            assert!(handles(name));
+            assert_eq!(
+                call(&mut interp, name, &[]).expect("enabled primitive dispatches"),
+                Value::Integer(expected)
+            );
+        }
+    }
 
     #[test]
     fn parses_compact_lexical_binding_modelines() {

@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/tools/perf/gcs-per-conses.el"
+  ],
+  "returncode": 0,
+  "stdout": "collections 94 in 1.62 s; threshold 800000 percentage 1.0\ngc: ((conses 16 2088 11796) (symbols 48 1693 2) (strings 32 420 696) (string-bytes 1 25437) (vectors 16 1179) (vector-slots 8 7060 1627) (floats 8 6 4) (intervals 56 3 4) (buffers 992 4))\ncollections 94 in 1.62 s after an explicit gc\n",
+  "stderr": ""
+}

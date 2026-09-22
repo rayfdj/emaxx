@@ -1451,13 +1451,18 @@ pub(crate) fn read_one_form_in_env(
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
-        Some(value) if reader.emitted_reader_forms() => {
-            crate::lisp::reader::resolve_circular_read_syntax(value)?
-        }
         Some(value) => value,
         None => return Err(end_of_file_error(interp, env)),
     };
     let value = interp.intern_read_symbols_in_value(value, env)?;
+    // Allocate identity-bearing objects before resolving references into
+    // them. The parser-only resolver could not construct cyclic closures
+    // or records and performed a second, competing graph reconstruction.
+    let value = if reader.emitted_reader_forms() {
+        interp.materialize_read_object_literals(value, env)?
+    } else {
+        value
+    };
     interp.set_variable(
         "lread--unescaped-character-literals",
         Value::list(reader.unescaped_character_literals().map(Value::Integer)),
@@ -1568,9 +1573,6 @@ fn read_one_positioned_form(
         base_position,
     );
     let value = match reader.read()? {
-        Some(value) if reader.emitted_reader_forms() => {
-            crate::lisp::reader::resolve_circular_read_syntax(value)?
-        }
         Some(value) => value,
         None => return Err(end_of_file_error(interp, env)),
     };
@@ -1633,6 +1635,12 @@ fn materialize_positioned_symbols(
                     crate::lisp::types::ReaderForm::HashTable { fields },
                 ))
             }
+            crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
+                let payload = materialize_positioned_symbols(interp, *payload, seen);
+                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
+                    crate::lisp::types::ReaderForm::CircularLabel { id: *id, payload },
+                ))
+            }
             _ => Value::ReaderForm(form),
         },
         Kind::Cons(cell) => {
@@ -1656,9 +1664,12 @@ fn materialize_positioned_symbols(
         Kind::Vector(vector) => {
             let pointer = vector.identity() as *const crate::lisp::types::ConsCell;
             if seen.insert(pointer) {
-                let slots = vector.slots().to_vec();
-                for (slot, materialized) in vector.slots_mut().iter_mut().zip(slots) {
-                    *slot = materialize_positioned_symbols(interp, materialized, seen);
+                let slots = vector.slots().collect::<Vec<_>>();
+                for (index, materialized) in slots.into_iter().enumerate() {
+                    vector.set(
+                        index,
+                        materialize_positioned_symbols(interp, materialized, seen),
+                    );
                 }
             }
             Value::Vector(vector)
@@ -1750,15 +1761,7 @@ pub(crate) fn read_from_lisp_source(
     source: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let value = read_from_lisp_source_raw(interp, source, env)?;
-    interp.intern_symbols_in_value(&value);
-    // GNU's reader constructs every object literal before returning —
-    // records, hash tables, char tables, AND `#[...]' byte-code objects
-    // (with `#N=' labels into them).  Route through the same full
-    // materializer the load path uses; the partial record/hash/char pass
-    // left `#<reader-form>' placeholders in `#[...]' data for `read'
-    // consumers (pp-tests--sanity).
-    interp.materialize_read_object_literals(value, env)
+    read_from_lisp_source_raw(interp, source, env)
 }
 
 // GNU's reader constructs real hash tables for `#s(hash-table ...)' input;
@@ -1833,10 +1836,12 @@ fn materialize_char_table_literals_inner(
         if !seen.insert(vector.identity()) {
             return Ok(*value);
         }
-        let slots = vector.slots().to_vec();
+        let slots = vector.slots().collect::<Vec<_>>();
         for (index, slot) in slots.iter().enumerate() {
-            vector.slots_mut()[index] =
-                materialize_char_table_literals_inner(interp, slot, env, seen)?;
+            vector.set(
+                index,
+                materialize_char_table_literals_inner(interp, slot, env, seen)?,
+            );
         }
         return Ok(*value);
     }
@@ -2228,10 +2233,12 @@ fn materialize_hash_table_literals_inner(
         if !seen.insert(vector.identity()) {
             return Ok(*value);
         }
-        let slots = vector.slots().to_vec();
+        let slots = vector.slots().collect::<Vec<_>>();
         for (index, slot) in slots.iter().enumerate() {
-            vector.slots_mut()[index] =
-                materialize_hash_table_literals_inner(interp, slot, env, seen)?;
+            vector.set(
+                index,
+                materialize_hash_table_literals_inner(interp, slot, env, seen)?,
+            );
         }
         return Ok(*value);
     }

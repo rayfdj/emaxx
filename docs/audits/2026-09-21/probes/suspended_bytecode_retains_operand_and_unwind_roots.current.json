@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/suspended_bytecode_retains_operand_and_unwind_roots.el"
+  ],
+  "returncode": 0,
+  "stdout": "((1 t 0) (1 t 0))",
+  "stderr": ""
+}

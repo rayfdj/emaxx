@@ -836,11 +836,10 @@ pub(crate) fn aset_vector_value(
     let Kind::Vector(vector) = target.kind() else {
         return Err(LispError::WrongTypeArgument("arrayp".into(), *target));
     };
-    let slots = vector.slots_mut();
-    let slot = slots
-        .get_mut(index)
-        .ok_or_else(|| LispError::Signal("Args out of range".into()))?;
-    *slot = new_value;
+    if index >= vector.len() {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    vector.set(index, new_value);
     Ok(())
 }
 
@@ -2777,7 +2776,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
     }
     let excluded = exclude
         .filter(|value| !value.is_nil())
-        .map(Value::to_vec)
+        .map(|value| value.to_vec())
         .transpose()?
         .unwrap_or_default();
     let mut codings = Vec::new();

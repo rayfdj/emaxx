@@ -223,11 +223,6 @@ pub(crate) enum DumpType {
     TextProperties = 10,
     /// An interpreted closure (`Value::Lambda').
     Closure = 11,
-    /// A closure's parameter vector, shared between closures made from
-    /// one lambda form.
-    LambdaParams = 12,
-    /// A closure's body forms, shared likewise.
-    LambdaBody = 13,
     CharTable = 16,
     /// A record or pseudovector kept as its slots (`Value::Record').
     Record = 17,
@@ -270,8 +265,6 @@ impl DumpType {
             9 => Self::Obarray,
             10 => Self::TextProperties,
             11 => Self::Closure,
-            12 => Self::LambdaParams,
-            13 => Self::LambdaBody,
             16 => Self::CharTable,
             17 => Self::Record,
             18 => Self::BoolVector,
