@@ -981,33 +981,10 @@ impl NativeRuntime {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        if self.heap.native_stack_bottom.is_null() && self.suspended_stacks.is_empty() {
-            // No generated activation is on the stack. Traverse Lisp roots
-            // without borrowing the heap: ordinary cons reads can lazily
-            // reconcile writes left by earlier native activations.
-            let reachability = interpreter.weak_hash_reachability(environment, &[]);
-            // From here to the sweep, no other mark phase may begin (a
-            // checked build's guard; see `begin_mark_epoch').
-            crate::lisp::types::set_sweep_pending(true);
-            interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
-            let epoch = reachability.epoch;
-            interpreter.mark_doomed_finalizers(epoch);
-            crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
-            // alloc.c:gc_sweep, after the weak entries are gone; the
-            // heap's views of the cells it took go with them.
-            // gc_sweep's order has the strings first; here they go last:
-            // a swept cons drops its fields, and the destructor of a kind
-            // still reference counted (a symbol's registry entry keyed
-            // by its name) reads strings, which must still be there.
-            crate::lisp::alloc::sweep_conses(epoch);
-            crate::lisp::alloc::sweep_floats(epoch);
-            crate::lisp::alloc::sweep_vectors(epoch);
-            crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
-            crate::lisp::types::sweep_symbol_cells(epoch);
-            crate::lisp::alloc::sweep_strings(epoch);
-            self.heap.forget_swept_conses();
-            return;
-        }
+        // comp.c keeps loaded units' relocation objects alive between
+        // generated calls too. Use the same mark/sweep path in both states:
+        // the absence of a native stack removes only that stack's roots,
+        // not relocation roots or the bridge edges needed to reach them.
         let mut roots = self
             .handlers
             .iter()
@@ -10177,6 +10154,58 @@ mod tests {
     }
 
     #[test]
+    fn native_relocation_roots_survive_collection_between_generated_calls() {
+        #[inline(never)]
+        fn make_roots(runtime: &mut NativeRuntime) -> (Box<[NativeWord; 1]>, [usize; 4]) {
+            let child = Value::Float(6.25.into());
+            let live = Value::vector(vec![child]);
+            let dead_child = Value::Float(7.5.into());
+            let dead = Value::vector(vec![dead_child]);
+            let words = [live, child, dead, dead_child]
+                .map(|value| runtime.heap.encode(&value).expect("canonical native word"));
+            let roots = Box::new([words[0]]);
+            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            (roots, words.map(|word| word ^ HIDE))
+        }
+
+        #[inline(never)]
+        fn collect_and_check(
+            runtime: &mut NativeRuntime,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            hidden: [usize; 4],
+            keep_root: bool,
+        ) {
+            let stack_marker = 0;
+            assert!(runtime.heap.native_stack_bottom.is_null());
+            runtime.collect_native_heap_now(
+                std::ptr::from_ref(&stack_marker),
+                interpreter,
+                environment,
+            );
+            for (index, hidden_word) in hidden.into_iter().enumerate() {
+                assert_eq!(
+                    runtime.heap.decode(hidden_word ^ HIDE).is_ok(),
+                    keep_root && index < 2,
+                    "relocation object {index}: root present = {keep_root}"
+                );
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let (mut roots, hidden) = make_roots(&mut runtime);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            collect_and_check(&mut runtime, &mut interpreter, &environment, hidden, true);
+        }
+        roots[0] = 0;
+        crate::lisp::alloc::clobber_stack();
+        collect_and_check(&mut runtime, &mut interpreter, &environment, hidden, false);
+    }
+
+    #[test]
     fn native_gc_retains_the_exact_buffer_reference_owned_by_a_live_bridge() {
         #[inline(never)]
         fn make_aliases(
@@ -10187,8 +10216,8 @@ mod tests {
             let word = heap.encode(&first).expect("first buffer reference");
             assert_eq!(heap.encode(&second).expect("equivalent reference"), word);
             (
-                crate::lisp::alloc::RootedVec::from_vec(vec![first]),
-                [word ^ HIDE, second.word() ^ HIDE],
+                crate::lisp::alloc::RootedVec::from_vec(vec![second]),
+                [word ^ HIDE, first.word() ^ HIDE],
             )
         }
 
@@ -10216,7 +10245,7 @@ mod tests {
             let Kind::Buffer(buffer) = retained.kind() else {
                 panic!("the bridge must retain an allocated buffer reference")
             };
-            assert_eq!(buffer.name.as_str(), "buffer-alias-after");
+            assert_eq!(buffer.name.as_str(), "buffer-alias-before");
         }
 
         let mut interpreter = Interpreter::new();

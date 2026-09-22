@@ -594,3 +594,30 @@ Vector source-3 failure and follow-up:
   errors not covered by unstaged git diff checks; its original bytes remain
   in the immutable float archive and linux-ci-original-thread-probe-1.el.
   Later vector/string/record/root-iterator drafts are outside that CI commit.
+
+
+Between-call native relocation rooting (source 7):
+
+- A new regression on source 6 fails before the runtime repair: a native
+  relocation still points at a vector, but collection between generated
+  calls frees that vector. The exact failing binary and raw assertion are
+  preserved under compact-vector-words-source6 and
+  native-relocation-roots-before-repair-1. This is an independently reproduced
+  defect; it is not yet established as the cause of the Linux gate abort.
+- Removed the separate no-active-native-stack collection branch. Collection
+  now follows the same native/Lisp mark path in both states, preserving
+  loaded relocation roots and bridge edges, while an absent native stack
+  contributes no stack roots. GNU comp.c:load_comp_unit retains permanent
+  data through its unit, and alloc.c marks all reachable objects independently
+  of whether generated code is currently executing. No new root registry or
+  per-operation lookup is introduced. The regression also requires collection
+  of unrelated objects and reclamation after the relocation is cleared.
+- The grouped gate now defaults RUST_BACKTRACE to 1 and records it, while
+  respecting any explicitly supplied value. This retains the original panic
+  stack before a native ABI abort, without changing selectors or outcomes.
+- Source 5's corrected buffer regression passes, but its native fixture
+  still aborts in vector allocation metadata. The two earlier predicates'
+  failure-only diagnostics did not get a chance to report an equality
+  mismatch in that run. All six separate ownership contracts again pass.
+  Source 5's macOS replay of the first failed Linux gate test passes; Linux
+  remains failed and cannot be certified by that cross-platform replay.

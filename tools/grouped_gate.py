@@ -263,6 +263,7 @@ def gate_environment(template: bool) -> dict[str, str]:
             "RUST_TEST_THREADS": "1",
         }
     )
+    environment.setdefault("RUST_BACKTRACE", "1")
     # The loadup image every process and test boots from (batch.rs's
     # FixtureImage): built once by the first boot, loaded by the rest.
     fixture_images = PROJECT_ROOT / "target" / "grouped-gate" / "fixture-images"
@@ -676,6 +677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "LC_ALL": "C",
             "RUST_MIN_STACK": "134217728",
             "RUST_TEST_THREADS": "1",
+            "RUST_BACKTRACE": os.environ.get("RUST_BACKTRACE", "1"),
         },
         "runs": [],
         "cargo_stages": [],
