@@ -522,3 +522,75 @@ Compact float allocation (implementation prepared; validation pending):
   epochs. The native invalid-word test now changes the type tag instead of
   assuming that the following eight bytes cannot contain another live float.
   This change still needs its own compilation and execution checkpoint.
+
+Vector headers and native words (separate draft; unvalidated):
+
+- VectorHeader is one word, placing ordinary and interpreted-closure slots
+  at lisp.h:Lisp_Vector's payload offset. Small-vector marks use a bitmap in
+  their 4 KiB aligned allocation block; 4,048 bytes hold objects, with 40 bytes
+  of metadata and eight padding bytes. Large vectors reserve 16 bytes past
+  their rounded payload for the existing epoch mark. These costs must remain
+  visible: the large-vector allocation does not necessarily shrink. Ordinary
+  lengths, slot reads and stores consult no GC metadata.
+- The block epoch supports the current independent reachability passes, as
+  in the float draft. It is an integration constraint, not a claim that GNU
+  needs epochs; eventual conversion of the collector to GNU's complete mark/
+  sweep lifecycle must revisit these temporary metadata arrangements. No GC
+  or allocation performance result is available for this draft.
+- Native encoding now returns the actual word for ordinary vectors and
+  interpreted closures, removing their NativeIdentity cases, handle allocation,
+  identity-map entries and extra handle marking. The remaining bridge's existing tag
+  word becomes a private header discriminator, without growing the handle.
+  It must disappear with NativeHandle when all value encodings converge.
+  Checked host decoding and conservative marking still validate allocation;
+  live native decoding reads the object header directly. Native equality's
+  positioned-symbol path likewise reads only the header of direct objects.
+- New tests check GNU payload offsets and direct stores across collection,
+  sizes around the small/large boundary, identity across native heaps, and
+  both survival and reclamation of vector/closure cycles. A shared Lisp input
+  compiles two differently named functions and varies sizes and element types
+  through mutation, interpreted callbacks and forced GC. These tests have
+  not run yet. Other object kinds still use different word encodings, so this
+  does not establish the final uniform native slot ABI or the required
+  two-word cons representation.
+
+- The float source-1 checkpoint passes fmt, all-target check, strict Clippy
+  and diff checks without warnings, all 45 focused tests and all six required
+  GC/ownership contracts. The libtest artifact is preserved separately with
+  SHA-256 d53d044467a5df62831a4cf1bc2d2cc330444891d2ff7ade39633965a7f79123.
+  The first execution launcher ran before its build manifest existed and ran
+  no tests; its failure is retained. Execution attempt 2 has complete passing
+  inventories. Source/artifacts/results are compact-floats-*-1.json and
+  compact-floats-execution-2.json under target/runtime-goal. No timing, release,
+  full-gate or pinned-platform certification follows from this checkpoint.
+- The vector source-1 targeted build failed in the pre-sweep diagnostic,
+  whose old API read an in-object epoch word. The repair queries whether the
+  object is marked in the specified epoch, preserving the same invariant
+  check against unmarked children. No tests ran from the failed build. The
+  failure remains in compact-vector-words-checks-and-build-1.json; source 2
+  will retry. All-target check and strict Clippy are deferred to the next
+  integration checkpoint for this vector change, not waived for completion.
+
+Vector source-3 failure and follow-up:
+
+- Source 3 compiled without warnings, but the 147-test focused group aborted
+  after starting 117 tests in the new native vector fixture; no complete
+  passing inventory exists. All six separate ownership/GC contracts passed.
+  The exact-test replay also aborts and identifies a freed vectorlike read
+  in native_handle_has_external_owner. Both failures and the artifact with
+  SHA-256 d2a5fa933e9a37c143bb9f038f76a4324edf8e20465a0cdcce509654e9152cf8
+  are retained under compact-vector-words-*-3 and native-fixture-backtrace-1.
+- The next repair classifies the static builtin handles from their stored
+  identity, without dereferencing weak payloads before tracing. When distinct
+  buffer-reference allocations share a native identity, retaining that bridge
+  also traces its exact stored reference. A new contract checks survival over
+  repeated collections and reclamation after the equivalent Lisp root leaves.
+  This is a temporary correctness repair for duplicate buffer references;
+  canonical buffer objects and removal of their bridge remain required.
+- The user authorized the repository's existing CI. Linux full-gate run
+  https://github.com/rayfdj/emaxx/actions/runs/35765824945 targets 16da098bf8544b7449085456be68becb28100f9d,
+  the previously passing float source-1 runtime checkpoint. One archived Lisp
+  probe received whitespace-only cleanup because staging exposed whitespace
+  errors not covered by unstaged git diff checks; its original bytes remain
+  in the immutable float archive and linux-ci-original-thread-probe-1.el.
+  Later vector/string/record/root-iterator drafts are outside that CI commit.

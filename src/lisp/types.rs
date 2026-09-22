@@ -1258,7 +1258,7 @@ impl SharedBigInt {
         self.0.ptr_eq(&other.0)
     }
 
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
+    pub(crate) fn mark_bit(&self) -> crate::lisp::alloc::vectors::VectorMark<'_> {
         self.0.mark_bit()
     }
 
@@ -2662,33 +2662,6 @@ pub(crate) fn format_float(value: f64) -> String {
 }
 
 impl Value {
-    /// Whether a reference-counted object wrapped for native code is still
-    /// owned outside that native wrapper.  Id-backed values return true
-    /// because their host representation has no reference count; their
-    /// wrappers are the stable identities generated code observes.
-    pub(crate) fn native_handle_has_external_owner(&self) -> bool {
-        match self.kind() {
-            Kind::BigInteger(_) => false,
-            // A float has no count: its handle lives while the mark
-            // reaches the cell (from Lisp or from generated code).
-            Kind::Float(_) => false,
-            // A string has no count: its handle lives while the mark
-            // reaches the cell.
-            Kind::String(_) => false,
-            // A vectorlike has no count either: its handle lives while
-            // the mark reaches the cell.
-            Kind::StringObject(_)
-            | Kind::Vector(_)
-            | Kind::Lambda(_)
-            | Kind::Buffer(_)
-            | Kind::ReaderForm(_) => false,
-            // A cons has no count: the collector decides its life.
-            Kind::Cons(_) => true,
-            Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            _ => false,
-        }
-    }
-
     // Constructors
 
     pub fn int(n: i64) -> Self {
@@ -3686,6 +3659,69 @@ mod tests {
         assert_eq!(slots.next().expect("updated slot").to_string(), "(73)");
         assert_eq!(slots.next_back().expect("cycle").word(), value.word());
         assert!(slots.next().is_none());
+    }
+
+    #[test]
+    fn vector_gnu_payload_offsets_survive_collection_and_direct_stores() {
+        use std::cell::Cell;
+
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        let mut environment = super::Env::new();
+        let lengths = [0, 1, 2, 3, 63, 251, 252, 511, 4097];
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        // Include the small/large allocation boundary and enough objects
+        // for several blocks. A root buffer keeps every cyclic vector live.
+        for index in 0..270 {
+            let len = lengths[index % lengths.len()];
+            let value = Value::vector(std::iter::repeat_n(Value::Integer(index as i64), len));
+            let Kind::Vector(vector) = value.kind() else {
+                unreachable!("constructed vector")
+            };
+            // lisp.h:Lisp_Vector has one size word, immediately followed
+            // by Lisp_Object slots. Exercise that ABI independently of get.
+            let header = vector.identity() as *const usize;
+            // SAFETY: a live vector's initialized, immutable size word.
+            assert_eq!(unsafe { header.read() }, len);
+            if len != 0 {
+                // SAFETY: the first payload word is Cell<Value>, whose
+                // representation is Cell<usize>. No exclusive borrow escapes.
+                unsafe { &*header.add(1).cast::<Cell<usize>>() }.set(value.word());
+                assert!(vector.get(0).expect("first slot").eq_value(value));
+            }
+            roots.push(value);
+        }
+
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "garbage-collect",
+                &[],
+                &mut environment,
+            )
+            .expect("collect vectors across blocks and sizes");
+            for (index, value) in roots.iter().enumerate() {
+                let Kind::Vector(vector) = value.kind() else {
+                    unreachable!("retained vector")
+                };
+                let len = lengths[index % lengths.len()];
+                assert_eq!(vector.len(), len);
+                if len != 0 {
+                    assert!(vector.get(0).expect("cycle").eq_value(*value));
+                }
+                if len > 1 {
+                    assert_eq!(vector.get(1), Some(Value::Integer(index as i64)));
+                    let replacement = Value::float(index as f64 + 0.5);
+                    vector.set(len - 1, replacement);
+                    // SAFETY: this is the last initialized Lisp payload
+                    // word, after one header word at the GNU ABI offset.
+                    let last = unsafe { &*(vector.identity() as *const Cell<usize>).add(len) };
+                    assert_eq!(last.get(), replacement.word());
+                    // Restore the test's second slot when it is also last.
+                    vector.set(len - 1, Value::Integer(index as i64));
+                }
+            }
+        }
     }
 
     #[test]

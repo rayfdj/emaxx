@@ -13,12 +13,13 @@
 //! destructor at the sweep.  The handle of either is the header's
 //! address, copied without a count, valid while the mark reaches it.
 //!
-//! Not C: the header is two words (the size word, and the epoch mark
-//! beside it where C folds `ARRAY_MARK_FLAG' into the size word). Lisp
-//! slots are one machine word, including the slots of closures.
+//! The header and Lisp slots are each one machine word, including closure
+//! slots. The current collector uses collection epochs rather than C's
+//! ARRAY_MARK_FLAG: small vectors share a block bitmap, and large vectors
+//! carry their mark past the payload. Ordinary object access reads neither.
 
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
-use super::{BlockKind, FREE_MARK, blocks_of, register_block, unregister_block};
+use super::{BlockKind, blocks_of, register_block, unregister_block};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -33,9 +34,12 @@ const fn vroundup(bytes: usize) -> usize {
     (bytes + ROUNDUP_SIZE - 1) & !(ROUNDUP_SIZE - 1)
 }
 
-/// alloc.c's `VECTOR_BLOCK_BYTES': the block less its link word (the
-/// blocks are registered instead of chained; the footprint is kept).
-const VECTOR_BLOCK_BYTES: usize = VECTOR_BLOCK_SIZE - vroundup(std::mem::size_of::<usize>());
+/// Space available to vectors. The allocator's block bitmap replaces the
+/// per-vector epoch words; no Lisp payload contains this metadata.
+const VECTOR_BLOCK_BYTES: usize =
+    (VECTOR_BLOCK_SIZE - std::mem::size_of::<VectorBlockMarks>()) & !(ROUNDUP_SIZE - 1);
+const VECTOR_MARK_WORDS: usize = (VECTOR_BLOCK_SIZE / ROUNDUP_SIZE).div_ceil(usize::BITS as usize);
+const LARGE_MARK_BYTES: usize = vroundup(std::mem::size_of::<MarkBit>());
 const HEADER_SIZE: usize = std::mem::size_of::<VectorHeader>();
 const WORD_SIZE: usize = std::mem::size_of::<usize>();
 /// alloc.c's `VBLOCK_BYTES_MIN': a one-slot vector.
@@ -88,17 +92,103 @@ impl VectorTag {
     }
 }
 
-/// lisp.h's `union vectorlike_header', with the mark beside it.
+/// lisp.h's `union vectorlike_header': exactly one word before the payload.
 #[repr(C)]
 pub struct VectorHeader {
     /// An ordinary vector's slot count; a pseudovector's or a free
     /// vector's `PSEUDOVECTOR_FLAG', tag and word count.
     size: usize,
-    mark: MarkBit,
-    _pad: u32,
+}
+
+const _: () = assert!(HEADER_SIZE == WORD_SIZE);
+
+struct VectorBlockMarks {
+    epoch: Cell<u32>,
+    words: [Cell<usize>; VECTOR_MARK_WORDS],
+}
+
+impl VectorBlockMarks {
+    const fn new() -> Self {
+        Self {
+            epoch: Cell::new(0),
+            words: [const { Cell::new(0) }; VECTOR_MARK_WORDS],
+        }
+    }
+}
+
+enum VectorMarkStorage<'a> {
+    Block(&'a VectorBlockMarks, usize),
+    Separate(&'a MarkBit),
+}
+
+pub(crate) struct VectorMark<'a>(VectorMarkStorage<'a>);
+
+impl VectorMark<'_> {
+    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+        match self.0 {
+            VectorMarkStorage::Block(block, index) => {
+                block.epoch.get() == epoch
+                    && block.words[index / usize::BITS as usize].get()
+                        & (1 << (index % usize::BITS as usize))
+                        != 0
+            }
+            VectorMarkStorage::Separate(mark) => mark.is_marked(epoch),
+        }
+    }
+
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        match self.0 {
+            VectorMarkStorage::Block(block, index) => {
+                if block.epoch.get() != epoch {
+                    for word in &block.words {
+                        word.set(0);
+                    }
+                    block.epoch.set(epoch);
+                }
+                let word = &block.words[index / usize::BITS as usize];
+                let mask = 1 << (index % usize::BITS as usize);
+                let old = word.get();
+                word.set(old | mask);
+                old & mask == 0
+            }
+            VectorMarkStorage::Separate(mark) => mark.mark(epoch),
+        }
+    }
 }
 
 impl VectorHeader {
+    /// The collector derives metadata from the allocated object's address
+    /// and size. This method is never needed to read or mutate a Lisp slot.
+    fn mark_bit(&self) -> VectorMark<'_> {
+        debug_assert_ne!(self.tag(), VectorTag::Free);
+        let address = std::ptr::from_ref(self) as usize;
+        if self.size == 0 {
+            // SAFETY: the only zero-length vector is the permanently
+            // allocated ZeroVector, whose mark follows this header.
+            return VectorMark(VectorMarkStorage::Separate(unsafe {
+                &(*(address as *const ZeroVector)).mark
+            }));
+        }
+        let nbytes = self.nbytes();
+        if nbytes > VBLOCK_BYTES_MAX {
+            // SAFETY: allocate_vectorlike reserves and initializes a mark
+            // immediately after every large vector's rounded payload.
+            return VectorMark(VectorMarkStorage::Separate(unsafe {
+                &*((address + nbytes) as *const MarkBit)
+            }));
+        }
+        let base = address & !(VECTOR_BLOCK_SIZE - 1);
+        let index = (address - base) / ROUNDUP_SIZE;
+        // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE;
+        // their initialized bitmap occupies the reserved tail of the block.
+        let block = unsafe { &*((base + VECTOR_BLOCK_BYTES) as *const VectorBlockMarks) };
+        VectorMark(VectorMarkStorage::Block(block, index))
+    }
+
+    fn is_marked(&self, epoch: u32) -> bool {
+        self.tag() != VectorTag::Free && self.mark_bit().is_marked(epoch)
+    }
+
     fn tag(&self) -> VectorTag {
         if self.size & PSEUDOVECTOR_FLAG == 0 {
             VectorTag::Normal
@@ -244,7 +334,6 @@ unsafe fn setup_on_free_list(header: *mut VectorHeader, nbytes: usize) {
     // word are inside the block.
     unsafe {
         (*header).size = VectorHeader::pseudovector_size_word(VectorTag::Free, nbytes);
-        (*header).mark.set_raw(FREE_MARK);
         payload(header)
             .cast::<*mut VectorHeader>()
             .write(FREE_LISTS[index].load(Ordering::Relaxed));
@@ -255,19 +344,27 @@ unsafe fn setup_on_free_list(header: *mut VectorHeader, nbytes: usize) {
 
 /// alloc.c's `allocate_vector_block'.
 fn allocate_vector_block() -> usize {
-    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, ROUNDUP_SIZE)
+    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE)
         .expect("vector block layout");
     // SAFETY: a non-zero layout.
     let block = unsafe { std::alloc::alloc(layout) };
     assert!(!block.is_null(), "out of memory for a vector block");
     let start = block as usize;
+    // SAFETY: metadata is outside the region carved into Lisp vectors and
+    // is initialized before the block becomes visible to the collector.
+    unsafe {
+        block
+            .add(VECTOR_BLOCK_BYTES)
+            .cast::<VectorBlockMarks>()
+            .write(VectorBlockMarks::new())
+    };
     register_block(start, BlockKind::VectorBlock);
     start
 }
 
 fn release_vector_block(start: usize) {
     unregister_block(start);
-    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, ROUNDUP_SIZE)
+    let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE)
         .expect("vector block layout");
     // SAFETY: a block `allocate_vector_block' made, with nothing live.
     unsafe { std::alloc::dealloc(start as *mut u8, layout) };
@@ -332,11 +429,19 @@ fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
     if nbytes <= VBLOCK_BYTES_MAX {
         allocate_vector_from_block(nbytes)
     } else {
-        let layout =
-            std::alloc::Layout::from_size_align(nbytes, ROUNDUP_SIZE).expect("large vector layout");
+        let layout = std::alloc::Layout::from_size_align(nbytes + LARGE_MARK_BYTES, ROUNDUP_SIZE)
+            .expect("large vector layout");
         // SAFETY: a non-zero layout.
         let vector = unsafe { std::alloc::alloc(layout) };
         assert!(!vector.is_null(), "out of memory for a vector");
+        // SAFETY: the reserved tail is aligned for MarkBit and is not part
+        // of the Lisp-visible header or payload.
+        unsafe {
+            vector
+                .add(nbytes)
+                .cast::<MarkBit>()
+                .write(MarkBit::default())
+        };
         register_block(vector as usize, BlockKind::LargeVector);
         vector.cast()
     }
@@ -344,8 +449,8 @@ fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
 
 fn free_large_vector(header: *mut VectorHeader, nbytes: usize) {
     unregister_block(header as usize);
-    let layout =
-        std::alloc::Layout::from_size_align(nbytes, ROUNDUP_SIZE).expect("large vector layout");
+    let layout = std::alloc::Layout::from_size_align(nbytes + LARGE_MARK_BYTES, ROUNDUP_SIZE)
+        .expect("large vector layout");
     // SAFETY: `allocate_vectorlike' made it with this layout; nothing
     // reaches it.
     unsafe { std::alloc::dealloc(header.cast(), layout) };
@@ -353,14 +458,27 @@ fn free_large_vector(header: *mut VectorHeader, nbytes: usize) {
 
 /// The one zero-length vector (alloc.c's `zero_vector'), outside every
 /// block: every empty allocation is it, so it is never swept.
+#[repr(C)]
+struct ZeroVector {
+    header: VectorHeader,
+    mark: MarkBit,
+}
+
+static ZERO_VECTOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+pub(super) fn zero_vector_at(address: usize) -> Option<*mut VectorHeader> {
+    ZERO_VECTOR
+        .get()
+        .filter(|&&zero| zero == address)
+        .map(|&zero| zero as *mut VectorHeader)
+}
+
 fn zero_vector() -> *mut VectorHeader {
-    static ZERO: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *ZERO.get_or_init(|| {
-        Box::leak(Box::new(VectorHeader {
-            size: 0,
+    *ZERO_VECTOR.get_or_init(|| {
+        Box::leak(Box::new(ZeroVector {
+            header: VectorHeader { size: 0 },
             mark: MarkBit::default(),
-            _pad: 0,
-        })) as *mut VectorHeader as usize
+        })) as *mut ZeroVector as usize
     }) as *mut VectorHeader
 }
 
@@ -383,8 +501,8 @@ impl VectorRef {
         unsafe {
             (*header).size = len;
             (*header)
-                .mark
-                .set_raw(super::super::types::current_mark_epoch());
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
             std::ptr::copy_nonoverlapping(slots.as_ptr(), payload(header).cast::<Value>(), len);
             slots.set_len(0);
         }
@@ -452,8 +570,8 @@ impl VectorRef {
     }
 
     #[inline]
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.header().mark
+    pub(crate) fn mark_bit(&self) -> VectorMark<'_> {
+        self.header().mark_bit()
     }
 }
 
@@ -473,8 +591,8 @@ impl ClosureRef {
     pub(crate) fn allocate(slots: &[Value]) -> Self {
         assert!((3..=6).contains(&slots.len()));
         let nbytes = vroundup(HEADER_SIZE + slots.len() * WORD_SIZE);
-        // Account for the allocation actually made, including the current
-        // two-word Rust header and allocator rounding.
+        // Account for the Lisp allocation, including the one-word header
+        // and allocator rounding. Block metadata is shared by small vectors.
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
         let header = allocate_vectorlike(nbytes);
         // SAFETY: freshly allocated NBYTES, aligned for the header and slots.
@@ -483,8 +601,8 @@ impl ClosureRef {
             (*header).size =
                 VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, slots.len());
             (*header)
-                .mark
-                .set_raw(super::super::types::current_mark_epoch());
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
             let target = payload(header).cast::<Cell<Value>>();
             for (index, value) in slots.iter().enumerate() {
                 target.add(index).write(Cell::new(*value));
@@ -550,8 +668,8 @@ impl ClosureRef {
     }
 
     #[inline]
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.header().mark
+    pub(crate) fn mark_bit(&self) -> VectorMark<'_> {
+        self.header().mark_bit()
     }
 }
 
@@ -603,7 +721,7 @@ impl<T: Vectorlike> VectorlikeRef<T> {
     /// alloc.c's `allocate_pseudovector' of one T, moved in place.
     pub(crate) fn allocate(value: T) -> Self {
         const {
-            assert!(std::mem::align_of::<T>() <= ROUNDUP_SIZE);
+            assert!(std::mem::align_of::<T>() <= WORD_SIZE);
         }
         let nbytes = vroundup(HEADER_SIZE + std::mem::size_of::<T>()).max(VBLOCK_BYTES_MIN);
         let header = allocate_vectorlike(nbytes);
@@ -611,8 +729,8 @@ impl<T: Vectorlike> VectorlikeRef<T> {
         unsafe {
             (*header).size = VectorHeader::pseudovector_size_word(T::TAG, nbytes);
             (*header)
-                .mark
-                .set_raw(super::super::types::current_mark_epoch());
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
             payload(header).cast::<T>().write(value);
             census_on_allocate(header);
             Self(NonNull::new_unchecked(header), PhantomData)
@@ -647,9 +765,9 @@ impl<T> VectorlikeRef<T> {
     }
 
     #[inline]
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
+    pub(crate) fn mark_bit(&self) -> VectorMark<'_> {
         // SAFETY: the header lives while a handle can be read.
-        unsafe { &(*self.0.as_ptr()).mark }
+        unsafe { (*self.0.as_ptr()).mark_bit() }
     }
 }
 
@@ -832,7 +950,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             // SAFETY: the block is tiled with vectors, live or free, up
             // to where `vector_in_block' fails.
             unsafe {
-                if (*vector).mark.raw() == epoch {
+                if (*vector).is_marked(epoch) {
                     stats.count(vector);
                     vector = advance(vector, (*vector).nbytes());
                     continue;
@@ -845,13 +963,13 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                         let first = payload(next).cast::<usize>().read();
                         assert!(
                             (*next).tag() == VectorTag::Free || first != 0xA5A5_A5A5_A5A5_A5A5,
-                            "sweeping a cell already cleaned: header {:#x} at offset {} of block {:#x}, size word {:#x}, tag {:?}, mark {}, run start {:#x}",
+                            "sweeping a cell already cleaned: header {:#x} at offset {} of block {:#x}, size word {:#x}, tag {:?}, marked {}, run start {:#x}",
                             next as usize,
                             next as usize - block,
                             block,
                             (*next).size,
                             (*next).tag(),
-                            (*next).mark.raw(),
+                            (*next).is_marked(epoch),
                             vector as usize,
                         );
                     }
@@ -859,7 +977,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                     let nbytes = (*next).nbytes();
                     total += nbytes;
                     next = advance(next, nbytes);
-                    if !(vector_in_block(next, block) && (*next).mark.raw() != epoch) {
+                    if !vector_in_block(next, block) || (*next).is_marked(epoch) {
                         break;
                     }
                 }
@@ -879,7 +997,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
         let vector = start as *mut VectorHeader;
         // SAFETY: a registered large vector.
         unsafe {
-            if (*vector).mark.raw() == epoch {
+            if (*vector).is_marked(epoch) {
                 stats.count(vector);
             } else {
                 let nbytes = (*vector).nbytes();

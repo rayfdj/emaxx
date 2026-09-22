@@ -130,6 +130,15 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
 }
 
 #[test]
+fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-vector-native-words.el"),
+        "((t t 45) (t t 45))",
+        "native vector mutation and interpreted closure identity through collection",
+    );
+}
+
+#[test]
 fn atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu() {
     // floatfns.c:Fatan selects atan, rather than atan2, when X is nil.
     assert_oracle_contract_matches_interpreter(

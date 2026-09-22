@@ -1419,6 +1419,9 @@ unsafe fn mark_of<'a>(cell: *mut ConsCell) -> &'a MarkBit {
 /// The blocks registry is read under its lock; the cell's mark word is
 /// readable in every state.
 pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
+    if let Some(vector) = vectors::zero_vector_at(address) {
+        return Some(Found::Vectorlike(vector));
+    }
     let blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1605,11 +1608,9 @@ fn verify_marking(epoch: u32) {
             let live = unsafe { &*cell };
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.value_in_place();
-                if let Some(target_mark) = vectorlike_mark_raw(&value)
-                    && target_mark != epoch
-                {
+                if vectorlike_is_marked(&value, epoch) == Some(false) {
                     panic!(
-                        "before the sweep of epoch {epoch}, marked cons {:#x} (serial {}, car {}, cdr {}) holds an unmarked vectorlike (mark {target_mark}) in its {which}: {}",
+                        "before the sweep of epoch {epoch}, marked cons {:#x} (serial {}, car {}, cdr {}) holds an unmarked vectorlike in its {which}: {}",
                         cell as usize,
                         live.serial,
                         describe(&live.car.value_in_place()),
@@ -1677,15 +1678,15 @@ fn verify_marking(epoch: u32) {
     }
 }
 
-/// The mark word of a vectorlike the value names, for the checks.
-fn vectorlike_mark_raw(value: &super::types::Value) -> Option<u32> {
+/// The mark state of a vectorlike the value names, for the checks.
+fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool> {
     match value.kind() {
-        Kind::Vector(vector) => Some(vector.mark_bit().raw()),
-        Kind::Lambda(lambda) => Some(lambda.mark_bit().raw()),
-        Kind::Buffer(buffer) => Some(buffer.mark_bit().raw()),
-        Kind::StringObject(state) => Some(state.mark_bit().raw()),
-        Kind::ReaderForm(form) => Some(form.mark_bit().raw()),
-        Kind::BigInteger(integer) => Some(integer.mark_bit().raw()),
+        Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
+        Kind::Lambda(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
+        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
+        Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
+        Kind::ReaderForm(form) => Some(form.mark_bit().is_marked(epoch)),
+        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
         _ => None,
     }
 }

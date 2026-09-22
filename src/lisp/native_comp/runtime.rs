@@ -2802,6 +2802,13 @@ fn native_remove_symbol_position(
     if word & TAG_MASK != TAG_VECTORLIKE {
         return Ok(word);
     }
+    // Direct vectors/closures have their real header and are never
+    // symbol-with-position records. Read only that header, not a handle
+    // struct that would extend past a short vector allocation.
+    let header = unsafe { (word.wrapping_sub(TAG_VECTORLIKE) as *const usize).read() };
+    if header != NATIVE_BRIDGE_HEADER | TAG_VECTORLIKE {
+        return Ok(word);
+    }
     let runtime = unsafe { &*active.runtime };
     // The active native arguments keep the complete pointed-to object live.
     let handle = unsafe { runtime.heap.live_handle(word) }
@@ -3722,9 +3729,7 @@ enum NativeIdentity {
     BigInteger(usize),
     String(usize),
     StringObject(usize),
-    Vector(usize),
     Builtin(usize),
-    Lambda(usize),
     Buffer(u64),
     Marker(u64),
     Overlay(u64),
@@ -3742,9 +3747,7 @@ impl NativeIdentity {
             Self::BigInteger(value) => (2, *value),
             Self::String(value) => (4, *value),
             Self::StringObject(value) => (5, *value),
-            Self::Vector(value) => (6, *value),
             Self::Builtin(value) => (7, *value),
-            Self::Lambda(value) => (8, *value),
             Self::Buffer(value) => (9, *value as usize),
             Self::Marker(value) => (10, *value as usize),
             Self::Overlay(value) => (11, *value as usize),
@@ -3969,11 +3972,24 @@ struct TouchedConses {
     cons_set: IdentitySet,
 }
 
-#[repr(align(8))]
+// Temporary discriminator for the remaining bridge objects. Reuse the
+// existing tag word; do not add another allocation or payload. Ordinary
+// vectors and interpreted closures now use their actual vector header.
+// This private tag disappears with NativeHandle when all kinds use the
+// same Lisp word in Rust and generated code.
+const NATIVE_BRIDGE_HEADER: usize = (1 << (usize::BITS - 2)) | (42 << 24);
+
+#[repr(C, align(8))]
 struct NativeHandle {
+    header: usize,
     value: Value,
-    tag: usize,
     identity: NativeIdentity,
+}
+
+impl NativeHandle {
+    fn tag(&self) -> usize {
+        self.header & TAG_MASK
+    }
 }
 
 #[repr(C, align(8))]
@@ -4089,7 +4105,7 @@ impl NativeMark<'_> {
                 continue;
             }
             let address = word.wrapping_sub(word & TAG_MASK);
-            if matches!(word & TAG_MASK, TAG_SYMBOL | TAG_FLOAT) {
+            if matches!(word & TAG_MASK, TAG_SYMBOL | TAG_FLOAT | TAG_VECTORLIKE) {
                 // alloc.c:live_symbol_holding/live_float_holding. Only
                 // GC and checked host decoding consult the allocation
                 // registry; ordinary live reads use the word directly.
@@ -4101,9 +4117,25 @@ impl NativeMark<'_> {
                         values.push(unsafe { Value::from_word(word) });
                         continue;
                     }
-                    Some(crate::lisp::alloc::Found::Float(cell)) if cell as usize == address => {
+                    Some(crate::lisp::alloc::Found::Float(cell))
+                        if word & TAG_MASK != TAG_VECTORLIKE && cell as usize == address =>
+                    {
                         // SAFETY: an allocated float's canonical word.
                         values.push(unsafe { Value::from_word(address | TAG_FLOAT) });
+                        continue;
+                    }
+                    Some(crate::lisp::alloc::Found::Vectorlike(header))
+                        if word & TAG_MASK != TAG_FLOAT
+                            && header as usize == address
+                            && matches!(
+                                unsafe { crate::lisp::alloc::vectors::header_tag(header) },
+                                crate::lisp::alloc::VectorTag::Normal
+                                    | crate::lisp::alloc::VectorTag::Closure
+                            ) =>
+                    {
+                        // SAFETY: an allocated canonical vector/closure,
+                        // possibly offered as an untagged conservative root.
+                        values.push(unsafe { Value::from_word(address | TAG_VECTORLIKE) });
                         continue;
                     }
                     _ => {}
@@ -4160,7 +4192,9 @@ impl NativeMark<'_> {
             | Kind::Unbound
             | Kind::Integer(_)
             | Kind::Float(_)
-            | Kind::Symbol(_) => {
+            | Kind::Symbol(_)
+            | Kind::Vector(_)
+            | Kind::Lambda(_) => {
                 return (false, Vec::new());
             }
             _ => {
@@ -4171,6 +4205,17 @@ impl NativeMark<'_> {
         };
         if let Some(&index) = self.heap.handle_by_value.get(&identity) {
             self.marked_handles[index] = true;
+            // Buffer references currently share a logical id while owning
+            // distinct allocation addresses. Keeping their bridge must also
+            // keep the exact reference it holds, not only this equivalent
+            // Lisp reference. This edge disappears with the buffer bridge.
+            let retained = self.heap.handles[index]
+                .as_ref()
+                .expect("indexed native handle")
+                .value;
+            if retained.word() != value.word() {
+                return (false, vec![retained]);
+            }
         }
         (false, Vec::new())
     }
@@ -4406,8 +4451,11 @@ impl NativeHeap {
         let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
         for entry in self.handles.iter().flatten() {
-            if entry.value.native_handle_has_external_owner() {
-                pending.push((&**entry as *const NativeHandle) as usize + entry.tag);
+            // Builtin subrs have static lifetime. Other handles are weak
+            // until reached; inspecting their payload here can dereference
+            // an object reclaimed by a collection outside this native heap.
+            if matches!(entry.identity, NativeIdentity::Builtin(_)) {
+                pending.push((&**entry as *const NativeHandle) as usize + entry.tag());
             }
         }
 
@@ -4544,7 +4592,7 @@ impl NativeHeap {
     ///
     /// `word` must name an object kept live by the active generated stack or
     /// an explicit native root, and must have a remaining bridge encoding.
-    /// Canonical symbols and floats do not address NativeHandle.
+    /// Canonical symbols, floats, vectors and closures do not address NativeHandle.
     unsafe fn live_handle(&self, word: NativeWord) -> Option<&NativeHandle> {
         if word == 0 || word == native_boolean(true) {
             return None;
@@ -4554,7 +4602,7 @@ impl NativeHeap {
         debug_assert_ne!(tag, TAG_SYMBOL);
         let address = word.wrapping_sub(tag);
         let native = unsafe { &*(address as *const NativeHandle) };
-        (native.tag == tag).then_some(native)
+        (native.header == NATIVE_BRIDGE_HEADER | tag).then_some(native)
     }
 
     /// Read the symbol object reached directly by `lisp.h:XSYMBOL`.
@@ -4842,7 +4890,7 @@ impl NativeHeap {
             Kind::Cons(cell) => self.encode_cons(&cell, pending),
             // lisp.h:XFLOAT/XFLOAT_DATA: one tagged pointer to the same
             // double, with no bridge allocation or identity lookup.
-            Kind::Float(_) => Ok(value.word()),
+            Kind::Float(_) | Kind::Vector(_) | Kind::Lambda(_) => Ok(value.word()),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
                 self.encode_handle(identity, value, tag)
@@ -4930,13 +4978,13 @@ impl NativeHeap {
                 (
                     index,
                     Box::new(NativeHandle {
+                        header: NATIVE_BRIDGE_HEADER | tag,
                         value: *value,
-                        tag,
                         identity: identity.clone(),
                     }),
                 )
             };
-            native.tag = tag;
+            native.header = NATIVE_BRIDGE_HEADER | tag;
             native.identity = identity.clone();
             let address = (&*native as *const NativeHandle) as usize;
             if address & TAG_MASK != 0 {
@@ -4954,7 +5002,7 @@ impl NativeHeap {
         let entry = self.handles[index]
             .as_ref()
             .expect("native handle maps only contain occupied slots");
-        if entry.tag != tag {
+        if entry.tag() != tag {
             return Err("native object identity changed Lisp tag".to_string());
         }
         Ok((index, (&**entry as *const NativeHandle) as usize + tag))
@@ -5072,6 +5120,28 @@ impl NativeHeap {
             // or the checked boundary just identified its allocated cell.
             return Ok(unsafe { Value::from_word(word) });
         }
+        if tag == TAG_VECTORLIKE {
+            if live_word {
+                // GNU XUNTAG reaches the actual vector or closure header.
+                // Only the remaining migration handles have this private
+                // header. No reverse map or mirror is used for direct objects.
+                let header = unsafe { (address as *const usize).read() };
+                if header != NATIVE_BRIDGE_HEADER | TAG_VECTORLIKE {
+                    return Ok(unsafe { Value::from_word(word) });
+                }
+            } else if let Some(crate::lisp::alloc::Found::Vectorlike(header)) =
+                unsafe { crate::lisp::alloc::mem_find(address) }
+                && header as usize == address
+                && matches!(
+                    unsafe { crate::lisp::alloc::vectors::header_tag(header) },
+                    crate::lisp::alloc::VectorTag::Normal | crate::lisp::alloc::VectorTag::Closure
+                )
+            {
+                // SAFETY: the checked boundary found this allocated object's
+                // exact header, including the permanent zero-length vector.
+                return Ok(unsafe { Value::from_word(word) });
+            }
+        }
         if live_word {
             // GNU's lisp.h:XUNTAG/XPNTR reaches a live object's stable
             // address directly.  The active stack/root precondition keeps
@@ -5091,7 +5161,7 @@ impl NativeHeap {
             .get(index)
             .and_then(Option::as_ref)
             .ok_or_else(|| format!("native Lisp word 0x{word:x} names a reclaimed handle"))?;
-        if entry.tag != tag || (&**entry as *const NativeHandle) as usize != address {
+        if entry.tag() != tag || (&**entry as *const NativeHandle) as usize != address {
             return Err(format!("native Lisp word 0x{word:x} has a mismatched tag"));
         }
         Ok(entry.value)
@@ -5218,9 +5288,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         ),
         Kind::String(string) => (NativeIdentity::String(string.identity_ptr()), TAG_STRING),
         Kind::StringObject(string) => (NativeIdentity::StringObject(string.identity()), TAG_STRING),
-        Kind::Vector(vector) => (NativeIdentity::Vector(vector.identity()), TAG_VECTORLIKE),
         Kind::BuiltinFunc(name) => (NativeIdentity::Builtin(name.identity_ptr()), TAG_VECTORLIKE),
-        Kind::Lambda(lambda) => (NativeIdentity::Lambda(lambda.identity()), TAG_VECTORLIKE),
         Kind::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
         Kind::Marker(id) => (NativeIdentity::Marker(id), TAG_VECTORLIKE),
         Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
@@ -5236,6 +5304,8 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::Integer(_)
         | Kind::Float(_)
         | Kind::Symbol(_)
+        | Kind::Vector(_)
+        | Kind::Lambda(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
@@ -9896,6 +9966,122 @@ mod tests {
     }
 
     #[test]
+    fn native_vectors_and_interpreted_closures_share_words_across_heaps() {
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let cycle = Value::vector([Value::Nil]);
+        let Kind::Vector(vector) = cycle.kind() else {
+            unreachable!("constructed vector")
+        };
+        vector.set(0, cycle);
+        for value in [
+            Value::vector([]),
+            Value::vector([Value::Integer(19), Value::float(73.5)]),
+            cycle,
+            Value::lambda(Vec::new(), vec![Value::Integer(73)], Value::Nil),
+        ] {
+            let word = first.encode(&value).expect("canonical vectorlike word");
+            assert_eq!(word, value.word());
+            assert_eq!(word & TAG_MASK, TAG_VECTORLIKE);
+            assert_eq!(second.encode(&value).expect("another native heap"), word);
+            assert_eq!(first.decode(word).expect("checked read").word(), word);
+            assert_eq!(
+                unsafe { second.decode_live(word) }
+                    .expect("rooted direct read")
+                    .word(),
+                word
+            );
+            assert!(first.decode(word - TAG_VECTORLIKE + TAG_FLOAT).is_err());
+            assert!(first.decode(word + std::mem::size_of::<Value>()).is_err());
+        }
+        assert!(first.handles.is_empty());
+        assert!(second.handles.is_empty());
+        assert!(first.handle_by_value.is_empty());
+        assert!(second.handle_by_address.is_empty());
+    }
+
+    #[test]
+    fn native_gc_traces_direct_vector_closure_cycles_and_reclaims_them() {
+        #[inline(never)]
+        fn make_graph(heap: &mut NativeHeapOwner) -> [usize; 5] {
+            let value = Value::vector([Value::Nil, Value::Nil]);
+            let closure = Value::lambda(Vec::new(), vec![value], Value::Nil);
+            let Kind::Vector(vector) = value.kind() else {
+                unreachable!("constructed vector")
+            };
+            vector.set(0, closure);
+            vector.set(1, value);
+            let dead_vector = Value::vector([Value::Integer(19)]);
+            let dead_closure = Value::lambda(Vec::new(), vec![Value::Integer(73)], Value::Nil);
+            let root_word = heap.encode(&value).expect("direct vector");
+            [
+                heap.cons(root_word, 0) ^ HIDE,
+                value.word() ^ HIDE,
+                closure.word() ^ HIDE,
+                dead_vector.word() ^ HIDE,
+                dead_closure.word() ^ HIDE,
+            ]
+        }
+
+        #[inline(never)]
+        fn collect_live_graph(
+            heap: &mut NativeHeapOwner,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_marker: *const NativeWord,
+            hidden: [usize; 5],
+        ) {
+            heap.collect(stack_marker, &[hidden[0] ^ HIDE], interpreter, environment);
+            let value = heap.decode(hidden[1] ^ HIDE).expect("vector survives");
+            let closure = heap.decode(hidden[2] ^ HIDE).expect("closure survives");
+            let Kind::Vector(vector) = value.kind() else {
+                panic!("retained vector")
+            };
+            assert!(vector.get(0).expect("closure slot").eq_value(closure));
+            assert!(vector.get(1).expect("cycle slot").eq_value(value));
+            let Kind::Lambda(function) = closure.kind() else {
+                panic!("retained interpreted closure")
+            };
+            assert!(
+                function
+                    .body()
+                    .car()
+                    .expect("shared body form")
+                    .eq_value(value)
+            );
+            assert!(heap.decode(hidden[3] ^ HIDE).is_err());
+            assert!(heap.decode(hidden[4] ^ HIDE).is_err());
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        heap.encode(&Value::string("remaining-native-bridge-control"))
+            .expect("exercise marking with another kind still bridged");
+        let hidden = make_graph(&mut heap);
+        crate::lisp::alloc::clobber_stack();
+        collect_live_graph(
+            &mut heap,
+            &mut interpreter,
+            &environment,
+            std::ptr::from_ref(&stack_marker),
+            hidden,
+        );
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert!(heap.decode(hidden[1] ^ HIDE).is_err(), "dead vector cycle");
+        assert!(heap.decode(hidden[2] ^ HIDE).is_err(), "dead closure cycle");
+    }
+
+    #[test]
     fn live_native_handle_decode_follows_the_gnu_tagged_pointer_path() {
         let mut heap = NativeHeapOwner::new();
         let value = Value::string("direct tagged-pointer access");
@@ -9988,6 +10174,77 @@ mod tests {
             first_word,
             "different GNU Lisp_Buffer objects must retain different words"
         );
+    }
+
+    #[test]
+    fn native_gc_retains_the_exact_buffer_reference_owned_by_a_live_bridge() {
+        #[inline(never)]
+        fn make_aliases(
+            heap: &mut NativeHeapOwner,
+        ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 2]) {
+            let first = Value::buffer(42, "buffer-alias-before");
+            let second = Value::buffer(42, "buffer-alias-after");
+            let word = heap.encode(&first).expect("first buffer reference");
+            assert_eq!(heap.encode(&second).expect("equivalent reference"), word);
+            (
+                crate::lisp::alloc::RootedVec::from_vec(vec![first]),
+                [word ^ HIDE, second.word() ^ HIDE],
+            )
+        }
+
+        #[inline(never)]
+        fn collect_and_check(
+            heap: &mut NativeHeapOwner,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_marker: *const NativeWord,
+            hidden: [usize; 2],
+        ) {
+            heap.collect(stack_marker, &[], interpreter, environment);
+            let retained = heap
+                .decode(hidden[0] ^ HIDE)
+                .expect("retained buffer bridge");
+            assert_eq!(retained.word(), hidden[1] ^ HIDE);
+            let address = retained.word() & !TAG_MASK;
+            assert!(matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Buffer
+            ));
+            let Kind::Buffer(buffer) = retained.kind() else {
+                panic!("the bridge must retain an allocated buffer reference")
+            };
+            assert_eq!(buffer.name.as_str(), "buffer-alias-after");
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (roots, hidden) = make_aliases(&mut heap);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            collect_and_check(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+                hidden,
+            );
+        }
+        drop(roots);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert!(heap.decode(hidden[0] ^ HIDE).is_err());
     }
 
     #[test]
