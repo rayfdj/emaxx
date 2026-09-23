@@ -264,6 +264,7 @@ def git_state() -> dict[str, str | bool | None]:
 
 def gate_environment(template: bool) -> dict[str, str]:
     environment = os.environ.copy()
+    environment.setdefault("RUST_BACKTRACE", "1")
     environment.update(
         {
             "LANG": "C",
@@ -487,11 +488,21 @@ def finish_group(
         "timed_out": timed_out,
         "log": str(running.log_path),
     }
+    # Preserve the process outcome even if it crashed before libtest could
+    # print a result. Otherwise the failed gate loses the exit/signal code.
+    running.log_path.with_suffix(".json").write_text(
+        json.dumps(record, indent=2) + "\n"
+    )
     if timed_out:
         raise GateError(
             f"{running.spec.name} exceeded its {timeout_seconds}s group timeout"
         )
-    result = parse_test_result(output)
+    try:
+        result = parse_test_result(output)
+    except GateError as error:
+        raise GateError(
+            f"{running.spec.name} exited with {running.process.returncode}: {error}"
+        ) from error
     record["result"] = result
     validate_test_result(
         result,
@@ -685,6 +696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "LC_ALL": "C",
             "RUST_MIN_STACK": "134217728",
             "RUST_TEST_THREADS": "1",
+            "RUST_BACKTRACE": os.environ.get("RUST_BACKTRACE", "1"),
         },
         "runs": [],
         "cargo_stages": [],
