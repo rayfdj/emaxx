@@ -3743,6 +3743,7 @@ impl Interpreter {
     /// roots of a weak table; an entry that survives one table can mark an
     /// object which in turn makes an entry in another table survive, so the
     /// pass repeats to a fixed point exactly like alloc.c.
+    #[cfg(test)]
     pub(crate) fn weak_hash_reachability(
         &self,
         env: &Env,
