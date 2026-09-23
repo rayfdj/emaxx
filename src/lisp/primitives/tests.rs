@@ -2600,17 +2600,24 @@ fn finalizers_follow_alloc_c() {
 fn a_failing_finalizer_is_logged_not_signalled() {
     // alloc.c:run_finalizer_function: internal_condition_case_1 with Qt and
     // run_finalizer_handler, which add_to_log's "finalizer failed: %S".
-    // The oracle cannot pin this: its conservative stack scan keeps a
-    // just-created finalizer object alive through the next collection
-    // (probed: `(let ((ran nil)) (make-finalizer (lambda () (setq ran t)))
-    // (garbage-collect) ran)' is nil in GNU), so which collection dooms it
-    // is not deterministic there; Emaxx's precise reachability dooms it at
-    // once.
-    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    // A conservative stack scan can retain a newly created finalizer
+    // through the first collection. As in finalizers_follow_alloc_c,
+    // observe later collections, and require the failing callback to run
+    // exactly once. GNU evaluates the same program below.
     let program = r#"
-        (progn (make-finalizer (lambda () (error "boom")))
-               (garbage-collect)
-               (with-current-buffer "*Messages*" (buffer-string)))"#;
+        (let ((runs 0))
+          (make-finalizer (lambda () (setq runs (1+ runs)) (error "boom")))
+          (garbage-collect)
+          (garbage-collect)
+          (let ((after-error runs))
+            (garbage-collect)
+            (list after-error runs
+                  (with-current-buffer "*Messages*" (buffer-string)))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(1 1 \"finalizer failed: (error \\\"boom\\\")\n\")",
+    );
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(program)
         .read_all()
         .expect("read finalizer program")
@@ -2618,7 +2625,15 @@ fn a_failing_finalizer_is_logged_not_signalled() {
     let result = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("a failing finalizer does not signal to the collector's caller");
-    let text = string_like(&result).expect("*Messages* text").text;
+    let fields = result.to_vec().expect("finalizer observations");
+    assert_eq!(fields.len(), 3);
+    assert_eq!(
+        fields[0],
+        Value::Integer(1),
+        "callback ran before observation"
+    );
+    assert_eq!(fields[1], Value::Integer(1), "callback never runs twice");
+    let text = string_like(&fields[2]).expect("*Messages* text").text;
     assert!(
         text.contains("finalizer failed: (error \"boom\")"),
         "expected the add_to_log line, got {text:?}"

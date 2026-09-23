@@ -10348,7 +10348,11 @@ mod tests {
                 "unreachable control"
             );
             if live {
-                let Kind::Finalizer(object) = heap.decode(hidden[0] ^ HIDE).unwrap().kind() else {
+                let Kind::Finalizer(object) = heap
+                    .decode(hidden[0] ^ HIDE)
+                    .expect("live finalizer allocation")
+                    .kind()
+                else {
                     panic!("canonical finalizer")
                 };
                 assert_eq!(object.function().word(), hidden[1] ^ HIDE);
@@ -10428,11 +10432,13 @@ mod tests {
         source.set_global_binding("finalizer-copy-root", vector);
 
         let cloned = source.deep_clone_image();
-        let copied_vector = cloned.global_binding_value("finalizer-copy-root").unwrap();
+        let copied_vector = cloned
+            .global_binding_value("finalizer-copy-root")
+            .expect("copied global root");
         let Kind::Vector(slots) = copied_vector.kind() else {
             panic!("copied vector")
         };
-        let Kind::Finalizer(copied) = slots.get(0).unwrap().kind() else {
+        let Kind::Finalizer(copied) = slots.get(0).expect("copied finalizer slot").kind() else {
             panic!("copied finalizer")
         };
         assert_ne!(copied, object);
@@ -10441,7 +10447,10 @@ mod tests {
         let Kind::Lambda(function) = copied.function().kind() else {
             panic!("copied callback")
         };
-        assert_eq!(function.body().car().unwrap().word(), copied_vector.word());
+        assert_eq!(
+            function.body().car().expect("copied callback body").word(),
+            copied_vector.word()
+        );
         copied.set_function(Value::Nil);
         assert!(
             !object.function().is_nil(),
@@ -10937,10 +10946,16 @@ mod tests {
                 panic!("retained record")
             };
             assert_eq!(id.slots[0].word(), reader.word());
-            assert_eq!(integer, Value::Integer(i64::MAX));
-            for word in &hidden[3..] {
-                assert!(heap.decode(word ^ HIDE).is_err(), "unreachable object");
+            // alloc.c:allocate_vectorlike reuses swept vector addresses.
+            // Check reclamation before allocating a comparison bignum at
+            // what may be one of those addresses.
+            for (index, word) in hidden[3..].iter().enumerate() {
+                assert!(
+                    heap.decode(word ^ HIDE).is_err(),
+                    "unreachable object {index}"
+                );
             }
+            assert_eq!(integer, Value::Integer(i64::MAX));
         }
 
         let mut interpreter = Interpreter::new();
