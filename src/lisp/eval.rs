@@ -3466,15 +3466,14 @@ impl LispReachability<'_, '_> {
         // discovered by the weak-table fixed point, rather than sweeping
         // that storage before this pass can discover it.
         if let Some(native) = self.native.as_deref_mut() {
-            let (native_cons, children) = native.trace_lisp_value(value);
+            let children = native.trace_lisp_value(value);
             for child in &children {
                 self.enqueue(child);
             }
-            if native_cons {
-                // Generated code's current car/cdr words are authoritative;
-                // tracing a stale typed mirror would retain replaced edges.
-                return;
-            }
+            // The native walk refreshes reached cons views before returning.
+            // Trace their actual typed fields too: equivalent buffer references
+            // can still own different allocations in the two representations.
+            // This extra traversal disappears with the shared object payload.
         }
 
         match value.kind() {

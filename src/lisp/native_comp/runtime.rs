@@ -4167,15 +4167,14 @@ impl NativeMark<'_> {
 
     /// Connect a typed Lisp object to its existing native word without
     /// allocating an object or making an encoded shadow value during GC.
-    /// The boolean says that native car/cdr words supplied this cons's edges.
-    pub(crate) fn trace_lisp_value(&mut self, value: &Value) -> (bool, Vec<Value>) {
+    pub(crate) fn trace_lisp_value(&mut self, value: &Value) -> Vec<Value> {
         // No handle is held for any object: nothing to mark for a
         // non-cons value (the identity lookup below would miss), and only
         // an attached cons has native words to follow.
         if self.heap.handle_by_value.is_empty()
             && !matches!(value.kind(), Kind::Cons(cell) if cell.attached_native_address().is_some())
         {
-            return (false, Vec::new());
+            return Vec::new();
         }
         if let Kind::Cons(cell) = value.kind() {
             if let Some(address) = cell.attached_native_address()
@@ -4186,14 +4185,14 @@ impl NativeMark<'_> {
                 // edges. Re-entering the conservative pointer search for
                 // the typed view only repeats address-map lookups.
                 if mirror.gc_marked {
-                    return (true, Vec::new());
+                    return Vec::new();
                 }
                 // Reuse this mark pass's work stack, as alloc.c does,
                 // instead of allocating a temporary stack for every cons.
                 self.pending.push(address + TAG_CONS);
-                return (true, self.trace_words());
+                return self.trace_words();
             }
-            return (false, Vec::new());
+            return Vec::new();
         }
         let identity = match value.kind() {
             Kind::Nil
@@ -4209,7 +4208,7 @@ impl NativeMark<'_> {
             | Kind::BigInteger(_)
             | Kind::Record(_)
             | Kind::ReaderForm(_) => {
-                return (false, Vec::new());
+                return Vec::new();
             }
             _ => {
                 handle_identity(value)
@@ -4228,10 +4227,10 @@ impl NativeMark<'_> {
                 .expect("indexed native handle")
                 .value;
             if retained.word() != value.word() {
-                return (false, vec![retained]);
+                return vec![retained];
             }
         }
-        (false, Vec::new())
+        Vec::new()
     }
 }
 
@@ -9474,6 +9473,88 @@ mod tests {
     // frame of their own, keep only a hidden copy of its word, and clear
     // the stack under the test (`clobber_stack') before the collection.
     const HIDE: usize = 0x5555_5555_5555_5555;
+
+    #[test]
+    fn native_gc_retains_buffer_fields_in_reachable_cons_views() {
+        #[inline(never)]
+        fn make_cons(heap: &mut NativeHeapOwner, interpreter: &mut Interpreter) -> [usize; 4] {
+            let native_reference = Value::buffer(52, "cons-field-buffer");
+            let typed_reference = Value::buffer(52, "cons-field-buffer");
+            heap.encode(&native_reference).expect("initial buffer word");
+            let cons = Value::cons(typed_reference, Value::Nil);
+            let word = heap.encode(&cons).expect("cons containing the same buffer");
+            interpreter.set_global_binding("retained-buffer-cons", cons);
+            [
+                cons.word(),
+                native_reference.word(),
+                typed_reference.word(),
+                word,
+            ]
+            .map(|word| word ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn check_payloads(hidden: [usize; 4], reachable: bool) {
+            let cons_address = (hidden[0] ^ HIDE) & !TAG_MASK;
+            assert_eq!(
+                crate::lisp::alloc::allocated_serial(cons_address).is_some(),
+                reachable,
+                "the rooted cons survives and is reclaimed after removing its root"
+            );
+            for hidden_word in &hidden[1..3] {
+                let address = (hidden_word ^ HIDE) & !TAG_MASK;
+                let allocated = matches!(
+                    unsafe { crate::lisp::alloc::mem_find(address) },
+                    Some(crate::lisp::alloc::Found::Vectorlike(header))
+                        if header as usize == address
+                            && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                                == crate::lisp::alloc::VectorTag::Buffer
+                );
+                assert_eq!(
+                    allocated, reachable,
+                    "a reached buffer field must remain allocated"
+                );
+            }
+        }
+
+        #[inline(never)]
+        fn check_view(heap: &mut NativeHeapOwner, hidden: [usize; 4]) {
+            let cons = heap.decode(hidden[3] ^ HIDE).expect("retained cons view");
+            let Kind::Buffer(buffer) = cons.car().expect("cons car").kind() else {
+                panic!("the cons must still contain its buffer");
+            };
+            assert_eq!(buffer.id, 52);
+            assert_eq!(buffer.name.as_str(), "cons-field-buffer");
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let hidden = make_cons(&mut heap, &mut interpreter);
+        let stack_marker = 0;
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_payloads(hidden, true);
+            check_view(&mut heap, hidden);
+        }
+        interpreter.set_global_binding("retained-buffer-cons", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        check_payloads(hidden, false);
+        assert!(heap.decode(hidden[3] ^ HIDE).is_err());
+        assert!(heap.handles.iter().all(Option::is_none));
+    }
 
     #[test]
     fn native_gc_uninterned_symbols_are_weak_across_collectors() {
