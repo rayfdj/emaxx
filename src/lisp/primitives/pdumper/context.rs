@@ -1255,13 +1255,11 @@ impl DumpContext {
     fn dump_subr(&mut self, subr: &crate::lisp::types::BuiltinRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = [0_u64];
-        self.field_lv(
-            start,
-            &mut words,
-            0,
-            &Value::string(subr.as_str()),
-            WEIGHT_STRONG,
-        );
+        // Defsubr already interned this name. Reuse its Lisp string on
+        // every dump pass: allocating another string while writing copied
+        // objects would create a graph edge after the scan has finished.
+        let name = SymbolName::intern_str(subr.as_str()).lisp_name();
+        self.field_lv(start, &mut words, 0, &name, WEIGHT_STRONG);
         self.object_finish(&words)
     }
 

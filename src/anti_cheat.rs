@@ -675,6 +675,20 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
             .0;
         audited_source.push_str(body);
     }
+    // Direct subr targets now live in the generated registration objects.
+    // Audit the generator's selection as well as runtime dispatch; the ABI
+    // regeneration gate checks the emitted table against this generator.
+    let generator = fs::read_to_string(repo_root().join("tools/generate_native_subrs.rs"))
+        .expect("read native subr generator");
+    let generator = comments.replace_all(&generator, "");
+    let direct_targets = generator
+        .split_once("fn direct_native_target")
+        .expect("native generator lost direct target selection")
+        .1
+        .split_once("fn read_min_arg_constants")
+        .expect("native generator lost direct target boundary")
+        .0;
+    audited_source.push_str(direct_targets);
     let actual = string_literal
         .captures_iter(&audited_source)
         .map(|capture| capture[1].to_owned())

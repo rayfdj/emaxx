@@ -742,34 +742,14 @@ impl Interpreter {
         }
     }
 
-    /// `raw_function_binding' for the symbol in hand: the facts and the
-    /// function cell by id (eval_sub's `XSYMBOL (fun)->u.s.function'),
-    /// no hash of the name.
+    /// eval_sub's `XSYMBOL (fun)->u.s.function'. Defsubr installs the
+    /// initial builtin object; a subsequently void cell stays void.
     pub(crate) fn raw_function_binding_symbol(
         &self,
         symbol: &SymbolName,
-        env: &Env,
+        _env: &Env,
     ) -> Option<Value> {
-        if let Some(value) = self.globals.function(symbol) {
-            return Some(*value);
-        }
-        let facts = self
-            .globals
-            .facts_or(symbol, || primitives::name_facts_symbol(symbol));
-        if facts.prefer_override {
-            return facts.subr.map(Value::BuiltinFunc);
-        }
-        let name_is_builtin = facts.builtin || facts.special_form;
-        // The lexical environment is a value namespace (eval.c's Ffuncall
-        // reads the function cell whatever `let' bound the name to).
-        let _ = env;
-        // Special forms live in function cells in GNU Emacs, so symbol
-        // indirection (indirect-function, fboundp, macrop) must resolve them
-        // instead of signaling a void-function error.
-        if name_is_builtin {
-            return facts.subr.map(Value::BuiltinFunc);
-        }
-        None
+        self.globals.function(symbol).copied()
     }
 
     /// `lookup_function' for the symbol in hand (the alias chain followed
@@ -796,7 +776,7 @@ impl Interpreter {
             }
             seen.push(current.id());
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
-                return Err(LispError::VoidFunction(current.as_str().to_string()));
+                return Err(LispError::VoidFunction(symbol.as_str().to_string()));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next,
@@ -805,16 +785,8 @@ impl Interpreter {
         }
     }
 
-    /// Return the Lisp-visible function cell even when execution of NAME is
-    /// pinned to a native implementation.  GNU metadata consumers such as
-    /// gv-get follow symbol aliases through `symbol-function`; hiding an
-    /// alias here loses declarations attached to its target.
+    /// Metadata consumers see the same function cell that execution reads.
     pub fn logical_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
-        if primitives::name_facts(name).prefer_override
-            && let Some(binding) = self.functions_index.get(name)
-        {
-            return Some(*binding);
-        }
         self.raw_function_binding(name, env)
     }
 
@@ -827,18 +799,8 @@ impl Interpreter {
     /// bool is true when the binding came from an env frame (such a
     /// verdict must not be cached as a global fact).
     fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
-        let facts = primitives::name_facts(name);
-        if facts.prefer_override {
-            return facts.subr.map(|subr| (Value::BuiltinFunc(subr), false));
-        }
-        let _ = env;
-        if let Some(value) = self.functions_index.get(name) {
-            return Some((*value, false));
-        }
-        if facts.builtin || facts.special_form {
-            return facts.subr.map(|subr| (Value::BuiltinFunc(subr), false));
-        }
-        None
+        self.raw_function_binding(name, env)
+            .map(|value| (value, false))
     }
 
     /// `macro_position_binding' with symbol-alias indirection, for the
@@ -884,7 +846,7 @@ impl Interpreter {
             }
 
             let Some(binding) = self.raw_function_binding(&current, env) else {
-                return Err(LispError::VoidFunction(current));
+                return Err(LispError::VoidFunction(name.to_string()));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next.to_string(),

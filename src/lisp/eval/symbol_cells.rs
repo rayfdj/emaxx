@@ -50,9 +50,6 @@ struct SymbolCell {
     /// eval_sub reads `XSYMBOL (fun)->u.s.function' (the name-keyed
     /// function index is written alongside; see `set_function').
     function: Option<Value>,
-    /// The subr behind the name, as lisp.h keeps it in the symbol: the
-    /// manifest's facts and the evaluator's arm, learned on first use.
-    facts: Cell<Option<crate::lisp::primitives::NameFacts>>,
     /// `SYMBOL_VARALIAS': the alias target.
     alias: Option<SymbolName>,
     flags: u8,
@@ -302,34 +299,13 @@ impl SymbolCells {
 
     /// Write (or void) the symbol's function cell.
     pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
-        match function {
+        match function.filter(|value| !value.is_nil()) {
             Some(function) => self.cell_mut(symbol).function = Some(function),
             None => {
                 if let Some(cell) = self.existing_cell_mut(symbol.id()) {
                     cell.function = None;
                 }
             }
-        }
-    }
-
-    /// The name facts kept in the symbol's cell, computed by COMPUTE on
-    /// first use (a symbol without a cell yet is computed each time).
-    #[inline]
-    pub(crate) fn facts_or(
-        &self,
-        symbol: &SymbolName,
-        compute: impl FnOnce() -> crate::lisp::primitives::NameFacts,
-    ) -> crate::lisp::primitives::NameFacts {
-        match self.cell(symbol.id()) {
-            Some(cell) => match cell.facts.get() {
-                Some(facts) => facts,
-                None => {
-                    let facts = compute();
-                    cell.facts.set(Some(facts));
-                    facts
-                }
-            },
-            None => compute(),
         }
     }
 

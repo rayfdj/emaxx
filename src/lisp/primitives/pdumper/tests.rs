@@ -1486,3 +1486,59 @@ fn closure_slot_graphs_survive_interpreter_cloning_and_dump_restoration() {
         "the stored body refers to the restored closure itself"
     );
 }
+
+#[test]
+fn voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration() {
+    fn check(interp: &mut Interpreter, saved: Value) {
+        let mut env = crate::lisp::types::Env::new();
+        assert!(interp.raw_function_binding("identity", &env).is_none());
+        assert!(interp.raw_function_binding("if", &env).is_none());
+        assert!(matches!(
+            interp
+                .raw_function_binding("car", &env)
+                .map(|value| value.kind()),
+            Some(Kind::BuiltinFunc(_))
+        ));
+        assert_eq!(
+            interp
+                .call_function_value(saved, None, &[Value::Integer(73)], &mut env)
+                .expect("the saved subr remains callable"),
+            Value::Integer(73),
+        );
+    }
+
+    let mut source = Interpreter::new();
+    let saved = source
+        .raw_function_binding("identity", &crate::lisp::types::Env::new())
+        .expect("defsubr installs identity");
+    source.remove_all_function_bindings("identity");
+    source.remove_all_function_bindings("if");
+    check(&mut source.deep_clone_image(), saved);
+
+    let graph = Value::vector([Value::symbol("identity"), Value::symbol("if"), saved]);
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("load the symbol and subr graph");
+    let restored = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("saved subr root");
+    let Kind::Vector(restored) = restored.kind() else {
+        panic!("the root remains a vector")
+    };
+    let restored_subr = restored.slots().nth(2).expect("saved subr slot");
+    assert_eq!(restored_subr.word(), saved.word());
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "void-function-cells.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("install the actual dumped function cells");
+    check(&mut target, restored_subr);
+}

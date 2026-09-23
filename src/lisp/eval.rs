@@ -1601,7 +1601,9 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
         if state != active_state {
             // SAFETY: as above; only Lisp marks are updated in this phase.
             let other = unsafe { Interpreter::registered_gc_view(state) };
-            other.mark_doomed_finalizers(epoch);
+            let mut other_marked = LispReachability::with_epoch(epoch);
+            other_marked.native = marked.native.as_deref_mut();
+            other.mark_doomed_finalizers(&mut other_marked);
         }
     }
 }
@@ -4217,6 +4219,9 @@ impl Interpreter {
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
             let mut other_marked = LispReachability::with_epoch(marked.epoch);
+            // These roots share the allocator and the collecting native
+            // heap. Keep their existing native edges in this same mark pass.
+            other_marked.native = marked.native.as_deref_mut();
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
@@ -7787,24 +7792,11 @@ impl Interpreter {
         for name in completed_startup_globals {
             interp.mark_special_variable(&name);
         }
-        // GNU's defsubr interns every C primitive's name in the standard
-        // obarray as the image is built (lread.c:defsubr -> intern_c_string),
-        // so a bare `emacs -Q -batch' answers `intern-soft' for names like
-        // `1-' or `decode-sjis-char' before any Lisp mentions them.  Emaxx
-        // dispatches those primitives by name without a per-name Lisp
-        // binding, so register the same committed DEFUN contract surface the
-        // dispatch layer is built and gated against (finding 112/#27).  An
-        // `arity: None' contract names a DEFUN outside the oracle build
-        // (another platform's *.c); the oracle never defsubrs those, so
-        // neither does this registration.
-        for contract in primitives::GNU_C_PRIMITIVES {
-            if contract.arity.is_some() {
-                interp.intern_symbol_name(contract.name);
-            }
-        }
-        // lread.c:defsubr stores the actual subr in its symbol's function
-        // cell. Ordinary resolution can now return that object directly.
+        // lread.c:defsubr interns each configured C primitive and stores
+        // its actual subr in the function cell. The same registration
+        // objects define availability, identity and the native ABI.
         for subr in crate::lisp::native_comp::abi::native_subrs() {
+            interp.intern_symbol_name(subr.name);
             let symbol = SymbolName::intern_str(subr.name);
             interp.globals.set_function(
                 &symbol,

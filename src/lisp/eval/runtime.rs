@@ -1351,8 +1351,10 @@ impl Interpreter {
     }
 
     /// alloc.c:mark_finalizer_list retains both the object and its callback.
-    pub(crate) fn mark_doomed_finalizers(&self, epoch: u32) {
-        let mut marked = crate::lisp::eval::LispReachability::with_epoch(epoch);
+    pub(crate) fn mark_doomed_finalizers(
+        &self,
+        marked: &mut crate::lisp::eval::LispReachability<'_, '_>,
+    ) {
         // SAFETY: tracing changes marks, never links, and invokes no Lisp.
         for object in unsafe { self.doomed_finalizers.iter() } {
             marked.mark(self, &Value::Finalizer(object));

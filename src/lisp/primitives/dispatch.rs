@@ -146,10 +146,8 @@ fn direct_primitive(name: &str) -> Option<DirectPrimitive> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct NameFacts {
-    pub(crate) subr: Option<crate::lisp::types::BuiltinRef>,
     pub(crate) builtin: bool,
     pub(crate) special_form: bool,
-    pub(crate) prefer_override: bool,
     file_name_handler: Option<FileNameHandlerOperation>,
     module: DispatchModule,
     /// The body as a function pointer, for the names that have one.
@@ -184,6 +182,7 @@ macro_rules! define_dispatch_modules {
                 Self::None
             }
 
+            #[cfg(test)]
             fn prefer_builtin(self, name: &str) -> bool {
                 match self {
                     $(Self::$variant => $module::prefer_builtin(name),)+
@@ -265,13 +264,10 @@ define_dispatch_modules! {
 
 pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
     let module = DispatchModule::for_name(name);
-    // The GNU C manifest is the authority for the public native boundary.
-    // Absence from it means Elisp-owned (or not a GNU function), never
-    // "probably native".  There is deliberately no private Lisp-callable
-    // exception: an internal host operation must use a typed Rust path, not
-    // a renamed function cell.
-    let native_owner =
-        crate::lisp::primitives::generated_gnu_c_primitive_available(name).unwrap_or(false);
+    // GNU defsubr's configured registrations own the native boundary.
+    // A dispatch arm alone cannot turn an Elisp function into a C subr.
+    let subr = crate::lisp::native_comp::abi::find_builtin(name);
+    let native_owner = subr.is_some();
     // A callable native route is the builtin contract.  Keeping a
     // second list of the same names made every new primitive require
     // two coordinated edits and allowed function lookup to drift from
@@ -298,7 +294,6 @@ pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
     };
     // The configured subr object is the arity authority for every execution
     // mode. The static dispatch descriptor is prepared once from its fields.
-    let subr = crate::lisp::native_comp::abi::find_builtin(name);
     let min_args = subr.map_or(0, |subr| subr.descriptor().min_args);
     let max_args = subr.and_then(|subr| match subr.descriptor().max_args() {
         crate::lisp::native_comp::abi::NativeMaxArgs::Fixed(maximum) => Some(maximum),
@@ -316,11 +311,10 @@ pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
     // zeroed bytes outside the fields' values are never read as a field.
     unsafe {
         let facts_ptr = facts.as_mut_ptr();
-        (&raw mut (*facts_ptr).subr).write(subr);
         (&raw mut (*facts_ptr).builtin).write(builtin);
-        (&raw mut (*facts_ptr).special_form)
-            .write(crate::lisp::primitives::is_special_form_name(name));
-        (&raw mut (*facts_ptr).prefer_override).write(native_owner && module.prefer_builtin(name));
+        (&raw mut (*facts_ptr).special_form).write(subr.is_some_and(|subr| {
+            subr.descriptor().max_args() == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+        }));
         (&raw mut (*facts_ptr).file_name_handler).write(file_name_handler_operation(name));
         (&raw mut (*facts_ptr).module).write(module);
         (&raw mut (*facts_ptr).direct).write(direct);
@@ -357,33 +351,6 @@ impl std::hash::Hasher for FnvHasher {
 
 pub(crate) type FnvBuildHasher = std::hash::BuildHasherDefault<FnvHasher>;
 
-/// `name_facts' for the symbol in hand: the facts kept per symbol id
-/// (lisp.h keeps the subr in the symbol's function cell; a hash of the
-/// name per resolution stood in for that field read).  Symbol ids are
-/// never reused; an uninterned symbol (the high bit set) goes by name.
-pub(crate) fn name_facts_symbol(symbol: &crate::lisp::types::SymbolName) -> NameFacts {
-    thread_local! {
-        static BY_SYMBOL: std::cell::RefCell<Vec<Option<NameFacts>>> =
-            const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let id = symbol.id();
-    if id & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0 {
-        return name_facts(symbol.as_str());
-    }
-    let index = id as usize;
-    if let Some(facts) = BY_SYMBOL.with_borrow(|table| table.get(index).copied().flatten()) {
-        return facts;
-    }
-    let facts = name_facts(symbol.as_str());
-    BY_SYMBOL.with_borrow_mut(|table| {
-        if table.len() <= index {
-            table.resize(index + 1, None);
-        }
-        table[index] = Some(facts);
-    });
-    facts
-}
-
 pub(crate) fn name_facts(name: &str) -> NameFacts {
     thread_local! {
         static NAME_FACTS: std::cell::RefCell<
@@ -407,6 +374,11 @@ pub fn is_builtin(name: &str) -> bool {
 #[cfg(test)]
 pub(crate) fn has_dispatch_handler(name: &str) -> bool {
     name_facts(name).module != DispatchModule::None
+}
+
+#[cfg(test)]
+pub(crate) fn has_builtin_override(name: &str) -> bool {
+    DispatchModule::for_name(name).prefer_builtin(name)
 }
 
 /// Dispatch a builtin function call.

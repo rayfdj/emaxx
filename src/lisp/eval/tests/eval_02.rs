@@ -8155,6 +8155,62 @@ fn cl_type_of_honors_redefinition_and_aliases_without_changing_saved_subrs() {
 }
 
 #[test]
+fn fmakunbound_keeps_builtin_function_cells_void_and_saved_subrs_callable() {
+    // data.c:Ffmakunbound writes Qnil into the actual function cell;
+    // eval.c resolves that cell without recreating a subr from its name.
+    // The identical fixture was executed in GNU, including the special
+    // form and saved ordinary-subr cases.
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/builtin-function-cell-authority.el"
+        )),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::symbol("void-function"),
+            Value::Integer(7),
+            Value::Nil,
+            Value::Nil,
+            Value::symbol("void-function"),
+        ])
+    );
+}
+
+#[test]
+fn saved_special_form_subrs_reject_funcall_before_arity_dispatch() {
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/builtin-special-form-funcall.el"
+        )),
+        Value::list([
+            Value::list([Value::symbol("invalid-function"), Value::T]),
+            Value::list([Value::symbol("invalid-function"), Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn nil_function_cells_remain_void_while_alias_cells_remain_bound() {
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/builtin-nil-function-cell.el"
+        )),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::symbol("identity"),
+            Value::list([Value::symbol("void-function"), Value::symbol("identity")]),
+            Value::list([
+                Value::symbol("void-function"),
+                Value::symbol("function-cell-delta"),
+            ]),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
 fn subr_arity_reports_regular_builtin_functions() {
     assert_eq!(
         eval_str("(subr-arity (symbol-function 'identity))"),

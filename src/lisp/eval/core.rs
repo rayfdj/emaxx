@@ -1450,11 +1450,21 @@ impl Interpreter {
                         None,
                     );
                     crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result =
+                    let result = if name.descriptor().max_args()
+                        == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+                    {
+                        // eval.c:funcall_subr rejects special forms as
+                        // function values, before their bodies or arity checks.
+                        Err(LispError::SignalValue(Value::list([
+                            Value::symbol("invalid-function"),
+                            func,
+                        ])))
+                    } else {
                         primitives::call_with_facts(interp, name.as_str(), name.facts(), args, env)
                             .map_err(|error| {
                                 Self::builtin_call_error(name, args.len(), funcall, error)
-                            });
+                            })
+                    };
                     interp.settle_frame_result(result, env)
                 })
             }

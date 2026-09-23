@@ -25351,3 +25351,17 @@ fn closure_body_identity_and_text_property_identity_match_gnu() {
         "closure code and interval object identity",
     );
 }
+
+#[test]
+fn registered_subrs_never_request_function_cell_overrides() {
+    // GNU's eval_sub/funcall resolve the live function cell. The old
+    // dispatch annotation must never bypass a user definition or a void
+    // cell. Keep the macro's platform-attribute control independently.
+    for subr in crate::lisp::native_comp::abi::native_subrs() {
+        assert!(
+            !super::dispatch::has_builtin_override(subr.name),
+            "{} requests a function-cell bypass",
+            subr.name,
+        );
+    }
+}

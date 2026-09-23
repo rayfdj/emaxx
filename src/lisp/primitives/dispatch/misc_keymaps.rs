@@ -1806,7 +1806,6 @@ pub(super) fn direct_symbol_function(
     let symbol = checked_symbol_name(interp, &args[0], env)?;
     Ok(match interp.logical_function_binding(&symbol, env) {
         Some(value) => value,
-        None if is_special_form_name(&symbol) => Value::BuiltinFunc(symbol.clone().into()),
         // GNU returns nil for an unbound function cell (nadvice's
         // pending-advice path reads it).
         None => Value::Nil,

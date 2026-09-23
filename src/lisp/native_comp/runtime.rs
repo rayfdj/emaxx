@@ -1783,18 +1783,10 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             decoded.push(value);
         }
         let mutation_epoch = crate::lisp::types::cons_mutation_epoch();
-        static SUBROUTINE_FACTS: OnceLock<Box<[crate::lisp::primitives::NameFacts]>> =
-            OnceLock::new();
-        let facts = SUBROUTINE_FACTS.get_or_init(|| {
-            super::abi::native_subrs()
-                .iter()
-                .map(|subroutine| crate::lisp::primitives::name_facts(subroutine.name))
-                .collect()
-        })[index];
         let result = crate::lisp::primitives::call_with_facts(
             unsafe { &mut *active.interpreter },
             subroutine.name,
-            facts,
+            subroutine.facts(),
             &decoded,
             unsafe { &mut *active.environment },
         );
@@ -4076,7 +4068,8 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::Closure
                                 | crate::lisp::alloc::VectorTag::Bignum
                                 | crate::lisp::alloc::VectorTag::Record
-                                | crate::lisp::alloc::VectorTag::ReaderForm,
+                                | crate::lisp::alloc::VectorTag::ReaderForm
+                                | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
                             ) => Some(TAG_VECTORLIKE),
                             (
@@ -10363,6 +10356,22 @@ mod tests {
         assert_eq!(after.count, before.count + 1);
         assert_eq!(after.slots, before.slots + 4);
         assert!(matches!(value.kind(), Kind::Finalizer(_)));
+    }
+
+    #[test]
+    fn native_finalizer_words_reach_the_lisp_marker_without_bridge_handles() {
+        let mut interpreter = Interpreter::new();
+        let finalizer = interpreter.make_finalizer(Value::symbol("ignore"));
+        let mut heap = NativeHeapOwner::new();
+        assert!(heap.handles.is_empty());
+        // Test the native-root handoff itself, so conservative Rust stack
+        // scanning cannot conceal a missing PVEC_FINALIZER case.
+        let mut marker = NativeMark {
+            marked_handles: Vec::new(),
+            pending: vec![finalizer.word()],
+            heap: &mut heap,
+        };
+        assert_eq!(marker.trace_words(), vec![finalizer]);
     }
 
     #[test]

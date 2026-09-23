@@ -482,6 +482,7 @@ macro_rules! define_dispatch {
         $visibility const LIFTED_PRIMITIVES: &[(&str, crate::lisp::primitives::DirectPrimitive)] =
             dispatch_table!(($($argument),*) [] $($arms)*);
 
+        #[cfg(test)]
         $visibility fn prefer_builtin(name: &str) -> bool {
             let _ = name;
             dispatch_property!(dispatch_select_builtin_override, name; $($arms)*)

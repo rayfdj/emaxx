@@ -546,9 +546,9 @@ define_dispatch!(
                 // the dynamic reader switch is enabled.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
                 Ok(
-                    if is_builtin(&symbol)
-                        || interp.lookup_function(&symbol, env).is_ok()
-                        || is_special_form_name(&symbol)
+                    if interp
+                        .raw_function_binding(&symbol, env)
+                        .is_some_and(|function| !function.is_nil())
                     {
                         Value::T
                     } else {

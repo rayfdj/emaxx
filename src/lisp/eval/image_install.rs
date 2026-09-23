@@ -271,19 +271,19 @@ impl Interpreter {
         self.update_forwarded_eval_cell(name, value);
     }
 
-    /// The function cell: a built-in's own subr is the dispatch default
-    /// and needs no entry; anything else is bound.
+    /// Restore the actual function cell, including a voided builtin. An
+    /// unchanged static subr needs no entry in the Lisp-definition index.
     fn install_function_cell(&mut self, name: &str, function: &Value) {
         if function.is_nil() {
-            if self.functions_index.contains_key(name) {
-                self.set_function_binding(name, None);
-            }
+            self.remove_all_function_bindings(name);
             return;
         }
         if let Kind::BuiltinFunc(subr) = function.kind()
             && subr.as_str() == name
-            && !self.functions_index.contains_key(name)
         {
+            self.remove_all_function_bindings(name);
+            self.globals
+                .set_function(&SymbolName::intern_str(name), Some(*function));
             return;
         }
         self.set_function_binding(name, Some(*function));
