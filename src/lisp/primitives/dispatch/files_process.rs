@@ -1511,7 +1511,7 @@ define_dispatch!(
                 #[cfg(target_os = "macos")]
                 if !remote_watch {
                     let descriptor =
-                        interp.register_kqueue_file_notify_watch(path, flags, args[2].clone())?;
+                        interp.register_kqueue_file_notify_watch(path, flags, args[2])?;
                     return Ok(Value::Integer(descriptor));
                 }
                 let descriptor =

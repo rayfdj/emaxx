@@ -745,10 +745,8 @@ impl Interpreter {
 
         while let Some(current) = pending.pop() {
             match current.kind() {
-                Kind::Symbol(name) => {
-                    if crate::lisp::types::visible_symbol_name(&name) == name {
-                        self.intern_symbol_name(&name);
-                    }
+                Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
+                    self.intern_symbol_name(&name);
                 }
                 Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;

@@ -71,10 +71,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                     pending.push(car.get());
                 }
             }
-            Kind::Vector(vector) => {
-                if seen_vectors.insert(vector.identity()) {
-                    pending.extend(vector.slots().iter().cloned());
-                }
+            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
+                pending.extend(vector.slots().iter().cloned());
             }
             Kind::ReaderForm(form) => match form.as_ref() {
                 ReaderForm::HashTable { fields }
@@ -387,10 +385,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 stack.push(car_cell.get());
                 stack.push(cdr_cell.get());
             }
-            Kind::Vector(vector) => {
-                if seen_vectors.insert(vector.identity()) {
-                    stack.extend(vector.slots().iter().cloned());
-                }
+            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
+                stack.extend(vector.slots().iter().cloned());
             }
             Kind::StringObject(state) => {
                 for span in &state.borrow().props {

@@ -2214,15 +2214,11 @@ pub(crate) fn menu_item_details_with_button(
         };
         let value = &rest[index + 1];
         match keyword.as_ref() {
-            ":visible" => {
-                if eval_property(interp, env, value).is_nil() {
-                    return None;
-                }
+            ":visible" if eval_property(interp, env, value).is_nil() => {
+                return None;
             }
-            ":enable" => {
-                if eval_property(interp, env, value).is_nil() {
-                    enabled = false;
-                }
+            ":enable" if eval_property(interp, env, value).is_nil() => {
+                enabled = false;
             }
             ":filter" => filter = Some(*value),
             ":button" => {

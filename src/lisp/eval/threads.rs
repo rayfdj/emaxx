@@ -2746,8 +2746,8 @@ impl Interpreter {
                 (
                     watch.active,
                     watch.path.clone(),
-                    watch.descriptor.clone(),
-                    watch.callback.clone(),
+                    watch.descriptor,
+                    watch.callback,
                     watch.fingerprint.clone(),
                     watch.directory_snapshot.clone(),
                     watch.flags.clone(),
@@ -2788,7 +2788,7 @@ impl Interpreter {
                             &event_path,
                             &action,
                             secondary_path.as_deref(),
-                            vec![callback.clone()],
+                            vec![callback],
                         );
                     }
                 }
@@ -2827,7 +2827,7 @@ impl Interpreter {
                 }
                 if !actions.is_empty() {
                     let raw_event = Value::list([
-                        callback.0.clone(),
+                        callback.0,
                         Value::list(actions),
                         Value::String(path.clone().into()),
                     ]);
@@ -2836,7 +2836,7 @@ impl Interpreter {
                             path: String::new(),
                             secondary_path: None,
                             action: String::new(),
-                            callbacks: vec![callback.clone()],
+                            callbacks: vec![callback],
                             raw_event: Some(raw_event),
                         });
                 }
