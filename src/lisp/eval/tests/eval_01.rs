@@ -4395,18 +4395,27 @@ fn markers_held_only_by_the_interpreter_survive_a_collection() {
 
 #[test]
 fn normal_mode_survives_collections_during_its_autoloads() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     // The gate's shape: `set-auto-mode' on an HTML buffer, with the
     // collection threshold low enough that mhtml-mode's autoload
     // collects while the search's marker bound is held only by the
     // call's argument list.  GNU: mhtml-mode.
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with(
+            &mut interp,
             r#"(with-temp-buffer
                  (insert "<!doctype html>")
                  (let ((gc-cons-threshold 100)) (normal-mode))
                  major-mode)"#,
         ),
-        Value::Symbol("mhtml-mode".into())
+        Value::Symbol("mhtml-mode".into()),
+        "GNU Lisp messages: {}",
+        eval_str_with(
+            &mut interp,
+            r#"(if (get-buffer "*Messages*")
+                   (with-current-buffer "*Messages*" (buffer-string))
+                 "No messages buffer")"#,
+        )
     );
 }
 
@@ -4788,8 +4797,10 @@ fn preloaded_file_buffer_policy_is_bound_and_truly_buffer_local() {
 
 #[test]
 fn normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with(
+            &mut interp,
             r##"(let ((directory (make-temp-file "emaxx-mode-pipeline" t)))
                  (unwind-protect
                      (let ((file (expand-file-name "sample.quux" directory))
@@ -4834,7 +4845,14 @@ fn normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence() {
             ]),
             Value::Symbol("text-mode".into()),
             Value::Symbol("mhtml-mode".into()),
-        ])
+        ]),
+        "GNU Lisp messages: {}",
+        eval_str_with(
+            &mut interp,
+            r#"(if (get-buffer "*Messages*")
+                   (with-current-buffer "*Messages*" (buffer-string))
+                 "No messages buffer")"#,
+        )
     );
 }
 
