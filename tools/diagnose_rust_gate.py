@@ -37,6 +37,7 @@ def main() -> int:
             for key in (
                 "LANG", "LC_ALL", "RUST_MIN_STACK", "RUST_TEST_THREADS",
                 "RUST_BACKTRACE", "EMAXX_IMAGE_TEMPLATE", "EMAXX_FIXTURE_IMAGE_DIR",
+                "CARGO_PROFILE_GATE_DEBUG", "EMAXX_GC_VERIFY",
             )
         },
         "status": "building",
@@ -74,6 +75,7 @@ def main() -> int:
             "-ex", "run",
             "-ex", "python gdb.execute('thread apply all bt') if gdb.selected_inferior().pid else None",
             "-ex", "python gdb.execute('info registers') if gdb.selected_inferior().pid else None",
+            "-ex", "python gdb.execute('x/12i $pc-24') if gdb.selected_inferior().pid else None",
             "--args", *test_command,
         ]
         summary.update(status="running", command=command, test_command=test_command)

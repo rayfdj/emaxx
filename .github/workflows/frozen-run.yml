@@ -354,6 +354,7 @@ jobs:
               ;;
             rust-backtrace)
               LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                CARGO_PROFILE_GATE_DEBUG=1 EMAXX_GC_VERIFY=1 \
                 python3 tools/diagnose_rust_gate.py --filter "$VALIDATION_RUST_FILTER" \
                   --output target/frozen-ci/rust-backtrace
               ;;
