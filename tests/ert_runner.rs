@@ -27,27 +27,31 @@ fn run_el_test(filename: &str) {
     let (tx, rx) = mpsc::channel();
     let filename_for_thread = filename.to_string();
     std::thread::spawn(move || {
-        let report = match lisp::run_ert_file(&path) {
-            Ok((passed, failed, total, results)) => {
-                let mut lines = Vec::new();
-                for (name, ok, err) in &results {
-                    if *ok {
-                        lines.push(format!("  PASS: {name}"));
-                    } else {
+        let report =
+            match lisp::run_ert_file(&path, std::path::Path::new(env!("CARGO_BIN_EXE_emaxx"))) {
+                Ok(report) => {
+                    let mut lines = Vec::new();
+                    for result in &report.results {
                         lines.push(format!(
-                            "  FAIL: {name} -- {}",
-                            err.as_deref().unwrap_or("?")
+                            "  {:?}: {} (expected={:?}) -- {}",
+                            result.status,
+                            result.name,
+                            result.expected,
+                            result.message.as_deref().unwrap_or("")
                         ));
                     }
+                    let issues = emaxx::compat::report_execution_issues(&report);
+                    lines.push(format!("  {:?}; issues: {issues:?}", report.summary));
+                    if report.summary.total == 0 {
+                        lines.push("  ERROR: upstream file executed no tests".into());
+                    }
+                    (report.summary.total > 0 && issues.is_empty(), lines)
                 }
-                lines.push(format!("  [{passed}/{total}] passed, {failed} failed"));
-                (failed == 0, lines)
-            }
-            Err(error) => (
-                false,
-                vec![format!("  ERROR loading {filename_for_thread}: {error}")],
-            ),
-        };
+                Err(error) => (
+                    false,
+                    vec![format!("  ERROR loading {filename_for_thread}: {error}")],
+                ),
+            };
         let _ = tx.send(report);
     });
 

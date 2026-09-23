@@ -2,17 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::buffer::Buffer;
 use crate::compat;
-use crate::lisp::eval::Interpreter;
-use crate::lisp::reader::Reader;
-use crate::lisp::types::{Env, Kind, LispError, Value};
-use crate::overlay::Overlay;
 
 pub const PERF_SCENARIO_MANIFEST_PATH: &str = "compat/perf_scenarios.json";
 pub const PERF_RESULT_FILE_ENV: &str = "EMAXX_PERF_RESULT_FILE";
@@ -310,6 +305,84 @@ impl PerfCaseReport {
 }
 
 impl PerfRunReport {
+    /// Check the report against the requested workload, rather than trusting
+    /// a child's status string or summary fields.  Raw reports are retained
+    /// by the harness even when this check rejects them.
+    pub fn validate_completed(&self, runner: &str, scenario: &PerfScenario) -> Result<(), String> {
+        if self.runner != runner || self.scenario_id != scenario.id || self.tier != scenario.tier {
+            return Err("performance report identity does not match the request".into());
+        }
+        if self.status != PerfRunStatus::Completed || self.cases.is_empty() {
+            return Err("performance report did not complete every requested case".into());
+        }
+        let expected = expand_scenario_cases(scenario)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let actual = self
+            .cases
+            .iter()
+            .map(|case| case.case_id.clone())
+            .collect::<BTreeSet<_>>();
+        if actual.len() != self.cases.len() {
+            return Err("performance report contains duplicate cases".into());
+        }
+        if actual != expected {
+            return Err(format!(
+                "performance case inventory mismatch: expected {expected:?}, got {actual:?}"
+            ));
+        }
+        for (key, expected) in [
+            ("n", scenario.param_u64("n").unwrap_or(4096)),
+            ("warmup", u64::from(scenario.warmup)),
+            ("samples", u64::from(scenario.samples)),
+        ] {
+            if self
+                .metadata
+                .get(key)
+                .and_then(|value| value.parse::<u64>().ok())
+                != Some(expected)
+            {
+                return Err(format!("performance report has the wrong {key}"));
+            }
+        }
+        for case in &self.cases {
+            if case.status != PerfCaseStatus::Completed
+                || case.metric_unit != "seconds"
+                || case.samples.len() != scenario.samples as usize
+                || case
+                    .samples
+                    .iter()
+                    .any(|sample| !sample.is_finite() || *sample <= 0.0)
+                || !case.gc_seconds.is_finite()
+                || case.gc_seconds < 0.0
+            {
+                return Err(format!(
+                    "{} has incomplete or invalid samples",
+                    case.case_id
+                ));
+            }
+            let summary = SampleSummary::compute(&case.samples)
+                .ok_or_else(|| format!("{} has no samples", case.case_id))?;
+            for (reported, computed) in [
+                (case.min, summary.min),
+                (case.median, summary.median),
+                (case.mean, summary.mean),
+                (case.p95, summary.p95),
+                (case.max, summary.max),
+            ] {
+                if reported.is_none_or(|value| {
+                    !value.is_finite() || (value - computed).abs() > 1e-12 * computed.abs().max(1.0)
+                }) {
+                    return Err(format!(
+                        "{} summary disagrees with its raw samples",
+                        case.case_id
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn unsupported(
         runner: &str,
         scenario: &PerfScenario,
@@ -426,14 +499,18 @@ pub fn best_effort_cpu_model() -> String {
     "unknown".into()
 }
 
-pub fn ensure_release_emaxx_binary() -> Result<PathBuf, String> {
+pub fn ensure_release_emaxx_binary(emacs_repo: &Path) -> Result<PathBuf, String> {
     let project_root = compat::project_root();
     let status = Command::new("cargo")
         .arg("build")
         .arg("--quiet")
+        .arg("--locked")
         .arg("--release")
         .arg("--bin")
         .arg("emaxx")
+        .arg("--bin")
+        .arg("make-fingerprint")
+        .env("EMAXX_GNU_SOURCE_DIRECTORY", emacs_repo)
         .current_dir(&project_root)
         .status()
         .map_err(|error| format!("build release emaxx binary: {error}"))?;
@@ -447,6 +524,16 @@ pub fn ensure_release_emaxx_binary() -> Result<PathBuf, String> {
             candidate.display()
         ));
     }
+    let status = Command::new(project_root.join("tools/build-image.sh"))
+        .arg(&candidate)
+        .env("EMAXX_DUMP_SOURCE_DIRECTORY", emacs_repo)
+        .env("EMACS_TEST_DIRECTORY", emacs_repo.join("test"))
+        .current_dir(&project_root)
+        .status()
+        .map_err(|error| format!("build the release binary's own image: {error}"))?;
+    if !status.success() {
+        return Err("release image construction failed".into());
+    }
     Ok(candidate)
 }
 
@@ -455,7 +542,9 @@ pub fn compare_reports(
     oracle: &PerfRunReport,
     emaxx: Option<&PerfRunReport>,
 ) -> PerfComparisonReport {
-    let mut ids = BTreeSet::new();
+    let mut ids = expand_scenario_cases(scenario)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     for case in &oracle.cases {
         ids.insert(case.case_id.clone());
     }
@@ -486,10 +575,21 @@ pub fn compare_reports(
     for case_id in ids {
         let oracle_case = oracle_cases.get(&case_id).copied();
         let emaxx_case = emaxx_cases.get(&case_id).copied();
-        let (class, notes) = classify_case(oracle_case, emaxx_case);
+        let run_failed = oracle.status != PerfRunStatus::Completed
+            || emaxx.is_some_and(|report| report.status == PerfRunStatus::Failed);
+        let (class, notes) = if run_failed {
+            (
+                PerfComparisonClass::Failed,
+                Some("an editor did not complete the requested run".into()),
+            )
+        } else {
+            classify_case(oracle_case, emaxx_case)
+        };
         let oracle_median = oracle_case.and_then(|case| case.median);
         let emaxx_median = emaxx_case.and_then(|case| case.median);
-        let emaxx_over_oracle = comparable_ratio(oracle_median, emaxx_median);
+        let emaxx_over_oracle = (!run_failed)
+            .then(|| comparable_ratio(oracle_median, emaxx_median))
+            .flatten();
         let exceeds_two_x = scenario.tier == PerfTier::Comparable
             && emaxx_over_oracle.is_some_and(|ratio| ratio >= 2.0);
         match class {
@@ -528,35 +628,6 @@ fn comparable_ratio(oracle_median: Option<f64>, emaxx_median: Option<f64>) -> Op
     let oracle = oracle_median.filter(|median| median.is_finite() && *median > 0.0)?;
     let emaxx = emaxx_median.filter(|median| median.is_finite() && *median >= 0.0)?;
     Some(emaxx / oracle)
-}
-
-pub fn run_emaxx_batch_scenario(
-    scenario_id: &str,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> Result<PerfRunReport, String> {
-    let manifest = PerfScenarioManifest::load()?;
-    let scenario = manifest
-        .find(scenario_id)
-        .ok_or_else(|| format!("unknown perf scenario `{scenario_id}`"))?;
-    let report = match scenario.emaxx_adapter.as_deref() {
-        Some("interpreter_suite") => run_interpreter_suite(scenario, n, warmup, samples),
-        Some("noverlay_marker_suite") => run_noverlay_marker_suite(scenario, n, warmup, samples),
-        Some("noverlay_insert_delete_suite") => {
-            run_noverlay_insert_delete_suite(scenario, n, warmup, samples)
-        }
-        Some(_) | None => PerfRunReport::unsupported(
-            "emaxx",
-            scenario,
-            "emaxx does not yet provide a comparable adapter for this scenario",
-            expand_scenario_cases(scenario),
-        ),
-    };
-    if let Ok(result_path) = std::env::var(PERF_RESULT_FILE_ENV) {
-        report.write_json(Path::new(&result_path))?;
-    }
-    Ok(report)
 }
 
 pub fn expand_scenario_cases(scenario: &PerfScenario) -> Vec<String> {
@@ -609,33 +680,39 @@ pub fn expand_scenario_cases(scenario: &PerfScenario) -> Vec<String> {
                 "perf-display-random/face/random",
                 "perf-display-random/invisible/scroll",
                 "perf-display-random/invisible/random",
-                "perf-display-hierarchical/face/scroll",
             ]
             .into_iter()
             .map(str::to_string)
             .collect(),
             Some("perf-noc-suite") => vec![
                 "perf-noc-hierarchical/forward/linear",
-                "perf-noc-sequential/forward/linear",
-                "perf-noc-random/forward/linear",
-                "perf-noc-hierarchical/forward/line-end",
-                "perf-noc-sequential/forward/line-end",
-                "perf-noc-random/forward/line-end",
-                "perf-noc-hierarchical/backward/linear",
-                "perf-noc-sequential/backward/linear",
-                "perf-noc-random/backward/linear",
-                "perf-noc-hierarchical/backward/line-beginning",
-                "perf-noc-sequential/backward/line-beginning",
-                "perf-noc-random/backward/line-beginning",
+                "perf-noc-hierarchical/forward/backnforth",
+                "perf-noc-hierarchical/forward/backnforth#2",
             ]
             .into_iter()
             .map(str::to_string)
             .collect(),
             _ => Vec::new(),
         },
-        "coding_decoder" => vec!["without-optimization", "with-optimization"]
+        // test/src/coding-tests.el:test-file-list at the pinned GNU revision.
+        "coding_decoder" => ["ascii", "utf-8-r", "utf-8-m"]
             .into_iter()
-            .map(str::to_string)
+            .flat_map(|prefix| {
+                [
+                    "tag-utf-8-unix.unix",
+                    "tag-utf-8.unix",
+                    "tag-none.unix",
+                    "tag-utf-8-dos.dos",
+                    "tag-utf-8.dos",
+                    "tag-none.dos",
+                ]
+                .into_iter()
+                .flat_map(move |suffix| {
+                    ["without-optimization", "with-optimization"]
+                        .into_iter()
+                        .map(move |mode| format!("{mode}/{prefix}-{suffix}"))
+                })
+            })
             .collect(),
         _ => Vec::new(),
     }
@@ -691,388 +768,6 @@ fn interpreted_case_names() -> [&'static str; 3] {
         "emaxx-perf-interpreted-cons-allocation",
         "emaxx-perf-interpreted-function-calls",
     ]
-}
-
-fn run_interpreter_suite(
-    scenario: &PerfScenario,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> PerfRunReport {
-    match try_run_interpreter_suite(scenario, n, warmup, samples) {
-        Ok(cases) => completed_run_report("emaxx", scenario, n, warmup, samples, cases),
-        Err(error) => PerfRunReport::failed("emaxx", scenario, error),
-    }
-}
-
-fn try_run_interpreter_suite(
-    scenario: &PerfScenario,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> Result<Vec<PerfCaseReport>, String> {
-    let workload_specs: Vec<_> = scenario
-        .load_files
-        .iter()
-        .filter(|spec| spec.starts_with(PERF_HARNESS_LOAD_PREFIX))
-        .collect();
-    if workload_specs.len() != 1 {
-        return Err(format!(
-            "interpreter scenario `{}` must declare exactly one `{PERF_HARNESS_LOAD_PREFIX}` workload; found {}",
-            scenario.id,
-            workload_specs.len()
-        ));
-    }
-    let workload_path = resolve_harness_load_file(workload_specs[0])?
-        .ok_or_else(|| "interpreter workload did not resolve as a harness file".to_string())?;
-    let workload = workload_path
-        .to_str()
-        .ok_or_else(|| format!("non-UTF-8 workload path {}", workload_path.display()))?;
-
-    let mut interpreter = Interpreter::new();
-    interpreter.load_target(workload).map_err(|error| {
-        format!(
-            "load interpreter workload {}: {error}",
-            workload_path.display()
-        )
-    })?;
-
-    Ok(interpreted_case_names()
-        .into_iter()
-        .map(|case_id| run_interpreted_case(&mut interpreter, case_id, n, warmup, samples))
-        .collect())
-}
-
-fn run_interpreted_case(
-    interpreter: &mut Interpreter,
-    case_id: &str,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> PerfCaseReport {
-    let source = format!("({case_id} {n})");
-    let form = match Reader::new(&source).read_all() {
-        Ok(mut forms) if forms.len() == 1 => forms.remove(0),
-        Ok(forms) => {
-            return PerfCaseReport::failed(
-                case_id,
-                format!("benchmark call parsed as {} forms", forms.len()),
-            );
-        }
-        Err(error) => {
-            return PerfCaseReport::failed(case_id, format!("parse benchmark call: {error}"));
-        }
-    };
-
-    let mut timings = Vec::with_capacity(samples as usize);
-    for sample in 0..warmup.saturating_add(samples) {
-        let mut env = Env::new();
-        let started = Instant::now();
-        let result = interpreter.eval(&form, &mut env);
-        let elapsed = started.elapsed().as_secs_f64();
-        match validate_interpreted_case_result(case_id, result) {
-            Ok(()) => {
-                if sample >= warmup {
-                    timings.push(elapsed);
-                }
-            }
-            Err(error) => return PerfCaseReport::failed(case_id, error),
-        }
-    }
-    PerfCaseReport::completed(case_id, "seconds", timings, 0, 0.0, None)
-}
-
-fn validate_interpreted_case_result(
-    case_id: &str,
-    result: Result<Value, LispError>,
-) -> Result<(), String> {
-    match result.map(|v| v.kind()) {
-        Ok(Kind::T) => Ok(()),
-        Ok(value) => Err(format!(
-            "{case_id} did not validate its checksum; returned {value}"
-        )),
-        Err(error) => Err(format!("{case_id} failed checksum validation: {error}")),
-    }
-}
-
-fn run_noverlay_marker_suite(
-    scenario: &PerfScenario,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> PerfRunReport {
-    let cases = vec![
-        run_case("perf-insert-before-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 1);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_min());
-            }
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    interpreter.insert_current_buffer("X");
-                }
-            })
-        }),
-        run_case("perf-insert-after-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 11);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_max());
-            }
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    interpreter.insert_current_buffer("X");
-                }
-            })
-        }),
-        run_case("perf-insert-scatter-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 21);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_min());
-            }
-            let mut rng = PerfRng::new(0x51_0000 + sample as u64);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let point_max = interpreter.buffer.point_max();
-                    let pos = rng.emacs_marker_scatter_position(point_max);
-                    interpreter.buffer.goto_char(pos);
-                    interpreter.insert_current_buffer("X");
-                }
-            })
-        }),
-        run_case("perf-delete-before-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 31);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_min());
-            }
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let _ = interpreter.delete_char_current_buffer(1);
-                }
-            })
-        }),
-        run_case("perf-delete-after-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 41);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_max());
-            }
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let _ = interpreter.delete_char_current_buffer(-1);
-                }
-            })
-        }),
-        run_case("perf-delete-scatter-marker", warmup, samples, |sample| {
-            let mut interpreter = Interpreter::new();
-            insert_perf_text(&mut interpreter.buffer, n);
-            seed_markers(&mut interpreter, n, sample as u64 + 51);
-            {
-                let buffer = &mut interpreter.buffer;
-                buffer.goto_char(buffer.point_max());
-            }
-            let mut rng = PerfRng::new(0x61_0000 + sample as u64);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let point_max = interpreter.buffer.point_max();
-                    let pos = rng.emacs_marker_scatter_position(point_max);
-                    interpreter.buffer.goto_char(pos);
-                    let _ = interpreter.delete_char_current_buffer(1);
-                }
-            })
-        }),
-    ];
-    completed_run_report("emaxx", scenario, n, warmup, samples, cases)
-}
-
-fn run_noverlay_insert_delete_suite(
-    scenario: &PerfScenario,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-) -> PerfRunReport {
-    let cases = vec![
-        run_case("perf-insert-before", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 101);
-            buffer.goto_char(1);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    buffer.insert("X");
-                }
-            })
-        }),
-        run_case("perf-insert-after", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 111);
-            buffer.goto_char(buffer.point_max());
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    buffer.insert("X");
-                }
-            })
-        }),
-        run_case("perf-insert-scatter", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 121);
-            buffer.goto_char(buffer.point_max());
-            let mut rng = PerfRng::new(0x71_0000 + sample as u64);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let point_max = buffer.point_max();
-                    let pos = rng.emacs_insert_scatter_position(point_max);
-                    buffer.goto_char(pos);
-                    buffer.insert("X");
-                }
-            })
-        }),
-        run_case("perf-delete-before", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 131);
-            buffer.goto_char(1);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let _ = buffer.delete_char(1);
-                }
-            })
-        }),
-        run_case("perf-delete-after", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 141);
-            buffer.goto_char(buffer.point_max());
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let _ = buffer.delete_char(-1);
-                }
-            })
-        }),
-        run_case("perf-delete-scatter", warmup, samples, |sample| {
-            let mut buffer = Buffer::new("*perf*");
-            insert_perf_text(&mut buffer, n);
-            seed_scattered_overlays(&mut buffer, 0, n, sample as u64 + 151);
-            buffer.goto_char(buffer.point_max());
-            let mut rng = PerfRng::new(0x81_0000 + sample as u64);
-            timed_operation(|| {
-                for _ in 0..(n / 2) {
-                    let point_max = buffer.point_max();
-                    let pos = rng.emacs_marker_scatter_position(point_max);
-                    buffer.goto_char(pos);
-                    let _ = buffer.delete_char(1);
-                }
-            })
-        }),
-    ];
-    completed_run_report("emaxx", scenario, n, warmup, samples, cases)
-}
-
-fn completed_run_report(
-    runner: &str,
-    scenario: &PerfScenario,
-    n: usize,
-    warmup: u32,
-    samples: u32,
-    cases: Vec<PerfCaseReport>,
-) -> PerfRunReport {
-    let mut metadata = BTreeMap::new();
-    metadata.insert("group".into(), scenario.group.clone());
-    metadata.insert("n".into(), n.to_string());
-    metadata.insert("warmup".into(), warmup.to_string());
-    metadata.insert("samples".into(), samples.to_string());
-    metadata.insert("target_profile".into(), "release".into());
-    PerfRunReport {
-        runner: runner.into(),
-        scenario_id: scenario.id.clone(),
-        tier: scenario.tier,
-        status: PerfRunStatus::Completed,
-        cases,
-        metadata,
-    }
-}
-
-fn run_case<F>(case_id: &str, warmup: u32, samples: u32, mut operation: F) -> PerfCaseReport
-where
-    F: FnMut(u32) -> f64,
-{
-    let mut timings = Vec::new();
-    for sample in 0..(warmup + samples) {
-        let timing = operation(sample);
-        if sample >= warmup {
-            timings.push(timing);
-        }
-    }
-    PerfCaseReport::completed(case_id, "seconds", timings, 0, 0.0, None)
-}
-
-fn timed_operation<F>(operation: F) -> f64
-where
-    F: FnOnce(),
-{
-    let started = Instant::now();
-    operation();
-    started.elapsed().as_secs_f64()
-}
-
-fn insert_perf_text(buffer: &mut Buffer, n: usize) {
-    let ncols = 68usize;
-    for _ in 0..(n / ncols) {
-        buffer.insert(&".".repeat(ncols - 1));
-        buffer.insert("\n");
-    }
-    let rem = n % ncols;
-    if rem > 0 {
-        buffer.insert(&".".repeat(rem.saturating_sub(1)));
-        buffer.insert("\n");
-    }
-    buffer.goto_char(buffer.point_min());
-}
-
-fn seed_scattered_overlays(buffer: &mut Buffer, buffer_id: u64, n: usize, seed: u64) {
-    let mut rng = PerfRng::new(0x91_0000 + seed);
-    for overlay_id in 0..n {
-        let begin = rng.emacs_overlay_begin(buffer.point_max());
-        let len = rng.inclusive(24);
-        let end = begin.saturating_add(len);
-        buffer.overlays.push(Overlay::new(
-            overlay_id as u64 + 1,
-            begin,
-            end,
-            buffer_id,
-            false,
-            false,
-        ));
-    }
-}
-
-fn seed_markers(interpreter: &mut Interpreter, n: usize, seed: u64) {
-    let mut rng = PerfRng::new(0xA1_0000 + seed);
-    let buffer_id = interpreter.current_buffer_id();
-    let point_max = interpreter.buffer.point_max();
-    for _ in 0..n {
-        let marker = interpreter.make_marker();
-        let Kind::Marker(id) = marker.kind() else {
-            unreachable!("make_marker must return a marker");
-        };
-        let position = rng.emacs_overlay_begin(point_max);
-        let _ = interpreter.set_marker(id, Some(position), Some(buffer_id));
-    }
 }
 
 fn classify_case(
@@ -1166,52 +861,9 @@ impl SampleSummary {
 }
 
 fn percentile(sorted: &[f64], pct: f64) -> f64 {
-    let idx = ((sorted.len() - 1) as f64 * pct).round() as usize;
+    // The shared Lisp runner uses GNU round, whose ties go to even.
+    let idx = ((sorted.len() - 1) as f64 * pct).round_ties_even() as usize;
     sorted[idx.min(sorted.len() - 1)]
-}
-
-#[derive(Clone, Debug)]
-struct PerfRng {
-    state: u64,
-}
-
-impl PerfRng {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: seed ^ 0x9E37_79B9_7F4A_7C15,
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state ^= self.state >> 12;
-        self.state ^= self.state << 25;
-        self.state ^= self.state >> 27;
-        self.state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    fn exclusive(&mut self, upper_exclusive: usize) -> usize {
-        if upper_exclusive == 0 {
-            0
-        } else {
-            (self.next_u64() % upper_exclusive as u64) as usize
-        }
-    }
-
-    fn inclusive(&mut self, upper_inclusive: usize) -> usize {
-        self.exclusive(upper_inclusive.saturating_add(1))
-    }
-
-    fn emacs_overlay_begin(&mut self, point_max: usize) -> usize {
-        self.inclusive(point_max)
-    }
-
-    fn emacs_insert_scatter_position(&mut self, point_max: usize) -> usize {
-        self.exclusive(point_max).saturating_add(1).max(1)
-    }
-
-    fn emacs_marker_scatter_position(&mut self, point_max: usize) -> usize {
-        self.exclusive(point_max).max(1)
-    }
 }
 
 #[cfg(test)]
@@ -1337,6 +989,65 @@ mod tests {
     }
 
     #[test]
+    fn reports_reject_missing_cases_samples_and_fabricated_summaries() {
+        let manifest = PerfScenarioManifest::load().unwrap();
+        let scenario = manifest.find("interpreter/source-eval-suite").unwrap();
+        let report = PerfRunReport {
+            runner: "emaxx".into(),
+            scenario_id: scenario.id.clone(),
+            tier: scenario.tier,
+            status: PerfRunStatus::Completed,
+            cases: expand_scenario_cases(scenario)
+                .into_iter()
+                .map(|name| {
+                    PerfCaseReport::completed(
+                        name,
+                        "seconds",
+                        vec![0.25; scenario.samples as usize],
+                        3,
+                        0.02,
+                        None,
+                    )
+                })
+                .collect(),
+            metadata: BTreeMap::from([
+                ("n".into(), "4096".into()),
+                ("warmup".into(), scenario.warmup.to_string()),
+                ("samples".into(), scenario.samples.to_string()),
+            ]),
+        };
+        report.validate_completed("emaxx", scenario).unwrap();
+        for corruption in 0..12 {
+            let mut bad = report.clone();
+            match corruption {
+                0 => bad.runner = "oracle".into(),
+                1 => bad.scenario_id = "other/workload".into(),
+                2 => bad.status = PerfRunStatus::Failed,
+                3 => bad.cases.clear(),
+                4 => {
+                    bad.cases.pop();
+                }
+                5 => bad.cases.push(bad.cases[0].clone()),
+                6 => bad.cases[0].status = PerfCaseStatus::Unsupported,
+                7 => {
+                    bad.cases[0].samples.pop();
+                }
+                8 => bad.cases[0].samples[0] = f64::NAN,
+                9 => bad.cases[0].samples[0] = -0.5,
+                10 => bad.cases[0].median = Some(0.001),
+                11 => {
+                    bad.metadata.insert("n".into(), "32".into());
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                bad.validate_completed("emaxx", scenario).is_err(),
+                "corruption {corruption}"
+            );
+        }
+    }
+
+    #[test]
     fn artifact_directory_preserves_scenario_shape() {
         let root = PathBuf::from("/tmp/perf");
         let dir = scenario_artifact_dir(&root, "noverlay/perf-marker-suite");
@@ -1424,23 +1135,76 @@ mod tests {
             samples: 2,
             timeout_secs: 60,
         };
-        let report = run_interpreter_suite(&scenario, 32, 1, 2);
-        assert_eq!(report.status, PerfRunStatus::Completed);
-        assert_eq!(report.cases.len(), interpreted_case_names().len());
-        for (case, expected_name) in report.cases.iter().zip(interpreted_case_names()) {
-            assert_eq!(case.case_id, expected_name);
-            assert_eq!(case.status, PerfCaseStatus::Completed, "{:?}", case.notes);
-            assert_eq!(case.samples.len(), 2);
-            assert!(case.samples.iter().all(|sample| *sample > 0.0));
-        }
+        with_shared_interpreter_workload(move |interpreter| {
+            let output = crate::test_support::eval_lisp(
+                interpreter,
+                &mut crate::lisp::types::Env::new(),
+                "(json-encode (emaxx-perf--interpreter-cases 32 1 2))",
+            )
+            .expect("shared Lisp runner completes");
+            let output = crate::lisp::primitives::string_like(&output).expect("JSON string");
+            let cases: Vec<PerfCaseReport> =
+                serde_json::from_str(&output.text).expect("case reports");
+            let report = PerfRunReport {
+                runner: "emaxx".into(),
+                scenario_id: scenario.id.clone(),
+                tier: scenario.tier,
+                status: PerfRunStatus::Completed,
+                cases,
+                metadata: BTreeMap::from([
+                    ("n".into(), "32".into()),
+                    ("warmup".into(), "1".into()),
+                    ("samples".into(), "2".into()),
+                ]),
+            };
+            report
+                .validate_completed("emaxx", &scenario)
+                .expect("complete checked samples");
+        });
     }
 
     #[test]
     fn interpreter_sample_is_rejected_when_checksum_validation_does_not_return_t() {
-        assert!(validate_interpreted_case_result("case", Ok(Value::Nil)).is_err());
-        assert!(
-            validate_interpreted_case_result("case", Err(LispError::Signal("broken".into())))
-                .is_err()
-        );
+        with_shared_interpreter_workload(|interpreter| {
+            for body in ["nil", "(error \"deliberately broken checksum\")"] {
+                let program = format!(
+                    "(progn
+                       (fset 'emaxx-perf-interpreted-list-walk (lambda (_) {body}))
+                       (emaxx-perf--interpreter-cases 32 1 2))"
+                );
+                assert!(
+                    crate::test_support::eval_lisp(
+                        interpreter,
+                        &mut crate::lisp::types::Env::new(),
+                        &program
+                    )
+                    .is_err(),
+                    "the shared runner must reject {body}"
+                );
+            }
+        });
+    }
+
+    fn with_shared_interpreter_workload(
+        test: impl FnOnce(&mut crate::lisp::eval::Interpreter) + Send + 'static,
+    ) {
+        let permit = crate::test_support::acquire_host_test_permit();
+        std::thread::Builder::new()
+            .stack_size(128 * 1024 * 1024)
+            .spawn(move || {
+                let _permit = permit;
+                crate::test_support::note_host_permit_moved_to_this_thread();
+                let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+                for file in ["compat/emacs_perf_runner.el", "compat/interpreter_perf.el"] {
+                    let path = compat::compat_path(file);
+                    interpreter
+                        .load_target(path.to_str().expect("UTF-8 helper path"))
+                        .expect("load shared performance source");
+                }
+                test(&mut interpreter);
+            })
+            .expect("performance contract test stack")
+            .join()
+            .expect("shared workload tests");
     }
 }

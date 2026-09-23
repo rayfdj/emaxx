@@ -397,6 +397,8 @@ pub(crate) fn eval_lisp(
     let forms = Reader::new(source).read_all()?;
     let mut result = Value::Nil;
     for form in forms {
+        let form = interpreter.intern_read_symbols_in_value(form, environment)?;
+        let form = interpreter.materialize_read_object_literals(form, environment)?;
         result = interpreter.eval(&form, environment)?;
     }
     Ok(result)

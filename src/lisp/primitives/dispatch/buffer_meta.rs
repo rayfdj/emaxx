@@ -1372,7 +1372,7 @@ define_dispatch!(
                                 .flatten()
                         })
                     });
-                if !code_offset.is_some_and(|offset| offset >= 0x11_0000) {
+                if code_offset.is_none_or(|offset| offset < 0x11_0000) {
                     return Err(LispError::Signal(format!("Can't unify charset: {charset}")));
                 }
                 if let Some(map) = args.get(1)

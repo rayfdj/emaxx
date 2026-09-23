@@ -1,0 +1,30 @@
+{
+  "fns-tests-sort": {
+    "oracle": 1.1044800000000001,
+    "baseline": 2.2931519995,
+    "current": 1.767355,
+    "current_over_oracle": 1.600169310444734,
+    "improvement_percent": 22.929007741948425
+  },
+  "pcase-tests-macro": {
+    "oracle": 9.549999999999999e-05,
+    "baseline": 0.00019549999999999998,
+    "current": 0.0003205,
+    "current_over_oracle": 3.356020942408377,
+    "improvement_percent": -63.938618925831214
+  },
+  "undo-test4": {
+    "oracle": 0.6546814999999999,
+    "baseline": 3.839314,
+    "current": 3.115161,
+    "current_over_oracle": 4.758284753731395,
+    "improvement_percent": 18.861520573727486
+  },
+  "mule-cmds-tests--ucs-names-missing-names": {
+    "oracle": 0.804006,
+    "baseline": 2.6342265,
+    "current": 2.4375345,
+    "current_over_oracle": 3.0317367034574367,
+    "improvement_percent": 7.466783892729046
+  }
+}

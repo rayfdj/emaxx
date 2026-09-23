@@ -722,7 +722,9 @@ impl CachedProgram {
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
         // captured during decoding. End the borrow before Lisp can run.
-        self.constants.slots()[usize::from(index)]
+        self.constants
+            .get(usize::from(index))
+            .expect("validated constant index")
     }
 }
 
@@ -2462,8 +2464,8 @@ mod tests {
             &mut interp,
             &object,
             &[Value::lambda(
-                Vec::new().into(),
-                std::rc::Rc::new(vec![Value::Integer(42)]),
+                Vec::new(),
+                vec![Value::Integer(42)],
                 Value::Nil,
             )],
             &mut env,
@@ -2476,8 +2478,8 @@ mod tests {
             &mut interp,
             &object,
             &[Value::lambda(
-                Vec::new().into(),
-                std::rc::Rc::new(vec![Value::list([Value::symbol("car"), Value::Integer(9)])]),
+                Vec::new(),
+                vec![Value::list([Value::symbol("car"), Value::Integer(9)])],
                 Value::Nil,
             )],
             &mut env,

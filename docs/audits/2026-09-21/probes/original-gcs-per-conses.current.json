@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/tools/perf/gcs-per-conses.el"
+  ],
+  "returncode": 0,
+  "stdout": "collections 120 in 3.21 s; threshold 800000 percentage 1.0\ngc: ((conses 16 143226 0) (symbols 48 17924 0) (strings 32 318099 0) (string-bytes 1 4654687) (vectors 16 13831) (vector-slots 8 113760 0) (floats 8 126 0) (intervals 56 24 0) (buffers 992 4))\ncollections 120 in 3.18 s after an explicit gc\n",
+  "stderr": ""
+}

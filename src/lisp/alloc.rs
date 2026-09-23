@@ -30,20 +30,19 @@ pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
+pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
     FreedRecord, live_record_census, live_string_object_census, live_vector_census, sweep_vectors,
     take_freed_records,
 };
-pub use vectors::{VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 
 /// alloc.c's block geometry: the cells per block that its formulas give
 /// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'
 /// = BLOCK_ALIGN - sizeof (struct ablocks *), `MALLOC_SIZE_NEAR (1024)'
-/// = 1016 under glibc's 16-byte alignment).  A cell here is wider than
-/// its `struct' (the native words, the borrow flags and the serial ride
-/// along until the representation shrinks), so a block is wider than
-/// C's, for C's number of cells: the mem tree has C's number of nodes
-/// and a block is given back when C's would be.
+/// = 1016 under glibc's 16-byte alignment). Cons cells still carry a
+/// second payload and metadata, so their blocks exceed C's footprint.
+/// Float cells have C's eight-byte payload and a 32 KiB block; their
+/// extra allocation bitmap slightly reduces the cells per block.
 const C_BLOCK_BYTES: usize = (1 << 15) - 8;
 const C_MALLOC_SIZE_NEAR_1024: usize = 1016;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
@@ -51,8 +50,10 @@ const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
 /// padding, times CHAR_BIT, over the cons's bits plus its mark bit, with
 /// a 16-byte cons.
 pub(crate) const CELLS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8 - (16 - 8)) * 8) / (16 * 8 + 1);
-/// `FLOAT_BLOCK_SIZE', with an 8-byte float.
-pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 1);
+/// Eight-byte float payloads and two bits per slot: the collection mark,
+/// and allocation state for checked native-word decoding. GNU has one mark
+/// bit; the allocation bit replaces this runtime's in-object FREE_MARK.
+pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 2);
 /// `STRING_BLOCK_SIZE': (MALLOC_SIZE_NEAR (1024) - sizeof (struct
 /// string_block *)) / sizeof (struct Lisp_String), a 32-byte string.
 pub(crate) const STRINGS_PER_BLOCK: usize = (C_MALLOC_SIZE_NEAR_1024 - 8) / 32;
@@ -65,7 +66,7 @@ const BLOCK_ALIGN: usize = 4096;
 fn block_bytes(kind: BlockKind) -> usize {
     let cells = match kind {
         BlockKind::Cons => CELLS_PER_BLOCK * CELL_SIZE,
-        BlockKind::Float => FLOATS_PER_BLOCK * FLOAT_CELL_SIZE,
+        BlockKind::Float => std::mem::size_of::<FloatBlock>(),
         BlockKind::String => STRINGS_PER_BLOCK * STRING_CELL_SIZE,
         BlockKind::Symbol => SYMBOLS_PER_BLOCK * symbols::SYMBOL_CELL_SIZE,
         BlockKind::VectorBlock | BlockKind::LargeVector => {
@@ -73,6 +74,14 @@ fn block_bytes(kind: BlockKind) -> usize {
         }
     };
     cells.div_ceil(BLOCK_ALIGN) * BLOCK_ALIGN
+}
+
+fn block_alignment(kind: BlockKind) -> usize {
+    if kind == BlockKind::Float {
+        FLOAT_BLOCK_ALIGN
+    } else {
+        BLOCK_ALIGN
+    }
 }
 
 /// The mark word of a cell on the free list (alloc.c sets the mark bit
@@ -139,12 +148,119 @@ static LIVE_FLOATS: AtomicUsize = AtomicUsize::new(0);
 static FREE_FLOATS: AtomicUsize = AtomicUsize::new(0);
 const FLOAT_CELL_SIZE: usize = std::mem::size_of::<FloatCell>();
 
-/// alloc.c's `struct Lisp_Float': the double, and (here, in the cell
-/// rather than in the block's bitmap) the mark word.
+/// lisp.h's `struct Lisp_Float': one double, also read directly by generated
+/// code. Allocation and collection state belong to the containing block.
 #[repr(C)]
 pub struct FloatCell {
     value: f64,
-    mark: MarkBit,
+}
+
+const FLOAT_BLOCK_ALIGN: usize = 1 << 15;
+const FLOAT_BITMAP_WORDS: usize = FLOATS_PER_BLOCK.div_ceil(usize::BITS as usize);
+
+#[repr(C, align(32768))]
+struct FloatBlock {
+    cells: [std::mem::MaybeUninit<FloatCell>; FLOATS_PER_BLOCK],
+    marks: FloatMarks,
+}
+
+const _: () = {
+    assert!(FLOAT_CELL_SIZE == 8);
+    assert!(std::mem::size_of::<FloatBlock>() == FLOAT_BLOCK_ALIGN);
+    assert!(FLOATS_PER_BLOCK * FLOAT_CELL_SIZE < FLOAT_BLOCK_ALIGN);
+};
+
+/// alloc.c:float_block.gcmarkbits. One epoch for the block allows the
+/// runtime's independent reachability passes to use these compact marks:
+/// the first mark of a new pass clears the old bitmap. There is no epoch
+/// or allocation-state load on an ordinary release-build float read.
+#[repr(C)]
+struct FloatMarks {
+    epoch: Cell<u32>,
+    allocated: [Cell<usize>; FLOAT_BITMAP_WORDS],
+    marked: [Cell<usize>; FLOAT_BITMAP_WORDS],
+}
+
+impl FloatMarks {
+    const fn new() -> Self {
+        Self {
+            epoch: Cell::new(0),
+            allocated: [const { Cell::new(0) }; FLOAT_BITMAP_WORDS],
+            marked: [const { Cell::new(0) }; FLOAT_BITMAP_WORDS],
+        }
+    }
+}
+
+pub(crate) struct FloatMark<'a> {
+    block: &'a FloatMarks,
+    index: usize,
+}
+
+impl FloatMark<'_> {
+    #[inline]
+    fn bit(&self) -> (usize, usize) {
+        (
+            self.index / usize::BITS as usize,
+            1 << (self.index % usize::BITS as usize),
+        )
+    }
+
+    #[inline]
+    fn allocated(&self) -> bool {
+        let (word, mask) = self.bit();
+        self.block.allocated[word].get() & mask != 0
+    }
+
+    #[inline]
+    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+        let (word, mask) = self.bit();
+        self.block.epoch.get() == epoch && self.block.marked[word].get() & mask != 0
+    }
+
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        debug_assert!(self.allocated(), "marking a free float");
+        if self.block.epoch.get() != epoch {
+            for word in &self.block.marked {
+                word.set(0);
+            }
+            self.block.epoch.set(epoch);
+        }
+        let (word, mask) = self.bit();
+        let old = self.block.marked[word].get();
+        self.block.marked[word].set(old | mask);
+        old & mask == 0
+    }
+
+    fn allocate(&self, epoch: u32) {
+        let (word, mask) = self.bit();
+        self.block.allocated[word].set(self.block.allocated[word].get() | mask);
+        self.mark(epoch);
+    }
+
+    fn release(&self) {
+        let (word, mask) = self.bit();
+        self.block.allocated[word].set(self.block.allocated[word].get() & !mask);
+        self.block.marked[word].set(self.block.marked[word].get() & !mask);
+    }
+}
+
+/// FLOAT_BLOCK/FLOAT_INDEX: derive the metadata by alignment and index,
+/// without a hash table or a registry lookup.
+///
+/// # Safety
+/// CELL is a slot of an allocated FloatBlock. It may be on its free list.
+/// The caller must keep the block allocated for the returned borrow;
+/// its metadata remains initialized until the entire block is released.
+#[inline]
+unsafe fn float_mark<'a>(cell: *const FloatCell) -> FloatMark<'a> {
+    let address = cell as usize;
+    let base = address & !(FLOAT_BLOCK_ALIGN - 1);
+    let index = (address - base) / FLOAT_CELL_SIZE;
+    debug_assert!(index < FLOATS_PER_BLOCK);
+    // SAFETY: metadata is initialized before the block is registered, and
+    // the caller keeps the block allocated for the returned borrow.
+    let block = unsafe { &*std::ptr::addr_of!((*(base as *const FloatBlock)).marks) };
+    FloatMark { block, index }
 }
 
 /// `Lisp_Object' for a float: the cell's address, copied freely, valid
@@ -158,7 +274,7 @@ impl FloatRef {
         // SAFETY: a `FloatRef' names an allocated cell (see `ConsRef').
         let cell = unsafe { self.0.as_ref() };
         debug_assert!(
-            cell.mark.raw() != FREE_MARK,
+            self.mark_bit().allocated(),
             "use of a float the collector freed"
         );
         cell
@@ -186,8 +302,9 @@ impl FloatRef {
         self.0 == other.0
     }
 
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.cell().mark
+    pub(crate) fn mark_bit(&self) -> FloatMark<'_> {
+        // SAFETY: a reachable FloatRef keeps its containing block allocated.
+        unsafe { float_mark(self.0.as_ptr()) }
     }
 }
 
@@ -245,17 +362,11 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
         head
     };
     LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-    // SAFETY: SLOT is a free cell of a float block; both words are
-    // written before a handle is made (the epoch as for a cons).
+    // SAFETY: SLOT is a free cell of a float block. Initialize its one word
+    // and the block's allocation/mark bits before publishing a handle.
     unsafe {
-        std::ptr::write(
-            slot,
-            FloatCell {
-                value,
-                mark: MarkBit::default(),
-            },
-        );
-        (*slot).mark.set_raw(super::types::current_mark_epoch());
+        std::ptr::write(slot, FloatCell { value });
+        float_mark(slot).allocate(super::types::current_mark_epoch());
         FloatRef(NonNull::new_unchecked(slot))
     }
 }
@@ -295,15 +406,15 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
         for index in 0..lim {
             let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
             // SAFETY: inside a registered float block.
-            let mark = unsafe { (*cell).mark.raw() };
-            if mark == epoch {
+            let mark = unsafe { float_mark(cell) };
+            if mark.is_marked(epoch) {
                 num_used += 1;
                 continue;
             }
-            // SAFETY: an unmarked cell holds no owned storage; it becomes
-            // free (the free mark, the link in its first word).
+            // SAFETY: an unmarked cell holds no owned storage; clear its
+            // allocation bit and store the free-list link in its one word.
             unsafe {
-                (*cell).mark.set_raw(FREE_MARK);
+                mark.release();
                 (*cell.cast::<FreeFloat>()).next = free_list;
             }
             this_free += 1;
@@ -359,8 +470,11 @@ pub(crate) const UNTRACKED_TEXT: usize = usize::MAX;
 /// keeping the string.
 #[repr(C)]
 pub struct StringCell {
-    text: String,
+    // This existing size word also distinguishes plain text storage from
+    // the current property-bearing string allocation. It adds no word or
+    // lookup. Both storage forms now use GNU's string tag at their address.
     storage_bytes: usize,
+    text: String,
     mark: MarkBit,
     serial: u64,
 }
@@ -438,9 +552,10 @@ struct FreeString {
 /// alloc.c's `empty_unibyte_string': one permanently rooted empty string,
 /// outside every block (no sweep reaches it), returned by every
 /// zero-length allocation so that `(eq "" "")' holds.
+static EMPTY_TEXT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 pub(crate) fn empty_text() -> TextRef {
-    static EMPTY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let address = *EMPTY.get_or_init(|| {
+    let address = *EMPTY_TEXT.get_or_init(|| {
         Box::leak(Box::new(StringCell {
             text: String::new(),
             storage_bytes: UNTRACKED_TEXT,
@@ -456,6 +571,10 @@ pub(crate) fn empty_text() -> TextRef {
 /// the newest string block; the text's bytes stay where the `String'
 /// keeps them (allocate_string_data's large-string case).
 pub(crate) fn allocate_string(text: String, storage_bytes: usize) -> TextRef {
+    // GNU's STRING_BYTES_BOUND is below the pseudovector flag. Enforce the
+    // allocator invariant even for an invalid internal/image caller before
+    // publishing a word whose storage class is read from this header.
+    assert!(storage_bytes < (1 << (usize::BITS - 2)) || storage_bytes == UNTRACKED_TEXT);
     let head = STRING_FREE_LIST.load(Ordering::Relaxed);
     let slot = if head.is_null() {
         bump_string()
@@ -588,9 +707,6 @@ pub(crate) fn live_string_bytes() -> usize {
 }
 
 thread_local! {
-    /// The OS stack region of this thread below the coroutine trampoline
-    /// (the region the trampoline's caller uses), scanned with the rest.
-    static OS_STACK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     /// The stacks of parked Lisp threads (coroutines suspended on this OS
     /// thread): base to saved stack pointer.
     static PARKED_STACKS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -796,11 +912,12 @@ impl<T> RootedVec<T> {
         self.inner.reverse();
     }
 
-    /// The drained elements, taken at once (the slots they leave are
-    /// zeroed before this returns).
-    pub fn drain(&mut self, range: impl std::ops::RangeBounds<usize>) -> std::vec::IntoIter<T> {
+    /// The drained elements, taken at once and kept rooted until consumed.
+    /// The source slots they leave are zeroed before this returns.
+    pub fn drain(&mut self, range: impl std::ops::RangeBounds<usize>) -> RootedIntoIter<T> {
         let before = self.inner.len();
         let drained = self.inner.drain(range).collect::<Vec<_>>();
+        let drained = Self::from_vec(drained);
         self.clear_popped(before - self.inner.len());
         drained.into_iter()
     }
@@ -873,47 +990,99 @@ impl<T> FromIterator<T> for RootedVec<T> {
     }
 }
 
-/// Iteration by value keeps the buffer registered until the iterator is
-/// dropped (the values moved out leave their words behind, which the
-/// scan still reads: harmless over-marking).
+/// The remaining elements stay in the registered buffer. Consuming an
+/// element clears its old bytes, like popping a RootedVec: a collection
+/// cannot mistake a consumed value for a still-live buffer element.
 pub struct RootedIntoIter<T> {
-    iter: std::vec::IntoIter<T>,
-    slot: usize,
+    buffer: RootedVec<T>,
+    front: usize,
+    back: usize,
+}
+
+impl<T> RootedIntoIter<T> {
+    /// # Safety
+    /// INDEX is an initialized element removed from the remaining range.
+    unsafe fn take(&mut self, index: usize) -> T {
+        // SAFETY: the Vec still owns the complete allocation, with its
+        // length zero so it cannot drop moved elements. The iterator's
+        // front/back indices own the initialized elements instead. Derive
+        // one mutable raw pointer from the Vec, move out exactly once, and
+        // clear that vacated storage without creating an aliased reference.
+        unsafe {
+            let slot = self.buffer.inner.as_mut_ptr().add(index);
+            let value = slot.read();
+            std::ptr::write_bytes(slot.cast::<u8>(), 0, std::mem::size_of::<T>());
+            value
+        }
+    }
 }
 
 impl<T> Iterator for RootedIntoIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
-        self.iter.next()
+        if self.front == self.back {
+            return None;
+        }
+        let index = self.front;
+        self.front += 1;
+        // SAFETY: INDEX was the first remaining initialized element.
+        Some(unsafe { self.take(index) })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
+        let len = self.back - self.front;
+        (len, Some(len))
     }
 }
 
 impl<T> DoubleEndedIterator for RootedIntoIter<T> {
     fn next_back(&mut self) -> Option<T> {
-        self.iter.next_back()
+        if self.front == self.back {
+            return None;
+        }
+        self.back -= 1;
+        // SAFETY: BACK was the last remaining initialized element.
+        Some(unsafe { self.take(self.back) })
     }
 }
 
 impl<T> ExactSizeIterator for RootedIntoIter<T> {}
+impl<T> std::iter::FusedIterator for RootedIntoIter<T> {}
 
 impl<T> Drop for RootedIntoIter<T> {
     fn drop(&mut self) {
-        RootedVec::<T>::unregister(self.slot);
+        if !std::mem::needs_drop::<T>() {
+            return;
+        }
+        // As with Vec's owning iterator, one panicking destructor must not
+        // skip the remaining destructors. The buffer stays registered until
+        // this guard finishes, including any collection during a destructor.
+        struct Remaining<'a, T>(&'a mut RootedIntoIter<T>);
+        impl<T> Drop for Remaining<'_, T> {
+            fn drop(&mut self) {
+                for value in self.0.by_ref() {
+                    drop(value);
+                }
+            }
+        }
+        let guard = Remaining(self);
+        for value in guard.0.by_ref() {
+            drop(value);
+        }
     }
 }
 
 impl<T> IntoIterator for RootedVec<T> {
     type Item = T;
     type IntoIter = RootedIntoIter<T>;
-    fn into_iter(self) -> RootedIntoIter<T> {
-        let mut this = std::mem::ManuallyDrop::new(self);
-        let inner = std::mem::take(&mut this.inner);
+    fn into_iter(mut self) -> RootedIntoIter<T> {
+        let back = self.inner.len();
+        // SAFETY: the owning iterator now manages every initialized
+        // element. Its Drop releases them before the Vec frees the buffer.
+        unsafe { self.inner.set_len(0) };
         RootedIntoIter {
-            iter: inner.into_iter(),
-            slot: this.slot,
+            buffer: self,
+            front: 0,
+            back,
         }
     }
 }
@@ -931,6 +1100,57 @@ impl<'a, T> IntoIterator for &'a mut RootedVec<T> {
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> std::slice::IterMut<'a, T> {
         self.inner.iter_mut()
+    }
+}
+
+#[cfg(test)]
+mod root_buffer_tests {
+    use super::RootedVec;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn owning_iterator_drops_remaining_elements_and_unregisters_after_panic() {
+        struct Probe {
+            id: usize,
+            drops: Rc<RefCell<Vec<usize>>>,
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.drops.borrow_mut().push(self.id);
+                assert_ne!(self.id, 1, "exercise a panicking element destructor");
+            }
+        }
+        let drops = Rc::new(RefCell::new(Vec::new()));
+        let roots: RootedVec<_> = (0..5)
+            .map(|id| Probe {
+                id,
+                drops: drops.clone(),
+            })
+            .collect();
+        let slot = roots.slot;
+        let mut iter = roots.into_iter();
+        drop(iter.next().expect("front"));
+        drop(iter.next_back().expect("back"));
+        assert_eq!(iter.len(), 3);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(iter)));
+        assert!(panic.is_err());
+        assert_eq!(&*drops.borrow(), &[0, 4, 1, 2, 3]);
+        assert!(super::heap_roots().regions[slot].is_none());
+    }
+
+    #[test]
+    fn owning_iterator_handles_empty_and_zero_sized_elements() {
+        let mut empty = RootedVec::<()>::new().into_iter();
+        assert_eq!(empty.next(), None);
+        assert_eq!(empty.next_back(), None);
+        let mut units = RootedVec::from_vec(vec![(); 3]).into_iter();
+        assert_eq!(units.next(), Some(()));
+        assert_eq!(units.next_back(), Some(()));
+        assert_eq!(units.len(), 1);
+        assert_eq!(units.next(), Some(()));
+        assert_eq!(units.next_back(), None);
+        assert_eq!(units.next(), None);
     }
 }
 
@@ -1024,9 +1244,8 @@ pub(crate) fn os_stack_base() -> Option<usize> {
     None
 }
 
-/// alloc.c:mark_stack and mark_threads: the running stack, the OS stack
-/// region below the trampoline, the parked coroutines' stacks and the
-/// regions of the stacks waiting on a resumed coroutine.
+/// alloc.c:mark_stack and mark_threads: the running stack, the parked
+/// coroutines' stacks and every live stack waiting on an alternate stack.
 #[inline(never)]
 pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(Value)) {
     let base = current_base.or_else(os_stack_base);
@@ -1235,8 +1454,8 @@ fn bump_cell() -> *mut ConsCell {
 /// (the sweep found nothing live in it).
 fn release_block(start: usize, kind: BlockKind) {
     unregister_block(start);
-    let layout =
-        std::alloc::Layout::from_size_align(block_bytes(kind), BLOCK_ALIGN).expect("block layout");
+    let layout = std::alloc::Layout::from_size_align(block_bytes(kind), block_alignment(kind))
+        .expect("block layout");
     // SAFETY: a block `new_block' allocated with this layout, unregistered
     // above; every cell is free (nothing reaches it).
     unsafe { std::alloc::dealloc(start as *mut u8, layout) };
@@ -1244,8 +1463,8 @@ fn release_block(start: usize, kind: BlockKind) {
 
 /// alloc.c's `lisp_align_malloc' of a block of KIND: every cell free.
 fn new_block(kind: BlockKind) -> usize {
-    let layout =
-        std::alloc::Layout::from_size_align(block_bytes(kind), BLOCK_ALIGN).expect("block layout");
+    let layout = std::alloc::Layout::from_size_align(block_bytes(kind), block_alignment(kind))
+        .expect("block layout");
     // SAFETY: a non-zero layout.
     let block = unsafe { std::alloc::alloc(layout) };
     assert!(!block.is_null(), "out of memory for a block");
@@ -1260,16 +1479,12 @@ fn new_block(kind: BlockKind) -> usize {
             }
         }
         BlockKind::Float => {
-            for index in 0..FLOATS_PER_BLOCK {
-                let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
-                // SAFETY: inside the block just allocated; the mark word
-                // is written as a plain word.
-                unsafe {
-                    std::ptr::addr_of_mut!((*cell).mark)
-                        .cast::<u32>()
-                        .write(FREE_MARK)
-                };
-            }
+            // SAFETY: a fresh aligned FloatBlock allocation. The cells stay
+            // uninitialized; zero allocation bits reject every unused slot.
+            unsafe {
+                std::ptr::addr_of_mut!((*(block.cast::<FloatBlock>())).marks)
+                    .write(FloatMarks::new())
+            };
         }
         BlockKind::String => {
             for index in 0..STRINGS_PER_BLOCK {
@@ -1316,6 +1531,12 @@ unsafe fn mark_of<'a>(cell: *mut ConsCell) -> &'a MarkBit {
 /// The blocks registry is read under its lock; the cell's mark word is
 /// readable in every state.
 pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
+    if let Some(vector) = vectors::zero_vector_at(address) {
+        return Some(Found::Vectorlike(vector));
+    }
+    if EMPTY_TEXT.get().is_some_and(|&empty| empty == address) {
+        return Some(Found::String(address as *mut StringCell));
+    }
     let blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1342,8 +1563,8 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
             }
             let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
             // SAFETY: inside a registered float block.
-            let mark = unsafe { (*cell).mark.raw() };
-            (mark != FREE_MARK).then_some(Found::Float(cell))
+            let mark = unsafe { float_mark(cell) };
+            mark.allocated().then_some(Found::Float(cell))
         }
         BlockKind::String => {
             let index = offset / STRING_CELL_SIZE;
@@ -1502,11 +1723,9 @@ fn verify_marking(epoch: u32) {
             let live = unsafe { &*cell };
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.value_in_place();
-                if let Some(target_mark) = vectorlike_mark_raw(&value)
-                    && target_mark != epoch
-                {
+                if vectorlike_is_marked(&value, epoch) == Some(false) {
                     panic!(
-                        "before the sweep of epoch {epoch}, marked cons {:#x} (serial {}, car {}, cdr {}) holds an unmarked vectorlike (mark {target_mark}) in its {which}: {}",
+                        "before the sweep of epoch {epoch}, marked cons {:#x} (serial {}, car {}, cdr {}) holds an unmarked vectorlike in its {which}: {}",
                         cell as usize,
                         live.serial,
                         describe(&live.car.value_in_place()),
@@ -1574,15 +1793,15 @@ fn verify_marking(epoch: u32) {
     }
 }
 
-/// The mark word of a vectorlike the value names, for the checks.
-fn vectorlike_mark_raw(value: &super::types::Value) -> Option<u32> {
+/// The mark state of a vectorlike the value names, for the checks.
+fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool> {
     match value.kind() {
-        Kind::Vector(vector) => Some(vector.mark_bit().raw()),
-        Kind::Lambda(lambda) => Some(lambda.mark_bit().raw()),
-        Kind::Buffer(buffer) => Some(buffer.mark_bit().raw()),
-        Kind::StringObject(state) => Some(state.mark_bit().raw()),
-        Kind::ReaderForm(form) => Some(form.mark_bit().raw()),
-        Kind::BigInteger(integer) => Some(integer.mark_bit().raw()),
+        Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
+        Kind::Lambda(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
+        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
+        Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
+        Kind::ReaderForm(form) => Some(form.mark_bit().is_marked(epoch)),
+        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
         _ => None,
     }
 }
@@ -1680,13 +1899,6 @@ pub(crate) fn free_conses() -> usize {
     FREE_CONSES.load(Ordering::Relaxed)
 }
 
-/// Record the OS stack region this thread uses outside the coroutine
-/// trampoline: from the trampoline's entry down to BASE (the highest
-/// address of the thread's stack that may hold a value).
-pub(crate) fn note_os_stack(entry_sp: usize, base: usize) {
-    OS_STACK.with(|region| region.set((entry_sp, base)));
-}
-
 thread_local! {
     /// `current_thread->stack_top': the frame `flush_stack_call_func'
     /// recorded at the collection's entry, zero outside a collection.
@@ -1747,9 +1959,8 @@ pub(crate) fn stack_top() -> usize {
 
 /// alloc.c:mark_stack for the running thread: the callee-saved registers
 /// spilled into a local array, then every word from the current stack
-/// pointer to the stack's base (the coroutine's, and the OS stack region
-/// below the trampoline) that names an allocated cell marks it.  MARK is
-/// called with each such cell.
+/// pointer to this stack's base that names an allocated cell marks it.
+/// Waiting callers' stacks are separate regions in `mark_all_stacks`.
 #[inline(never)]
 pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(Value)) {
     // alloc.c:mark_c_stack from the thread's `stack_top' (the collection's
@@ -1768,12 +1979,6 @@ pub(crate) fn mark_stack(base: Option<usize>, mut mark: impl FnMut(Value)) {
         // SAFETY: the words between a live frame and the stack base are
         // this thread's stack, readable in full.
         unsafe { scan_words(low, base, &mut mark) };
-    }
-    let (entry_sp, os_base) = OS_STACK.with(Cell::get);
-    if entry_sp != 0 && os_base > entry_sp {
-        // SAFETY: the region the trampoline's caller uses, recorded at
-        // entry; it stays mapped while the thread runs.
-        unsafe { scan_words(entry_sp, os_base, &mut mark) };
     }
     std::hint::black_box(&spill);
 }

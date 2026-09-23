@@ -4,7 +4,7 @@ use super::types::{
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use unicode_names2::character as unicode_character;
 
@@ -45,14 +45,6 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     !matches!(cdr.get().kind(), Kind::Integer(_))
 }
 
-fn invalid_circular_read_syntax() -> LispError {
-    LispError::ReadError("invalid-read-syntax".into())
-}
-
-fn nonsensical_circular_self_reference() -> LispError {
-    LispError::ReadError("nonsensical self-reference".into())
-}
-
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     let mut pending = vec![*value];
     let mut seen_cons = HashSet::new();
@@ -71,10 +63,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                     pending.push(car.get());
                 }
             }
-            Kind::Vector(vector) => {
-                if seen_vectors.insert(vector.identity()) {
-                    pending.extend(vector.slots().iter().cloned());
-                }
+            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
+                pending.extend(vector.slots());
             }
             Kind::ReaderForm(form) => match form.as_ref() {
                 ReaderForm::HashTable { fields }
@@ -98,279 +88,10 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     false
 }
 
-fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
-    let (car, cdr) = value.cons_values()?;
-    if !matches!(car.kind(), Kind::Symbol(ref symbol) if symbol == "quote") {
-        return None;
-    }
-    let (literal, rest) = cdr.cons_values()?;
-    if !rest.is_nil() {
-        return None;
-    }
-    matches!(
-        literal.kind(),
-        Kind::ReaderForm(form) if matches!(form.as_ref(), ReaderForm::HashTable { .. })
-    )
-    .then_some(literal)
-}
-
-/// The elements of a vector template, head included: a `(vector-literal
-/// ...)' list, or a vector itself, whose `to_vec' also leads with that
-/// head.  A list is examined by its car alone, never converted.
-fn vector_literal_items(value: &Value) -> Option<Vec<Value>> {
-    match value.kind() {
-        Kind::Vector(_) => value.to_vec().ok(),
-        Kind::Cons(_) => {
-            let (car, _) = value.cons_values()?;
-            if !matches!(car.kind(), Kind::Symbol(ref symbol) if symbol == "vector-literal") {
-                return None;
-            }
-            value.to_vec().ok()
-        }
-        _ => None,
-    }
-}
-
-fn circular_vector_skeleton(len: usize) -> Value {
-    Value::vector(std::iter::repeat_n(Value::Nil, len))
-}
-
-fn fill_circular_label_value(
-    template: &Value,
-    target: &Value,
-    labels: &mut HashMap<u32, Value>,
-) -> Result<(), LispError> {
-    if let Some(items) = vector_literal_items(template) {
-        let Kind::Vector(vector) = target.kind() else {
-            return Err(invalid_circular_read_syntax());
-        };
-        if vector.slots().len() != items.len().saturating_sub(1) {
-            return Err(invalid_circular_read_syntax());
-        }
-        for (index, item) in items[1..].iter().enumerate() {
-            let resolved = resolve_circular_read_syntax_inner(item, labels)?;
-            vector.slots_mut()[index] = resolved;
-        }
-        return Ok(());
-    }
-
-    let Some((template_car, template_cdr)) = template.cons_values() else {
-        return Err(invalid_circular_read_syntax());
-    };
-    let Some((target_car, target_cdr)) = target.cons_cells() else {
-        return Err(invalid_circular_read_syntax());
-    };
-    target_car.set(resolve_circular_read_syntax_inner(&template_car, labels)?);
-    target_cdr.set(resolve_circular_read_syntax_inner(&template_cdr, labels)?);
-    Ok(())
-}
-
-fn resolve_circular_read_syntax_inner(
-    value: &Value,
-    labels: &mut HashMap<u32, Value>,
-) -> Result<Value, LispError> {
-    Ok(resolve_changed(value, labels)?.unwrap_or(*value))
-}
-
-/// The resolved form of VALUE, or None when VALUE holds no reader form
-/// and is final as read: the common case, whose structure is then kept
-/// as the reader built it instead of being copied cell by cell.
-fn resolve_changed(
-    value: &Value,
-    labels: &mut HashMap<u32, Value>,
-) -> Result<Option<Value>, LispError> {
-    if let Some(literal) = quoted_hash_table_literal(value)
-        && contains_circular_read_syntax(&literal)
-    {
-        return Err(invalid_circular_read_syntax());
-    }
-
-    if let Some(id) = circular_read_ref_form(value) {
-        return labels
-            .get(&id)
-            .cloned()
-            .map(Some)
-            .ok_or_else(invalid_circular_read_syntax);
-    }
-
-    if let Some((id, template)) = circular_read_label_form(value) {
-        if circular_read_ref_form(&template) == Some(id) {
-            return Err(nonsensical_circular_self_reference());
-        }
-
-        let placeholder = if let Some(items) = vector_literal_items(&template) {
-            circular_vector_skeleton(items.len().saturating_sub(1))
-        } else if matches!(template.kind(), Kind::Cons(_)) {
-            Value::cons(Value::Nil, Value::Nil)
-        } else {
-            let resolved = resolve_circular_read_syntax_inner(&template, labels)?;
-            labels.insert(id, resolved);
-            return Ok(Some(resolved));
-        };
-
-        // GNU lread.c deliberately replaces an existing #N= mapping.  Label
-        // numbers can therefore be reused for separate circular subobjects
-        // inside one top-level form; later #N# references bind to the newest
-        // definition without changing already materialized cycles.
-        labels.insert(id, placeholder);
-        fill_circular_label_value(&template, &placeholder, labels)?;
-        return Ok(Some(placeholder));
-    }
-
-    if let Some(items) = vector_literal_items(value) {
-        let mut changed = false;
-        let mut resolved = Vec::with_capacity(items.len());
-        for item in &items[1..] {
-            match resolve_changed(item, labels)? {
-                Some(item) => {
-                    changed = true;
-                    resolved.push(item);
-                }
-                None => resolved.push(*item),
-            }
-        }
-        if !changed {
-            return Ok(None);
-        }
-        return Ok(Some(if matches!(value.kind(), Kind::Vector(_)) {
-            Value::vector(resolved)
-        } else {
-            Value::list(std::iter::once(Value::symbol("vector-literal")).chain(resolved))
-        }));
-    }
-
-    match value.kind() {
-        Kind::Cons(_) => {
-            // Walk the spine iteratively, each element's car first and the
-            // final cdr last, as the recursive descent did; a long list
-            // must not recurse once per element.  Every tail is examined
-            // as a value of its own (a `(quote HASH-TABLE)' tail included).
-            let mut items = Vec::new();
-            let mut changed = false;
-            let mut cursor = *value;
-            let mut first = true;
-            while let Some((car, cdr)) = cursor.cons_values() {
-                if !first
-                    && let Some(literal) = quoted_hash_table_literal(&cursor)
-                    && contains_circular_read_syntax(&literal)
-                {
-                    return Err(invalid_circular_read_syntax());
-                }
-                first = false;
-                match resolve_changed(&car, labels)? {
-                    Some(car) => {
-                        changed = true;
-                        items.push(car);
-                    }
-                    None => items.push(car),
-                }
-                cursor = cdr;
-                if !matches!(cursor.kind(), Kind::Cons(_)) {
-                    break;
-                }
-                if circular_read_ref_form(&cursor).is_some()
-                    || circular_read_label_form(&cursor).is_some()
-                    || vector_literal_items(&cursor).is_some()
-                {
-                    break;
-                }
-            }
-            let tail = match resolve_changed(&cursor, labels)? {
-                Some(tail) => {
-                    changed = true;
-                    tail
-                }
-                None => cursor,
-            };
-            if !changed {
-                return Ok(None);
-            }
-            let mut result = tail;
-            for item in items.into_iter().rev() {
-                result = Value::cons(item, result);
-            }
-            Ok(Some(result))
-        }
-        // Propertized string literals carry arbitrary values in their
-        // property plists; `#N=' labels and `#N#' references may appear
-        // there (print-circle output shares prop values).
-        Kind::StringObject(state) => {
-            let spans = state.borrow().props.clone();
-            let mut changed = false;
-            let mut resolved_spans = Vec::with_capacity(spans.len());
-            for span in spans {
-                let mut resolved_props = Vec::with_capacity(span.props.len());
-                for (key, prop_value) in span.props {
-                    let resolved = match resolve_changed(&prop_value, labels)? {
-                        Some(resolved) => {
-                            changed = true;
-                            resolved
-                        }
-                        None => prop_value,
-                    };
-                    resolved_props.push((key, resolved));
-                }
-                resolved_spans.push(StringPropertySpan {
-                    props: resolved_props,
-                    ..span
-                });
-            }
-            if !changed {
-                return Ok(None);
-            }
-            state.borrow_mut().props = resolved_spans;
-            Ok(Some(*value))
-        }
-        Kind::ReaderForm(form) => {
-            let resolve_fields = |fields: &[Value], labels: &mut HashMap<u32, Value>| {
-                fields
-                    .iter()
-                    .map(|field| resolve_circular_read_syntax_inner(field, labels))
-                    .collect::<Result<Vec<_>, _>>()
-            };
-            let resolved = match form.as_ref() {
-                ReaderForm::HashTable { fields } => ReaderForm::HashTable {
-                    fields: resolve_fields(fields, labels)?,
-                },
-                ReaderForm::CharTable { fields } => ReaderForm::CharTable {
-                    fields: resolve_fields(fields, labels)?,
-                },
-                ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
-                    fields: resolve_fields(fields, labels)?,
-                },
-                ReaderForm::Record { slots } => ReaderForm::Record {
-                    slots: resolve_fields(slots, labels)?,
-                },
-                ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
-                    kind: *kind,
-                    slots: resolve_fields(slots, labels)?,
-                },
-                // Bits carry no reader labels to resolve; a positioned
-                // symbol is a leaf: both are final as read.
-                ReaderForm::BoolVector { .. } | ReaderForm::PositionedSymbol { .. } => {
-                    return Ok(None);
-                }
-                ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
-                    unreachable!("circular reader forms are handled before structural descent")
-                }
-            };
-            Ok(Some(Value::ReaderForm(
-                crate::lisp::alloc::VectorlikeRef::allocate(resolved),
-            )))
-        }
-        _ => Ok(None),
-    }
-}
-
-pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispError> {
-    resolve_circular_read_syntax_inner(&value, &mut HashMap::new())
-}
-
-/// True when a quoted template contains reader marker forms (`#N='/`#N#'
-/// circular labels, hash/character tables, or record literals) that `quote' must
-/// resolve.  Marker-free templates — the common case — can be returned
-/// as-is, sharing structure exactly like GNU's quote.
-pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
+/// Whether a parsed object still contains reader forms requiring runtime
+/// allocation. Resolve these once at the read boundary, as lread.c does,
+/// before evaluation or returning the object from a Lisp reader primitive.
+pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
     let mut seen = std::collections::HashSet::new();
     let mut seen_vectors = std::collections::HashSet::new();
     let mut stack = vec![*value];
@@ -387,10 +108,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 stack.push(car_cell.get());
                 stack.push(cdr_cell.get());
             }
-            Kind::Vector(vector) => {
-                if seen_vectors.insert(vector.identity()) {
-                    stack.extend(vector.slots().iter().cloned());
-                }
+            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
+                stack.extend(vector.slots());
             }
             Kind::StringObject(state) => {
                 for span in &state.borrow().props {
@@ -464,7 +183,7 @@ pub struct Reader<'a> {
     /// Whether any datum read so far is a `ReaderForm' placeholder (a
     /// circular label or reference, a hash-table, record, char-table,
     /// bool-vector or closure literal, a positioned symbol): only then
-    /// does the read result need `resolve_circular_read_syntax'.
+    /// does the read result need Interpreter-owned object materialization.
     emitted_reader_forms: bool,
 }
 
@@ -587,7 +306,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Whether a datum read so far contains a placeholder that
-    /// `resolve_circular_read_syntax' must materialize.  False for the
+    /// the Interpreter must materialize. False for the
     /// common marker-free text, whose value is final as read.
     pub fn emitted_reader_forms(&self) -> bool {
         self.emitted_reader_forms
@@ -2622,7 +2341,10 @@ mod tests {
     #[test]
     fn circular_label_numbers_can_be_reused_within_one_top_level_form() {
         let parsed = read_one("(#1=(a #1#) #1=(b #1#))");
-        let resolved = resolve_circular_read_syntax(parsed).expect("resolve reused labels");
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        let resolved = interpreter
+            .materialize_read_object_literals(parsed, &mut crate::lisp::types::Env::new())
+            .expect("resolve reused labels");
         let objects = resolved.to_vec().expect("outer list");
         assert_eq!(objects.len(), 2);
 

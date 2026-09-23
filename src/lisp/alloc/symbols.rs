@@ -16,7 +16,6 @@
 
 use super::super::types::{MarkBit, Value};
 use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
-use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -30,8 +29,6 @@ pub struct SymbolCell {
     pub(crate) mark: MarkBit,
     /// The symbol's index into an interpreter's `SymbolCells'.
     pub(crate) id: u32,
-    /// The native handle word (comp.c passes a symbol by its address).
-    pub(crate) native_word: Cell<u64>,
     /// An uninterned symbol's own copy of its key text, for the release
     /// of its registry entries when the sweep frees the cell.
     pub(crate) key: Option<Box<str>>,

@@ -364,7 +364,9 @@ fn with_active_registry<R>(body: impl FnOnce(&mut NativeRegistry) -> R) -> Optio
     })
 }
 
-fn with_active_registered_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R) -> Option<R> {
+pub(super) fn with_active_registered_runtime<R>(
+    body: impl FnOnce(&mut NativeRuntime) -> R,
+) -> Option<R> {
     ACTIVE_REGISTERED_RUNTIME.with(|runtime| {
         let runtime = runtime.get();
         (!runtime.is_null()).then(|| {
@@ -392,6 +394,58 @@ pub(super) fn with_active_compiler<R>(body: impl FnOnce(&SharedCompiler) -> R) -
 #[cfg(test)]
 mod suspension_tests {
     use super::*;
+
+    #[test]
+    fn collections_in_loader_scope_retain_native_relocations_until_scope_teardown() {
+        const HIDE: usize = 0x5555_5555_5555_5555;
+
+        #[inline(never)]
+        fn relocation(runtime: &mut NativeRuntime) -> (Vec<NativeWord>, usize) {
+            let value = Value::buffer(731, "loader-collection-root");
+            let words = runtime.encode_relocations(&[value]).expect("encode buffer");
+            runtime.register_permanent_root_range(words.as_ptr(), words.len());
+            (words, value.word() ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn allocation_is_live(hidden: usize) -> bool {
+            let address = (hidden ^ HIDE) & !7;
+            matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Buffer
+            )
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let compiler = SharedCompiler::default();
+        let mut registry = NativeRegistry::default();
+        let mut runtime = NativeRuntime::default();
+        let (words, hidden) = relocation(&mut runtime);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            with_native_state(&compiler, &mut registry, &mut runtime, |_runtime| {
+                // The loader/backend can run Lisp and collect before any
+                // generated function installs an ACTIVE_CALL frame.
+                super::super::begin_garbage_collection(&mut interpreter, &environment);
+                assert!(
+                    allocation_is_live(hidden),
+                    "a loader-scoped native relocation lost its exact Lisp allocation"
+                );
+            });
+        }
+        drop(runtime);
+        drop(words);
+        crate::lisp::alloc::clobber_stack();
+        super::super::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(
+            !allocation_is_live(hidden),
+            "a relocation must cease retaining its object after runtime teardown"
+        );
+    }
 
     #[test]
     fn suspended_loader_restores_owners_and_tls_after_a_rust_panic() {
@@ -510,8 +564,6 @@ unsafe fn read_static_object(
     crate::lisp::types::note_string_allocation(len);
     let text = decode_utf8_bytes(bytes);
     let (value, _) = read_one_form_in_env(interpreter, &text, environment)?;
-    let value = interpreter.materialize_read_object_literals(value, environment)?;
-    interpreter.intern_symbols_in_value(&value);
     Ok(value)
 }
 

@@ -285,10 +285,7 @@ pub(crate) fn function_arity_value(
             .ok_or_else(|| {
                 LispError::Signal(format!("emaxx: no GNU-derived arity for subr {name}"))
             }),
-        Kind::Lambda(lambda) => match &lambda.public_parameters {
-            Some(parameters) => closure_arity_value(interp, parameters, function, env),
-            None => Ok(lambda_arity_value(&lambda.params)),
-        },
+        Kind::Lambda(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
         Kind::Record(id)
             if interp
                 .find_record(id)

@@ -1,0 +1,24 @@
+{
+  "round": 1,
+  "name": "undo-test4",
+  "runner": "baseline",
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/baseline/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-L",
+    "/Users/rayd/projects/emacs/test",
+    "-l",
+    "ert",
+    "-l",
+    "/Users/rayd/projects/emaxx/compat/emacs_compat_runner.el",
+    "-l",
+    "/Users/rayd/projects/emacs/test/src/undo-tests.el",
+    "--eval",
+    "(emaxx-compat-run 'undo-test4)"
+  ],
+  "returncode": 0,
+  "process_seconds": 4.185331917000001,
+  "stdout": "",
+  "stderr": "Undo\nUndo\n"
+}

@@ -1,0 +1,24 @@
+{
+  "round": 1,
+  "name": "mule-cmds-tests--ucs-names-missing-names",
+  "runner": "oracle",
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-L",
+    "/Users/rayd/projects/emacs/test",
+    "-l",
+    "ert",
+    "-l",
+    "/Users/rayd/projects/emaxx/compat/emacs_compat_runner.el",
+    "-l",
+    "/Users/rayd/projects/emacs/test/lisp/international/mule-tests.el",
+    "--eval",
+    "(emaxx-compat-run 'mule-cmds-tests--ucs-names-missing-names)"
+  ],
+  "returncode": 0,
+  "process_seconds": 1.1961262500000025,
+  "stdout": "",
+  "stderr": ""
+}

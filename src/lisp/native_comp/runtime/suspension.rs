@@ -151,14 +151,17 @@ impl Drop for SuspendedStackGuard {
     }
 }
 
-struct SuspendedLispRoots<'a> {
-    handlers: &'a [HandlerEntry],
-    unwind: &'a [UnwindEntry],
-    calls: &'a [NativeCallFrame],
-    environment: Option<&'a Env>,
+/// eval.c:mark_specpdl applies to executing and suspended native frames.
+/// Both paths trace the same live fields; binding restore tokens are copies
+/// of the canonical specbindings already traced by the interpreter.
+pub(super) struct NativeLispRoots<'a> {
+    pub(super) handlers: &'a [HandlerEntry],
+    pub(super) unwind: &'a [UnwindEntry],
+    pub(super) calls: &'a [NativeCallFrame],
+    pub(super) environment: Option<&'a Env>,
 }
 
-impl TraceLispRoots for SuspendedLispRoots<'_> {
+impl TraceLispRoots for NativeLispRoots<'_> {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
         for handler in self.handlers {
             marker.value(&handler.match_value);
@@ -274,7 +277,7 @@ pub(crate) fn with_thread_suspended<R>(
                     .then(|| ACTIVE_NATIVE_HEAP.swap(std::ptr::null_mut(), Ordering::Relaxed)),
                 cons_sync_depth: CONS_SYNC_DEPTH.replace(0),
             };
-            let roots = SuspendedLispRoots {
+            let roots = NativeLispRoots {
                 handlers: &runtime.handlers,
                 unwind: &runtime.unwind,
                 calls: &runtime.calls,

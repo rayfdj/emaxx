@@ -6357,6 +6357,76 @@ fn autoloaded_macros_expand_when_called() {
 }
 
 #[test]
+fn membership_reports_original_improper_lists_and_reached_cycles() {
+    assert_eq!(
+        eval_str(
+            "(mapcar
+               (lambda (function)
+                 (let ((improper (cons 'first 'tail))
+                       (cycle (list 'first)))
+                   (setcdr cycle cycle)
+                   (list
+                    (condition-case condition
+                        (funcall function 'tail improper)
+                      (error (list (car condition)
+                                   (cadr condition)
+                                   (eq (caddr condition) improper))))
+                    (condition-case condition
+                        (funcall function 'tail 'tail)
+                      (error condition))
+                    (eq (funcall function 'first improper) improper)
+                    (eq (funcall function 'first cycle) cycle)
+                    (condition-case condition
+                        (funcall function 'absent cycle)
+                      (error (list (car condition)
+                                   (eq (cadr condition) cycle)))))))
+               '(memq memql member))",
+        ),
+        Value::list(std::iter::repeat_n(
+            Value::list([
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("listp"),
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("listp"),
+                    Value::symbol("tail"),
+                ]),
+                Value::T,
+                Value::T,
+                Value::list([Value::symbol("circular-list"), Value::T]),
+            ]),
+            3,
+        ))
+    );
+}
+
+#[test]
+fn membership_checks_quit_after_the_same_traversals_as_gnu() {
+    for name in ["memq", "memql", "member"] {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let list = Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
+        interp.set_symbol_value_cell("quit-flag", Value::T);
+        let found =
+            crate::lisp::primitives::call(&mut interp, name, &[Value::Integer(2), list], &mut env)
+                .expect("FOR_EACH_TAIL returns a second-element match before checking quit");
+        assert_eq!(found.word(), list.cdr().expect("second cell").word());
+        assert_eq!(interp.lookup_var("quit-flag", &env), Some(Value::T));
+        let error =
+            crate::lisp::primitives::call(&mut interp, name, &[Value::Integer(3), list], &mut env)
+                .expect_err("FOR_EACH_TAIL checks quit after advancing past the second cell");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([Value::symbol("quit")])
+        );
+        assert_eq!(interp.lookup_var("quit-flag", &env), Some(Value::Nil));
+    }
+}
+
+#[test]
 fn memq_returns_the_original_tail_cell() {
     assert_eq!(
         eval_str(

@@ -123,8 +123,8 @@ fn func_arity_matches_upstream_core_cases() {
             &mut interp,
             "func-arity",
             &[Value::lambda(
-                vec!["&rest".into(), "_x".into()].into(),
-                Vec::new().into(),
+                vec!["&rest".into(), "_x".into()],
+                Vec::new(),
                 Value::Nil,
             )],
             &mut env,
@@ -137,8 +137,8 @@ fn func_arity_matches_upstream_core_cases() {
             &mut interp,
             "func-arity",
             &[Value::lambda(
-                vec!["_x".into(), "&optional".into(), "y".into()].into(),
-                Vec::new().into(),
+                vec!["_x".into(), "&optional".into(), "y".into()],
+                Vec::new(),
                 Value::Nil,
             )],
             &mut env,

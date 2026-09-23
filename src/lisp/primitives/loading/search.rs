@@ -133,7 +133,8 @@ pub(super) fn openp_search(
                 Vec::new(),
                 filename.multibyte || suffix_multibyte,
             );
-            let handler = find_file_name_handler(interp, env, &text, "file-exists-p")?;
+            let handler =
+                find_file_name_handler(interp, env, &text, Value::symbol("file-exists-p"))?;
             let mask = match predicate.kind() {
                 Kind::Integer(mask) if mask >= 0 => Some(mask),
                 _ => None,

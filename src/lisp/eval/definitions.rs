@@ -2,101 +2,9 @@ use super::core::{list_car, list_cons_count, list_next, list_nth, next_cons};
 use super::*;
 use crate::lisp::types::Kind;
 
-type NormalizedClosureBody = (Option<Value>, Option<Value>, Vec<Value>);
-
 impl Interpreter {
-    fn normalize_function_body_documentation(
-        &mut self,
-        forms: &[Value],
-        env: &mut Env,
-    ) -> Result<(Option<Value>, Vec<Value>), LispError> {
-        let Some(first) = forms.first() else {
-            return Ok((None, Vec::new()));
-        };
-        let documentation = match first.kind() {
-            Kind::String(text) if forms.len() > 1 => Some(Value::String(text)),
-            Kind::StringObject(state) if forms.len() > 1 => {
-                Some(Value::String(state.borrow().text.clone().into()))
-            }
-            Kind::Cons(_) => {
-                let items = first.to_vec()?;
-                match items
-                    .as_slice()
-                    .iter()
-                    .map(|v| v.kind())
-                    .collect::<Vec<_>>()
-                    .as_slice()
-                {
-                    [Kind::Symbol(head), expression] if head == ":documentation" => {
-                        Some(self.eval(&expression.value(), env)?)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-
-        let Some(documentation) = documentation else {
-            return Ok((None, forms.to_vec()));
-        };
-        // GNU removes documentation from the executable closure body and
-        // stores it in closure slot four.  Keeping a second copy in `body'
-        // made non-string dynamic documentation execute as code.
-        Ok((Some(documentation), forms[1..].to_vec()))
-    }
-
-    /// Extract the metadata GNU's `function' special form stores in closure
-    /// slots four and five, leaving only executable body forms.  Keeping this
-    /// as the single parser prevents source closures, defuns, and serialized
-    /// closures from inventing subtly different slot layouts.
-    fn normalize_interpreted_closure_body(
-        &mut self,
-        forms: &[Value],
-        env: &mut Env,
-    ) -> Result<NormalizedClosureBody, LispError> {
-        let (documentation, mut body) = self.normalize_function_body_documentation(forms, env)?;
-        let interactive_form = body
-            .first()
-            .filter(|form| {
-                crate::lisp::types::LambdaValue::interactive_slot_from_form(form).is_some()
-            })
-            .cloned();
-        if interactive_form.is_some() {
-            body.remove(0);
-        }
-        if body.is_empty() {
-            body.push(Value::Nil);
-        }
-        Ok((documentation, interactive_form, body))
-    }
-
     pub(super) fn sf_setq(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         self.sf_setq_internal(args, env, false)
-    }
-
-    pub fn set_custom_option(
-        &mut self,
-        symbol: &str,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        let resolved = self.resolve_variable_name(symbol)?;
-        if let Some(setter) = self.get_symbol_property(&resolved, "custom-set") {
-            self.call_function_value(
-                setter,
-                None,
-                &[Value::Symbol(resolved.clone().into()), value],
-                env,
-            )?;
-        } else {
-            self.call_function_value(
-                Value::BuiltinFunc("set-default".into()),
-                Some("set-default"),
-                &[Value::Symbol(resolved.into()), value],
-                env,
-            )?;
-        }
-        Ok(value)
     }
 
     pub(super) fn sf_setq_internal(
@@ -250,57 +158,52 @@ impl Interpreter {
         Ok(name_value)
     }
 
-    /// Ffunction: a symbol names itself; a `(setf NAME)' form its
-    /// function name; a lambda form becomes the interpreted closure; any
-    /// other object is returned as it is.
+    /// eval.c:Ffunction removes only leading documentation/interactive
+    /// metadata. Its body is the remaining source tail, not a copied AST.
     pub(super) fn sf_function(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        let Some((quoted, _)) = list_next(args) else {
-            return Ok(Value::Nil);
+        let Some((quoted, rest)) = list_next(args) else {
+            return Err(LispError::WrongNumberOfArgs("function".into(), 0));
         };
-        if let Kind::Symbol(name) = quoted.kind() {
-            return Ok(Value::Symbol(name));
+        if !rest.is_nil() {
+            let length = self.eval_list_length(*args, env)?;
+            return Err(LispError::WrongNumberOfArgs("function".into(), length));
         }
-        if let Ok(name) = super::function_name_from_binding_form(&quoted) {
-            return Ok(Value::Symbol(name.into()));
-        }
-        if matches!(quoted.car().map(|v| v.kind()), Ok(Kind::Symbol(ref head)) if head == "lambda")
+        if !matches!(quoted.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "lambda")
         {
-            let lambda_items = quoted.to_vec()?;
-            return self.sf_lambda_from_source(&quoted, &lambda_items, env);
+            return Ok(quoted);
         }
-        Ok(quoted)
-    }
-
-    // Expand registered `cl-generic-define-context-rewriter' heads inside a
-    // cl-defmethod lambda list's &context section: (erc-obsolete-var VAR
-    // SPEC) becomes the rewriter's ((EXPR) SPEC) output.
-
-    pub(super) fn sf_lambda_from_source(
-        &mut self,
-        source: &Value,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        self.sf_lambda_with_source(items, Some(source), env)
-    }
-
-    fn sf_lambda_with_source(
-        &mut self,
-        items: &[Value],
-        source: Option<&Value>,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::Signal("lambda needs params".into()));
+        let tail = quoted.cdr()?;
+        let parameters = tail.car()?;
+        let mut body = tail.cdr()?;
+        let mut documentation = Value::Nil;
+        if let Kind::Cons(cell) = body.kind() {
+            let first = cell.car.get();
+            if first.is_string() {
+                let rest = cell.cdr.get();
+                if !rest.is_nil() {
+                    documentation = first;
+                    body = rest;
+                }
+            } else if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == ":documentation")
+            {
+                documentation = self.eval(&first.cdr()?.car()?, env)?;
+                // Re-read after evaluation: dynamic documentation can mutate
+                // the source cell whose cdr GNU reads here.
+                body = cell.cdr.get();
+            }
         }
-        let params = self.parse_source_params(&items[1], env)?;
-        let (documentation, interactive_form, body) =
-            self.normalize_interpreted_closure_body(&items[2..], env)?;
-        // Ffunction: under a non-nil interpreter environment the lambda
-        // is a closure over that environment (the head itself, sharing
-        // its binding conses); under nil it stays a dynamic lambda.  The
-        // context stack stands in for the environment being nil or `(t)'
-        // where the evaluator was entered without one.
+        let mut iform = Value::Nil;
+        if let Kind::Cons(cell) = body.kind() {
+            let first = cell.car.get();
+            if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "interactive")
+            {
+                iform = first;
+                body = cell.cdr.get();
+            }
+        }
+        if body.is_nil() {
+            body = Value::list([Value::Nil]);
+        }
         let capture_override = self.lambda_capture_override();
         let closure_env = if capture_override == Some(false) {
             Value::Nil
@@ -315,11 +218,7 @@ impl Interpreter {
         } else {
             Value::Nil
         };
-
-        // eval.c:Ffunction delegates lexical-environment filtering to the
-        // preloaded `internal-make-interpreted-closure-function'.  In GNU 30
-        // that function is the unchanged Elisp `cconv-make-interpreted-closure';
-        // C neither scans free variables nor rewrites the body itself.
+        // Environment filtering is owned by the unchanged GNU cconv.el.
         if !closure_env.is_nil()
             && let Some(filter) = self
                 .lookup_var("internal-make-interpreted-closure-function", env)
@@ -328,60 +227,10 @@ impl Interpreter {
             return self.call_function_value(
                 filter,
                 None,
-                &[
-                    items[1],
-                    Value::list(body.iter().cloned()),
-                    closure_env,
-                    documentation.unwrap_or(Value::Nil),
-                    interactive_form.unwrap_or(Value::Nil),
-                ],
+                &[parameters, body, closure_env, documentation, iform],
                 env,
             );
         }
-
-        let body = match source.and_then(|source| source.cons_cells().map(|(car, _)| car)) {
-            Some(source_anchor) => {
-                let source_id = source_anchor.cell_id();
-                if let Some(cached) = self
-                    .lambda_source_bodies
-                    .get(&source_id)
-                    .and_then(ConsMutationStamped::current)
-                    && cached
-                        .source
-                        .upgrade()
-                        .is_some_and(|cached| cached.ptr_eq(&source_anchor))
-                    && let Some(body) = cached.body.upgrade()
-                {
-                    body
-                } else {
-                    let body = Rc::new(body);
-                    self.lambda_source_bodies.insert(
-                        source_id,
-                        ConsMutationStamped::new(
-                            crate::lisp::types::ConsMutationSnapshot::list_spine(
-                                source.expect("a source anchor came from a source form"),
-                            ),
-                            LambdaSourceBodyCacheEntry {
-                                source: source_anchor.downgrade(),
-                                body: Rc::downgrade(&body),
-                            },
-                        ),
-                    );
-                    body
-                }
-            }
-            None => Rc::new(body),
-        };
-        let interactive = interactive_form
-            .as_ref()
-            .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
-        Ok(Value::lambda_with_public_parameters(
-            params.into(),
-            items[1],
-            body,
-            closure_env,
-            documentation,
-            interactive,
-        ))
+        self.make_interpreted_closure(parameters, body, closure_env, documentation, iform)
     }
 }

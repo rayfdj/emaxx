@@ -491,10 +491,8 @@ define_dispatch!(
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }
                     }
-                    Kind::Lambda(lambda) => interp
-                        .interpreted_closure_slots(&lambda)
+                    Kind::Lambda(lambda) => lambda
                         .get(idx)
-                        .cloned()
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::CharTable(id) => {
                         let key = raw_idx as u32;

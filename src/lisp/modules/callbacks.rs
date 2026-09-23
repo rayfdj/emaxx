@@ -512,14 +512,14 @@ fn vector(a: &Context<'_>, handle: Handle, index: Option<isize>) -> Result<Value
         return Err(primitives::wrong_type_argument("vectorp", value));
     };
     if let Some(index) = index
-        && (index < 0 || index as usize >= vector.slots().len())
+        && (index < 0 || index as usize >= vector.len())
     {
         return Err(condition(
             "args-out-of-range",
             [
                 Value::Integer(index as i64),
                 Value::Integer(0),
-                Value::Integer(vector.slots().len() as i64 - 1),
+                Value::Integer(vector.len() as i64 - 1),
             ],
         ));
     }
@@ -556,7 +556,7 @@ pub(super) unsafe extern "C" fn vec_size(env: *mut ModuleEnv, handle: Handle) ->
         let Kind::Vector(vector) = (vector(a, handle, None)?).kind() else {
             unreachable!()
         };
-        Ok(vector.slots().len() as isize)
+        Ok(vector.len() as isize)
     })
 }
 pub(super) unsafe extern "C" fn should_quit(env: *mut ModuleEnv) -> bool {

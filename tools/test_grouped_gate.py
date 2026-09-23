@@ -2,8 +2,12 @@
 """Offline unit tests for grouped_gate.py's fail-closed scheduler."""
 
 from pathlib import Path
+import json
 import os
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -160,8 +164,51 @@ class GroupedGateTests(unittest.TestCase):
     def test_gate_environment_overrides_unsafe_thread_count(self):
         with mock.patch.dict(os.environ, {"RUST_TEST_THREADS": "99"}):
             environment = gate.gate_environment(template=True)
-        self.assertEqual(environment["RUST_TEST_THREADS"], "2")
+        self.assertEqual(environment["RUST_TEST_THREADS"], "1")
         self.assertEqual(environment["EMAXX_IMAGE_TEMPLATE"], "1")
+
+    def test_group_checks_preserve_the_actual_process_outcome(self):
+        complete = (
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+            "0 filtered out; finished in 0.01s\n"
+        )
+        incomplete = complete.replace("1 passed", "0 passed")
+        for code, output, error in (
+            (9, "", "exited with 9"),
+            (0, "", "found 0"),
+            (7, complete, "exited with 7"),
+            (0, incomplete, "inventory contains 1"),
+            (0, complete, None),
+        ):
+            with self.subTest(code=code, output=output):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "group.log"
+                    command = [
+                        sys.executable, "-c",
+                        "import sys; sys.stdout.write(sys.argv[1]); sys.exit(int(sys.argv[2]))",
+                        output, str(code),
+                    ]
+                    stream = path.open("wb")
+                    process = subprocess.Popen(
+                        command, stdout=stream, stderr=subprocess.STDOUT,
+                        start_new_session=os.name == "posix",
+                    )
+                    running = gate.RunningGroup(
+                        gate.LIGHTWEIGHT_GROUP, 1, 0, command, path, stream,
+                        process, time.monotonic(),
+                    )
+                    if error is None:
+                        result = gate.finish_group(running, 1, 10)
+                        self.assertEqual(result["result"]["passed"], 1)
+                    else:
+                        with self.assertRaisesRegex(gate.GateError, error):
+                            gate.finish_group(running, 1, 10)
+                    recorded = json.loads(path.with_suffix(".json").read_text())
+                    self.assertEqual(recorded["exit_code"], code)
+                    self.assertEqual(recorded["expected_tests"], 1)
+                    self.assertEqual(recorded["command"], command)
+                    self.assertFalse(recorded["timed_out"])
+                    self.assertEqual(path.read_text(), output)
 
 
 if __name__ == "__main__":

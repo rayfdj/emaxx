@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/current/bin/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/argument-overflow.el"
+  ],
+  "returncode": 0,
+  "stdout": "(1 2 3 4 5 6 7 8 9 10 11 12)\n",
+  "stderr": ""
+}

@@ -1,0 +1,5 @@
+{
+  "returncode": 101,
+  "stdout": "values=200000 corrupted=127122\n",
+  "stderr": "\nthread 'main' (5714829) panicked at /Users/rayd/projects/emaxx/target/audit-2026-09-21/probes/parallel-values.rs:22:5:\nassertion `left == right` failed\n  left: 127122\n right: 0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+}

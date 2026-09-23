@@ -1,45 +1,19 @@
 use super::core::{list_cdr, list_forms, list_next};
 use super::*;
-use crate::lisp::reader;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 impl Interpreter {
     pub(super) fn sf_quote(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        let Some((template, _)) = list_next(args) else {
-            return Ok(Value::Nil);
+        // eval.c:Fquote returns the object already constructed by the
+        // reader. Evaluation neither walks it nor retains a cached copy.
+        let Some((value, rest)) = list_next(args) else {
+            return Err(LispError::WrongNumberOfArgs("quote".into(), 0));
         };
-        // GNU's quote returns its argument as-is, sharing structure.  The
-        // emaxx reader leaves marker forms (circular labels, `#s(hash-table
-        // ...)' literals) that must be resolved first, but marker-free
-        // templates — the common case — are returned directly.  The verdict
-        // is cached per template so hot code doesn't rescan large constants.
-        if let Kind::Cons(cell) = template.kind() {
-            let key = crate::lisp::types::ConsCell::identity(&cell);
-            if self
-                .plain_quote_templates
-                .get(&key)
-                .and_then(ConsMutationStamped::current)
-                .is_some()
-            {
-                return Ok(template);
-            }
-            if !reader::quote_template_needs_resolution(&template) {
-                if self.plain_quote_templates.len() >= (1 << 20) {
-                    self.plain_quote_templates.clear();
-                }
-                self.plain_quote_templates.insert(
-                    key,
-                    ConsMutationStamped::new(
-                        crate::lisp::types::ConsMutationSnapshot::tree(&template),
-                        template,
-                    ),
-                );
-                return Ok(template);
-            }
-        } else if !reader::quote_template_needs_resolution(&template) {
-            return Ok(template);
+        if !rest.is_nil() {
+            let length = self.eval_list_length(*args, env)?;
+            return Err(LispError::WrongNumberOfArgs("quote".into(), length));
         }
-        self.materialize_read_object_literals(template, env)
+        Ok(value)
     }
 
     pub(super) fn sf_if(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {

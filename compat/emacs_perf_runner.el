@@ -3,6 +3,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'seq)
+(require 'benchmark)
 
 (defun emaxx-perf--write-report (report)
   (let ((path (getenv "EMAXX_PERF_RESULT_FILE")))
@@ -57,43 +58,22 @@
     ("notes" . ,note)))
 
 (defun emaxx-perf--suite-cases (suite n warmup samples)
-  (mapcar
-   (lambda (test)
-     (let ((sample-values nil)
-           (gc-count 0)
-           (gc-seconds 0.0)
-           (unsupported-note nil))
-       (dotimes (sample (+ warmup samples))
-         (garbage-collect)
-         (let ((result (condition-case err
-                           (cond
-                            ((perf-variable-test-p test) (funcall test n))
-                            ((perf-constant-test-p test) (funcall test))
-                            (t nil))
-                         (error
-                          (setq unsupported-note (error-message-string err))
-                          nil))))
-           (cond
-            ((and (consp result) (numberp (nth 0 result)))
-             (when (>= sample warmup)
-               (push (float (nth 0 result)) sample-values)
-               (cl-incf gc-count (or (nth 1 result) 0))
-               (cl-incf gc-seconds (float (or (nth 2 result) 0.0)))))
-            (result)
-            (t
-             (unless unsupported-note
-               (setq unsupported-note "benchmark returned nil"))))))
-       (if sample-values
-           (emaxx-perf--completed-case
-            (symbol-name test)
-            (nreverse sample-values)
-            gc-count
-            gc-seconds
-            unsupported-note)
-         (emaxx-perf--unsupported-case
-          (symbol-name test)
-          (or unsupported-note "benchmark produced no samples")))))
-   (perf-expand-suites (list suite))))
+  (let ((occurrences nil))
+    (mapcar
+     (lambda (test)
+       ;; The pinned perf-noc-suite repeats one benchmark.  Run every
+       ;; occurrence and identify it separately so no map drops a sample.
+       (let* ((count (1+ (or (alist-get test occurrences) 0)))
+              (case-id (if (= count 1) (symbol-name test)
+                         (format "%s#%d" test count))))
+         (setf (alist-get test occurrences) count)
+         (emaxx-perf--benchmark-case
+          case-id warmup samples
+          (lambda ()
+            (cond ((perf-variable-test-p test) (funcall test n))
+                  ((perf-constant-test-p test) (funcall test))
+                  (t (error "Invalid upstream benchmark: %S" test)))))))
+     (perf-expand-suites (list suite)))))
 
 (defun emaxx-perf--coding-decoder-cases (warmup samples)
   (generate-benchmark-test-file)
@@ -126,48 +106,48 @@
     (nreverse cases)))
 
 (defun emaxx-perf--interpreter-cases (n warmup samples)
-  (mapcar
-   (lambda (case)
-     (emaxx-perf--benchmark-case
-      (symbol-name case)
-      warmup
-      samples
-      (lambda ()
-        (benchmark-run 1 (funcall case n)))))
-   '(emaxx-perf-interpreted-list-walk
-     emaxx-perf-interpreted-cons-allocation
-     emaxx-perf-interpreted-function-calls)))
+  (let* ((even-count (/ (+ n 1) 2))
+         (odd-count (/ n 2))
+         (triangular (/ (* n (1- n)) 2)))
+    (mapcar
+     (lambda (case)
+       (emaxx-perf--benchmark-case
+        (symbol-name (car case)) warmup samples
+        (lambda ()
+          (let* ((result nil)
+                 (measurement (benchmark-run 1
+                                (setq result (funcall (car case) n)))))
+            (unless (equal result (cdr case))
+              (error "%s produced %S; expected %S; timing %S"
+                     (car case) result (cdr case) measurement))
+            measurement))))
+     `((emaxx-perf-interpreted-list-walk . ,(* n 139))
+       (emaxx-perf-interpreted-cons-allocation
+        . ,(+ triangular (* even-count 3) (* odd-count 7)))
+       (emaxx-perf-interpreted-function-calls
+        . ,(+ (* 3 triangular) (* even-count 5) (* odd-count 9)))))))
 
 (defun emaxx-perf--benchmark-case (case-id warmup samples thunk)
   (let ((sample-values nil)
         (gc-count 0)
-        (gc-seconds 0.0)
-        (unsupported-note nil))
+        (gc-seconds 0.0))
     (dotimes (sample (+ warmup samples))
       (garbage-collect)
-      (let ((result (condition-case err
-                        (funcall thunk)
-                      (error
-                       (setq unsupported-note (error-message-string err))
-                       nil))))
-        (cond
-         ((and (consp result) (numberp (nth 0 result)))
-          (when (>= sample warmup)
-            (push (float (nth 0 result)) sample-values)
-            (cl-incf gc-count (or (nth 1 result) 0))
-            (cl-incf gc-seconds (float (or (nth 2 result) 0.0)))))
-         (result)
-         (t
-          (unless unsupported-note
-            (setq unsupported-note "benchmark produced no samples"))))))
-    (if sample-values
-        (emaxx-perf--completed-case
-         case-id
-         (nreverse sample-values)
-         gc-count
-         gc-seconds
-         unsupported-note)
-      (emaxx-perf--unsupported-case case-id (or unsupported-note "benchmark produced no samples")))))
+      ;; Errors must fail the process.  A partial set of successful samples
+      ;; cannot turn an unsuccessful workload into a completed case.
+      (let ((result (funcall thunk)))
+        (princ (format "PERF-SAMPLE %s %d %S\n" case-id sample result))
+        (unless (and (listp result) (= (length result) 3)
+                     (numberp (nth 0 result)) (> (nth 0 result) 0)
+                     (integerp (nth 1 result)) (>= (nth 1 result) 0)
+                     (numberp (nth 2 result)) (>= (nth 2 result) 0))
+          (error "%s returned an invalid timing sample: %S" case-id result))
+        (when (>= sample warmup)
+          (push (float (nth 0 result)) sample-values)
+          (cl-incf gc-count (nth 1 result))
+          (cl-incf gc-seconds (float (nth 2 result))))))
+    (emaxx-perf--completed-case
+     case-id (nreverse sample-values) gc-count gc-seconds)))
 
 (defun emaxx-perf--scenario-tier (scenario-id)
   (pcase scenario-id
@@ -182,6 +162,10 @@
   (car (split-string scenario-id "/")))
 
 (defun emaxx-perf-run-scenario (scenario-id n warmup samples)
+  (unless (and (integerp n) (> n 0)
+               (integerp warmup) (>= warmup 0)
+               (integerp samples) (> samples 0))
+    (error "Invalid performance parameters: %S %S %S" n warmup samples))
   (let* ((cases
           (pcase scenario-id
             ("interpreter/source-eval-suite"
@@ -199,14 +183,9 @@
             ("coding/decoder"
              (emaxx-perf--coding-decoder-cases warmup samples))
             (_ (error "Unknown perf scenario: %s" scenario-id))))
-         (status (if (seq-some (lambda (case)
-                                 (equal (alist-get "status" case nil nil #'equal)
-                                        "completed"))
-                               cases)
-                     "completed"
-                   "unsupported"))
+         (status "completed")
          (report
-          `(("runner" . "oracle")
+          `(("runner" . ,(or (getenv "EMAXX_PERF_RUNNER") "oracle"))
             ("scenario_id" . ,scenario-id)
             ("tier" . ,(emaxx-perf--scenario-tier scenario-id))
             ("status" . ,status)

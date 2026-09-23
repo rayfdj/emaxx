@@ -106,16 +106,23 @@ fn graph_matches(
         (Kind::BuiltinFunc(x), Kind::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
         // Identity-bearing kinds compared by the tests through the
         // interpreters that own them.
-        (Kind::Lambda(_), Kind::Lambda(_))
-        | (Kind::CharTable(_), Kind::CharTable(_))
-        | (Kind::Record(_), Kind::Record(_)) => Ok(()),
+        (Kind::Lambda(left), Kind::Lambda(right)) => {
+            if left.public_len() != right.public_len() {
+                return Err("closure length differs".into());
+            }
+            for (left, right) in left.slots().zip(right.slots()) {
+                graph_matches(&left, &right, seen)?;
+            }
+            Ok(())
+        }
+        (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::Record(_), Kind::Record(_)) => Ok(()),
         (Kind::Cons(_), Kind::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
             graph_matches(&a.cdr().expect("cdr"), &b.cdr().expect("cdr"), seen)
         }
         (Kind::Vector(x), Kind::Vector(y)) => {
-            let x = x.slots().to_vec();
-            let y = y.slots().to_vec();
+            let x = x.slots().collect::<Vec<_>>();
+            let y = y.slots().collect::<Vec<_>>();
             if x.len() != y.len() {
                 return Err("vector length differs".into());
             }
@@ -566,7 +573,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     let Kind::Vector(vector) = loaded.kind() else {
         panic!("root vector")
     };
-    let slots = vector.slots().to_vec();
+    let slots = vector.slots().collect::<Vec<_>>();
 
     // Two closures over one environment: the frame is shared, and calling
     // them in the restored interpreter mutates the shared binding.
@@ -579,8 +586,10 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
         Interpreter::same_environment(&first.environment_value(), &second.environment_value()),
         "one environment object"
     );
-    assert_eq!(second.params.as_slice().len(), 1);
-    assert_eq!(second.params[0].as_str(), "y");
+    assert_eq!(
+        second.parameters().to_vec().expect("parameter list"),
+        vec![Value::symbol("y")]
+    );
     let call = |target: &mut Interpreter, function: &Value, args: &[Value]| {
         target
             .call_function_value(*function, None, args, &mut crate::lisp::types::Env::new())
@@ -709,7 +718,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let Kind::Vector(vector) = loaded.kind() else {
         panic!("root vector")
     };
-    let slots = vector.slots().to_vec();
+    let slots = vector.slots().collect::<Vec<_>>();
     let eq_table = slots[0];
     let equal_table = slots[1];
     let weak = slots[2];
@@ -985,7 +994,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Vector(source_vector) = graph.kind() else {
         panic!("root vector")
     };
-    let source = source_vector.slots().to_vec();
+    let source = source_vector.slots().collect::<Vec<_>>();
     let Kind::Buffer(source_buffer) = source[0].kind() else {
         panic!("buffer")
     };
@@ -1017,7 +1026,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Vector(vector) = root(RootSlot::LoadPath).kind() else {
         panic!("root vector")
     };
-    let slots = vector.slots().to_vec();
+    let slots = vector.slots().collect::<Vec<_>>();
 
     // The buffer: text, positions, narrowing, flags, property spans, the
     // side list, the undo entries, the modtime, the local binding, the
@@ -1393,4 +1402,85 @@ fn image_refuses_pending_transient_state_it_cannot_carry() {
         }
         Ok(_) => panic!("pending transient state was dumped"),
     }
+}
+
+#[test]
+fn closure_slot_graphs_survive_interpreter_cloning_and_dump_restoration() {
+    let mut source = Interpreter::new();
+    let arguments = Value::list([Value::symbol("parameter")]);
+    let body = Value::list([Value::Nil]);
+    let environment = Value::list([Value::T]);
+    let documentation = Value::cons(Value::Nil, body);
+    let closure = source
+        .make_interpreted_closure(
+            arguments,
+            body,
+            environment,
+            documentation,
+            Value::list([Value::symbol("interactive")]),
+        )
+        .expect("construct a six-slot closure");
+    body.set_car(Value::list([Value::symbol("quote"), closure]))
+        .expect("body cycle");
+    documentation.set_car(closure).expect("documentation cycle");
+    let malformed_arguments = Value::list([Value::Nil]);
+    let malformed = source
+        .make_interpreted_closure(
+            malformed_arguments,
+            Value::list([Value::Nil]),
+            environment,
+            Value::Nil,
+            Value::Nil,
+        )
+        .expect("parameter validation is deferred until a call");
+    malformed_arguments
+        .set_car(malformed)
+        .expect("parameter cycle");
+    let root = Value::vector([
+        closure,
+        arguments,
+        body,
+        environment,
+        documentation,
+        malformed,
+    ]);
+    source.set_variable(
+        "closure-slot-graph",
+        root,
+        &mut crate::lisp::types::Env::new(),
+    );
+    let clone = source.clone();
+    let cloned = clone
+        .symbol_value_cell("closure-slot-graph")
+        .expect("cloned graph root");
+    graph_matches(&root, &cloned, &mut HashMap::new())
+        .expect("clone preserves slot sharing and cycles");
+    let image = dump(&mut source, vec![(RootSlot::LoadPath, root)]);
+    let mut target = Interpreter::new();
+    let loaded = load_image(&image, &mut target).expect("restore closure graph");
+    let restored = loaded
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("restored explicit graph root")
+        .1;
+    graph_matches(&root, &restored, &mut HashMap::new())
+        .expect("dump preserves slot sharing and cycles");
+    let Kind::Vector(vector) = restored.kind() else {
+        panic!("restored root vector")
+    };
+    let restored_closure = vector.get(0).expect("first vector slot");
+    let returned = target
+        .call_function_value(
+            restored_closure,
+            None,
+            &[Value::Integer(19)],
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect("call restored closure");
+    assert_eq!(
+        returned.word(),
+        restored_closure.word(),
+        "the stored body refers to the restored closure itself"
+    );
 }

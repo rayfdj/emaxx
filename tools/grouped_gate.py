@@ -48,15 +48,6 @@ ALLOWED_IGNORED_TESTS = frozenset(
         "encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars",
         "tty::tty_differential_end_to_end",
         "tty::tty_smoke_end_to_end",
-        # Checkpoint 20o: a reachability contract whose outcome depends on
-        # the frame layout under the native heap's conservative word scan
-        # (a stale interior pointer in a live frame above the collection's
-        # stack top); recorded as a weakening in
-        # docs/honesty-audit-2026-08-18.md.
-        "lisp::primitives::tests::"
-        "suspended_bytecode_retains_operand_and_unwind_roots",
-        "lisp::primitives::tests::"
-        "threads_retain_lexical_caller_roots_across_separate_callee_environments",
     }
 )
 
@@ -272,6 +263,7 @@ def gate_environment(template: bool) -> dict[str, str]:
             "RUST_TEST_THREADS": "1",
         }
     )
+    environment.setdefault("RUST_BACKTRACE", "1")
     # The loadup image every process and test boots from (batch.rs's
     # FixtureImage): built once by the first boot, loaded by the rest.
     fixture_images = PROJECT_ROOT / "target" / "grouped-gate" / "fixture-images"
@@ -487,11 +479,21 @@ def finish_group(
         "timed_out": timed_out,
         "log": str(running.log_path),
     }
+    # Preserve the process outcome even if it crashed before libtest could
+    # print a result. Otherwise the failed gate loses the exit/signal code.
+    running.log_path.with_suffix(".json").write_text(
+        json.dumps(record, indent=2) + "\n"
+    )
     if timed_out:
         raise GateError(
             f"{running.spec.name} exceeded its {timeout_seconds}s group timeout"
         )
-    result = parse_test_result(output)
+    try:
+        result = parse_test_result(output)
+    except GateError as error:
+        raise GateError(
+            f"{running.spec.name} exited with {running.process.returncode}: {error}"
+        ) from error
     record["result"] = result
     validate_test_result(
         result,
@@ -685,6 +687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "LC_ALL": "C",
             "RUST_MIN_STACK": "134217728",
             "RUST_TEST_THREADS": "1",
+            "RUST_BACKTRACE": os.environ.get("RUST_BACKTRACE", "1"),
         },
         "runs": [],
         "cargo_stages": [],

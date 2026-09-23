@@ -890,7 +890,6 @@ impl SymbolName {
                     lisp_name,
                     mark: MarkBit::default(),
                     id,
-                    native_word: Cell::new(0),
                     key: None,
                 },
             ));
@@ -1002,7 +1001,6 @@ impl SymbolName {
                 lisp_name,
                 mark: MarkBit::default(),
                 id,
-                native_word: Cell::new(0),
                 key,
             },
         ));
@@ -1026,15 +1024,6 @@ impl SymbolName {
     /// uninterned symbol's id carries `UNINTERNED_SYMBOL_ID_BIT'.
     pub(crate) fn id(&self) -> u32 {
         self.0.id
-    }
-
-    /// The packed native handle slot (see `SymbolCell::native_word').
-    pub(crate) fn native_slot(&self) -> u64 {
-        self.0.native_word.get()
-    }
-
-    pub(crate) fn set_native_slot(&self, slot: u64) {
-        self.0.native_word.set(slot);
     }
 
     pub fn into_string(self) -> String {
@@ -1067,7 +1056,19 @@ impl SymbolName {
 pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
     INTERNED_SYMBOL_NAMES.with_borrow(|names| {
         for name in names {
-            mark(&Value::Symbol(*name));
+            let value = Value::Symbol(*name);
+            if matches!(value.kind(), Kind::Nil | Kind::T) {
+                // During symbol migration, the builtin word is constant
+                // but its SymbolName still has an allocated name cell.
+                // Keep that obarray-owned cell and both name strings.
+                // This adapter goes when the builtin symbol allocation
+                // also owns the value, function and property cells.
+                name.mark_bit().mark(current_mark_epoch());
+                mark(&Value::String(*name.internal_text()));
+                mark(name.lisp_name_ref());
+            } else {
+                mark(&value);
+            }
         }
     });
 }
@@ -1257,7 +1258,7 @@ impl SharedBigInt {
         self.0.ptr_eq(&other.0)
     }
 
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
+    pub(crate) fn mark_bit(&self) -> crate::lisp::alloc::vectors::VectorMark<'_> {
         self.0.mark_bit()
     }
 
@@ -1318,106 +1319,65 @@ pub type SharedFloat = crate::lisp::alloc::FloatRef;
 pub type SharedCons = crate::lisp::alloc::ConsRef;
 pub use crate::lisp::alloc::WeakConsRef;
 pub type ConsCells = (ConsSlot, ConsSlot);
-pub type SharedLambdaParams = Rc<Vec<SymbolName>>;
-pub type SharedLambdaBody = Rc<Vec<Value>>;
-
-#[derive(Debug)]
-pub struct LambdaValue {
-    pub params: SharedLambdaParams,
-    /// Exact GNU interpreted-closure slot zero.  Emaxx also keeps `params`
-    /// as a compact binding vector, but Lisp-visible closure inspection and
-    /// native compilation must see the original argument-list objects,
-    /// including source-position symbols.
-    pub public_parameters: Option<Value>,
-    pub body: SharedLambdaBody,
-    /// CLOSURE_CONSTANTS of an interpreted closure: the lexical environment
-    /// it was made under, `nil' for a dynamic lambda.  Set once; the image
-    /// loader and the copier fill it after the closure exists, as a closure
-    /// can reach itself through its environment.
-    pub env: std::cell::OnceCell<Value>,
-    /// GNU closure slot four.  Unlike ordinary source docstrings, a
-    /// `(:documentation FORM)' may evaluate to any Lisp object (oclosure.el
-    /// deliberately stores its type symbol here).
-    pub documentation: Option<Value>,
-    /// GNU closure slot five.  `Some(nil)' is distinct from an absent slot:
-    /// `(interactive)' still makes the closure a command and gives it length
-    /// six.  A vector-valued slot preserves GNU's command-modes metadata.
-    pub interactive: Option<Value>,
-}
+/// Interpreted closures keep their GNU slots in the vector allocation.
+pub type LambdaValue = crate::lisp::alloc::ClosureRef;
 
 impl LambdaValue {
-    /// The closure's lexical environment, None for a dynamic lambda.
     #[inline]
-    pub(crate) fn environment(&self) -> Option<&Value> {
-        self.env.get().filter(|environment| !environment.is_nil())
+    pub(crate) fn parameters(&self) -> Value {
+        self.get(0).expect("a closure has an argument slot")
     }
 
-    /// The environment slot as a value (`nil' for a dynamic lambda).
+    #[inline]
+    pub(crate) fn body(&self) -> Value {
+        self.get(1).expect("a closure has a body slot")
+    }
+
     #[inline]
     pub(crate) fn environment_value(&self) -> Value {
-        self.env.get().cloned().unwrap_or(Value::Nil)
+        self.get(2).expect("a closure has an environment slot")
     }
 
-    /// Convert GNU's `(interactive SPEC . MODES)' form into closure slot
-    /// five.  Multiple command modes use the modern `[SPEC MODES]' layout.
-    pub fn interactive_slot_from_form(form: &Value) -> Option<Value> {
-        let items = form.to_vec().ok()?;
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "interactive")
-        {
-            return None;
-        }
-        Some(Self::interactive_slot_from_iform_items(&items))
+    pub(crate) fn documentation(&self) -> Option<Value> {
+        self.get(4)
     }
 
-    /// Convert the already-validated list passed as IFORM to GNU's
-    /// `make-interpreted-closure' into slot five.
-    pub fn interactive_slot_from_iform_items(items: &[Value]) -> Value {
-        let spec = items.get(1).cloned().unwrap_or(Value::Nil);
-        if items.len() <= 2 {
+    pub(crate) fn interactive(&self) -> Option<Value> {
+        self.get(5)
+    }
+
+    /// eval.c:Fmake_interpreted_closure preserves IFORM's mode-list tail.
+    pub(crate) fn interactive_slot_from_iform(iform: Value) -> Result<Value, LispError> {
+        let tail = iform.cdr()?;
+        let modes = tail.cdr()?;
+        let spec = tail.car()?;
+        Ok(if modes.is_nil() {
             spec
         } else {
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                spec,
-                Value::list(items[2..].to_vec()),
-            ])
-        }
+            Value::vector([spec, modes])
+        })
     }
 
     /// Return the public interactive specification from GNU closure slot
     /// five.  New-style slots are vectors `[SPEC MODES]' while old-style
     /// slots contain SPEC directly.
     pub fn interactive_spec(&self) -> Option<Value> {
-        self.interactive.as_ref().map(|slot| {
-            slot.to_vec()
-                .ok()
-                .filter(|items| {
-                    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "vector-literal")
-                })
-                .and_then(|items| items.get(1).cloned())
-                .unwrap_or(*slot)
+        self.interactive().map(|slot| match slot.kind() {
+            Kind::Vector(vector) => vector.get(0).unwrap_or(slot),
+            _ => slot,
         })
     }
 
     pub fn command_modes(&self) -> Option<Value> {
-        self.interactive
+        self.interactive()
             .as_ref()
             .and_then(Self::command_modes_from_slot)
     }
 
     pub fn command_modes_from_slot(slot: &Value) -> Option<Value> {
-        let items = slot.to_vec().ok()?;
-        matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "vector-literal")
-            .then(|| items.get(2).cloned().unwrap_or(Value::Nil))
-    }
-
-    pub fn public_len(&self) -> usize {
-        if self.interactive.is_some() {
-            6
-        } else if self.documentation.is_some() {
-            5
-        } else {
-            3
+        match slot.kind() {
+            Kind::Vector(vector) => Some(vector.get(1).unwrap_or(Value::Nil)),
+            _ => None,
         }
     }
 }
@@ -1432,7 +1392,7 @@ pub struct BufferValue {
 /// in a vector block (or on its own when large), named by its address.
 pub use crate::lisp::alloc::VectorRef;
 /// The pseudovector kinds' handles (alloc.c's `allocate_pseudovector').
-pub type LambdaRef = crate::lisp::alloc::VectorlikeRef<LambdaValue>;
+pub type LambdaRef = crate::lisp::alloc::ClosureRef;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
@@ -1972,7 +1932,7 @@ pub enum ReaderForm {
 /// `kind' as C reads `XTYPE' and the pseudovector header.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Value(usize);
+pub struct Value(usize, std::marker::PhantomData<*mut ()>);
 
 const TAG_MASK: usize = 7;
 const TAG_SYMBOL: usize = 0;
@@ -1983,9 +1943,6 @@ const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
 /// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_NIL: usize = 0;
-const SUB_T: usize = 1;
-const SUB_UNBOUND: usize = 2;
 const SUB_MARKER: usize = 3;
 const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
@@ -2062,10 +2019,18 @@ pub enum Kind {
 
 #[allow(non_snake_case, non_upper_case_globals)]
 impl Value {
-    /// `Qnil', `Qt' and the unbound marker: immediates under tag 1.
-    pub const Nil: Value = Value(special(SUB_NIL, 0));
-    pub const T: Value = Value(special(SUB_T, 0));
-    pub const Unbound: Value = Value(special(SUB_UNBOUND, 0));
+    /// A Lisp word may name mutable GC storage. The zero-sized marker keeps
+    /// it local to its owning OS thread without changing the word-sized ABI.
+    const fn from_bits(word: usize) -> Self {
+        Self(word, std::marker::PhantomData)
+    }
+
+    /// GNU's builtin symbol words: globals.h indices 0, 1 and 2 with the
+    /// supported 64-bit Lisp_Symbol size of 48 bytes. All execution modes
+    /// use these words; no native boolean anchor or unbound handle exists.
+    pub const Nil: Value = Value::from_bits(0);
+    pub const T: Value = Value::from_bits(48);
+    pub const Unbound: Value = Value::from_bits(96);
 
     /// lisp.h's `make_int': a fixnum for a value in `most-positive-fixnum''s
     /// range, a bignum past it.
@@ -2074,82 +2039,89 @@ impl Value {
         const MOST_POSITIVE: i64 = (1_i64 << 61) - 1;
         const MOST_NEGATIVE: i64 = -(1_i64 << 61);
         if (MOST_NEGATIVE..=MOST_POSITIVE).contains(&n) {
-            Value(((n << 2) as usize) | TAG_INT0)
+            Value::from_bits(((n << 2) as usize) | TAG_INT0)
         } else {
             Value::BigInteger(BigInt::from(n).into())
         }
     }
     #[inline]
     pub fn BigInteger(value: SharedBigInt) -> Value {
-        Value(value.identity_ptr() | TAG_VECTORLIKE)
+        Value::from_bits(value.identity_ptr() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Float(value: SharedFloat) -> Value {
-        Value(value.identity_ptr() | TAG_FLOAT)
+        Value::from_bits(value.identity_ptr() | TAG_FLOAT)
     }
     #[inline]
     pub fn String(text: SharedText) -> Value {
-        Value(text.identity_ptr() | TAG_STRING)
+        Value::from_bits(text.identity_ptr() | TAG_STRING)
     }
     #[inline]
     pub fn StringObject(state: StringObjectRef) -> Value {
-        Value(state.identity() | TAG_VECTORLIKE)
+        Value::from_bits(state.identity() | TAG_STRING)
     }
     #[inline]
     pub fn Symbol(name: SymbolName) -> Value {
-        Value(name.identity_ptr() | TAG_SYMBOL)
+        // Temporary until the builtin symbols and their mutable cells
+        // share the same symbol allocation. Private-obarray and uninterned
+        // names carry a distinct internal key and cannot take these arms.
+        match name.as_str() {
+            "nil" => Value::Nil,
+            "t" => Value::T,
+            _ => Value::from_bits(name.identity_ptr() | TAG_SYMBOL),
+        }
     }
     #[inline]
     pub fn Cons(cell: SharedCons) -> Value {
-        Value(cell.as_ptr() as usize | TAG_CONS)
+        Value::from_bits(cell.as_ptr() as usize | TAG_CONS)
     }
     #[inline]
     pub fn Vector(vector: VectorRef) -> Value {
-        Value(vector.identity() | TAG_VECTORLIKE)
+        Value::from_bits(vector.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn BuiltinFunc(name: SymbolName) -> Value {
-        Value(special(SUB_BUILTIN, name.identity_ptr() >> SUB_SHIFT))
+        Value::from_bits(special(SUB_BUILTIN, name.identity_ptr() >> SUB_SHIFT))
     }
     #[inline]
     pub fn Lambda(lambda: LambdaRef) -> Value {
-        Value(lambda.identity() | TAG_VECTORLIKE)
+        Value::from_bits(lambda.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Buffer(buffer: BufferRef) -> Value {
-        Value(buffer.identity() | TAG_VECTORLIKE)
+        Value::from_bits(buffer.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Marker(id: u64) -> Value {
-        Value(special(SUB_MARKER, id as usize))
+        Value::from_bits(special(SUB_MARKER, id as usize))
     }
     #[inline]
     pub fn Overlay(id: u64) -> Value {
-        Value(special(SUB_OVERLAY, id as usize))
+        Value::from_bits(special(SUB_OVERLAY, id as usize))
     }
     #[inline]
     pub fn CharTable(id: u64) -> Value {
-        Value(special(SUB_CHAR_TABLE, id as usize))
+        Value::from_bits(special(SUB_CHAR_TABLE, id as usize))
     }
     #[inline]
     pub fn Frame(id: u64) -> Value {
-        Value(special(SUB_FRAME, id as usize))
+        Value::from_bits(special(SUB_FRAME, id as usize))
     }
     #[inline]
     pub fn Terminal(id: u64) -> Value {
-        Value(special(SUB_TERMINAL, id as usize))
+        Value::from_bits(special(SUB_TERMINAL, id as usize))
     }
     #[inline]
     pub fn Record(record: RecordRef) -> Value {
-        Value(record.identity() | TAG_VECTORLIKE)
+        Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Finalizer(id: u64) -> Value {
-        Value(special(SUB_FINALIZER, id as usize))
+        Value::from_bits(special(SUB_FINALIZER, id as usize))
     }
     #[inline]
     pub fn ReaderForm(form: ReaderFormRef) -> Value {
-        Value(form.identity() | TAG_VECTORLIKE)
+        Value::from_bits(form.identity() | TAG_VECTORLIKE)
     }
 
     /// The word itself (the conservative scan's and the native runtime's
@@ -2167,7 +2139,7 @@ impl Value {
     /// allocated, or be an immediate.
     #[inline(always)]
     pub(crate) unsafe fn from_word(word: usize) -> Value {
-        Value(word)
+        Value::from_bits(word)
     }
 
     /// `XTYPE' and the pseudovector header: the kind, with the handle.
@@ -2185,6 +2157,12 @@ impl Value {
                 Kind::Cons(unsafe { SharedCons::from_raw((word & !TAG_MASK) as *const ConsCell) })
             }
             TAG_SYMBOL => {
+                match word {
+                    0 => return Kind::Nil,
+                    48 => return Kind::T,
+                    96 => return Kind::Unbound,
+                    _ => {}
+                }
                 // SAFETY: as above, a symbol cell.
                 Kind::Symbol(SymbolName::from_ref(unsafe {
                     crate::lisp::alloc::SymbolRef::from_raw(
@@ -2193,8 +2171,22 @@ impl Value {
                 }))
             }
             TAG_STRING => {
-                // SAFETY: as above, a string cell.
-                Kind::String(unsafe { SharedText::from_raw((word & !TAG_MASK) as *mut _) })
+                let address = word & !TAG_MASK;
+                // SAFETY: both current string allocations start with an
+                // initialized size word. Plain text sizes (including the
+                // untracked-name sentinel) cannot have the StringObject
+                // pseudovector tag. No native bridge pointer is involved.
+                unsafe {
+                    if crate::lisp::alloc::vectors::header_tag(address as *mut _)
+                        == crate::lisp::alloc::VectorTag::StringObject
+                    {
+                        Kind::StringObject(crate::lisp::alloc::VectorlikeRef::from_raw(
+                            address as *mut _,
+                        ))
+                    } else {
+                        Kind::String(SharedText::from_raw(address as *mut _))
+                    }
+                }
             }
             TAG_FLOAT => {
                 // SAFETY: as above, a float cell.
@@ -2217,10 +2209,10 @@ impl Value {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Closure => {
-                            Kind::Lambda(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::StringObject => {
-                            Kind::StringObject(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            impossible_tag("a string object uses the string tag")
                         }
                         crate::lisp::alloc::VectorTag::ReaderForm => {
                             Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
@@ -2241,9 +2233,6 @@ impl Value {
             _ => {
                 let payload = (word >> PAYLOAD_SHIFT) as u64;
                 match (word >> SUB_SHIFT) & 31 {
-                    SUB_NIL => Kind::Nil,
-                    SUB_T => Kind::T,
-                    SUB_UNBOUND => Kind::Unbound,
                     SUB_MARKER => Kind::Marker(payload),
                     SUB_OVERLAY => Kind::Overlay(payload),
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
@@ -2271,7 +2260,7 @@ impl Value {
     /// might already be freed, and whose header `kind' would read).
     #[inline]
     pub(crate) fn symbol_by_tag(self) -> Option<SymbolName> {
-        if self.0 & TAG_MASK == TAG_SYMBOL {
+        if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
             // SAFETY: a symbol-tagged word names a symbol cell; symbol
             // cells are swept after the vectors and the conses.
             Some(SymbolName::from_ref(unsafe {
@@ -2687,33 +2676,6 @@ pub(crate) fn format_float(value: f64) -> String {
 }
 
 impl Value {
-    /// Whether a reference-counted object wrapped for native code is still
-    /// owned outside that native wrapper.  Id-backed values return true
-    /// because their host representation has no reference count; their
-    /// wrappers are the stable identities generated code observes.
-    pub(crate) fn native_handle_has_external_owner(&self) -> bool {
-        match self.kind() {
-            Kind::BigInteger(_) => false,
-            // A float has no count: its handle lives while the mark
-            // reaches the cell (from Lisp or from generated code).
-            Kind::Float(_) => false,
-            // A string has no count: its handle lives while the mark
-            // reaches the cell.
-            Kind::String(_) => false,
-            // A vectorlike has no count either: its handle lives while
-            // the mark reaches the cell.
-            Kind::StringObject(_)
-            | Kind::Vector(_)
-            | Kind::Lambda(_)
-            | Kind::Buffer(_)
-            | Kind::ReaderForm(_) => false,
-            // A cons has no count: the collector decides its life.
-            Kind::Cons(_) => true,
-            Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            _ => false,
-        }
-    }
-
     // Constructors
 
     pub fn int(n: i64) -> Self {
@@ -2753,60 +2715,21 @@ impl Value {
         Value::Vector(VectorRef::allocate(slots))
     }
 
-    pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: Value) -> Self {
-        Self::lambda_with_documentation(params, body, env, None)
+    /// Host-side construction uses the same Lisp lists as the reader and
+    /// Fmake_interpreted_closure. The vectors are consumed at construction;
+    /// they never become an additional representation of executable code.
+    pub fn lambda(params: Vec<SymbolName>, body: Vec<Value>, env: Value) -> Self {
+        let parameters = Value::list(params.into_iter().map(Value::Symbol));
+        let body = if body.is_empty() {
+            Value::list([Value::Nil])
+        } else {
+            Value::list(body)
+        };
+        Self::allocated_lambda(&[parameters, body, env])
     }
 
-    pub fn lambda_with_documentation(
-        params: SharedLambdaParams,
-        body: SharedLambdaBody,
-        env: Value,
-        documentation: Option<Value>,
-    ) -> Self {
-        Self::lambda_with_metadata(params, body, env, documentation, None)
-    }
-
-    pub fn lambda_with_metadata(
-        params: SharedLambdaParams,
-        body: SharedLambdaBody,
-        env: Value,
-        documentation: Option<Value>,
-        interactive: Option<Value>,
-    ) -> Self {
-        Self::allocated_lambda(LambdaValue {
-            params,
-            public_parameters: None,
-            body,
-            env: std::cell::OnceCell::from(env),
-            documentation,
-            interactive,
-        })
-    }
-
-    /// Fmake_interpreted_closure: the slots as given.
-    pub fn lambda_with_public_parameters(
-        params: SharedLambdaParams,
-        public_parameters: Value,
-        body: SharedLambdaBody,
-        env: Value,
-        documentation: Option<Value>,
-        interactive: Option<Value>,
-    ) -> Self {
-        Self::allocated_lambda(LambdaValue {
-            params,
-            public_parameters: Some(public_parameters),
-            body,
-            env: std::cell::OnceCell::from(env),
-            documentation,
-            interactive,
-        })
-    }
-
-    pub(crate) fn allocated_lambda(lambda: LambdaValue) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(
-            lambda.public_len().saturating_add(1).saturating_mul(8),
-        );
-        Value::Lambda(crate::lisp::alloc::VectorlikeRef::allocate(lambda))
+    pub(crate) fn allocated_lambda(slots: &[Value]) -> Self {
+        Value::Lambda(crate::lisp::alloc::ClosureRef::allocate(slots))
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
@@ -2847,7 +2770,7 @@ impl Value {
     }
 
     pub fn is_string(&self) -> bool {
-        matches!(self.kind(), Kind::String(_) | Kind::StringObject(_))
+        self.0 & TAG_MASK == TAG_STRING
     }
 
     pub fn is_symbol(&self) -> bool {
@@ -2979,12 +2902,12 @@ impl Value {
     }
 
     /// Convert a proper list to a Vec.
-    pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
+    pub fn to_vec(self) -> Result<Vec<Value>, LispError> {
         if let Kind::Vector(vector) = self.kind() {
             let slots = vector.slots();
             let mut result = Vec::with_capacity(slots.len().saturating_add(1));
             result.push(Value::symbol("vector-literal"));
-            result.extend(slots.iter().cloned());
+            result.extend(slots);
             return Ok(result);
         }
         let mut result = Vec::new();
@@ -3120,19 +3043,21 @@ fn values_equal_recursive(
             }
             let a = a.slots();
             let b = b.slots();
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b.iter())
-                    .all(|(a, b)| values_equal_recursive(a, b, seen))
+            a.len() == b.len() && a.zip(b).all(|(a, b)| values_equal_recursive(&a, &b, seen))
         }
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::Lambda(a), Kind::Lambda(b)) => {
-            a.params == b.params
-                && a.public_parameters == b.public_parameters
-                && a.body == b.body
-                && a.documentation == b.documentation
-                && a.interactive == b.interactive
-                && values_equal_recursive(&a.environment_value(), &b.environment_value(), seen)
+            if a.ptr_eq(&b)
+                || !seen
+                    .get_or_insert_with(HashSet::new)
+                    .insert((a.identity(), b.identity()))
+            {
+                return true;
+            }
+            a.public_len() == b.public_len()
+                && a.slots()
+                    .zip(b.slots())
+                    .all(|(a, b)| values_equal_recursive(&a, &b, seen))
         }
         (Kind::Buffer(a), Kind::Buffer(b)) => a.id == b.id,
         (Kind::Marker(a), Kind::Marker(b)) => a == b,
@@ -3170,11 +3095,11 @@ fn format_value(
                 return write!(f, "#<circular-vector>");
             }
             write!(f, "[")?;
-            for (index, value) in vector.slots().iter().enumerate() {
+            for (index, value) in vector.slots().enumerate() {
                 if index != 0 {
                     write!(f, " ")?;
                 }
-                format_value(value, f, seen)?;
+                format_value(&value, f, seen)?;
             }
             seen.remove(&id);
             write!(f, "]")
@@ -3238,7 +3163,7 @@ fn format_value(
             write!(f, ")")
         }
         Kind::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
-        Kind::Lambda(lambda) => write!(f, "#<lambda ({})>", lambda.params.join(" ")),
+        Kind::Lambda(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
@@ -3663,6 +3588,18 @@ mod tests {
 
     #[test]
     fn value_is_one_machine_word() {
+        // This resolves only while Value is neither Send nor Sync. Giving
+        // the word either trait introduces another matching implementation
+        // and makes the inference ambiguous at compile time.
+        trait LocalWord<A> {
+            fn check() {}
+        }
+        struct IfSend;
+        struct IfSync;
+        impl<T> LocalWord<()> for T {}
+        impl<T: Send> LocalWord<IfSend> for T {}
+        impl<T: Sync> LocalWord<IfSync> for T {}
+        <Value as LocalWord<_>>::check();
         assert_eq!(
             std::mem::size_of::<Value>(),
             std::mem::size_of::<usize>(),
@@ -3701,6 +3638,104 @@ mod tests {
             matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
         );
         assert!(!environment_declares_special(frame.environment(), "cell"));
+    }
+
+    #[test]
+    fn vector_slots_observe_lisp_mutation_and_gc_during_iteration() {
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        let mut environment = super::Env::new();
+        let value = Value::vector([Value::Integer(19), Value::Nil, Value::Nil]);
+        let Kind::Vector(vector) = value.kind() else {
+            unreachable!("constructed vector")
+        };
+        let mut slots = vector.slots();
+        assert_eq!(slots.next(), Some(Value::Integer(19)));
+
+        // Keep the slot iterator alive across Lisp stores and a collection.
+        // It must read the authoritative words, and may not hold &Value or
+        // &mut Value references that forbid the intervening mutations.
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "aset",
+            &[value, Value::Integer(1), Value::list([Value::Integer(73)])],
+            &mut environment,
+        )
+        .expect("store a new Lisp object");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "aset",
+            &[value, Value::Integer(2), value],
+            &mut environment,
+        )
+        .expect("create a shared cycle");
+        crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut environment)
+            .expect("collect while the iterator remains live");
+        assert_eq!(slots.next().expect("updated slot").to_string(), "(73)");
+        assert_eq!(slots.next_back().expect("cycle").word(), value.word());
+        assert!(slots.next().is_none());
+    }
+
+    #[test]
+    fn vector_gnu_payload_offsets_survive_collection_and_direct_stores() {
+        use std::cell::Cell;
+
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        let mut environment = super::Env::new();
+        let lengths = [0, 1, 2, 3, 63, 251, 252, 511, 4097];
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        // Include the small/large allocation boundary and enough objects
+        // for several blocks. A root buffer keeps every cyclic vector live.
+        for index in 0..270 {
+            let len = lengths[index % lengths.len()];
+            let value = Value::vector(std::iter::repeat_n(Value::Integer(index as i64), len));
+            let Kind::Vector(vector) = value.kind() else {
+                unreachable!("constructed vector")
+            };
+            // lisp.h:Lisp_Vector has one size word, immediately followed
+            // by Lisp_Object slots. Exercise that ABI independently of get.
+            let header = vector.identity() as *const usize;
+            // SAFETY: a live vector's initialized, immutable size word.
+            assert_eq!(unsafe { header.read() }, len);
+            if len != 0 {
+                // SAFETY: the first payload word is Cell<Value>, whose
+                // representation is Cell<usize>. No exclusive borrow escapes.
+                unsafe { &*header.add(1).cast::<Cell<usize>>() }.set(value.word());
+                assert!(vector.get(0).expect("first slot").eq_value(value));
+            }
+            roots.push(value);
+        }
+
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "garbage-collect",
+                &[],
+                &mut environment,
+            )
+            .expect("collect vectors across blocks and sizes");
+            for (index, value) in roots.iter().enumerate() {
+                let Kind::Vector(vector) = value.kind() else {
+                    unreachable!("retained vector")
+                };
+                let len = lengths[index % lengths.len()];
+                assert_eq!(vector.len(), len);
+                if len != 0 {
+                    assert!(vector.get(0).expect("cycle").eq_value(*value));
+                }
+                if len > 1 {
+                    assert_eq!(vector.get(1), Some(Value::Integer(index as i64)));
+                    let replacement = Value::float(index as f64 + 0.5);
+                    vector.set(len - 1, replacement);
+                    // SAFETY: this is the last initialized Lisp payload
+                    // word, after one header word at the GNU ABI offset.
+                    let last = unsafe { &*(vector.identity() as *const Cell<usize>).add(len) };
+                    assert_eq!(last.get(), replacement.word());
+                    // Restore the test's second slot when it is also last.
+                    vector.set(len - 1, Value::Integer(index as i64));
+                }
+            }
+        }
     }
 
     #[test]
@@ -3791,11 +3826,7 @@ mod tests {
     fn live_census_counts_bignums_and_interpreted_closures_as_gnu_vectors() {
         let before = census_live_vectors();
         let integer = Value::big_integer(num_bigint::BigInt::from(1_u8) << 128);
-        let closure = Value::lambda(
-            std::rc::Rc::new(Vec::new()),
-            std::rc::Rc::new(vec![Value::Nil]),
-            Value::Nil,
-        );
+        let closure = Value::lambda(Vec::new(), vec![Value::Nil], Value::Nil);
         let after = census_live_vectors();
 
         assert_eq!(after.count, before.count + 2);
@@ -3904,8 +3935,8 @@ mod tests {
     }
 
     #[test]
-    fn cloning_lambda_shares_immutable_parameters() {
-        let lambda = Value::lambda(vec!["value".into()].into(), Vec::new().into(), Value::Nil);
+    fn cloning_lambda_shares_argument_and_body_lists() {
+        let lambda = Value::lambda(vec!["value".into()], Vec::new(), Value::Nil);
         let clone = lambda;
 
         let (Kind::Lambda(lambda), Kind::Lambda(cloned_lambda)) = (lambda.kind(), clone.kind())
@@ -3913,7 +3944,11 @@ mod tests {
             unreachable!("constructed lambda values")
         };
         assert!(lambda.ptr_eq(&cloned_lambda));
-        assert!(Rc::ptr_eq(&lambda.params, &cloned_lambda.params));
+        assert_eq!(
+            lambda.parameters().word(),
+            cloned_lambda.parameters().word()
+        );
+        assert_eq!(lambda.body().word(), cloned_lambda.body().word());
     }
 
     #[test]

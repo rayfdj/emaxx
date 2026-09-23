@@ -110,10 +110,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "empty after Fdump_emacs_portable's collection loop; the writer refuses otherwise",
     ),
     (
-        "plain_quote_templates",
-        "a cache over quoted constants, rebuilt on demand (the constants themselves are reached through the code)",
-    ),
-    (
         "char_tables",
         "the registry of char-table objects: each is written when a root or object reaches it, as GNU's heap objects are",
     ),
@@ -182,10 +178,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "symbols_with_positions_enabled",
         "the forwarded C slot of symbols-with-pos-enabled, refilled likewise",
-    ),
-    (
-        "local_special_names",
-        "eval.c's specpdl-scoped local specials of the running evaluation",
     ),
     ("lisp_eval_depth", "eval.c:init_eval resets lisp_eval_depth"),
     (
@@ -362,9 +354,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("definition_generation", "a cache generation"),
     ("function_binding_generation", "a cache generation"),
     ("not_macro_names", "a cache"),
-    ("lambda_source_bodies", "a cache"),
-    ("file_name_handler_match_cache", "a cache"),
-    ("file_name_handler_alist_watch", "a cache"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",
@@ -917,7 +906,7 @@ mod install {
 
     fn expect_vector(value: &Value, what: &str) -> Result<Vec<Value>, String> {
         match value.kind() {
-            Kind::Vector(vector) => Ok(vector.slots().to_vec()),
+            Kind::Vector(vector) => Ok(vector.slots().collect::<Vec<_>>()),
             other => Err(format!("{what}: not a vector: {other:?}")),
         }
     }

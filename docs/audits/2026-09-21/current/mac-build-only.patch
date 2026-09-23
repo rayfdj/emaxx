@@ -1,0 +1,68 @@
+--- a/src/lisp/primitives/dispatch/files_process.rs
++++ b/src/lisp/primitives/dispatch/files_process.rs
+@@ -1393,65 +1393,6 @@
+                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                 }
+                 write_region_value(interp, args, env)
+-            }
+-            #[cfg(target_os = "linux")]
+-            "inotify-add-watch" => {
+-                need_args(name, args, 3)?;
+-                // Finotify_add_watch converts ASPECT to its mask before
+-                // CHECK_STRING examines FILE-NAME, and symbol_to_inotifymask
+-                // reports any entry it cannot map -- a non-symbol included --
+-                // as an unknown aspect with errno set to EINVAL.
+-                let aspects = if args[1].is_nil() {
+-                    Vec::new()
+-                } else if args[1].cons_values().is_some() {
+-                    args[1].to_vec()?
+-                } else {
+-                    vec![args[1]]
+-                };
+-                let flags = aspects
+-                    .iter()
+-                    .map(|aspect| {
+-                        aspect.as_symbol().map(str::to_string).map_err(|_| {
+-                            crate::lisp::primitives::file_notify_error_with_errno(
+-                                "Unknown aspect",
+-                                &std::io::Error::from_raw_os_error(libc::EINVAL),
+-                                *aspect,
+-                            )
+-                        })
+-                    })
+-                    .collect::<Result<Vec<_>, _>>()?;
+-                interp.validate_inotify_aspects(&flags)?;
+-                let path = string_text(&args[0])?;
+-                interp.register_inotify_file_notify_watch(path, flags, args[2])
+-            }
+-            #[cfg(target_os = "linux")]
+-            "inotify-rm-watch" => {
+-                need_args(name, args, 1)?;
+-                let valid = args[0].cons_values().is_some_and(|(watch, id)| {
+-                    matches!(watch.kind(), Kind::Integer(value) if value >= 0 && value <= i64::from(i32::MAX))
+-                        && matches!(id.kind(), Kind::Integer(value) if value >= 0)
+-                });
+-                if !valid {
+-                    // report_file_notify_error renders whatever errno the
+-                    // preceding host call left behind, so GNU's own text here
+-                    // depends on session history; only the shape is stable.
+-                    return Err(crate::lisp::primitives::file_notify_error_with_errno(
+-                        "Invalid descriptor ",
+-                        &std::io::Error::last_os_error(),
+-                        args[0],
+-                    ));
+-                }
+-                interp.remove_inotify_file_notify_watch(&args[0])?;
+-                Ok(Value::T)
+-            }
+-            #[cfg(target_os = "linux")]
+-            "inotify-valid-p" => {
+-                need_args(name, args, 1)?;
+-                Ok(if interp.inotify_file_notify_watch_is_active(&args[0]) {
+-                    Value::T
+-                } else {
+-                    Value::Nil
+-                })
+             }
+             "kqueue-add-watch" => {
+                 need_args(name, args, 3)?;

@@ -14,9 +14,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{Kind, LambdaValue, SharedText, SymbolName};
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use crate::lisp::types::{Kind, SharedText, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -215,55 +213,15 @@ pub(crate) fn load_image(bytes: &[u8], interp: &mut Interpreter) -> Result<Loade
     let mut loader = Loader {
         reader: Reader { bytes },
         relocs: OffsetTable::for_image(bytes.len()),
-        types: OffsetTable::for_image(bytes.len()),
         objects: ObjectTable::for_image(bytes.len()),
-        params: OffsetMap::default(),
-        bodies: OffsetMap::default(),
-        closures_in_progress: OffsetSet::default(),
         interp,
     };
     loader.load(header)
 }
 
-/// The hasher of the loader's small tables (closure parameters, bodies,
-/// environments, frames).  Their keys are image offsets: 8-byte aligned
-/// positions in a 40 MB file, each inserted once and read a few times.
-/// SipHash on those inserts and reads was a third of the load (0.9 s of
-/// 2.4 s CPU); one multiplication by the golden-ratio constant, its high
-/// half folded into the low bits hashbrown indexes by (an aligned key
-/// would otherwise leave the low bits of the product constant), costs
-/// nothing measurable.  The three large tables (relocations, object
-/// types, objects) are dense: see `OffsetTable' and `ObjectTable'.
-#[derive(Default)]
-struct OffsetHasher(u64);
-
-impl std::hash::Hasher for OffsetHasher {
-    fn finish(&self) -> u64 {
-        self.0 ^ (self.0 >> 32)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-
-    fn write_u32(&mut self, offset: u32) {
-        self.0 = u64::from(offset).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    }
-}
-
-type OffsetMap<V> = HashMap<u32, V, std::hash::BuildHasherDefault<OffsetHasher>>;
-type OffsetSet = HashSet<u32, std::hash::BuildHasherDefault<OffsetHasher>>;
-
-/// A table keyed by image offset with one slot per aligned position of
-/// the image: the relocation kinds (a million entries) and the object
-/// types (half a million).  Every key the writer emits is a multiple of
-/// `DUMP_ALIGNMENT' (an object start or a word inside an object), so the
-/// slot number is the offset divided by it, and a read is one indexed
-/// load.  The hash tables these replace cost a quarter of the load: the
-/// inserts alone, each a probe into a table too large for the cache and
-/// a first touch of its pages, took 250 ms of a 1.4 s boot.
+/// Relocation kinds indexed by aligned image word. The separate object-type
+/// table and auxiliary closure maps are unnecessary: all object identities
+/// exist before relocation, and closures contain ordinary Lisp fields.
 struct OffsetTable<V> {
     slots: Vec<Option<V>>,
 }
@@ -309,9 +267,8 @@ impl<V: Copy> OffsetTable<V> {
 /// The reconstructed objects by start offset.  An object's number is
 /// looked up through a dense index by image position (as `OffsetTable'),
 /// and the values sit in a vector of the object count, so a value read
-/// through a relocation is two indexed loads.  A number is assigned when
-/// an offset is first inserted, so a closure materialized out of order
-/// gets one as well.
+/// through a relocation is two indexed loads. Every identity is allocated
+/// before the relocation pass fills any object's Lisp fields.
 struct ObjectTable {
     /// Object number plus one by slot; zero is no object.
     index: Vec<u32>,
@@ -376,11 +333,7 @@ struct Loader<'a> {
     reader: Reader<'a>,
     relocs: OffsetTable<DumpRelocKind>,
     /// Object type by start offset.
-    types: OffsetTable<DumpType>,
     objects: ObjectTable,
-    params: OffsetMap<Rc<Vec<SymbolName>>>,
-    bodies: OffsetMap<Rc<Vec<Value>>>,
-    closures_in_progress: OffsetSet,
     interp: &'a mut Interpreter,
 }
 
@@ -397,7 +350,6 @@ impl Loader<'_> {
             let kind = DumpType::from_u32(self.reader.u32(at + 4)?)
                 .ok_or_else(|| LoadError::Error(format!("unknown object type at {at}")))?;
             object_starts.push((offset, kind));
-            self.types.insert(offset, kind);
         }
         for phase in 0..RELOC_NUM_PHASES {
             let locator = header.dump_relocs[phase];
@@ -467,6 +419,18 @@ impl Loader<'_> {
                 DumpType::Cons => {
                     self.objects
                         .insert(offset, Value::cons(Value::Nil, Value::Nil));
+                }
+                DumpType::Closure => {
+                    let size = self.reader.word(offset)? as usize;
+                    if !(3..=6).contains(&size) {
+                        return Err(LoadError::Error(format!(
+                            "invalid closure size at {offset}"
+                        )));
+                    }
+                    // Publish every identity before relocating any field.
+                    // Any closure slot can participate in an object cycle.
+                    self.objects
+                        .insert(offset, Value::allocated_lambda(&[Value::Nil; 6][..size]));
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
@@ -570,15 +534,7 @@ impl Loader<'_> {
             }
         }
 
-        // Phase 3: closures, materialized on demand with their shared
-        // parameter vectors, bodies and environments.
-        for &(offset, kind) in &object_starts {
-            if kind == DumpType::Closure {
-                self.closure_at(offset)?;
-            }
-        }
-
-        // Phase 4: the containers' fields.
+        // Phase 3: relocate the fields of the published containers.
         let mut obarray = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
@@ -593,14 +549,28 @@ impl Loader<'_> {
                     cell.car.initialize(car);
                     cell.cdr.initialize(cdr);
                 }
+                DumpType::Closure => {
+                    let Kind::Lambda(closure) = self.objects[&offset].kind() else {
+                        unreachable!()
+                    };
+                    for index in 0..closure.public_len() {
+                        let value = self.value_at(offset + 8 * (index as u32 + 1))?;
+                        closure.initialize_slot(index, value);
+                    }
+                    if !matches!(closure.body().kind(), Kind::Cons(_)) {
+                        return Err(LoadError::Error(format!(
+                            "invalid interpreted closure body at {offset}"
+                        )));
+                    }
+                }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
                     let Kind::Vector(vector) = self.objects[&offset].kind() else {
                         unreachable!()
                     };
-                    let slots = vector.slots_mut();
-                    for (index, slot) in slots.iter_mut().enumerate().take(size) {
-                        *slot = self.value_at(offset + 8 * (index as u32 + 1))?;
+                    for index in 0..size {
+                        let value = self.value_at(offset + 8 * (index as u32 + 1))?;
+                        vector.set(index, value);
                     }
                 }
                 DumpType::Record | DumpType::Obarray | DumpType::HashTable => {
@@ -877,8 +847,8 @@ impl Loader<'_> {
     }
 
     /// The Lisp value a record field holds: the relocation says which
-    /// object the word names, or the word is immediate.  A closure named
-    /// before its own record was reached is materialized here.
+    /// object the word names, or the word is immediate. All container
+    /// identities were installed before relocation, including closures.
     fn value_at(&mut self, field_offset: u32) -> Result<Value, LoadError> {
         let word = self.reader.word(field_offset)?;
         match self.relocs.get(&field_offset).copied() {
@@ -887,9 +857,6 @@ impl Loader<'_> {
                 let target = word as u32;
                 if let Some(value) = self.objects.get(&target) {
                     return Ok(*value);
-                }
-                if self.types.get(&target) == Some(&DumpType::Closure) {
-                    return self.closure_at(target);
                 }
                 Err(LoadError::Error(format!(
                     "field at {field_offset} names no object ({word})"
@@ -946,11 +913,6 @@ impl Loader<'_> {
         }
     }
 
-    /// A closure record: parameters, body and environment through their
-    /// raw-pointer words, the Lisp-object slots directly.  The
-    /// environment is created as an empty shell first so a closure that
-    /// reaches itself through its own frame terminates, as
-    /// ImageGraphCopier does for the test template.
     /// The symbol a record stands for.  A symbol `unintern' removed from
     /// the obarray keeps its ordinary name; a symbol made uninterned gets
     /// a fresh identity; one interned in another obarray (SYMBOL_INTERNED)
@@ -1005,41 +967,6 @@ impl Loader<'_> {
         ))
     }
 
-    fn closure_at(&mut self, offset: u32) -> Result<Value, LoadError> {
-        if let Some(value) = self.objects.get(&offset) {
-            return Ok(*value);
-        }
-        if !self.closures_in_progress.insert(offset) {
-            return Err(LoadError::Error(format!(
-                "closure at {offset} names itself through its body or parameters"
-            )));
-        }
-        let params_offset = self.reader.word(offset)? as u32;
-        let body_offset = self.reader.word(offset + 16)? as u32;
-        let params = self.params_at(params_offset)?;
-        let body = self.body_at(body_offset)?;
-        let public_parameters = self.optional_at(offset + 8)?;
-        let documentation = self.optional_at(offset + 32)?;
-        let interactive = self.optional_at(offset + 40)?;
-        let closure = Value::allocated_lambda(LambdaValue {
-            params,
-            public_parameters,
-            body,
-            env: std::cell::OnceCell::new(),
-            documentation,
-            interactive,
-        });
-        self.objects.insert(offset, closure);
-        self.closures_in_progress.remove(&offset);
-        // The environment after the closure is on record: a closure can
-        // reach itself through its environment's conses.
-        let environment = self.value_at(offset + 24)?;
-        if let Kind::Lambda(lambda) = closure.kind() {
-            let _ = lambda.env.set(environment);
-        }
-        Ok(closure)
-    }
-
     /// A slot that is absent (the unbound word, no relocation) or a value.
     fn optional_at(&mut self, field: u32) -> Result<Option<Value>, LoadError> {
         let word = self.reader.word(field)?;
@@ -1049,37 +976,6 @@ impl Loader<'_> {
         self.value_at(field).map(Some)
     }
 
-    fn params_at(&mut self, offset: u32) -> Result<Rc<Vec<SymbolName>>, LoadError> {
-        if let Some(params) = self.params.get(&offset) {
-            return Ok(params.clone());
-        }
-        let count = self.reader.word(offset)? as usize;
-        let mut symbols = Vec::with_capacity(count);
-        for index in 0..count {
-            let value = self.value_at(offset + 8 * (index as u32 + 1))?;
-            symbols.push(symbol_of(value, "closure parameter")?);
-        }
-        let params = Rc::new(symbols);
-        self.params.insert(offset, params.clone());
-        Ok(params)
-    }
-
-    fn body_at(&mut self, offset: u32) -> Result<Rc<Vec<Value>>, LoadError> {
-        if let Some(body) = self.bodies.get(&offset) {
-            return Ok(body.clone());
-        }
-        let count = self.reader.word(offset)? as usize;
-        let mut forms = Vec::with_capacity(count);
-        for index in 0..count {
-            forms.push(self.value_at(offset + 8 * (index as u32 + 1))?);
-        }
-        let body = Rc::new(forms);
-        self.bodies.insert(offset, body.clone());
-        Ok(body)
-    }
-
-    /// A string record: size, size_byte, intervals, data; the bytes at the
-    /// cold offset in GNU's internal representation.
     fn load_string(
         &mut self,
         offset: u32,

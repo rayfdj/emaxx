@@ -67,6 +67,7 @@ impl LocalCells {
         self.cells.values().map(|(symbol, value)| (symbol, value))
     }
 
+    #[cfg(test)]
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
         self.cells.values_mut().map(|(_, value)| value)
     }

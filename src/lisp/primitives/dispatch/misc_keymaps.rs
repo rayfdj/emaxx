@@ -1584,7 +1584,8 @@ define_dispatch!(
                     Kind::Cons(_) if is_vector_value(&args[0]) => "vector",
                     Kind::Cons(_) => "cons",
                     Kind::BuiltinFunc(_) => "subr",
-                    Kind::Lambda(_) => "cons", // Emacs closures are cons cells
+                    // data.c:Ftype_of's PVEC_CLOSURE with a cons code slot.
+                    Kind::Lambda(_) => "interpreted-function",
                     Kind::Buffer(_) => "buffer",
                     Kind::Marker(_) => "marker",
                     Kind::Overlay(_) => "overlay",
@@ -1656,16 +1657,8 @@ pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
         return None;
     };
     // GNU oclosure-type recognizes a closure whose public slot four is a
-    // symbol.  That slot is LambdaValue::documentation in the typed host
-    // representation; no private body marker or Lisp-visible API is needed.
-    (lambda.public_len() > 4).then(|| {
-        lambda
-            .documentation
-            .as_ref()?
-            .as_symbol()
-            .ok()
-            .map(String::from)
-    })?
+    // symbol.  Read the actual slot without reconstructing closure metadata.
+    (lambda.public_len() > 4).then(|| lambda.documentation()?.as_symbol().ok().map(String::from))?
 }
 
 fn widget_get(interp: &Interpreter, widget: &Value, property: &Value) -> Result<Value, LispError> {

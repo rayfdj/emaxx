@@ -1,0 +1,24 @@
+{
+  "round": 1,
+  "name": "undo-test4",
+  "runner": "oracle",
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-L",
+    "/Users/rayd/projects/emacs/test",
+    "-l",
+    "ert",
+    "-l",
+    "/Users/rayd/projects/emaxx/compat/emacs_compat_runner.el",
+    "-l",
+    "/Users/rayd/projects/emacs/test/src/undo-tests.el",
+    "--eval",
+    "(emaxx-compat-run 'undo-test4)"
+  ],
+  "returncode": 0,
+  "process_seconds": 1.0849381670000007,
+  "stdout": "",
+  "stderr": "Undo\nUndo\n"
+}

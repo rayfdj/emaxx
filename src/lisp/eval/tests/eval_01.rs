@@ -2447,6 +2447,303 @@ fn fixed_arity_subr_past_its_maximum_signals_before_evaluating_arguments() {
     );
 }
 
+#[test]
+fn eval_call_validates_improper_and_circular_arguments_before_evaluation() {
+    // GNU eval.c:eval_sub/apply_lambda call fns.c:list_length before
+    // evaluating any argument.  The error includes the improper tail or
+    // circular object, rather than a substitute diagnostic string.
+    for (program, expected) in [
+        (
+            r#"(let ((seen nil))
+               (list (condition-case e (eval '(list (setq seen t) . 17))
+                       (error e)) seen))"#,
+            "((wrong-type-argument listp 17) nil)",
+        ),
+        (
+            r#"(condition-case e (eval '(quote 1 . 17)) (error e))"#,
+            "(wrong-type-argument listp 17)",
+        ),
+        (
+            r#"(let ((seen nil) (args (list '(setq seen t))))
+               (setcdr args args)
+               (list (condition-case e (eval (cons 'list args))
+                       (circular-list (list (car e) (eq (cadr e) args))))
+                     seen))"#,
+            "((circular-list t) nil)",
+        ),
+        (
+            r#"(let ((args (list 1)))
+               (setcdr args args)
+               (defalias 'argument-cycle-target (lambda (&rest values) values))
+               (condition-case e (eval (cons 'argument-cycle-target args))
+                 (circular-list (list (car e) (eq (cadr e) args)))))"#,
+            "(circular-list t)",
+        ),
+    ] {
+        assert_eq!(eval_str(program).to_string(), expected, "{program}");
+    }
+}
+
+#[test]
+fn eval_call_classifies_the_function_before_arguments() {
+    for (program, expected) in [
+        (
+            r#"(fset 'resolution-target 42) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error e)) seen))"#,
+            r#"((invalid-function resolution-target) nil)"#,
+        ),
+        (
+            r#"(fset 'resolution-target 42) (condition-case e (eval '(resolution-target 1 . 17)) (error e))"#,
+            r#"(invalid-function resolution-target)"#,
+        ),
+        (
+            r#"(fset 'resolution-target '(17)) (condition-case e (eval '(resolution-target 1 . 17)) (error e))"#,
+            r#"(invalid-function resolution-target)"#,
+        ),
+        (
+            r#"(fset 'resolution-target '(17)) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error e)) seen))"#,
+            r#"((invalid-function resolution-target) nil)"#,
+        ),
+        (
+            r#"(fset 'resolution-target 42) (fset 'resolution-alias 'resolution-target) (let ((seen nil)) (list (condition-case e (resolution-alias (setq seen t)) (error e)) seen))"#,
+            r#"((invalid-function resolution-alias) nil)"#,
+        ),
+        (
+            r#"(let ((seen nil)) (list (condition-case e (eval '(42 (setq seen t))) (error e)) seen))"#,
+            r#"((invalid-function 42) nil)"#,
+        ),
+        (
+            r#"(let ((seen nil)) (list (condition-case e (eval '((progn (setq seen t) (lambda () 42)))) (error e)) seen))"#,
+            r#"((invalid-function (progn (setq seen t) (lambda nil 42))) nil)"#,
+        ),
+        (
+            r#"(fset 'resolution-target '(lambda (one two) one)) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error (car e))) seen))"#,
+            r#"(wrong-number-of-arguments t)"#,
+        ),
+        (
+            r#"(fset 'if '(lambda (&rest values) values)) (if 1 2 3)"#,
+            r#"(1 2 3)"#,
+        ),
+    ] {
+        assert_eq!(eval_str(program).to_string(), expected, "{program}");
+    }
+}
+
+#[test]
+fn eval_call_rejects_malformed_autoloads_without_evaluating_arguments() {
+    for (program, expected) in [
+        (
+            r#"(fset 'resolution-target '(autoload 17)) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error e)) seen))"#,
+            r#"((wrong-type-argument stringp 17) nil)"#,
+        ),
+        (
+            r#"(fset 'resolution-target '(autoload)) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error e)) seen))"#,
+            r#"((wrong-type-argument stringp nil) nil)"#,
+        ),
+        (
+            r#"(fset 'resolution-target '(autoload "missing" . 17)) (let ((seen nil)) (list (condition-case e (resolution-target (setq seen t)) (error e)) seen))"#,
+            r#"((wrong-type-argument listp (autoload "missing" . 17)) nil)"#,
+        ),
+        (
+            r#"(condition-case e (autoload-do-load '(autoload "missing") 17) (error e))"#,
+            r#"(wrong-type-argument symbolp 17)"#,
+        ),
+        (
+            r#"(condition-case e (eval '((autoload "missing"))) (error e))"#,
+            r#"(wrong-type-argument symbolp (autoload "missing"))"#,
+        ),
+    ] {
+        assert_eq!(eval_str(program).to_string(), expected, "{program}");
+    }
+}
+
+#[test]
+fn nthcdr_errors_retain_the_original_improper_list() {
+    assert_eq!(
+        eval_str(
+            "(let ((cells '(a b . 17)))
+               (list (nthcdr 2 cells)
+                     (condition-case e (nthcdr 3 cells)
+                       (error (list (car e) (cadr e) (eq (caddr e) cells))))
+                     (condition-case e (nth 2 cells) (error e))
+                     (condition-case e (nth 3 cells)
+                       (error (list (car e) (cadr e) (eq (caddr e) cells))))))"
+        )
+        .to_string(),
+        "(17 (wrong-type-argument listp t) (wrong-type-argument listp 17) (wrong-type-argument listp t))"
+    );
+}
+
+#[test]
+fn eval_call_autoloads_before_counting_or_evaluating_arguments() {
+    // eval.c:eval_sub calls Fautoload_do_load, then retries the original
+    // callee.  Each fixture is loaded through the ordinary file loader.
+    let root = std::env::temp_dir().join(format!(
+        "emaxx resolution {}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    for (file, symbol, definition, body, expected, macro_kind) in [
+        (
+            "ordinary.el",
+            "call-order-target",
+            "(defun call-order-target (value) value)",
+            "(list (call-order-target (progn (setq resolution-log (cons 'argument resolution-log)) 42)) (reverse resolution-log))",
+            "(42 (loaded argument))",
+            "nil",
+        ),
+        (
+            "signals.el",
+            "call-order-error",
+            "(error \"resolution fixture error\")",
+            "(list (condition-case e (call-order-error (setq resolution-log (cons 'argument resolution-log))) (error (car e))) (reverse resolution-log))",
+            "(error (loaded))",
+            "nil",
+        ),
+        (
+            "missing definition.el",
+            "call-order-missing",
+            "nil",
+            "(list (condition-case e (call-order-missing (setq resolution-log (cons 'argument resolution-log))) (error (car e))) (reverse resolution-log))",
+            "(error (loaded))",
+            "nil",
+        ),
+        (
+            "subr alias.el",
+            "call-order-subr",
+            "(defalias 'call-order-subr (symbol-function 'cons))",
+            "(list (condition-case e (call-order-subr (setq resolution-log (cons 'argument resolution-log))) (error e)) (reverse resolution-log))",
+            "((wrong-number-of-arguments call-order-subr 1) (loaded))",
+            "nil",
+        ),
+        (
+            "macro.el",
+            "call-order-macro",
+            "(defmacro call-order-macro (&rest values) (car values))",
+            "(list (condition-case e (eval '(call-order-macro 42 . 17)) (error e)) (reverse resolution-log))",
+            "((wrong-type-argument listp 17) (loaded))",
+            "'macro",
+        ),
+    ] {
+        let path = root.join(file);
+        std::fs::write(
+            &path,
+            format!("(setq resolution-log (cons 'loaded resolution-log))\n{definition}\n"),
+        )
+        .unwrap();
+        let quoted_path = Value::string(path.to_str().unwrap()).to_string();
+        let program = format!(
+            "(defvar resolution-log nil)
+             (autoload '{symbol} {quoted_path} nil nil {macro_kind})
+             (let ((resolution-log nil)) {body})"
+        );
+        assert_eq!(eval_str(&program).to_string(), expected, "{program}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn eval_call_checks_minimum_before_side_effects_including_subr_aliases() {
+    for callee in ["setcar", "argument-count-alias"] {
+        let program = format!(
+            "(progn
+               (defalias 'argument-count-alias (symbol-function 'setcar))
+               (let ((seen nil))
+                 (list (condition-case e
+                           ({callee} (progn (setq seen t) (cons 1 2)))
+                         (error e))
+                       seen)))"
+        );
+        assert_eq!(
+            eval_str(&program).to_string(),
+            format!("((wrong-number-of-arguments {callee} 1) nil)")
+        );
+    }
+}
+
+#[test]
+fn eval_call_fixed_subrs_read_cdr_after_evaluation_and_fill_optional_positions() {
+    for (program, expected) in [
+        (
+            r#"(setq form '(cons (progn (setcdr (cdr form) (list 3)) 1) 2))
+             (eval form)"#,
+            "(1 . 3)",
+        ),
+        (
+            r#"(setq form '(substring
+                          (progn (setcdr (cddr form) (list 3)) "abcdef") 1))
+             (eval form)"#,
+            "\"bc\"",
+        ),
+        (
+            r#"(setq form '(cons (progn (setcdr (cdr form) 17) 1) 2))
+             (condition-case e (eval form) (error e))"#,
+            "(wrong-type-argument listp 17)",
+        ),
+        (
+            r#"(defalias 'argument-cons-alias (symbol-function 'cons))
+             (setq form '(argument-cons-alias
+                          (progn (setcdr (cdr form) (list 3)) 1) 2))
+             (eval form)"#,
+            "(1 . 3)",
+        ),
+    ] {
+        assert_eq!(eval_str(program).to_string(), expected, "{program}");
+    }
+}
+
+#[test]
+fn eval_call_variable_subrs_and_lambdas_keep_original_bounds() {
+    for (program, expected) in [
+        (
+            r#"(setq form '(list
+                          (progn (setcdr (cddr form) (list 3 4 5 6 7 8 9 10 11 12)) 1)
+                          2))
+             (eval form)"#,
+            "(1 2)",
+        ),
+        (
+            r#"(setq form '(list
+                          (progn (setcdr (last form) (list 10 11 12)) 1)
+                          2 3 4 5 6 7 8 9))
+             (eval form)"#,
+            "(1 2 3 4 5 6 7 8 9)",
+        ),
+        (
+            r#"(setq form '(list (progn (setcdr (cddr form) nil) 1) 2 3))
+             (eval form)"#,
+            "(1 2)",
+        ),
+        (
+            r#"(setq form '((lambda (&rest x) x)
+                          (progn (setcdr (cddr form) nil) 1) 2 3))
+             (eval form)"#,
+            "(1 2 nil)",
+        ),
+        (
+            r#"(setq form '((lambda (&rest x) x)
+                          (progn (setcdr (cddr form) nil) 1) 2 3 4 5 6 7 8 9))
+             (eval form)"#,
+            "(1 2 nil nil nil nil nil nil nil)",
+        ),
+        (
+            r#"(setq form '(list (progn (setcdr (cddr form) 17) 1) 2 3))
+             (eval form)"#,
+            "(1 2)",
+        ),
+        (
+            r#"(setq form '((lambda (&rest x) x)
+                          (progn (setcdr (cddr form) 17) 1) 2 3))
+             (condition-case e (eval form) (error e))"#,
+            "(wrong-type-argument listp 17)",
+        ),
+    ] {
+        assert_eq!(eval_str(program).to_string(), expected, "{program}");
+    }
+}
+
 fn assert_eval_string_ops() {
     assert_eq!(
         eval_str(r#"(concat "hello" " " "world")"#),
@@ -3506,9 +3803,48 @@ fn file_name_handlers_honor_precedence_operations_and_inhibition() {
 }
 
 #[test]
-fn file_name_handler_match_cache_reuses_stable_scans() {
+fn file_name_handler_lookup_matches_gnu_short_circuiting_and_identity() {
+    // The same source was executed through both editors' normal CLIs;
+    // fileio.c:Ffind_file_name_handler supplies the order and Fmemq tests.
+    // Change names and paths as well as the malformed/cyclic contents.
+    let program = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/file-name-handler-lookup.el"
+    ));
+    for (prefix, pattern, directory) in [
+        ("audit", "needle", "/dir/"),
+        ("lookup-alternative", "target-73", "/another-directory/"),
+    ] {
+        let source = program
+            .replace("audit", prefix)
+            .replace("needle", pattern)
+            .replace("/dir/", directory);
+        let symbol = |suffix| Value::symbol(&format!("{prefix}-handler-{suffix}"));
+        assert_eq!(
+            eval_str(&source),
+            Value::list([
+                symbol("a"),
+                Value::Nil,
+                Value::Nil,
+                Value::list([
+                    Value::symbol("invalid-regexp"),
+                    Value::string("Unmatched [ or [^"),
+                ]),
+                symbol("a"),
+                Value::T,
+                symbol("d"),
+                Value::Nil,
+                symbol("a"),
+                Value::list([Value::Nil, Value::Nil]),
+            ]),
+            "{prefix}"
+        );
+    }
+}
+
+#[test]
+fn file_name_handler_repeated_lookup_returns_the_same_handler() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_file_name_handler_scan_count();
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -3524,11 +3860,10 @@ fn file_name_handler_match_cache_reuses_stable_scans() {
             Value::symbol("emaxx-cache-handler"),
         ])
     );
-    assert_eq!(crate::lisp::primitives::file_name_handler_scan_count(), 1);
 }
 
 #[test]
-fn file_name_handler_match_cache_tracks_every_mutable_authority() {
+fn file_name_handler_lookup_observes_mutation_and_rebinding() {
     assert_eq!(
         eval_str(
             r#"(let* ((entry (cons "cache-one" 'emaxx-cache-first))
@@ -3559,8 +3894,8 @@ fn file_name_handler_match_cache_tracks_every_mutable_authority() {
         ])
     );
 
-    // Mutable Lisp regexps are validated against their cached text snapshot:
-    // `aset' can change one without replacing its enclosing cons cells.
+    // `aset' changes the regexp without replacing its enclosing cons cells;
+    // the next lookup must use the current contents.
     assert_eq!(
         eval_str(
             r#"(let* ((pattern (copy-sequence "mutable-a"))
@@ -3583,12 +3918,11 @@ fn file_name_handler_match_cache_tracks_every_mutable_authority() {
 }
 
 #[test]
-fn file_name_handler_match_cache_survives_unrelated_writes() {
+fn file_name_handler_lookup_preserves_results_across_unrelated_writes() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_file_name_handler_scan_count();
     let handler = Value::symbol("emaxx-cache-keep-handler");
-    // Cons mutations elsewhere, a new definition and a plist write on an
-    // unrelated symbol are not authorities of the scan: no rescan.
+    // Unrelated cons, function and property mutations leave the selected
+    // handler unchanged.
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -3606,60 +3940,48 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
         ),
         Value::list([handler, handler])
     );
-    assert_eq!(crate::lisp::primitives::file_name_handler_scan_count(), 1);
 
-    // Every way a handler's plist slot is replaced rescans: the first `put'
-    // (nil to a list), `setplist' in both directions, and the removal of
-    // the head pair as `cl-remprop' does it.
-    let mut step = |form: &str, expected: Value, scans: usize| {
+    // Exercise every way the handler's operations property changes:
+    // first `put', `setplist' in both directions, and removal of the head
+    // pair as `cl-remprop' does it.
+    let mut step = |form: &str, expected: Value| {
         assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
-        assert_eq!(
-            crate::lisp::primitives::file_name_handler_scan_count(),
-            scans,
-            "{form}"
-        );
     };
     step(
         r#"(progn (put 'emaxx-cache-keep-handler 'operations '(copy-file))
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
         Value::Nil,
-        2,
     );
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler nil)
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
         handler,
-        3,
     );
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler '(operations (file-exists-p)))
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
         handler,
-        4,
     );
     step(
         r#"(find-file-name-handler "/tmp/cache-keep" 'file-exists-p)"#,
         handler,
-        4,
     );
     step(
         r#"(progn (setplist 'emaxx-cache-keep-handler
                             (cddr (symbol-plist 'emaxx-cache-keep-handler)))
                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
         handler,
-        5,
     );
 
-    // A pattern that reads the syntax or category table is never cached:
-    // every call scans, as GNU's does.  (The optional group keeps the
-    // match independent of the tables the early-Lisp fixture defines.)
+    // Keep syntax- and category-dependent patterns covered too. The
+    // optional group makes the match independent of the early fixture's
+    // table definitions.
     step(
         r#"(let ((file-name-handler-alist
                   (list (cons "\\(?:\\cl\\)?" 'emaxx-cache-keep-handler))))
              (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
                    (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
         Value::list([handler, handler]),
-        7,
     );
     step(
         r#"(let ((file-name-handler-alist
@@ -3667,7 +3989,6 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
              (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
                    (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
         Value::list([handler, handler]),
-        9,
     );
 }
 
@@ -4395,18 +4716,27 @@ fn markers_held_only_by_the_interpreter_survive_a_collection() {
 
 #[test]
 fn normal_mode_survives_collections_during_its_autoloads() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     // The gate's shape: `set-auto-mode' on an HTML buffer, with the
     // collection threshold low enough that mhtml-mode's autoload
     // collects while the search's marker bound is held only by the
     // call's argument list.  GNU: mhtml-mode.
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with(
+            &mut interp,
             r#"(with-temp-buffer
                  (insert "<!doctype html>")
                  (let ((gc-cons-threshold 100)) (normal-mode))
                  major-mode)"#,
         ),
-        Value::Symbol("mhtml-mode".into())
+        Value::Symbol("mhtml-mode".into()),
+        "GNU Lisp messages: {}",
+        eval_str_with(
+            &mut interp,
+            r#"(if (get-buffer "*Messages*")
+                   (with-current-buffer "*Messages*" (buffer-string))
+                 "No messages buffer")"#,
+        )
     );
 }
 
@@ -4788,8 +5118,10 @@ fn preloaded_file_buffer_policy_is_bound_and_truly_buffer_local() {
 
 #[test]
 fn normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with(
+            &mut interp,
             r##"(let ((directory (make-temp-file "emaxx-mode-pipeline" t)))
                  (unwind-protect
                      (let ((file (expand-file-name "sample.quux" directory))
@@ -4834,7 +5166,14 @@ fn normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence() {
             ]),
             Value::Symbol("text-mode".into()),
             Value::Symbol("mhtml-mode".into()),
-        ])
+        ]),
+        "GNU Lisp messages: {}",
+        eval_str_with(
+            &mut interp,
+            r#"(if (get-buffer "*Messages*")
+                   (with-current-buffer "*Messages*" (buffer-string))
+                 "No messages buffer")"#,
+        )
     );
 }
 
@@ -9619,5 +9958,28 @@ fn unread_command_events_pop_ahead_of_the_terminal() {
     assert_eq!(
         crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env),
         None
+    );
+}
+
+#[test]
+fn quoted_objects_share_reader_identity_through_mutation_and_gc() {
+    // eval.c:Fquote returns its reader-owned argument unchanged. The
+    // literal graphs and eval-buffer definitions use the same Lisp as
+    // the retained GNU controls, including the alias's error identity.
+    let source = include_str!("../../../../tests/fixtures/quote-object-sharing.el");
+    assert_eq!(
+        eval_str(source).to_string(),
+        "((wrong-number-of-arguments quote 2) (wrong-number-of-arguments quote 2) (t changed) (t 19) (t changed) (t t 23) (t t changed) (t 29) (t changed))"
+    );
+    let renamed = source
+        .replace("quote-object", "alternate-reader")
+        .replace("quote-buffer", "buffer-reader")
+        .replace("'changed", "'replacement")
+        .replace("19 first", "73 first")
+        .replace("23 (aref", "47 (aref")
+        .replace("29 first", "101 first");
+    assert_eq!(
+        eval_str(&renamed).to_string(),
+        "((wrong-number-of-arguments quote 2) (wrong-number-of-arguments quote 2) (t replacement) (t 73) (t replacement) (t t 47) (t t replacement) (t 101) (t replacement))"
     );
 }
