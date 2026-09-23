@@ -10263,6 +10263,68 @@ mod tests {
     }
 
     #[test]
+    fn native_builtins_use_their_own_words_and_subr_fields() {
+        extern "C" fn invoke_unary_subr(subr: NativeWord, argument: NativeWord) -> NativeWord {
+            // lisp.h:Lisp_Subr.function immediately follows its header.
+            // The caller checks the subr's fixed unary arity before entering.
+            unsafe {
+                let target = ((subr - TAG_VECTORLIKE) as *const NativeWord).add(1).read();
+                let function = std::mem::transmute::<
+                    NativeWord,
+                    unsafe extern "C" fn(NativeWord) -> NativeWord,
+                >(target);
+                function(argument)
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut other = NativeHeapOwner::new();
+        for (name, argument, expected) in [("identity", 41, 41), ("1+", -8, -7)] {
+            let value = Value::BuiltinFunc(name.into());
+            let word = runtime.heap.encode(&value).expect("builtin word");
+            assert_eq!(word, value.word(), "no separate native builtin handle");
+            assert_eq!(word & TAG_MASK, TAG_VECTORLIKE);
+            let object = (word - TAG_VECTORLIKE) as *const u8;
+            // GNU's static subrs have PVEC_SUBR (18) and no size/restsize.
+            assert_eq!(
+                unsafe { object.cast::<NativeWord>().read() },
+                (1 << 62) | (18 << 24)
+            );
+            assert_eq!(unsafe { object.add(16).cast::<i16>().read() }, 1);
+            assert_eq!(unsafe { object.add(18).cast::<i16>().read() }, 1);
+            let c_name = unsafe { object.add(24).cast::<*const std::ffi::c_char>().read() };
+            assert_eq!(
+                unsafe { std::ffi::CStr::from_ptr(c_name) }.to_bytes(),
+                name.as_bytes()
+            );
+            assert_eq!(Value::BuiltinFunc(name.to_owned().into()).word(), word);
+            assert_eq!(
+                other.decode(word).expect("independent native heap").word(),
+                word
+            );
+            assert!(other.decode(word + size_of::<Value>()).is_err());
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        invoke_unary_subr as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[value, Value::Integer(argument)],
+                    )
+                    .expect("call the function stored on the actual subr"),
+                Value::Integer(expected)
+            );
+        }
+        assert!(runtime.heap.handles.is_empty());
+        assert!(runtime.heap.handle_by_value.is_empty());
+        assert!(other.handles.is_empty());
+        assert!(other.handle_by_address.is_empty());
+    }
+
+    #[test]
     fn native_finalizers_use_their_own_words_and_callback_slot() {
         extern "C" fn callback(finalizer: NativeWord) -> NativeWord {
             // lisp.h:Lisp_Finalizer.function is the word after its header.

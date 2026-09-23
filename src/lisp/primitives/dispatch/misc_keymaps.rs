@@ -1614,7 +1614,6 @@ define_dispatch!(
                 };
                 Ok(Value::Symbol(name.into()))
             }
-            #[dispatch(builtin_override)]
             "cl-type-of" => {
                 need_args(name, args, 1)?;
                 cl_type_value(interp, &args[0])

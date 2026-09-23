@@ -97,6 +97,9 @@ macro_rules! dispatch_visit_patterns {
     }};
 }
 
+// The synthetic dispatch regression below still exercises attribute gating.
+// No production subr may bypass its current Lisp function cell.
+#[cfg(test)]
 macro_rules! dispatch_select_builtin_override {
     ($name:ident, $pattern:pat =>) => {
         false

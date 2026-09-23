@@ -8125,6 +8125,36 @@ fn fboundp_recognizes_special_forms() {
 }
 
 #[test]
+fn cl_type_of_honors_redefinition_and_aliases_without_changing_saved_subrs() {
+    // data.c:Fcl_type_of is an ordinary subr. eval.c resolves subsequent
+    // symbol calls through their current function cells; retaining the
+    // original subr value still calls that original function.
+    assert_eq!(
+        eval_str(
+            "(let ((original (symbol-function 'cl-type-of)))
+               (unwind-protect
+                   (progn
+                     (fset 'cl-type-of (lambda (object) (+ object 100)))
+                     (defalias 'layout-audit-alias 'cl-type-of)
+                     (list (cl-type-of 17)
+                           (funcall 'cl-type-of 18)
+                           (funcall (symbol-function 'cl-type-of) 19)
+                           (funcall original 20)
+                           (layout-audit-alias 21)))
+                 (fset 'cl-type-of original)
+                 (fmakunbound 'layout-audit-alias)))",
+        ),
+        Value::list([
+            Value::Integer(117),
+            Value::Integer(118),
+            Value::Integer(119),
+            Value::symbol("fixnum"),
+            Value::Integer(121),
+        ])
+    );
+}
+
+#[test]
 fn subr_arity_reports_regular_builtin_functions() {
     assert_eq!(
         eval_str("(subr-arity (symbol-function 'identity))"),
