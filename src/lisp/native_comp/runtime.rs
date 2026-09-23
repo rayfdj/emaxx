@@ -4464,6 +4464,10 @@ impl NativeHeap {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
+        // A different runtime can sweep the shared allocator between this
+        // heap's collections. Retire its reclaimed cons views before reading
+        // any fields, including stale conservative stack words.
+        self.forget_swept_conses();
         self.publish_interpreter_writes()
             .expect("Rust cons mutations contain valid Lisp objects before marking");
         // Shared marking borrows this heap exclusively. Its cons reads
@@ -4473,7 +4477,13 @@ impl NativeHeap {
         let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
         for entry in self.handles.iter().flatten() {
-            if entry.value.native_handle_has_external_owner() {
+            // Only these immortal identities are unconditional roots. Other
+            // bridge entries are weak until reached: another heap's collection
+            // may already have reclaimed their payload, so do not inspect it.
+            if matches!(
+                entry.identity,
+                NativeIdentity::Symbol(_) | NativeIdentity::Builtin(_) | NativeIdentity::Unbound
+            ) {
                 pending.push((&**entry as *const NativeHandle) as usize + entry.tag);
             }
         }
@@ -9207,6 +9217,139 @@ mod tests {
     // frame of their own, keep only a hidden copy of its word, and clear
     // the stack under the test (`clobber_stack') before the collection.
     const HIDE: usize = 0x5555_5555_5555_5555;
+
+    #[test]
+    fn native_gc_retires_weak_handles_after_foreign_collection() {
+        #[inline(never)]
+        fn make_values(heap: &mut NativeHeapOwner, interpreter: &mut Interpreter) -> [usize; 4] {
+            let live = Value::vector([Value::Integer(731)]);
+            let dead = Value::vector([Value::Integer(947)]);
+            let live_word = heap.encode(&live).expect("live bridge");
+            let dead_word = heap.encode(&dead).expect("unreachable bridge");
+            interpreter.set_global_binding("foreign-collection-live-vector", live);
+            [live.word(), dead.word(), live_word, dead_word].map(|word| word ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn check_payloads(hidden: [usize; 4], keep_live: bool) {
+            for (word, expected) in hidden[..2].iter().zip([keep_live, false]) {
+                let address = (word ^ HIDE) & !TAG_MASK;
+                let allocated = matches!(
+                    unsafe { crate::lisp::alloc::mem_find(address) },
+                    Some(crate::lisp::alloc::Found::Vectorlike(header))
+                        if header as usize == address
+                );
+                assert_eq!(
+                    allocated, expected,
+                    "foreign sweep must decide payload liveness"
+                );
+            }
+        }
+
+        #[inline(never)]
+        fn check_bridges(heap: &mut NativeHeapOwner, hidden: [usize; 4], keep_live: bool) {
+            if keep_live {
+                let value = heap.decode(hidden[2] ^ HIDE).expect("reachable bridge");
+                assert_eq!(value.word(), hidden[0] ^ HIDE);
+                let Kind::Vector(vector) = value.kind() else {
+                    panic!("retained vector");
+                };
+                assert_eq!(vector.slots()[0], Value::Integer(731));
+            } else {
+                assert!(heap.decode(hidden[2] ^ HIDE).is_err());
+            }
+            assert!(heap.decode(hidden[3] ^ HIDE).is_err());
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let hidden = make_values(&mut first, &mut interpreter);
+        let stack_marker = 0;
+        for keep_live in [true, false] {
+            if !keep_live {
+                interpreter.set_global_binding("foreign-collection-live-vector", Value::Nil);
+            }
+            crate::lisp::alloc::clobber_stack();
+            second.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_payloads(hidden, keep_live);
+            crate::lisp::alloc::clobber_stack();
+            first.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_bridges(&mut first, hidden, keep_live);
+        }
+        assert!(first.handles.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn native_gc_discards_cons_views_swept_by_another_heap() {
+        #[inline(never)]
+        fn make_cons(heap: &mut NativeHeapOwner) -> usize {
+            let word = heap.cons((42 << FIXNUM_BITS) | TAG_FIXNUM_LOW, 0);
+            heap.decode(word).expect("attach a typed cons view");
+            word ^ HIDE
+        }
+
+        #[inline(never)]
+        fn check_reclaimed(hidden: usize) {
+            assert_eq!(
+                crate::lisp::alloc::allocated_serial((hidden ^ HIDE) - TAG_CONS),
+                None
+            );
+        }
+
+        #[inline(never)]
+        fn collect_stale_stack_word(
+            heap: &mut NativeHeapOwner,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            hidden: usize,
+        ) {
+            // An integer left in a machine frame is not proof that the
+            // address is still allocated. The conservative scan must reject
+            // a view invalidated by another runtime's collection.
+            let words = [0, hidden ^ HIDE];
+            heap.set_stack_bottom(unsafe { words.as_ptr().add(words.len()) });
+            heap.collect(words.as_ptr(), &[], interpreter, environment);
+            std::hint::black_box(words);
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let hidden = make_cons(&mut first);
+        crate::lisp::alloc::clobber_stack();
+        let stack_marker = 0;
+        second.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        check_reclaimed(hidden);
+        assert_eq!(
+            first.cons_values.len(),
+            1,
+            "the foreign view is still indexed"
+        );
+        assert_eq!(first.native_owned.len(), 1);
+        crate::lisp::alloc::clobber_stack();
+        collect_stale_stack_word(&mut first, &mut interpreter, &environment, hidden);
+        assert!(first.cons_values.is_empty());
+        assert!(first.native_owned.is_empty());
+        check_reclaimed(hidden);
+    }
 
     #[test]
     fn native_relocation_roots_survive_collection_between_generated_calls() {

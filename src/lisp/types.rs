@@ -2687,33 +2687,6 @@ pub(crate) fn format_float(value: f64) -> String {
 }
 
 impl Value {
-    /// Whether a reference-counted object wrapped for native code is still
-    /// owned outside that native wrapper.  Id-backed values return true
-    /// because their host representation has no reference count; their
-    /// wrappers are the stable identities generated code observes.
-    pub(crate) fn native_handle_has_external_owner(&self) -> bool {
-        match self.kind() {
-            Kind::BigInteger(_) => false,
-            // A float has no count: its handle lives while the mark
-            // reaches the cell (from Lisp or from generated code).
-            Kind::Float(_) => false,
-            // A string has no count: its handle lives while the mark
-            // reaches the cell.
-            Kind::String(_) => false,
-            // A vectorlike has no count either: its handle lives while
-            // the mark reaches the cell.
-            Kind::StringObject(_)
-            | Kind::Vector(_)
-            | Kind::Lambda(_)
-            | Kind::Buffer(_)
-            | Kind::ReaderForm(_) => false,
-            // A cons has no count: the collector decides its life.
-            Kind::Cons(_) => true,
-            Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            _ => false,
-        }
-    }
-
     // Constructors
 
     pub fn int(n: i64) -> Self {
