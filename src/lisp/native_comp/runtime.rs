@@ -9476,6 +9476,87 @@ mod tests {
     const HIDE: usize = 0x5555_5555_5555_5555;
 
     #[test]
+    fn native_gc_uninterned_symbols_are_weak_across_collectors() {
+        #[inline(never)]
+        fn make_values(heap: &mut NativeHeapOwner, interpreter: &mut Interpreter) -> [usize; 4] {
+            let live = Value::Symbol(SymbolName::make_uninterned(
+                Value::string("retained-native-symbol"),
+                "retained-native-symbol",
+                731,
+            ));
+            let dead = Value::Symbol(SymbolName::make_uninterned(
+                Value::string("unreachable-native-symbol"),
+                "unreachable-native-symbol",
+                947,
+            ));
+            let live_word = heap.encode(&live).expect("live symbol word");
+            let dead_word = heap.encode(&dead).expect("unreachable symbol word");
+            interpreter.set_global_binding("foreign-collection-live-symbol", live);
+            [live.word(), dead.word(), live_word, dead_word].map(|word| word ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn check_payloads(hidden: [usize; 4], keep_live: bool) {
+            for (word, expected) in hidden[..2].iter().zip([keep_live, false]) {
+                let address = (word ^ HIDE) & !TAG_MASK;
+                let allocated = matches!(
+                    unsafe { crate::lisp::alloc::mem_find(address) },
+                    Some(crate::lisp::alloc::Found::Symbol(cell)) if cell as usize == address
+                );
+                assert_eq!(allocated, expected, "uninterned symbol payload liveness");
+            }
+        }
+
+        #[inline(never)]
+        fn check_words(heap: &mut NativeHeapOwner, hidden: [usize; 4], keep_live: bool) {
+            if keep_live {
+                let value = heap.decode(hidden[2] ^ HIDE).expect("reachable symbol");
+                assert_eq!(value.word(), hidden[0] ^ HIDE);
+                let Kind::Symbol(symbol) = value.kind() else {
+                    panic!("retained symbol");
+                };
+                assert_eq!(
+                    crate::lisp::types::visible_symbol_name(symbol.as_str()),
+                    "retained-native-symbol"
+                );
+            } else {
+                assert!(heap.decode(hidden[2] ^ HIDE).is_err());
+            }
+            assert!(heap.decode(hidden[3] ^ HIDE).is_err());
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let hidden = make_values(&mut first, &mut interpreter);
+        let stack_marker = 0;
+        for keep_live in [true, false] {
+            if !keep_live {
+                interpreter.set_global_binding("foreign-collection-live-symbol", Value::Nil);
+            }
+            crate::lisp::alloc::clobber_stack();
+            second.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_payloads(hidden, keep_live);
+            crate::lisp::alloc::clobber_stack();
+            first.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_payloads(hidden, keep_live);
+            check_words(&mut first, hidden, keep_live);
+        }
+        assert!(first.handles.iter().all(Option::is_none));
+    }
+
+    #[test]
     fn native_gc_traces_interpreter_roots_and_current_native_fields() {
         #[inline(never)]
         fn build(
