@@ -643,7 +643,11 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     ACTIVE_CALL.with(|active| {
         let active = active.get();
         if active.is_null() {
-            None
+            // comp.c can invoke Lisp while the loader/backend owns the
+            // native state, before generated code installs an active call.
+            // Its relocations and GC counters still belong to that runtime;
+            // the interpreter's temporarily empty compiler is not an owner.
+            super::loader::with_active_registered_runtime(body)
         } else {
             // SAFETY: The active call owns the runtime for this synchronous
             // callback. Nested native invocations use the same owner.
@@ -715,13 +719,18 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
         maybe_gc_active();
         return;
     }
-    // lisp.h:maybe_gc's `consing_until_gc < 0' first: one compare on the
-    // common path, the in-progress flag read only past it.
-    if !interpreter
-        .native_compiler
-        .garbage_collection_might_be_due()
-        && !crate::lisp::alloc::stress_collections()
-    {
+    // lisp.h:maybe_gc's `consing_until_gc < 0' on the owning runtime.
+    // A loader/backend callback temporarily takes that owner out of the
+    // interpreter, but still charges allocations to the same GC counter.
+    let might_be_due = super::loader::with_active_registered_runtime(|runtime| {
+        runtime.garbage_collection_might_be_due()
+    })
+    .unwrap_or_else(|| {
+        interpreter
+            .native_compiler
+            .garbage_collection_might_be_due()
+    });
+    if !might_be_due && !crate::lisp::alloc::stress_collections() {
         return;
     }
     maybe_garbage_collect(interpreter, environment);
@@ -735,11 +744,13 @@ fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
         return;
     }
     let (threshold, percentage) = gc_tuning(interpreter, environment);
-    if !interpreter
-        .native_compiler
-        .garbage_collection_due(threshold, percentage)
-        && !crate::lisp::alloc::stress_collections()
-    {
+    let due = with_current_runtime(|runtime| runtime.garbage_collection_due(threshold, percentage))
+        .unwrap_or_else(|| {
+            interpreter
+                .native_compiler
+                .garbage_collection_due(threshold, percentage)
+        });
+    if !due && !crate::lisp::alloc::stress_collections() {
         return;
     }
     ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(true));
