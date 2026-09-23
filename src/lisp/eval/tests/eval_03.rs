@@ -4749,15 +4749,25 @@ fn dotimes_reuses_its_binding_across_large_loops() {
 
 #[test]
 fn cl_defmethod_supports_setf_function_names() {
+    // eval.c:Ffunction quotes this non-lambda argument unchanged; funcall
+    // rejects the resulting list. cl-generic.el resolves setter names with
+    // gv-setter. Retain the rejected input and exercise both valid callers.
     assert_eq!(
         eval_str_with_upstream_batch_feature(
             "cl-generic",
             "(progn
                    (cl-defmethod (setf sample-slot) (store object)
                      store)
-                   (funcall #'(setf sample-slot) 42 nil))"
-        ),
-        Value::Integer(42)
+                   (list
+                     (condition-case err
+                         (funcall #'(setf sample-slot) 42 nil)
+                       (invalid-function
+                        (equal err '(invalid-function (setf sample-slot)))))
+                     (funcall (gv-setter 'sample-slot) 42 nil)
+                     (setf (sample-slot nil) 57)))"
+        )
+        .to_string(),
+        "(t 42 57)"
     );
 }
 
