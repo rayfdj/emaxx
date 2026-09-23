@@ -2379,15 +2379,22 @@ pub(crate) fn value_matches_with_test(
 ) -> Result<bool, LispError> {
     match testfn.filter(|value| !value.is_nil()).map(|v| v.kind()) {
         None => Ok(values_eq_in_env(interp, left, right, env)),
-        Some(Kind::Symbol(name)) | Some(Kind::BuiltinFunc(name)) => match name.as_str() {
-            "eq" => Ok(values_eq_in_env(interp, left, right, env)),
-            "eql" => Ok(values_eql(left, right)),
-            "equal" => Ok(values_equal_in_env(interp, left, right, env)),
-            _ => {
-                let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
-                Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
+        Some(kind @ (Kind::Symbol(_) | Kind::BuiltinFunc(_))) => {
+            let name = match &kind {
+                Kind::Symbol(name) => name.as_str(),
+                Kind::BuiltinFunc(subr) => subr.as_str(),
+                _ => unreachable!("a symbol or a subr"),
+            };
+            match name {
+                "eq" => Ok(values_eq_in_env(interp, left, right, env)),
+                "eql" => Ok(values_eql(left, right)),
+                "equal" => Ok(values_equal_in_env(interp, left, right, env)),
+                _ => {
+                    let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
+                    Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
+                }
             }
-        },
+        }
         Some(other) => {
             let func = resolve_callable(interp, &other.value(), env)?;
             Ok(invoke_function_value(interp, &func, &[*left, *right], env)?.is_truthy())
@@ -3718,7 +3725,8 @@ pub(crate) fn unwrap_function_quote(value: &Value) -> Value {
 pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
     match value.kind() {
         Kind::Nil => "undefined".into(),
-        Kind::Symbol(name) | Kind::BuiltinFunc(name) => name.to_string(),
+        Kind::Symbol(name) => name.to_string(),
+        Kind::BuiltinFunc(subr) => subr.to_string(),
         Kind::Record(_) => "Prefix Command".into(),
         Kind::Cons(_) => value
             .to_vec()
@@ -4660,7 +4668,8 @@ pub(crate) fn remap_key_binding_text(command: &str) -> String {
 
 pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
     match value.kind() {
-        Kind::Symbol(name) | Kind::BuiltinFunc(name) => Some(name.to_string()),
+        Kind::Symbol(name) => Some(name.to_string()),
+        Kind::BuiltinFunc(subr) => Some(subr.to_string()),
         Kind::Cons(_) => value.to_vec().ok().and_then(|items| {
             match items
                 .as_slice()

@@ -111,34 +111,39 @@ fn main() {
          pub(crate) const NATIVE_ABI_SYSTEM_CONFIGURATION: &str = {abi_configuration:?};\n\
          pub(crate) const NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS: &str = {abi_configuration_options:?};\n\n"
     ));
-    generated.push_str("pub(crate) const NATIVE_SUBRS: &[NativeSubr] = &[\n");
-    for primitive in &registration {
+    generated.push_str(&format!(
+        "pub(crate) static NATIVE_SUBRS: [NativeSubr; {}] = [\n",
+        registration.len()
+    ));
+    for (index, primitive) in registration.iter().enumerate() {
         let max_args = match primitive.max_args {
             -2 => "NativeMaxArgs::Many".to_string(),
             -1 => "NativeMaxArgs::Unevalled".to_string(),
             value => format!("NativeMaxArgs::Fixed({value})"),
         };
+        assert!(
+            primitive.name.is_ascii(),
+            "GNU primitive names must be ASCII"
+        );
+        let target = direct_native_target(&primitive.name).map_or_else(
+            || format!("native_subr_{index:04}"),
+            |target| format!("super::runtime::{target}"),
+        );
         generated.push_str(&format!(
-            "    NativeSubr {{ name: {:?}, min_args: {}, max_args: {max_args} }},\n",
+            "    NativeSubr::new(c{:?}, {}, {max_args}, {target} as *const std::ffi::c_void, {index}),\n",
             primitive.name, primitive.min_args
         ));
     }
     generated.push_str("];\n\n");
     generated.push_str(
         "pub(crate) fn native_subr_address(index: usize) -> *mut std::ffi::c_void {\n\
-         \x20   match index {\n",
-    );
-    for (index, _) in registration.iter().enumerate() {
-        generated.push_str(&format!(
-            "        {index} => native_subr_{index:04} as *mut std::ffi::c_void,\n"
-        ));
-    }
-    generated.push_str(
-        "        _ => std::ptr::null_mut(),\n\
-         \x20   }\n\
+         \x20   NATIVE_SUBRS.get(index).map_or(std::ptr::null_mut(), |subr| subr.function.cast_mut())\n\
          }\n\n",
     );
     for (index, primitive) in registration.iter().enumerate() {
+        if direct_native_target(&primitive.name).is_some() {
+            continue;
+        }
         if primitive.name == "cons" {
             assert_eq!(primitive.max_args, 2, "alloc.c:Fcons has fixed arity two");
             generated.push_str(&format!(
@@ -188,6 +193,35 @@ fn main() {
     }
     fs::write(&output, generated)
         .unwrap_or_else(|error| panic!("write {}: {error}", output.display()));
+}
+
+// Store the chosen Rust implementation in the subr itself, as DEFUN stores
+// its C entry. Runtime funcall and ABI table construction need no name match.
+fn direct_native_target(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "null" => "direct_native_null",
+        "consp" => "direct_native_consp",
+        "atom" => "direct_native_atom",
+        "bare-symbol-p" => "direct_native_bare_symbol_p",
+        "car" => "direct_native_car",
+        "car-safe" => "direct_native_car_safe",
+        "cdr" => "direct_native_cdr",
+        "cdr-safe" => "direct_native_cdr_safe",
+        "listp" => "direct_native_listp",
+        "nlistp" => "direct_native_nlistp",
+        "identity" => "direct_native_identity",
+        "stringp" => "direct_native_stringp",
+        "eq" => "direct_native_eq",
+        "eql" => "direct_native_eql",
+        "type-of" => "direct_native_type_of",
+        "symbol-value" => "direct_native_symbol_value",
+        "get" => "direct_native_get",
+        "nreverse" => "direct_native_nreverse",
+        "length" => "direct_native_length",
+        "plist-member" => "direct_native_plist_member",
+        "make-closure" => "direct_native_make_closure",
+        _ => return None,
+    })
 }
 
 fn read_min_arg_constants(directory: &Path) -> HashMap<String, u16> {

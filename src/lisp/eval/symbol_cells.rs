@@ -53,7 +53,6 @@ struct SymbolCell {
     /// The subr behind the name, as lisp.h keeps it in the symbol: the
     /// manifest's facts and the evaluator's arm, learned on first use.
     facts: Cell<Option<crate::lisp::primitives::NameFacts>>,
-    native_form: Cell<Option<Option<super::core::NativeForm>>>,
     /// `SYMBOL_VARALIAS': the alias target.
     alias: Option<SymbolName>,
     flags: u8,
@@ -328,26 +327,6 @@ impl SymbolCells {
                     let facts = compute();
                     cell.facts.set(Some(facts));
                     facts
-                }
-            },
-            None => compute(),
-        }
-    }
-
-    /// The evaluator's arm for the symbol, likewise.
-    #[inline]
-    pub(crate) fn native_form_or(
-        &self,
-        symbol: &SymbolName,
-        compute: impl FnOnce() -> Option<super::core::NativeForm>,
-    ) -> Option<super::core::NativeForm> {
-        match self.cell(symbol.id()) {
-            Some(cell) => match cell.native_form.get() {
-                Some(native_form) => native_form,
-                None => {
-                    let native_form = compute();
-                    cell.native_form.set(Some(native_form));
-                    native_form
                 }
             },
             None => compute(),

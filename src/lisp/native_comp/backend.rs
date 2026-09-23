@@ -353,7 +353,8 @@ impl RuntimeImports {
         context: &Context,
         types: &Types,
         helper_c_names: &[String; HELPER_COUNT],
-        native_subrs: &[(NativeSubr, String)],
+        native_subrs: &[NativeSubr],
+        subr_c_names: &[String],
         abi_hash: &[u8],
     ) -> Self {
         let mut fields = Vec::with_capacity(HELPER_COUNT + native_subrs.len());
@@ -397,8 +398,8 @@ impl RuntimeImports {
 
         emit_static_object(context, types.char_, LINK_TABLE_HASH_SYM, abi_hash);
 
-        for (subr, c_name) in native_subrs {
-            let params = match subr.max_args {
+        for (subr, c_name) in native_subrs.iter().zip(subr_c_names) {
+            let params = match subr.max_args() {
                 NativeMaxArgs::Fixed(count) => vec![types.lisp_obj; usize::from(count)],
                 NativeMaxArgs::Many => vec![types.ptrdiff, types.lisp_obj_ptr],
                 NativeMaxArgs::Unevalled => vec![types.lisp_obj],
@@ -592,16 +593,12 @@ impl Compiler {
             TEXT_DATA_RELOC_EPHEMERAL_SYM,
         );
 
-        let native_subrs = subrs
-            .iter()
-            .copied()
-            .zip(input.subr_c_names.iter().cloned())
-            .collect::<Vec<_>>();
         self.runtime = Some(RuntimeImports::declare(
             &self.context,
             &self.types,
             input.helper_c_names,
-            &native_subrs,
+            subrs,
+            input.subr_c_names,
             input.abi_hash,
         ));
 

@@ -278,13 +278,7 @@ pub(crate) fn function_arity_value(
     }
 
     match function.kind() {
-        // Every genuine subr has its arity in the GNU-generated table; a
-        // miss means an emaxx coverage gap, never a value to invent.
-        Kind::BuiltinFunc(name) => builtin_arity_value(&name)
-            .or_else(|| special_form_arity_value(&name))
-            .ok_or_else(|| {
-                LispError::Signal(format!("emaxx: no GNU-derived arity for subr {name}"))
-            }),
+        Kind::BuiltinFunc(subr) => Ok(subr.arity_value()),
         Kind::Lambda(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
         Kind::Record(id)
             if interp

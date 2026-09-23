@@ -898,7 +898,7 @@ impl Loader<'_> {
                 let name_text = string_like(&name)
                     .map(|string| string.text)
                     .ok_or_else(|| LoadError::Error("subr name is not a string".into()))?;
-                Ok(Value::BuiltinFunc(SymbolName::intern_str(&name_text)))
+                Ok(Value::BuiltinFunc(name_text.into()))
             }
             DumpType::MainThread => Ok(self
                 .interp

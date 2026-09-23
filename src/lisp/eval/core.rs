@@ -260,44 +260,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
     crate::lisp::primitives::generated_gnu_c_primitive_special_form(name)
 }
 
-/// The evaluator arm a symbol in function position selects, remembered
-/// per symbol: the manifest's ownership check is a binary search over
-/// the primitive names, which a fresh form (each macro expansion of
-/// interpreted code) paid on every evaluation.  Symbol ids are never
-/// reused, so a verdict stays the symbol's.
-fn native_form_for_symbol(name: &SymbolName) -> Option<NativeForm> {
-    thread_local! {
-        static BY_SYMBOL: std::cell::RefCell<Vec<Option<Option<NativeForm>>>> =
-            const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let id = name.id();
-    let compute = || {
-        // A Lisp symbol may select a Rust evaluator arm only when the
-        // generated GNU C manifest owns that native surface.  In
-        // particular, an Emaxx-private prefix is not an ownership
-        // boundary and cannot turn an Elisp macro into a host fallback.
-        crate::lisp::primitives::generated_gnu_c_primitive_available(name)
-            .is_some_and(|available| available)
-            .then(|| NativeForm::for_name(name))
-            .flatten()
-    };
-    if id & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0 {
-        return compute();
-    }
-    let index = id as usize;
-    if let Some(known) = BY_SYMBOL.with_borrow(|table| table.get(index).copied().flatten()) {
-        return known;
-    }
-    let native_form = compute();
-    BY_SYMBOL.with_borrow_mut(|table| {
-        if table.len() <= index {
-            table.resize(index + 1, None);
-        }
-        table[index] = Some(native_form);
-    });
-    native_form
-}
-
 impl Interpreter {
     /// GNU treats a symbol-with-position in function position as its bare
     /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
@@ -566,7 +528,7 @@ impl Interpreter {
         let original_args = args_list.map_or(Value::Nil, Value::Cons);
         let prepared = loop {
             let resolution = if let Some(name) = callable_name.as_ref() {
-                self.resolve_symbol_call_with_frame_state(name, env, false)
+                self.resolve_symbol_call(name, env)
             } else {
                 // eval_sub quotes a non-symbol function with Ffunction;
                 // evaluating an arbitrary form here would execute code in
@@ -668,9 +630,9 @@ impl Interpreter {
             }
         };
         let subr = match &prepared {
-            FunctionResolution::DirectBuiltin(facts) => Some(*facts),
+            FunctionResolution::DirectBuiltin(subr) => Some(subr.facts()),
             FunctionResolution::Resolved(func) => match func.kind() {
-                Kind::BuiltinFunc(name) => Some(primitives::name_facts_symbol(&name)),
+                Kind::BuiltinFunc(subr) => Some(subr.facts()),
                 _ => None,
             },
         };
@@ -689,10 +651,9 @@ impl Interpreter {
             return self.eval_call_argument_error(depth, unevald_frame, error, env);
         }
         if let FunctionResolution::Resolved(function) = &prepared
-            && let Kind::BuiltinFunc(name) = function.kind()
-            && let Some(native_form) = self
-                .globals
-                .native_form_or(&name, || native_form_for_symbol(&name))
+            && let Kind::BuiltinFunc(subr) = function.kind()
+            && subr.facts().special_form
+            && let Some(native_form) = NativeForm::for_name(subr.as_str())
         {
             let result = self.eval_native_form(native_form, &original_args, env);
             let result = self.settle_frame_result(result, env);
@@ -853,28 +814,28 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let builtin = match &prepared {
-            FunctionResolution::DirectBuiltin(facts) => {
-                Some((callable_name.expect("a direct subr is named"), *facts))
-            }
+            FunctionResolution::DirectBuiltin(subr) => Some((*subr, subr.facts())),
             FunctionResolution::Resolved(func) => match func.kind() {
-                Kind::BuiltinFunc(name) => Some((name, primitives::name_facts_symbol(&name))),
+                Kind::BuiltinFunc(subr) => Some((subr, subr.facts())),
                 _ => None,
             },
         };
-        if let Some((name, facts)) = builtin {
-            let original_name = callable_name.unwrap_or(name);
-            if callable_name.is_some() {
-                self.set_backtrace_args(Value::Symbol(original_name), &args[..backtrace_argc]);
+        if let Some((subr, facts)) = builtin {
+            let original_name = callable_name
+                .as_ref()
+                .map_or(subr.as_str(), SymbolName::as_str);
+            if let Some(symbol) = callable_name {
+                self.set_backtrace_args(Value::Symbol(symbol), &args[..backtrace_argc]);
             } else {
                 self.push_backtrace_frame_borrowed(
-                    Value::BuiltinFunc(name),
+                    Value::BuiltinFunc(subr),
                     &args[..backtrace_argc],
                 );
             }
-            self.capture_current_backtrace_context(Some(original_name.as_str()), env, None);
-            let result =
-                primitives::call_with_facts(self, &name, facts, args, env).map_err(|error| {
-                    Self::builtin_call_error(&original_name, backtrace_argc, false, error)
+            self.capture_current_backtrace_context(Some(original_name), env, None);
+            let result = primitives::call_with_facts(self, subr.as_str(), facts, args, env)
+                .map_err(|error| {
+                    Self::builtin_call_error(original_name, backtrace_argc, false, error)
                 });
             let result = self.settle_frame_result(result, env);
             self.truncate_backtrace_frames(depth);
@@ -961,15 +922,14 @@ impl Interpreter {
                     Err(LispError::Terminate(termination))
                 } else {
                     match self.resolve_symbol_call(&name, env) {
-                        Ok(FunctionResolution::DirectBuiltin(facts)) => self
-                            .dispatch_named_builtin(
-                                &name,
-                                facts,
-                                Some(CallName::Symbol(&name)),
-                                args,
-                                env,
-                                true,
-                            ),
+                        Ok(FunctionResolution::DirectBuiltin(subr)) => self.dispatch_named_builtin(
+                            &name,
+                            subr,
+                            Some(CallName::Symbol(&name)),
+                            args,
+                            env,
+                            true,
+                        ),
                         Ok(FunctionResolution::Resolved(value)) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
                         {
                             let Kind::Record(id) = value.kind() else {
@@ -1143,58 +1103,33 @@ impl Interpreter {
 
     /// Resolve a symbol function cell once, before argument evaluation.
     ///
-    /// This is the single authority used by both ordinary source calls and
-    /// `funcall' of a symbol.  Global verdicts are generation-stamped; local
-    /// function-binding frames always take the uncached lookup path.
+    /// Source calls, bytecode Bcall and symbolic funcall all read the live
+    /// function cell. Aliases and redefinitions therefore select the actual
+    /// callable before any subr metadata is consulted.
     fn resolve_symbol_call(
         &mut self,
         name: &SymbolName,
         env: &Env,
     ) -> Result<FunctionResolution, LispError> {
-        self.resolve_symbol_call_with_frame_state(name, env, false)
-    }
-
-    /// Resolve an ordinary source call through its callsite-local verdict.
-    /// Symbolic `funcall' retains the global name cache above; both paths use
-    /// the same generation and uncached resolution authority below.
-    fn resolve_symbol_call_with_frame_state(
-        &mut self,
-        name: &SymbolName,
-        env: &Env,
-        local_context: bool,
-    ) -> Result<FunctionResolution, LispError> {
-        // eval_sub reads the function cell off the symbol (`XSYMBOL
-        // (fun)->u.s.function'): the facts and the cell by id, with no
-        // hash of the name and no memo in front of a field read.  Under a
-        // frame that holds a callable (cl-flet), only a frame binding
-        // this very name changes the answer.
-        let facts = self
-            .globals
-            .facts_or(name, || crate::lisp::primitives::name_facts_symbol(name));
-        let global = !local_context;
-        // `selected-window' keeps its own arm; its id read once.
-        static SELECTED_WINDOW_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        let selected_window =
-            *SELECTED_WINDOW_ID.get_or_init(|| SymbolName::intern_str("selected-window").id());
-        let resolution = if name.id() != selected_window
-            && (facts.prefer_override
-                || (facts.builtin && !facts.special_form && self.globals.function(name).is_none()))
-            && global
-        {
-            FunctionResolution::DirectBuiltin(facts)
-        } else {
-            FunctionResolution::Resolved(self.lookup_function_symbol(name, env)?)
-        };
-        Ok(resolution)
+        let function = self.lookup_function_symbol(name, env)?;
+        Ok(match function.kind() {
+            Kind::BuiltinFunc(subr)
+                if subr.descriptor().max_args()
+                    != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+            {
+                FunctionResolution::DirectBuiltin(subr)
+            }
+            _ => FunctionResolution::Resolved(function),
+        })
     }
 
     /// The BuiltinFunc arm of `call_function_value_inner' for a callee
-    /// still in name form: backtrace frame, native dispatch with the
-    /// already-fetched facts, handler mapping.
+    /// reached through a symbol: preserve that name in the backtrace while
+    /// dispatching the actual resolved subr, including through an alias.
     fn dispatch_named_builtin(
         &mut self,
         name: &SymbolName,
-        facts: crate::lisp::primitives::NameFacts,
+        subr: crate::lisp::types::BuiltinRef,
         original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
@@ -1212,8 +1147,11 @@ impl Interpreter {
             // eval.c:Ffuncall: maybe_quit, the depth check, record_in_backtrace,
             // then maybe_gc -- the arguments are on the specpdl by then.
             crate::lisp::native_comp::maybe_gc(interp, env);
-            let result = primitives::call_with_facts(interp, name, facts, args, env)
-                .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
+            let result =
+                primitives::call_with_facts(interp, subr.as_str(), subr.facts(), args, env)
+                    .map_err(|error| {
+                        Self::builtin_call_error(subr.as_str(), args.len(), funcall, error)
+                    });
             interp.settle_frame_result(result, env)
         })
     }
@@ -1340,26 +1278,18 @@ impl Interpreter {
     /// Bcall's fast path: FUNC as a lexbound byte-code function whose
     /// program is cached (a bare symbol read through its function cell,
     /// as `XBARE_SYMBOL (call_fun)->u.s.function'), or None for anything
-    /// Ffuncall must handle -- an alias, an autoload, a builtin that
-    /// overrides its Lisp definition, a dynamic arglist, the profiler.
+    /// Ffuncall must handle -- an alias, an autoload, a dynamic arglist,
+    /// or the profiler.
     pub(crate) fn bytecode_callee(
         &self,
         func: &Value,
     ) -> Option<(std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>, u64)> {
         let id = match func.kind() {
             Kind::Record(id) => id,
-            Kind::Symbol(name) => {
-                let facts = self
-                    .globals
-                    .facts_or(&name, || crate::lisp::primitives::name_facts_symbol(&name));
-                if facts.prefer_override {
-                    return None;
-                }
-                match self.globals.function(&name).map(|v| v.kind()) {
-                    Some(Kind::Record(id)) => id,
-                    _ => return None,
-                }
-            }
+            Kind::Symbol(name) => match self.globals.function(&name).map(|v| v.kind()) {
+                Some(Kind::Record(id)) => id,
+                _ => return None,
+            },
             _ => return None,
         };
         if profile_path().is_some() {
@@ -1436,10 +1366,10 @@ impl Interpreter {
                     }
                 };
                 match resolution {
-                    FunctionResolution::DirectBuiltin(facts) => {
+                    FunctionResolution::DirectBuiltin(subr) => {
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
                         return self
-                            .dispatch_named_builtin(&name, facts, call_name, args, env, funcall);
+                            .dispatch_named_builtin(&name, subr, call_name, args, env, funcall);
                     }
                     // funcall_general's COMPILEDP arm: the function cell
                     // holds a byte-code object already decoded once.
@@ -1511,8 +1441,8 @@ impl Interpreter {
             }
             Kind::BuiltinFunc(ref name) => {
                 let backtrace_function = original_name
-                    .map(|original| original.symbol_value(name))
-                    .unwrap_or_else(|| Value::Symbol(*name));
+                    .map(CallName::original_symbol_value)
+                    .unwrap_or(func);
                 self.with_backtrace_frame(backtrace_function, args, |interp| {
                     interp.capture_current_backtrace_context(
                         original_name.map(CallName::as_str),
@@ -1520,9 +1450,11 @@ impl Interpreter {
                         None,
                     );
                     crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = primitives::call(interp, name, args, env).map_err(|error| {
-                        Self::builtin_call_error(name, args.len(), funcall, error)
-                    });
+                    let result =
+                        primitives::call_with_facts(interp, name.as_str(), name.facts(), args, env)
+                            .map_err(|error| {
+                                Self::builtin_call_error(name, args.len(), funcall, error)
+                            });
                     interp.settle_frame_result(result, env)
                 })
             }

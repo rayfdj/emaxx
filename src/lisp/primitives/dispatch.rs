@@ -146,6 +146,7 @@ fn direct_primitive(name: &str) -> Option<DirectPrimitive> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct NameFacts {
+    pub(crate) subr: Option<crate::lisp::types::BuiltinRef>,
     pub(crate) builtin: bool,
     pub(crate) special_form: bool,
     pub(crate) prefer_override: bool,
@@ -262,7 +263,7 @@ define_dispatch_modules! {
     SearchCoding => search_coding => search_coding::call(interp, name, args, env),
 }
 
-fn compute_name_facts(name: &str) -> NameFacts {
+pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
     let module = DispatchModule::for_name(name);
     // The GNU C manifest is the authority for the public native boundary.
     // Absence from it means Elisp-owned (or not a GNU function), never
@@ -295,19 +296,15 @@ fn compute_name_facts(name: &str) -> NameFacts {
     } else {
         None
     };
-    // The source-tree arity table is regenerated from the pinned Darwin
-    // oracle for its audit.  Dispatch ownership is host-specific, so use
-    // the selected host C contract for the runtime maximum as well; this
-    // supplies Linux-only primitives such as inotify without reviving
-    // Darwin-only kqueue cells.
-    let arity = crate::lisp::primitives::GNU_C_PRIMITIVES
-        .binary_search_by_key(&name, |contract| contract.name)
-        .ok()
-        .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity);
-    let min_args = arity.map_or(0, |(minimum, _)| {
-        u16::try_from(minimum).expect("a GNU subr has a nonnegative minimum arity")
+    // The configured subr object is the arity authority for every execution
+    // mode. The static dispatch descriptor is prepared once from its fields.
+    let subr = crate::lisp::native_comp::abi::find_builtin(name);
+    let min_args = subr.map_or(0, |subr| subr.descriptor().min_args);
+    let max_args = subr.and_then(|subr| match subr.descriptor().max_args() {
+        crate::lisp::native_comp::abi::NativeMaxArgs::Fixed(maximum) => Some(maximum),
+        crate::lisp::native_comp::abi::NativeMaxArgs::Many
+        | crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled => None,
     });
-    let max_args = arity.and_then(|(_, maximum)| u16::try_from(maximum).ok());
     // The facts are cached and copied into the frame of every call: the
     // bytes no field's value covers (the padding, the words a `None'
     // leaves unspecified) are zero, not what the frame that computed
@@ -319,6 +316,7 @@ fn compute_name_facts(name: &str) -> NameFacts {
     // zeroed bytes outside the fields' values are never read as a field.
     unsafe {
         let facts_ptr = facts.as_mut_ptr();
+        (&raw mut (*facts_ptr).subr).write(subr);
         (&raw mut (*facts_ptr).builtin).write(builtin);
         (&raw mut (*facts_ptr).special_form)
             .write(crate::lisp::primitives::is_special_form_name(name));

@@ -70,6 +70,7 @@ pub enum VectorTag {
     Bignum = 2,
     Finalizer = 5,
     Buffer = 13,
+    Subr = 18,
     Closure = 31,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
@@ -85,6 +86,7 @@ impl VectorTag {
             2 => Self::Bignum,
             5 => Self::Finalizer,
             13 => Self::Buffer,
+            18 => Self::Subr,
             31 => Self::Closure,
             34 => Self::Record,
             40 => Self::StringObject,
@@ -832,6 +834,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_STRING_OBJECT_BYTES, state.storage_bytes());
                 raise(&LIVE_STRING_OBJECT_SPANS, state.props.len());
             }
+            VectorTag::Subr => unreachable!("static subrs do not enter vector allocation"),
             VectorTag::Normal | VectorTag::Free | VectorTag::Buffer | VectorTag::ReaderForm => {}
         }
     }
@@ -854,6 +857,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                     (*header).size,
                 ));
             }
+            VectorTag::Subr => unreachable!("static subrs are not swept"),
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
@@ -942,6 +946,7 @@ impl SweepStats {
                         self.string_object_spans += state.props.len();
                     }
                 }
+                VectorTag::Subr => unreachable!("static subrs are not swept"),
                 VectorTag::Free | VectorTag::Buffer | VectorTag::ReaderForm => {}
             }
         }
@@ -1145,6 +1150,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
+            VectorTag::Subr => unreachable!("static subrs do not live in vector allocations"),
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }

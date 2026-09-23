@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub use crate::lisp::native_comp::abi::BuiltinRef;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::fmt;
@@ -1927,7 +1928,7 @@ pub enum ReaderForm {
 /// 3, a string 4, a vectorlike 5 (the kind in its header), a float 7.
 /// Tag 1 (`Lisp_Type_Unused0') carries this implementation's remaining
 /// immediates in bits 3 to 7: nil, t and the unbound marker, the kinds
-/// still addressed by an id (bits 8 up), and a subr named by its symbol.
+/// still addressed by an id (bits 8 up).
 /// Copied as a word, compared by `equal' (`PartialEq'), read through
 /// `kind' as C reads `XTYPE' and the pseudovector header.
 #[repr(transparent)]
@@ -1948,7 +1949,6 @@ const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
 const SUB_TERMINAL: usize = 7;
-const SUB_BUILTIN: usize = 9;
 const SUB_SHIFT: u32 = 3;
 const PAYLOAD_SHIFT: u32 = 8;
 
@@ -1989,8 +1989,8 @@ pub enum Kind {
     Cons(SharedCons),
     /// An ordinary vector with GNU vector identity and contiguous slots.
     Vector(VectorRef),
-    /// Built-in function: name, arity (min, max), function pointer handled in eval
-    BuiltinFunc(SymbolName),
+    /// A static GNU-layout subr containing its arity and native entry point.
+    BuiltinFunc(BuiltinRef),
     /// A lambda or closure: params, immutable shared body, captured env.
     Lambda(LambdaRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
@@ -2079,8 +2079,8 @@ impl Value {
         Value::from_bits(vector.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn BuiltinFunc(name: SymbolName) -> Value {
-        Value::from_bits(special(SUB_BUILTIN, name.identity_ptr() >> SUB_SHIFT))
+    pub fn BuiltinFunc(subr: BuiltinRef) -> Value {
+        Value::from_bits(subr.identity_ptr() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Lambda(lambda: LambdaRef) -> Value {
@@ -2207,6 +2207,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Finalizer => {
                             Kind::Finalizer(crate::lisp::alloc::FinalizerRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Subr => {
+                            Kind::BuiltinFunc(BuiltinRef::from_raw(header as usize))
+                        }
                         crate::lisp::alloc::VectorTag::Buffer => {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2240,13 +2243,6 @@ impl Value {
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),
                     SUB_TERMINAL => Kind::Terminal(payload),
-                    // SAFETY: as above, a symbol cell.
-                    SUB_BUILTIN => Kind::BuiltinFunc(SymbolName::from_ref(unsafe {
-                        crate::lisp::alloc::SymbolRef::from_raw(
-                            ((word >> PAYLOAD_SHIFT) << SUB_SHIFT)
-                                as *mut crate::lisp::alloc::SymbolCell,
-                        )
-                    })),
                     // SAFETY: every word this implementation makes has
                     // one of the sub-tags above.
                     _ => unsafe { impossible_tag("a value with an unknown tag") },

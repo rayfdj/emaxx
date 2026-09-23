@@ -5,7 +5,7 @@
 //! backend boundary as GNU's `comp.c`: libgccjit code generation, `.eln`
 //! artifacts, relocation, loading, and native subroutine lifetime.
 
-mod abi;
+pub(crate) mod abi;
 mod backend;
 mod gccjit;
 // One generated table per supported target.  Each is the pinned GNU
@@ -39,7 +39,7 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
     let subrs = abi::native_subrs();
     let mut signatures = String::new();
     for subr in subrs {
-        let maximum = match subr.max_args {
+        let maximum = match subr.max_args() {
             abi::NativeMaxArgs::Fixed(maximum) => maximum.to_string(),
             abi::NativeMaxArgs::Many => "many".to_string(),
             abi::NativeMaxArgs::Unevalled => "unevalled".to_string(),
@@ -69,7 +69,7 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
         Value::list(
             subrs
                 .iter()
-                .map(|subr| Value::BuiltinFunc(subr.name.into())),
+                .map(|subr| Value::BuiltinFunc(abi::BuiltinRef::from_subr(subr))),
         ),
     );
     interpreter.define_special_variable("comp-abi-hash", Value::string(&abi_hash));

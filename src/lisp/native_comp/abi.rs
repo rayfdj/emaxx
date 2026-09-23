@@ -12,15 +12,244 @@ pub(crate) enum NativeMaxArgs {
     Unevalled,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A C primitive is a statically allocated GNU `Lisp_Subr`, not an
+/// interned name or a per-interpreter native handle. The prefix is the
+/// configured 64-bit `lisp.h` layout, including HAVE_NATIVE_COMP fields.
+///
+/// The Rust extension stores a string view of the same name bytes and
+/// the Rust dispatch metadata. Neither is another mutable Lisp payload.
+#[repr(C, align(8))]
 pub(crate) struct NativeSubr {
-    pub(crate) name: &'static str,
+    header: usize,
+    pub(crate) function: *const std::ffi::c_void,
     pub(crate) min_args: u16,
-    pub(crate) max_args: NativeMaxArgs,
+    max_args_word: i16,
+    symbol_name: *const std::ffi::c_char,
+    intspec: *const std::ffi::c_char,
+    command_modes: usize,
+    doc: isize,
+    native_comp_u: usize,
+    native_c_name: *const std::ffi::c_char,
+    lambda_list: usize,
+    native_type: usize,
+    pub(crate) name: &'static str,
+    index: u32,
+    facts: std::sync::OnceLock<crate::lisp::primitives::NameFacts>,
+}
+
+// lisp.h:struct Lisp_Subr on both supported HAVE_NATIVE_COMP targets.
+const _: () = {
+    assert!(std::mem::offset_of!(NativeSubr, header) == 0);
+    assert!(std::mem::offset_of!(NativeSubr, function) == 8);
+    assert!(std::mem::offset_of!(NativeSubr, min_args) == 16);
+    assert!(std::mem::offset_of!(NativeSubr, max_args_word) == 18);
+    assert!(std::mem::offset_of!(NativeSubr, symbol_name) == 24);
+    assert!(std::mem::offset_of!(NativeSubr, intspec) == 32);
+    assert!(std::mem::offset_of!(NativeSubr, command_modes) == 40);
+    assert!(std::mem::offset_of!(NativeSubr, doc) == 48);
+    assert!(std::mem::offset_of!(NativeSubr, native_comp_u) == 56);
+    assert!(std::mem::offset_of!(NativeSubr, native_c_name) == 64);
+    assert!(std::mem::offset_of!(NativeSubr, lambda_list) == 72);
+    assert!(std::mem::offset_of!(NativeSubr, native_type) == 80);
+    assert!(std::mem::offset_of!(NativeSubr, name) == 88);
+};
+
+// SAFETY: the generated table owns immutable static objects. Its pointers
+// name static string bytes and code, never a collector-owned allocation.
+// The Lisp-valued prefix fields are the immutable nil word. Dispatch
+// metadata contains only immutable descriptors and function pointers and
+// is initialized through OnceLock. Invoking a function still requires the
+// ordinary runtime ownership boundary; sharing a descriptor grants no
+// access to another thread's interpreter.
+unsafe impl Send for NativeSubr {}
+// SAFETY: as above, all shared prefix data is immutable and initialization
+// of the dispatch extension is synchronized by OnceLock.
+unsafe impl Sync for NativeSubr {}
+
+impl NativeSubr {
+    pub(crate) const fn new(
+        name: &'static std::ffi::CStr,
+        min_args: u16,
+        max_args: NativeMaxArgs,
+        function: *const std::ffi::c_void,
+        index: u32,
+    ) -> Self {
+        assert!(min_args <= i16::MAX as u16, "GNU subr minimum fits a short");
+        if let NativeMaxArgs::Fixed(count) = max_args {
+            assert!(count <= i16::MAX as u16, "GNU subr maximum fits a short");
+        }
+        let name_text = match std::str::from_utf8(name.to_bytes()) {
+            Ok(text) => text,
+            Err(_) => panic!("GNU subr names must be valid UTF-8"),
+        };
+        Self {
+            header: (1_usize << 62) | (18 << 24),
+            function,
+            min_args,
+            max_args_word: match max_args {
+                NativeMaxArgs::Fixed(count) => count as i16,
+                NativeMaxArgs::Many => -2,
+                NativeMaxArgs::Unevalled => -1,
+            },
+            symbol_name: name.as_ptr(),
+            intspec: std::ptr::null(),
+            command_modes: 0,
+            doc: 0,
+            native_comp_u: 0,
+            native_c_name: std::ptr::null(),
+            lambda_list: 0,
+            native_type: 0,
+            name: name_text,
+            index,
+            facts: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn max_args(&self) -> NativeMaxArgs {
+        match self.max_args_word {
+            -2 => NativeMaxArgs::Many,
+            -1 => NativeMaxArgs::Unevalled,
+            count => NativeMaxArgs::Fixed(count as u16),
+        }
+    }
+
+    pub(crate) fn facts(&'static self) -> crate::lisp::primitives::NameFacts {
+        *self
+            .facts
+            .get_or_init(|| crate::lisp::primitives::compute_name_facts(self.name))
+    }
+}
+
+/// The address of a registered, immutable C primitive. Ordinary calls
+/// carry this reference, so resolving a subr never reconstructs its name
+/// or consults the native runtime's object-handle maps.
+#[derive(Clone, Copy)]
+pub struct BuiltinRef(&'static NativeSubr);
+
+impl BuiltinRef {
+    pub(crate) fn from_subr(subr: &'static NativeSubr) -> Self {
+        Self(subr)
+    }
+
+    /// # Safety
+    /// ADDRESS names a registered static NativeSubr, for the process lifetime.
+    pub(crate) unsafe fn from_raw(address: usize) -> Self {
+        Self(unsafe { &*(address as *const NativeSubr) })
+    }
+
+    pub(crate) fn identity_ptr(self) -> usize {
+        std::ptr::from_ref(self.0) as usize
+    }
+
+    pub(crate) fn id(self) -> u32 {
+        self.0.index
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.0.name
+    }
+
+    pub(crate) fn descriptor(self) -> &'static NativeSubr {
+        self.0
+    }
+
+    pub(crate) fn facts(self) -> crate::lisp::primitives::NameFacts {
+        self.0.facts()
+    }
+
+    pub(crate) fn arity_value(self) -> crate::lisp::types::Value {
+        use crate::lisp::types::Value;
+        let maximum = match self.0.max_args() {
+            NativeMaxArgs::Fixed(count) => Value::Integer(i64::from(count)),
+            NativeMaxArgs::Many => Value::symbol("many"),
+            NativeMaxArgs::Unevalled => Value::symbol("unevalled"),
+        };
+        Value::cons(Value::Integer(i64::from(self.0.min_args)), maximum)
+    }
+}
+
+impl std::ops::Deref for BuiltinRef {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.0.name
+    }
+}
+
+impl std::fmt::Display for BuiltinRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.name.fmt(formatter)
+    }
+}
+
+impl std::fmt::Debug for BuiltinRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("BuiltinRef")
+            .field(&self.0.name)
+            .finish()
+    }
+}
+
+impl PartialEq for BuiltinRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for BuiltinRef {}
+
+impl PartialEq<str> for BuiltinRef {
+    fn eq(&self, other: &str) -> bool {
+        self.0.name == other
+    }
+}
+
+impl PartialEq<&str> for BuiltinRef {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.name == *other
+    }
+}
+
+impl From<&str> for BuiltinRef {
+    fn from(name: &str) -> Self {
+        find_builtin(name).expect("a builtin value names a registered GNU C subr")
+    }
+}
+
+impl From<String> for BuiltinRef {
+    fn from(name: String) -> Self {
+        Self::from(name.as_str())
+    }
+}
+
+impl From<crate::lisp::types::SymbolName> for BuiltinRef {
+    fn from(name: crate::lisp::types::SymbolName) -> Self {
+        Self::from(name.as_str())
+    }
+}
+
+pub(crate) fn find_builtin(name: &str) -> Option<BuiltinRef> {
+    native_subrs()
+        .iter()
+        .find(|subr| subr.name == name)
+        .map(BuiltinRef)
+}
+
+/// Checked external-word decoding: validate the allocation start without
+/// dereferencing arbitrary pointers or inventing an identity registry.
+pub(crate) fn builtin_at_address(address: usize) -> Option<BuiltinRef> {
+    let subrs = native_subrs();
+    let offset = address.checked_sub(subrs.as_ptr() as usize)?;
+    let size = std::mem::size_of::<NativeSubr>();
+    if !offset.is_multiple_of(size) {
+        return None;
+    }
+    subrs.get(offset / size).map(BuiltinRef)
 }
 
 pub(crate) fn native_subrs() -> &'static [NativeSubr] {
-    super::generated_native_subrs::NATIVE_SUBRS
+    &super::generated_native_subrs::NATIVE_SUBRS
 }
 
 pub(crate) const LISP_CONS_SIZE: usize = 2 * std::mem::size_of::<usize>();
@@ -130,7 +359,7 @@ mod tests {
             "internal-make-lisp-face"
         );
         assert_eq!(subrs[add1].min_args, 1);
-        assert_eq!(subrs[add1].max_args, NativeMaxArgs::Fixed(1));
+        assert_eq!(subrs[add1].max_args(), NativeMaxArgs::Fixed(1));
 
         let unique = subrs.iter().map(|subr| subr.name).collect::<HashSet<_>>();
         assert_eq!(unique.len(), subrs.len());

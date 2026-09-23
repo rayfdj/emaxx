@@ -735,16 +735,6 @@ impl Interpreter {
         self.functions_index.contains_key(name)
     }
 
-    /// A builtin's function cell as a value: `Value::BuiltinFunc' of the
-    /// symbol already interned under NAME (a string copy interned per
-    /// resolution before).
-    fn builtin_function_value(name: &str) -> Value {
-        match SymbolName::interned_cached(name) {
-            Some(symbol) => Value::BuiltinFunc(symbol),
-            None => Value::BuiltinFunc(name.to_string().into()),
-        }
-    }
-
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         match SymbolName::interned_cached(name) {
             Some(symbol) => self.raw_function_binding_symbol(&symbol, env),
@@ -760,24 +750,24 @@ impl Interpreter {
         symbol: &SymbolName,
         env: &Env,
     ) -> Option<Value> {
+        if let Some(value) = self.globals.function(symbol) {
+            return Some(*value);
+        }
         let facts = self
             .globals
             .facts_or(symbol, || primitives::name_facts_symbol(symbol));
         if facts.prefer_override {
-            return Some(Value::BuiltinFunc(*symbol));
+            return facts.subr.map(Value::BuiltinFunc);
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         // The lexical environment is a value namespace (eval.c's Ffuncall
         // reads the function cell whatever `let' bound the name to).
         let _ = env;
-        if let Some(v) = self.globals.function(symbol) {
-            return Some(*v);
-        }
         // Special forms live in function cells in GNU Emacs, so symbol
         // indirection (indirect-function, fboundp, macrop) must resolve them
         // instead of signaling a void-function error.
         if name_is_builtin {
-            return Some(Value::BuiltinFunc(*symbol));
+            return facts.subr.map(Value::BuiltinFunc);
         }
         None
     }
@@ -839,14 +829,14 @@ impl Interpreter {
     fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
-            return Some((Self::builtin_function_value(name), false));
+            return facts.subr.map(|subr| (Value::BuiltinFunc(subr), false));
         }
         let _ = env;
         if let Some(value) = self.functions_index.get(name) {
             return Some((*value, false));
         }
         if facts.builtin || facts.special_form {
-            return Some((Self::builtin_function_value(name), false));
+            return facts.subr.map(|subr| (Value::BuiltinFunc(subr), false));
         }
         None
     }

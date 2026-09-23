@@ -2065,9 +2065,9 @@ enum SavedRestrictionBounds {
 /// How a symbol callee resolved: eval_sub's reading of the function cell.
 #[derive(Clone)]
 pub(crate) enum FunctionResolution {
-    /// Direct native dispatch by name is valid; carries the name facts so
-    /// the hit path performs no facts probe at all.
-    DirectBuiltin(crate::lisp::primitives::NameFacts),
+    /// The function cell holds an ordinary subr. Carry its object directly
+    /// rather than resolving its name again at dispatch.
+    DirectBuiltin(crate::lisp::types::BuiltinRef),
     /// The name resolved to this exact function value.
     Resolved(Value),
 }
@@ -7801,6 +7801,17 @@ impl Interpreter {
             if contract.arity.is_some() {
                 interp.intern_symbol_name(contract.name);
             }
+        }
+        // lread.c:defsubr stores the actual subr in its symbol's function
+        // cell. Ordinary resolution can now return that object directly.
+        for subr in crate::lisp::native_comp::abi::native_subrs() {
+            let symbol = SymbolName::intern_str(subr.name);
+            interp.globals.set_function(
+                &symbol,
+                Some(Value::BuiltinFunc(
+                    crate::lisp::types::BuiltinRef::from_subr(subr),
+                )),
+            );
         }
         // GNU's syms_of_* initializers likewise intern every DEFSYM
         // (lisp.h:DEFSYM -> staticpro'd intern_c_string), covering names

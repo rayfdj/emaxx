@@ -2640,8 +2640,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Integer(left), Kind::Integer(right)) => left == right,
         (Kind::BigInteger(left), Kind::BigInteger(right)) => left == right,
         (Kind::Float(left), Kind::Float(right)) => left == right,
-        (Kind::Symbol(left), Kind::Symbol(right))
-        | (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
+        (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
+        (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
         // GNU's interval code compares property values with EQ, so a range
         // propertized with ONE string object is a single run.  Emaxx string
         // clones share their backing store, preserving that identity; the

@@ -1252,10 +1252,16 @@ impl DumpContext {
     }
 
     /// dump_subr: a built-in function's copied record names it.
-    fn dump_subr(&mut self, name: &SymbolName) -> Result<u32, DumpError> {
+    fn dump_subr(&mut self, subr: &crate::lisp::types::BuiltinRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = [0_u64];
-        self.field_lv(start, &mut words, 0, &name.lisp_name(), WEIGHT_STRONG);
+        self.field_lv(
+            start,
+            &mut words,
+            0,
+            &Value::string(subr.as_str()),
+            WEIGHT_STRONG,
+        );
         self.object_finish(&words)
     }
 

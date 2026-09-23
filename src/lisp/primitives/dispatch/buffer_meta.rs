@@ -823,13 +823,7 @@ define_dispatch!(
             "subr-arity" => {
                 need_args(name, args, 1)?;
                 match args[0].kind() {
-                    Kind::BuiltinFunc(symbol) => builtin_arity_value(&symbol)
-                        .or_else(|| special_form_arity_value(&symbol))
-                        .ok_or_else(|| {
-                            LispError::Signal(format!(
-                                "emaxx: no GNU-derived arity for subr {symbol}"
-                            ))
-                        }),
+                    Kind::BuiltinFunc(subr) => Ok(subr.arity_value()),
                     Kind::Record(id)
                         if interp.find_record(id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction

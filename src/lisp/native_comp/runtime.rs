@@ -1852,23 +1852,23 @@ static SYMBOL_VALUE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static NREVERSE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 
-extern "C" fn direct_native_null(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_null(value: NativeWord) -> NativeWord {
     native_boolean(value == 0)
 }
 
-extern "C" fn direct_native_consp(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_consp(value: NativeWord) -> NativeWord {
     native_boolean(native_consp(value))
 }
 
-extern "C" fn direct_native_atom(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_atom(value: NativeWord) -> NativeWord {
     native_boolean(!native_consp(value))
 }
 
-extern "C" fn direct_native_bare_symbol_p(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_bare_symbol_p(value: NativeWord) -> NativeWord {
     native_boolean(value & TAG_MASK == TAG_SYMBOL)
 }
 
-extern "C" fn direct_native_car(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_car(value: NativeWord) -> NativeWord {
     if native_consp(value) {
         unsafe { native_car(value) }
     } else if value == 0 {
@@ -1878,7 +1878,7 @@ extern "C" fn direct_native_car(value: NativeWord) -> NativeWord {
     }
 }
 
-extern "C" fn direct_native_car_safe(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_car_safe(value: NativeWord) -> NativeWord {
     if native_consp(value) {
         unsafe { native_car(value) }
     } else {
@@ -1886,7 +1886,7 @@ extern "C" fn direct_native_car_safe(value: NativeWord) -> NativeWord {
     }
 }
 
-extern "C" fn direct_native_cdr(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_cdr(value: NativeWord) -> NativeWord {
     if native_consp(value) {
         unsafe { native_cdr(value) }
     } else if value == 0 {
@@ -1896,7 +1896,7 @@ extern "C" fn direct_native_cdr(value: NativeWord) -> NativeWord {
     }
 }
 
-extern "C" fn direct_native_cdr_safe(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_cdr_safe(value: NativeWord) -> NativeWord {
     if native_consp(value) {
         unsafe { native_cdr(value) }
     } else {
@@ -1904,24 +1904,24 @@ extern "C" fn direct_native_cdr_safe(value: NativeWord) -> NativeWord {
     }
 }
 
-extern "C" fn direct_native_listp(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_listp(value: NativeWord) -> NativeWord {
     native_boolean(value == 0 || native_consp(value))
 }
 
-extern "C" fn direct_native_nlistp(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_nlistp(value: NativeWord) -> NativeWord {
     native_boolean(value != 0 && !native_consp(value))
 }
 
-extern "C" fn direct_native_identity(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_identity(value: NativeWord) -> NativeWord {
     value
 }
 
-extern "C" fn direct_native_stringp(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_stringp(value: NativeWord) -> NativeWord {
     // data.c:Fstringp / lisp.h:STRINGP never reads the pointed-to payload.
     native_boolean(value & TAG_MASK == TAG_STRING)
 }
 
-extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
     }
@@ -1934,7 +1934,7 @@ extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWor
     })
 }
 
-extern "C" fn direct_native_eql(left: NativeWord, right: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_eql(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
     }
@@ -1947,12 +1947,12 @@ extern "C" fn direct_native_eql(left: NativeWord, right: NativeWord) -> NativeWo
     })
 }
 
-extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord {
     native_scalar_type_word(value)
         .unwrap_or_else(|| slow_unary_subr(&TYPE_OF_SUBR_INDEX, "type-of", value))
 }
 
-extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
@@ -1968,7 +1968,7 @@ extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> NativeWord {
     })
 }
 
-extern "C" fn direct_native_get(symbol: NativeWord, property: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_get(symbol: NativeWord, property: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
@@ -1980,7 +1980,7 @@ extern "C" fn direct_native_get(symbol: NativeWord, property: NativeWord) -> Nat
     })
 }
 
-extern "C" fn direct_native_nreverse(sequence: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_nreverse(sequence: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
@@ -1993,7 +1993,7 @@ extern "C" fn direct_native_nreverse(sequence: NativeWord) -> NativeWord {
     })
 }
 
-extern "C" fn direct_native_length(sequence: NativeWord) -> NativeWord {
+pub(super) extern "C" fn direct_native_length(sequence: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
@@ -2006,7 +2006,7 @@ extern "C" fn direct_native_length(sequence: NativeWord) -> NativeWord {
     })
 }
 
-extern "C" fn direct_native_plist_member(
+pub(super) extern "C" fn direct_native_plist_member(
     plist: NativeWord,
     property: NativeWord,
     predicate: NativeWord,
@@ -2022,7 +2022,7 @@ extern "C" fn direct_native_plist_member(
     })
 }
 
-unsafe extern "C" fn direct_native_make_closure(
+pub(super) unsafe extern "C" fn direct_native_make_closure(
     argument_count: isize,
     arguments: *const NativeWord,
 ) -> NativeWord {
@@ -2045,42 +2045,12 @@ unsafe extern "C" fn direct_native_make_closure(
 }
 
 fn native_subr_address(index: usize) -> *mut c_void {
-    let Some(subroutine) = super::abi::native_subrs().get(index) else {
-        return std::ptr::null_mut();
-    };
-    match subroutine.name {
-        "null" => direct_native_null as *mut c_void,
-        "consp" => direct_native_consp as *mut c_void,
-        "atom" => direct_native_atom as *mut c_void,
-        "bare-symbol-p" => direct_native_bare_symbol_p as *mut c_void,
-        "car" => direct_native_car as *mut c_void,
-        "car-safe" => direct_native_car_safe as *mut c_void,
-        "cdr" => direct_native_cdr as *mut c_void,
-        "cdr-safe" => direct_native_cdr_safe as *mut c_void,
-        "listp" => direct_native_listp as *mut c_void,
-        "nlistp" => direct_native_nlistp as *mut c_void,
-        "identity" => direct_native_identity as *mut c_void,
-        "stringp" => direct_native_stringp as *mut c_void,
-        "eq" => direct_native_eq as *mut c_void,
-        "eql" => direct_native_eql as *mut c_void,
-        "type-of" => direct_native_type_of as *mut c_void,
-        "symbol-value" => direct_native_symbol_value as *mut c_void,
-        "get" => direct_native_get as *mut c_void,
-        "nreverse" => direct_native_nreverse as *mut c_void,
-        "length" => direct_native_length as *mut c_void,
-        "plist-member" => direct_native_plist_member as *mut c_void,
-        "make-closure" => direct_native_make_closure as *mut c_void,
-        _ => super::generated_native_subrs::native_subr_address(index),
-    }
+    super::generated_native_subrs::native_subr_address(index)
 }
 
 #[derive(Clone, Copy)]
 enum DirectFuncallTarget {
-    Builtin {
-        index: usize,
-        minimum: usize,
-        maximum: super::abi::NativeMaxArgs,
-    },
+    Builtin(crate::lisp::types::BuiltinRef),
     Native {
         record_id: u64,
         function: super::loader::DirectNativeFunction,
@@ -2110,11 +2080,9 @@ fn builtin_call_signature(
 impl DirectFuncallTarget {
     fn apply_padded_argument_count(self, argument_count: usize) -> usize {
         let (minimum, maximum) = match self {
-            Self::Builtin {
-                minimum, maximum, ..
-            } => (
-                minimum,
-                match maximum {
+            Self::Builtin(subr) => (
+                usize::from(subr.descriptor().min_args),
+                match subr.descriptor().max_args() {
                     // eval.c:funcall_subr only pads finite C subrs in the
                     // a0..a8 branch.  A finite max_args above eight is
                     // dispatched through aMANY and receives the original
@@ -2171,25 +2139,22 @@ impl DirectFuncallTarget {
         }
 
         let (target, convention, minimum, maximum, function_value) = match self {
-            Self::Builtin {
-                index,
-                minimum,
-                maximum,
-            } => {
-                let name = super::abi::native_subrs()[index].name;
+            Self::Builtin(subr) => {
+                let descriptor = subr.descriptor();
+                let maximum = descriptor.max_args();
                 if matches!(maximum, super::abi::NativeMaxArgs::Unevalled) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("invalid-function"),
-                        Value::BuiltinFunc(name.into()),
+                        Value::BuiltinFunc(subr),
                     ])));
                 }
                 let (convention, maximum) = builtin_call_signature(maximum);
                 (
-                    native_subr_address(index).cast_const(),
+                    descriptor.function,
                     convention,
-                    minimum,
+                    usize::from(descriptor.min_args),
                     maximum,
-                    Value::BuiltinFunc(name.into()),
+                    Value::BuiltinFunc(subr),
                 )
             }
             Self::Native {
@@ -2236,23 +2201,7 @@ fn direct_funcall_target(
         other => other.value(),
     };
     match resolved.kind() {
-        Kind::BuiltinFunc(name) => {
-            static SUBR_INDICES: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
-            let indices = SUBR_INDICES.get_or_init(|| {
-                super::abi::native_subrs()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, subroutine)| (subroutine.name, index))
-                    .collect()
-            });
-            let index = *indices.get(name.as_str())?;
-            let subroutine = super::abi::native_subrs()[index];
-            Some(DirectFuncallTarget::Builtin {
-                index,
-                minimum: subroutine.min_args as usize,
-                maximum: subroutine.max_args,
-            })
-        }
+        Kind::BuiltinFunc(subr) => Some(DirectFuncallTarget::Builtin(subr)),
         Kind::Record(record_id) => super::loader::active_direct_function(record_id.id)
             .map(|function| DirectFuncallTarget::Native {
                 record_id: record_id.id,
@@ -3721,7 +3670,6 @@ const NATIVE_TYPE_FLOAT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NativeIdentity {
-    Builtin(usize),
     Buffer(u64),
     Marker(u64),
     Overlay(u64),
@@ -3733,7 +3681,6 @@ enum NativeIdentity {
 impl NativeIdentity {
     fn hash_word(&self) -> usize {
         let (kind, payload) = match self {
-            Self::Builtin(value) => (7, *value),
             Self::Buffer(value) => (9, *value as usize),
             Self::Marker(value) => (10, *value as usize),
             Self::Overlay(value) => (11, *value as usize),
@@ -4206,6 +4153,7 @@ impl NativeMark<'_> {
             | Kind::BigInteger(_)
             | Kind::Record(_)
             | Kind::ReaderForm(_)
+            | Kind::BuiltinFunc(_)
             | Kind::Finalizer(_) => {
                 return Vec::new();
             }
@@ -4467,14 +4415,6 @@ impl NativeHeap {
         let _sync_guard = ConsSyncGuard::enter();
         let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
-        for entry in self.handles.iter().flatten() {
-            // Builtin subrs have static lifetime. Other handles are weak
-            // until reached; inspecting their payload here can dereference
-            // an object reclaimed by a collection outside this native heap.
-            if matches!(entry.identity, NativeIdentity::Builtin(_)) {
-                pending.push((&**entry as *const NativeHandle) as usize + entry.tag());
-            }
-        }
 
         if !self.native_stack_bottom.is_null() {
             let start = (stack_top as usize).min(self.native_stack_bottom as usize);
@@ -4914,7 +4854,8 @@ impl NativeHeap {
             | Kind::BigInteger(_)
             | Kind::Record(_)
             | Kind::ReaderForm(_)
-            | Kind::Finalizer(_) => Ok(value.word()),
+            | Kind::Finalizer(_)
+            | Kind::BuiltinFunc(_) => Ok(value.word()),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
                 self.encode_handle(identity, value, tag)
@@ -5172,6 +5113,8 @@ impl NativeHeap {
                 if header != NATIVE_BRIDGE_HEADER | TAG_VECTORLIKE {
                     return Ok(unsafe { Value::from_word(word) });
                 }
+            } else if let Some(subr) = super::abi::builtin_at_address(address) {
+                return Ok(Value::BuiltinFunc(subr));
             } else if let Some(crate::lisp::alloc::Found::Vectorlike(header)) =
                 unsafe { crate::lisp::alloc::mem_find(address) }
                 && header as usize == address
@@ -5330,7 +5273,6 @@ impl NativeHeap {
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
     Ok(match value.kind() {
-        Kind::BuiltinFunc(name) => (NativeIdentity::Builtin(name.identity_ptr()), TAG_VECTORLIKE),
         Kind::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
         Kind::Marker(id) => (NativeIdentity::Marker(id), TAG_VECTORLIKE),
         Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
@@ -5351,6 +5293,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::Record(_)
         | Kind::ReaderForm(_)
         | Kind::Finalizer(_)
+        | Kind::BuiltinFunc(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
@@ -8387,11 +8330,17 @@ mod tests {
 
     #[test]
     fn native_funcall_finite_max_above_eight_matches_gnu_many_dispatch() {
-        let target = DirectFuncallTarget::Builtin {
-            index: 0,
-            minimum: 0,
-            maximum: super::super::abi::NativeMaxArgs::Fixed(9),
-        };
+        // An internal arity descriptor, never installed as a Lisp function
+        // or invoked. Preserve the GNU finite-nadic branch control even
+        // when the configured primitive table has no max_args > 8 entry.
+        static SUBR: super::super::abi::NativeSubr = super::super::abi::NativeSubr::new(
+            c"finite-nadic-arity-control",
+            0,
+            super::super::abi::NativeMaxArgs::Fixed(9),
+            std::ptr::null(),
+            0,
+        );
+        let target = DirectFuncallTarget::Builtin(crate::lisp::types::BuiltinRef::from_subr(&SUBR));
 
         // GNU's funcall_subr uses aMANY for max_args > 8.  Fapply therefore
         // must not pad a finite-nadic call to the declared value, and the
@@ -9263,7 +9212,9 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        heap.encode(&Value::BuiltinFunc("identity".into()))
+        let bridge_control = interpreter.make_marker();
+        interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
             .expect("other kinds still have handles");
         let (root, live, dead) = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
@@ -10215,8 +10166,10 @@ mod tests {
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
         // Exercise typed float tracing while other kinds still have handles.
-        heap.encode(&Value::BuiltinFunc("identity".into()))
-            .expect("unrelated remaining builtin handle");
+        let bridge_control = interpreter.make_marker();
+        interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
+            .expect("unrelated remaining marker handle");
         let (root, live, dead) = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
         heap.collect(
@@ -10322,6 +10275,35 @@ mod tests {
         assert!(runtime.heap.handle_by_value.is_empty());
         assert!(other.handles.is_empty());
         assert!(other.handle_by_address.is_empty());
+    }
+
+    #[test]
+    fn native_gc_keeps_static_builtins_with_remaining_bridge_handles() {
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let marker = interpreter.make_marker();
+        interpreter.set_global_binding("subr-gc-marker", marker);
+        heap.encode(&marker).expect("remaining marker bridge");
+        assert_eq!(heap.handle_by_value.len(), 1);
+
+        let builtin = Value::BuiltinFunc("identity".into());
+        interpreter.set_global_binding("subr-gc-saved-function", builtin);
+        let word = heap.encode(&builtin).expect("canonical subr word");
+        let stack_marker = 0;
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[word],
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(heap.decode(word).expect("static subr survives"), builtin);
+        assert_eq!(
+            heap.handle_by_value.len(),
+            1,
+            "only the marker has a handle"
+        );
+        assert!(handle_identity(&builtin).is_err());
     }
 
     #[test]
@@ -10435,7 +10417,9 @@ mod tests {
         let mut owner = Interpreter::new();
         let mut collector = Interpreter::new();
         let mut heap = NativeHeapOwner::new();
-        heap.encode(&Value::BuiltinFunc("identity".into()))
+        let bridge_control = owner.make_marker();
+        owner.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
             .expect("also exercise the collector with a remaining bridge kind");
         let environment = Env::new();
         owner.set_global_binding("recorded-finalizer-runs", Value::Integer(0));
@@ -10652,7 +10636,9 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        heap.encode(&Value::BuiltinFunc("identity".into()))
+        let bridge_control = interpreter.make_marker();
+        interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
             .expect("exercise marking with another kind still bridged");
         let hidden = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
@@ -10811,7 +10797,9 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        heap.encode(&Value::BuiltinFunc("identity".into()))
+        let bridge_control = interpreter.make_marker();
+        interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
             .expect("remaining bridge control");
         let hidden = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
@@ -10855,35 +10843,45 @@ mod tests {
 
     #[test]
     fn native_handle_cache_keys_use_gnu_object_identity_words() {
-        let name = SymbolName::from("native-handle-identity-probe");
-        let builtin_identity = NativeIdentity::Builtin(name.identity_ptr());
-        assert_ne!(
-            NativeIdentity::Marker(name.identity_ptr() as u64).hash_word(),
-            builtin_identity.hash_word()
-        );
+        let marker_identity = NativeIdentity::Marker(19);
+        let overlay_identity = NativeIdentity::Overlay(19);
+        assert_ne!(marker_identity.hash_word(), overlay_identity.hash_word());
         let occupied_buckets = (0..4_096_u64)
             .map(|id| NativeIdentity::Marker(id).hash_word() & 4_095)
             .collect::<HashSet<_>>();
         assert!(occupied_buckets.len() > 2_000);
 
         let mut heap = NativeHeapOwner::new();
-        let symbol = Value::Symbol(name);
-        let builtin = Value::BuiltinFunc(name);
+        let symbol = Value::symbol("identity");
+        let builtin = Value::BuiltinFunc("identity".into());
         let symbol_word = heap.encode(&symbol).expect("encode symbol identity");
         let builtin_word = heap.encode(&builtin).expect("encode builtin identity");
-
         assert_ne!(symbol_word, builtin_word);
-        assert_eq!(
-            heap.encode(&symbol).expect("same canonical symbol"),
-            symbol_word
-        );
-        assert_eq!(
-            heap.encode(&builtin).expect("reuse builtin handle"),
-            builtin_word
-        );
+        assert_eq!(heap.encode(&symbol).expect("same symbol"), symbol_word);
+        assert_eq!(heap.encode(&builtin).expect("same subr"), builtin_word);
         assert_eq!(symbol_word, symbol.word());
-        assert_eq!(heap.handle_by_value.len(), 1);
-        assert!(heap.handle_by_value.contains_key(&builtin_identity));
+        assert_eq!(builtin_word, builtin.word());
+        assert!(heap.handle_by_value.is_empty());
+
+        // Keep the original cross-kind key and handle-reuse contract for
+        // two kinds that still use the migration bridge. These identities
+        // are local codec controls; no interpreter dereferences them.
+        let marker = Value::Marker(19);
+        let overlay = Value::Overlay(19);
+        let marker_word = heap.encode(&marker).expect("encode marker identity");
+        let overlay_word = heap.encode(&overlay).expect("encode overlay identity");
+        assert_ne!(marker_word, overlay_word);
+        assert_eq!(
+            heap.encode(&marker).expect("reuse marker handle"),
+            marker_word
+        );
+        assert_eq!(
+            heap.encode(&overlay).expect("reuse overlay handle"),
+            overlay_word
+        );
+        assert_eq!(heap.handle_by_value.len(), 2);
+        assert!(heap.handle_by_value.contains_key(&marker_identity));
+        assert!(heap.handle_by_value.contains_key(&overlay_identity));
     }
 
     #[test]
@@ -11026,7 +11024,9 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        heap.encode(&Value::BuiltinFunc("identity".into()))
+        let bridge_control = interpreter.make_marker();
+        interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
+        heap.encode(&bridge_control)
             .expect("remaining bridge control");
         let hidden = make_graph(&mut interpreter);
         crate::lisp::alloc::clobber_stack();
