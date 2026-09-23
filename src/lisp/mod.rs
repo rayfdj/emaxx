@@ -112,6 +112,7 @@ macro_rules! dispatch_select_builtin_override {
     };
 }
 
+#[cfg(test)]
 macro_rules! dispatch_property {
     ($selector:ident, $name:ident;) => {
         false
