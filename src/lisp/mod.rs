@@ -24,13 +24,20 @@ macro_rules! dispatch_handles {
     ($name:ident; , $($rest:tt)*) => {
         dispatch_handles!($name; $($rest)*)
     };
+    ($name:ident; #[dispatch($($property:ident),+)] $($rest:tt)*) => {
+        dispatch_handles!($name; $($rest)*)
+    };
     (
         $name:ident;
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {
-        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+        match $name {
+            $(#[$attribute])*
+            $pattern => true,
+            _ => dispatch_handles!($name; $($rest)*),
+        }
     };
     (
         $name:ident;
@@ -38,7 +45,11 @@ macro_rules! dispatch_handles {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {
-        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+        match $name {
+            $(#[$attribute])*
+            $pattern => true,
+            _ => dispatch_handles!($name; $($rest)*),
+        }
     };
 }
 
@@ -50,12 +61,16 @@ macro_rules! dispatch_visit_patterns {
     ($visitor:ident; , $($rest:tt)*) => {
         dispatch_visit_patterns!($visitor; $($rest)*)
     };
+    ($visitor:ident; #[dispatch($($property:ident),+)] $($rest:tt)*) => {
+        dispatch_visit_patterns!($visitor; $($rest)*)
+    };
     (
         $visitor:ident;
         $(#[$attribute:meta])*
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {{
+        $(#[$attribute])*
         $visitor(stringify!($pattern));
         dispatch_visit_patterns!($visitor; $($rest)*)
     }};
@@ -65,6 +80,7 @@ macro_rules! dispatch_visit_patterns {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {{
+        $(#[$attribute])*
         $visitor(stringify!($pattern));
         dispatch_visit_patterns!($visitor; $($rest)*)
     }};
@@ -96,8 +112,11 @@ macro_rules! dispatch_property {
         $pattern:pat $(if $guard:expr)? => $body:block
         $($rest:tt)*
     ) => {
-        $selector!($name, $pattern => $($property),+)
-            || dispatch_property!($selector, $name; $($rest)*)
+        (match $name {
+            $(#[$attribute])*
+            $pattern => $selector!($name, $pattern => $($property),+),
+            _ => false,
+        }) || dispatch_property!($selector, $name; $($rest)*)
     };
     (
         $selector:ident, $name:ident;
@@ -106,8 +125,11 @@ macro_rules! dispatch_property {
         $pattern:pat $(if $guard:expr)? => $body:expr,
         $($rest:tt)*
     ) => {
-        $selector!($name, $pattern => $($property),+)
-            || dispatch_property!($selector, $name; $($rest)*)
+        (match $name {
+            $(#[$attribute])*
+            $pattern => $selector!($name, $pattern => $($property),+),
+            _ => false,
+        }) || dispatch_property!($selector, $name; $($rest)*)
     };
     (
         $selector:ident, $name:ident;
@@ -140,6 +162,12 @@ macro_rules! dispatch_table {
     (($($argument:ident),*) [$($entries:tt)*] , $($rest:tt)*) => {
         dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
     };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        #[dispatch($($property:ident),+)] $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
+    };
     // A guarded literal arm is not lifted.
     (
         ($($argument:ident),*) [$($entries:tt)*]
@@ -157,14 +185,39 @@ macro_rules! dispatch_table {
     ) => {
         dispatch_table!(($($argument),*) [$($entries)*] $($rest)*)
     };
+    // Split alternations before lifting so each element retains the arm's
+    // attributes, including cfg/cfg_attr.  Applying them only to the residual
+    // match would still compile unavailable platform bodies into this table.
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $first:literal | $($other:literal)|+ => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*]
+            $(#[$attribute])* $first => $body
+            $(#[$attribute])* $($other)|+ => $body
+            $($rest)*)
+    };
+    (
+        ($($argument:ident),*) [$($entries:tt)*]
+        $(#[$attribute:meta])*
+        $first:literal | $($other:literal)|+ => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_table!(($($argument),*) [$($entries)*]
+            $(#[$attribute])* $first => { $body }
+            $(#[$attribute])* $($other)|+ => { $body }
+            $($rest)*)
+    };
     // (interp, name, args, env)
     (
         ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -175,15 +228,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($interp:ident, $name:ident, $args:ident, $env:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args, $env) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -194,16 +247,16 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // (interp, name, args)
     (
         ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -214,15 +267,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($interp:ident, $name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($interp, $name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($interp, $name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 $interp: &mut crate::lisp::eval::Interpreter,
@@ -233,16 +286,16 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // (name, args)
     (
         ($name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:block
+        $lit:literal => $body:block
         $($rest:tt)*
     ) => {
-        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 _interp: &mut crate::lisp::eval::Interpreter,
@@ -253,15 +306,15 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     (
         ($name:ident, $args:ident) [$($entries:tt)*]
         $(#[$attribute:meta])*
-        $($lit:literal)|+ => $body:expr,
+        $lit:literal => $body:expr,
         $($rest:tt)*
     ) => {
-        dispatch_table!(($name, $args) [$($entries)* $(($lit, {
+        dispatch_table!(($name, $args) [$($entries)* $(#[$attribute])* ($lit, {
             #[allow(unused_variables, unused_mut, clippy::needless_return, clippy::needless_question_mark)]
             fn lifted(
                 _interp: &mut crate::lisp::eval::Interpreter,
@@ -272,7 +325,7 @@ macro_rules! dispatch_table {
                 $body
             }
             lifted as crate::lisp::primitives::DirectPrimitive
-        }),)+] $($rest)*)
+        }),] $($rest)*)
     };
     // Any other arm or shape: not lifted.
     (
@@ -1558,6 +1611,69 @@ mod tests {
         preprocess_lazy_doc_source, read_source_forms, source_settings,
     };
     use std::path::Path;
+
+    #[test]
+    fn primitive_dispatch_preserves_platform_cfg() {
+        use crate::lisp::{
+            eval::Interpreter,
+            types::{LispError, Value},
+        };
+
+        define_dispatch! {
+            fn call(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
+                match name {
+                    #[cfg(any())]
+                    "unavailable-a" | "unavailable-b" => {
+                        unavailable_platform_function(interp, args)
+                    }
+                    #[cfg_attr(all(), cfg(any()))]
+                    "unavailable-expression" => unavailable_platform_function(interp, args),
+                    #[dispatch(builtin_override)]
+                    #[cfg(any())]
+                    "unavailable-override" => {
+                        unavailable_platform_function(interp, args)
+                    }
+                    #[cfg(all())]
+                    "first" | "second" => {
+                        Ok(Value::Integer(if name == "first" { 1 } else { 2 }))
+                    }
+                    #[dispatch(builtin_override)]
+                    #[cfg(all())]
+                    "third" => Ok(Value::Integer(3)),
+                }
+            }
+        }
+
+        assert_eq!(
+            LIFTED_PRIMITIVES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        for name in [
+            "unavailable-a",
+            "unavailable-b",
+            "unavailable-expression",
+            "unavailable-override",
+        ] {
+            assert!(!handles(name));
+            assert!(!prefer_builtin(name));
+        }
+        assert!(prefer_builtin("third"));
+        let mut patterns = Vec::new();
+        visit_handled_patterns(&mut |pattern| patterns.push(pattern));
+        assert_eq!(patterns, ["\"first\" | \"second\"", "\"third\""]);
+
+        let mut interp = Interpreter::new();
+        for (name, expected) in [("first", 1), ("second", 2), ("third", 3)] {
+            assert!(handles(name));
+            assert_eq!(
+                call(&mut interp, name, &[]).expect("enabled primitive dispatches"),
+                Value::Integer(expected)
+            );
+        }
+    }
 
     #[test]
     fn parses_compact_lexical_binding_modelines() {

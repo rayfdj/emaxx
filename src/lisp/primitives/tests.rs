@@ -12164,7 +12164,7 @@ fn network_interface_info_reports_the_real_interface() {
         .expect("read interface-info program")
         .remove(0);
     let rendered = interp
-        .eval(&form, &mut Vec::new())
+        .eval(&form, &mut Env::new())
         .expect("evaluate interface-info program");
     let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
 
@@ -12563,7 +12563,7 @@ fn kqueue_directory_watch_reports_external_child_creation() {
         .remove(0);
     assert_eq!(
         interp
-            .eval(&form, &mut Vec::new())
+            .eval(&form, &mut Env::new())
             .expect("evaluate external kqueue directory program")
             .to_string(),
         expected
