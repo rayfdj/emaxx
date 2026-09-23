@@ -1045,8 +1045,20 @@ impl NativeRuntime {
             }
         }
         self.suspended_stacks.append_words(&mut roots);
-        self.heap
-            .collect(stack_top, &roots, interpreter, environment)
+        let lisp_roots = suspension::NativeLispRoots {
+            handlers: &self.handlers,
+            unwind: &self.unwind,
+            calls: &self.calls,
+            environment: None,
+        };
+        let heap = &mut self
+            .shared
+            .as_mut()
+            .expect("the collecting runtime owns its shared heap")
+            .heap;
+        interpreter.with_lisp_stack_roots(&lisp_roots, |interpreter| {
+            heap.collect(stack_top, &roots, interpreter, environment)
+        })
     }
 
     pub(crate) fn begin_garbage_collection(
@@ -7943,6 +7955,80 @@ mod tests {
                 )
                 .expect("native apply with an empty spread"),
             Value::Nil
+        );
+    }
+
+    #[test]
+    fn native_gc_retains_pending_unwind_cleanup_and_reclaims_it_after_execution() {
+        #[inline(never)]
+        fn record_cleanup(runtime: &mut NativeRuntime, interpreter: &Interpreter) -> usize {
+            let name = Value::symbol("native-cleanup-collection-count");
+            let cleanup = Value::lambda(
+                Rc::new(Vec::new()),
+                Rc::new(vec![Value::list([
+                    Value::symbol("setq"),
+                    name,
+                    Value::list([Value::symbol("1+"), name]),
+                ])]),
+                Value::Nil,
+            );
+            runtime.record_unwind(
+                interpreter,
+                UnwindAction::Cleanup {
+                    function: true,
+                    value: cleanup,
+                },
+            );
+            cleanup.word() ^ HIDE
+        }
+
+        #[inline(never)]
+        fn cleanup_is_live(hidden: usize) -> bool {
+            let address = (hidden ^ HIDE) & !TAG_MASK;
+            matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Closure
+            )
+        }
+
+        #[inline(never)]
+        fn execute_cleanup(
+            runtime: &mut NativeRuntime,
+            interpreter: &mut Interpreter,
+            environment: &mut Env,
+        ) {
+            runtime
+                .unwind_one(interpreter, environment)
+                .expect("pending cleanup executes after collection");
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.define_special_variable("native-cleanup-collection-count", Value::Integer(0));
+        let mut runtime = NativeRuntime::default();
+        let hidden = record_cleanup(&mut runtime, &interpreter);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            runtime.begin_garbage_collection(&mut interpreter, &environment);
+            assert!(
+                cleanup_is_live(hidden),
+                "a pending native cleanup was freed"
+            );
+        }
+        execute_cleanup(&mut runtime, &mut interpreter, &mut environment);
+        assert_eq!(
+            interpreter.lookup_var("native-cleanup-collection-count", &environment),
+            Some(Value::Integer(1))
+        );
+        assert!(runtime.unwind.is_empty());
+        crate::lisp::alloc::clobber_stack();
+        runtime.begin_garbage_collection(&mut interpreter, &environment);
+        assert!(
+            !cleanup_is_live(hidden),
+            "an executed cleanup remained rooted"
         );
     }
 
