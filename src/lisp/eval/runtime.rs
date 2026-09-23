@@ -1331,51 +1331,31 @@ impl Interpreter {
         id
     }
 
-    pub fn alloc_finalizer_id(&mut self) -> u64 {
-        let id = self.next_finalizer_id;
-        self.next_finalizer_id += 1;
-        id
-    }
-
     /// alloc.c:Fmake_finalizer after CHECK_TYPE: allocate the object and
-    /// chain it onto `finalizers' with FUNCTION.
+    /// append it to the active list. The callback is the object's one slot.
     pub(crate) fn make_finalizer(&mut self, function: Value) -> Value {
-        let id = self.alloc_finalizer_id();
-        self.finalizer_functions.push((id, function));
-        Value::Finalizer(id)
+        let object = crate::lisp::alloc::FinalizerRef::new(function);
+        self.finalizers.append(object);
+        Value::Finalizer(object)
     }
 
-    pub(crate) fn finalizer_function(&self, id: u64) -> Option<Value> {
-        self.finalizer_functions
-            .iter()
-            .find(|(candidate, _)| *candidate == id)
-            .map(|(_, function)| *function)
-    }
-
-    /// alloc.c:queue_doomed_finalizers, run after the mark phase and
-    /// before the weak-table sweep: an unreached finalizer object with a
-    /// non-nil function leaves `finalizers' for `doomed_finalizers'.
-    pub(crate) fn queue_doomed_finalizers(&mut self, live: &crate::lisp::eval::MarkedIds) {
-        let mut doomed = Vec::new();
-        self.finalizer_functions.retain(|(id, function)| {
-            if live.contains(id) || function.is_nil() {
-                true
-            } else {
-                doomed.push(*function);
-                false
+    /// alloc.c:queue_doomed_finalizers, before marking any doomed callback.
+    pub(crate) fn queue_doomed_finalizers(&self, epoch: u32) {
+        // SAFETY: only the currently yielded member moves. No allocation,
+        // Lisp invocation or sweep occurs during this traversal.
+        for object in unsafe { self.finalizers.iter() } {
+            if !object.mark_bit().is_marked(epoch) && !object.function().is_nil() {
+                self.doomed_finalizers.append(object);
             }
-        });
-        self.doomed_finalizers.extend(doomed);
+        }
     }
 
-    /// alloc.c's `mark_finalizer_list (&doomed_finalizers)' after
-    /// queue_doomed_finalizers: the functions of the finalizers this
-    /// collection doomed were not reached by its mark phase, and they run
-    /// after the sweep, so they are marked in its epoch before it.
+    /// alloc.c:mark_finalizer_list retains both the object and its callback.
     pub(crate) fn mark_doomed_finalizers(&self, epoch: u32) {
         let mut marked = crate::lisp::eval::LispReachability::with_epoch(epoch);
-        for function in &self.doomed_finalizers {
-            marked.mark(self, function);
+        // SAFETY: tracing changes marks, never links, and invokes no Lisp.
+        for object in unsafe { self.doomed_finalizers.iter() } {
+            marked.mark(self, &Value::Finalizer(object));
         }
     }
 
@@ -1384,8 +1364,14 @@ impl Interpreter {
     /// signal caught and logged as "finalizer failed: %S"
     /// (run_finalizer_function's internal_condition_case_1 with Qt).
     pub(crate) fn run_doomed_finalizers(&mut self, env: &mut Env) -> Result<(), LispError> {
-        while !self.doomed_finalizers.is_empty() {
-            let function = self.doomed_finalizers.remove(0);
+        while let Some(object) = self.doomed_finalizers.pop_front() {
+            let function = object.function();
+            if function.is_nil() {
+                continue;
+            }
+            // alloc.c clears the actual slot before calling Lisp: a
+            // resurrected object or a nested GC cannot run it twice.
+            object.set_function(Value::Nil);
             self.finalizers_run += 1;
             let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
             let result = self.call_function_value(function, None, &[], env);

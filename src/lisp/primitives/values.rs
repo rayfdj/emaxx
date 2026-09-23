@@ -520,8 +520,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id))
-        | (Kind::Terminal(left_id), Kind::Terminal(right_id))
-        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        | (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eql on non-numbers is eq; identity must be reflexive here too.
         (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
@@ -591,8 +591,8 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id))
-        | (Kind::Terminal(left_id), Kind::Terminal(right_id))
-        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        | (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
@@ -1858,9 +1858,9 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 12);
             hash_mix(state, id.id);
         }
-        Kind::Finalizer(id) => {
+        Kind::Finalizer(object) => {
             hash_mix(state, 13);
-            hash_mix(state, id);
+            hash_mix(state, object.identity() as u64);
         }
         Kind::ReaderForm(form) => {
             hash_mix(state, 20);
@@ -2075,9 +2075,9 @@ pub(crate) fn hash_value_equal_at(
                 remove_symbol_positions,
             );
         }
-        Kind::Finalizer(id) => {
+        Kind::Finalizer(object) => {
             hash_mix(state, 46);
-            hash_mix(state, id);
+            hash_mix(state, object.identity() as u64);
         }
         Kind::ReaderForm(form) => {
             hash_mix(state, 50);

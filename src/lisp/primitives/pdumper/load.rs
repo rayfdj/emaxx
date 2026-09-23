@@ -514,9 +514,9 @@ impl Loader<'_> {
                     overlays.push((offset, id));
                 }
                 DumpType::Finalizer => {
-                    let id = self.reader.word(offset)?;
-                    self.objects.insert(offset, Value::Finalizer(id));
-                    finalizers.push((offset, id));
+                    let object = crate::lisp::alloc::FinalizerRef::new(Value::Nil);
+                    self.objects.insert(offset, Value::Finalizer(object));
+                    finalizers.push((offset, object));
                 }
                 // Nilled pseudovectors: each is a dead object of its own
                 // in the new process, whose live initial frame and
@@ -697,16 +697,17 @@ impl Loader<'_> {
         let mut finalizer_records = Vec::new();
         for (offset, id) in finalizers {
             let function = self.value_at(offset + 8)?;
+            id.set_function(function);
             let next = match (self.value_at(offset + 24)?).kind() {
                 Kind::Finalizer(next) => Some(next),
                 Kind::Nil => None,
                 other => {
                     return Err(LoadError::Error(format!(
-                        "finalizer {id}'s next is not a finalizer: {other:?}"
+                        "finalizer {id:?}'s next is not a finalizer: {other:?}"
                     )));
                 }
             };
-            finalizer_records.push((id, function, next));
+            finalizer_records.push((id, next));
         }
 
         // Phase 5: the symbol records.
@@ -779,29 +780,24 @@ impl Loader<'_> {
             });
         while let Some(id) = cursor {
             if chain.contains(&id) {
-                return Err(LoadError::Error(format!("finalizer chain loops at {id}")));
+                return Err(LoadError::Error(format!("finalizer chain loops at {id:?}")));
             }
             chain.push(id);
             cursor = finalizer_records
                 .iter()
-                .find(|(candidate, _, _)| *candidate == id)
-                .and_then(|(_, _, next)| *next);
+                .find(|(candidate, _)| *candidate == id)
+                .and_then(|(_, next)| *next);
         }
         for id in &chain {
-            let Some((_, function, _)) = finalizer_records
+            let Some((_, _)) = finalizer_records
                 .iter()
-                .find(|(candidate, _, _)| candidate == id)
+                .find(|(candidate, _)| candidate == id)
             else {
                 return Err(LoadError::Error(format!(
-                    "finalizer {id} is on the chain but not in the image"
+                    "finalizer {id:?} is on the chain but not in the image"
                 )));
             };
-            self.interp.install_finalizer(*id, *function);
-        }
-        for (id, function, _) in finalizer_records {
-            if !chain.contains(&id) {
-                self.interp.install_finalizer(id, function);
-            }
+            self.interp.install_finalizer(*id);
         }
         // The root groups: each reinstalled from its value.
         for (slot, value) in &roots {

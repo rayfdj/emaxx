@@ -68,6 +68,7 @@ pub enum VectorTag {
     Normal = 0,
     Free = 1,
     Bignum = 2,
+    Finalizer = 5,
     Buffer = 13,
     Closure = 31,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
@@ -82,6 +83,7 @@ impl VectorTag {
         match word {
             1 => Self::Free,
             2 => Self::Bignum,
+            5 => Self::Finalizer,
             13 => Self::Buffer,
             31 => Self::Closure,
             34 => Self::Record,
@@ -683,6 +685,7 @@ impl std::fmt::Debug for ClosureRef {
 /// `allocate_pseudovector'): the kind's fields follow the header.
 pub trait Vectorlike: Sized {
     const TAG: VectorTag;
+    const LISP_SLOTS: usize = 0;
 }
 
 impl Vectorlike for LispBignum {
@@ -727,7 +730,7 @@ impl<T: Vectorlike> VectorlikeRef<T> {
         let header = allocate_vectorlike(nbytes);
         // SAFETY: fresh storage of NBYTES; the payload is aligned for T.
         unsafe {
-            (*header).size = VectorHeader::pseudovector_size_word(T::TAG, nbytes);
+            (*header).size = VectorHeader::pseudovector_slots_word(T::TAG, nbytes, T::LISP_SLOTS);
             (*header)
                 .mark_bit()
                 .mark(super::super::types::current_mark_epoch());
@@ -811,6 +814,10 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 );
             }
             VectorTag::Bignum => raise(&LIVE_BIGNUMS, 1),
+            VectorTag::Finalizer => {
+                raise(&LIVE_VECTORS, 1);
+                raise(&LIVE_VECTOR_SLOTS, 4);
+            }
             VectorTag::Record => {
                 let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
                 let slots = record.gnu_vector_slots();
@@ -850,6 +857,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
+            VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
             // destructor. Its children are reclaimed by tracing, as in C.
             VectorTag::Closure => {}
@@ -911,6 +919,10 @@ impl SweepStats {
                     self.closure_slots += ((*header).size & PSEUDOVECTOR_SIZE_MASK) + 1;
                 }
                 VectorTag::Bignum => self.bignums += 1,
+                VectorTag::Finalizer => {
+                    self.vectors += 1;
+                    self.vector_slots += 4;
+                }
                 VectorTag::Record => {
                     let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
                     let slots = record.gnu_vector_slots();
@@ -1128,6 +1140,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
                 Value::BigInteger(super::super::types::SharedBigInt::from_raw(header))
             }
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
+            VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),

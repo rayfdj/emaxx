@@ -3728,7 +3728,6 @@ enum NativeIdentity {
     CharTable(u64),
     Frame(u64),
     Terminal(u64),
-    Finalizer(u64),
 }
 
 impl NativeIdentity {
@@ -3741,7 +3740,6 @@ impl NativeIdentity {
             Self::CharTable(value) => (12, *value as usize),
             Self::Frame(value) => (13, *value as usize),
             Self::Terminal(value) => (14, *value as usize),
-            Self::Finalizer(value) => (16, *value as usize),
         };
         // Hashbrown consumes both low bucket bits and high control bits.  A
         // simple rotation leaves aligned GNU-style pointers clustered, so
@@ -4207,7 +4205,8 @@ impl NativeMark<'_> {
             | Kind::Lambda(_)
             | Kind::BigInteger(_)
             | Kind::Record(_)
-            | Kind::ReaderForm(_) => {
+            | Kind::ReaderForm(_)
+            | Kind::Finalizer(_) => {
                 return Vec::new();
             }
             _ => {
@@ -4504,12 +4503,10 @@ impl NativeHeap {
         // From here to the sweep, no other mark phase may begin (a checked
         // build's guard; see `begin_mark_epoch').
         crate::lisp::types::set_sweep_pending(true);
-        // alloc.c:garbage_collect queues doomed finalizers after the marking
-        // fixed point, then removes weak entries before gc_sweep can reclaim
-        // their object storage.
-        interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
+        // The mark pass queued and traced doomed finalizers before the
+        // weak-table fixed point, as alloc.c does. Sweep weak entries before
+        // reclaiming any object storage.
         let epoch = reachability.epoch;
-        interpreter.mark_doomed_finalizers(epoch);
         crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
         // alloc.c:gc_sweep, after the weak entries are gone.  A view of a
         // cell the sweep took is gone with it; the views of the cells the
@@ -4916,7 +4913,8 @@ impl NativeHeap {
             | Kind::Lambda(_)
             | Kind::BigInteger(_)
             | Kind::Record(_)
-            | Kind::ReaderForm(_) => Ok(value.word()),
+            | Kind::ReaderForm(_)
+            | Kind::Finalizer(_) => Ok(value.word()),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
                 self.encode_handle(identity, value, tag)
@@ -5184,6 +5182,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
                         | crate::lisp::alloc::VectorTag::ReaderForm
+                        | crate::lisp::alloc::VectorTag::Finalizer
                 )
             {
                 // SAFETY: the checked boundary found this allocated object's
@@ -5338,7 +5337,6 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
         Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
         Kind::Terminal(id) => (NativeIdentity::Terminal(id), TAG_VECTORLIKE),
-        Kind::Finalizer(id) => (NativeIdentity::Finalizer(id), TAG_VECTORLIKE),
         Kind::Nil
         | Kind::T
         | Kind::Unbound
@@ -5352,6 +5350,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::BigInteger(_)
         | Kind::Record(_)
         | Kind::ReaderForm(_)
+        | Kind::Finalizer(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
@@ -10260,6 +10259,231 @@ mod tests {
             for (index, value) in vector.slots().enumerate() {
                 assert_eq!(value.as_float().expect("live float"), index as f64 - 123.25);
             }
+        }
+    }
+
+    #[test]
+    fn native_finalizers_use_their_own_words_and_callback_slot() {
+        extern "C" fn callback(finalizer: NativeWord) -> NativeWord {
+            // lisp.h:Lisp_Finalizer.function is the word after its header.
+            unsafe {
+                ((finalizer - TAG_VECTORLIKE) as *const NativeWord)
+                    .add(1)
+                    .read()
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut other = NativeHeapOwner::new();
+        for function in [Value::symbol("ignore"), Value::symbol("list")] {
+            let value = interpreter.make_finalizer(function);
+            let word = runtime.heap.encode(&value).expect("finalizer word");
+            assert_eq!(word, value.word(), "no separate native finalizer handle");
+            assert_eq!(word & TAG_MASK, TAG_VECTORLIKE);
+            let header = unsafe { ((word - TAG_VECTORLIKE) as *const NativeWord).read() };
+            assert_eq!(header, (1 << 62) | (5 << 24) | (2 << 12) | 1);
+            assert_eq!(
+                other.decode(word).expect("independent native heap").word(),
+                word
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        callback as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[value],
+                    )
+                    .expect("read the actual callback slot")
+                    .word(),
+                function.word()
+            );
+            assert!(other.decode(word + std::mem::size_of::<Value>()).is_err());
+        }
+        assert!(runtime.heap.handles.is_empty());
+        assert!(runtime.heap.handle_by_value.is_empty());
+        assert!(other.handles.is_empty());
+        assert!(other.handle_by_address.is_empty());
+    }
+
+    #[test]
+    fn finalizer_allocations_report_their_four_vector_words() {
+        let mut interpreter = Interpreter::new();
+        let function = Value::symbol("ignore");
+        let before = crate::lisp::types::census_live_vectors();
+        let value = interpreter.make_finalizer(function);
+        let after = crate::lisp::types::census_live_vectors();
+        assert_eq!(after.count, before.count + 1);
+        assert_eq!(after.slots, before.slots + 4);
+        assert!(matches!(value.kind(), Kind::Finalizer(_)));
+    }
+
+    #[test]
+    fn native_gc_finalizers_trace_callbacks_across_collectors_and_reclaim() {
+        #[inline(never)]
+        fn make_graph(owner: &mut Interpreter) -> [usize; 3] {
+            let counter = Value::symbol("recorded-finalizer-runs");
+            let body = Value::list([
+                Value::symbol("setq"),
+                counter,
+                Value::list([Value::symbol("1+"), counter]),
+            ]);
+            let function = Value::lambda(Vec::new(), vec![body], Value::Nil);
+            let object = owner.make_finalizer(function);
+            let unreachable = Value::vector([Value::Integer(83)]);
+            owner.set_global_binding("kept-finalizer", object);
+            [object.word(), function.word(), unreachable.word()].map(|word| word ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn check_payloads(heap: &mut NativeHeapOwner, hidden: [usize; 3], live: bool) {
+            for &word in &hidden[..2] {
+                assert_eq!(heap.decode(word ^ HIDE).is_ok(), live);
+            }
+            assert!(
+                heap.decode(hidden[2] ^ HIDE).is_err(),
+                "unreachable control"
+            );
+            if live {
+                let Kind::Finalizer(object) = heap.decode(hidden[0] ^ HIDE).unwrap().kind() else {
+                    panic!("canonical finalizer")
+                };
+                assert_eq!(object.function().word(), hidden[1] ^ HIDE);
+            }
+        }
+
+        #[inline(never)]
+        fn run_callbacks(owner: &mut Interpreter) {
+            owner
+                .run_doomed_finalizers(&mut Env::new())
+                .expect("callback");
+            assert_eq!(
+                owner.global_binding_value("recorded-finalizer-runs"),
+                Some(Value::Integer(1))
+            );
+        }
+
+        let mut owner = Interpreter::new();
+        let mut collector = Interpreter::new();
+        let mut heap = NativeHeapOwner::new();
+        heap.encode(&Value::BuiltinFunc("identity".into()))
+            .expect("also exercise the collector with a remaining bridge kind");
+        let environment = Env::new();
+        owner.set_global_binding("recorded-finalizer-runs", Value::Integer(0));
+        let hidden = make_graph(&mut owner);
+        let stack_marker = 0;
+
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut collector,
+            &environment,
+        );
+        check_payloads(&mut heap, hidden, true);
+        assert!(!owner.doomed_finalizers_pending());
+        assert_eq!(
+            owner.global_binding_value("recorded-finalizer-runs"),
+            Some(Value::Integer(0))
+        );
+
+        owner.set_global_binding("kept-finalizer", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut collector,
+            &environment,
+        );
+        assert!(
+            owner.doomed_finalizers_pending(),
+            "the foreign collector queues the owning state's callback"
+        );
+        check_payloads(&mut heap, hidden, true);
+        run_callbacks(&mut owner);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut collector,
+            &environment,
+        );
+        check_payloads(&mut heap, hidden, false);
+        run_callbacks(&mut owner);
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
+    }
+
+    #[test]
+    fn image_clones_copy_finalizer_callback_cycles_without_sharing_list_state() {
+        let mut source = Interpreter::new();
+        let value = source.make_finalizer(Value::Nil);
+        let Kind::Finalizer(object) = value.kind() else {
+            unreachable!()
+        };
+        let vector = Value::vector([value]);
+        object.set_function(Value::lambda(Vec::new(), vec![vector], Value::Nil));
+        source.set_global_binding("finalizer-copy-root", vector);
+
+        let cloned = source.deep_clone_image();
+        let copied_vector = cloned.global_binding_value("finalizer-copy-root").unwrap();
+        let Kind::Vector(slots) = copied_vector.kind() else {
+            panic!("copied vector")
+        };
+        let Kind::Finalizer(copied) = slots.get(0).unwrap().kind() else {
+            panic!("copied finalizer")
+        };
+        assert_ne!(copied, object);
+        assert_eq!(source.finalizer_objects(), vec![object]);
+        assert_eq!(cloned.finalizer_objects(), vec![copied]);
+        let Kind::Lambda(function) = copied.function().kind() else {
+            panic!("copied callback")
+        };
+        assert_eq!(function.body().car().unwrap().word(), copied_vector.word());
+        copied.set_function(Value::Nil);
+        assert!(
+            !object.function().is_nil(),
+            "the template callback is independent"
+        );
+        drop(cloned);
+        assert_eq!(source.finalizer_objects(), vec![object]);
+    }
+
+    #[test]
+    fn native_reads_cons_fields_reached_through_canonical_vector_slots() {
+        extern "C" fn read_car(vector: NativeWord) -> NativeWord {
+            // lisp.h: AREF reads the slot after the vector header; XCAR
+            // reads the first word of the reached cons. Neither operation
+            // crosses a primitive wrapper or prepares a second cons view.
+            unsafe {
+                let slot = ((vector - TAG_VECTORLIKE) as *const NativeWord).add(1);
+                let cons = (*slot - TAG_CONS) as *const NativeCons;
+                (*cons).car()
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for leaf in [
+            Value::Integer(37),
+            Value::symbol("cons-reached-through-vector"),
+            Value::list([Value::Integer(19), Value::Integer(73)]),
+        ] {
+            let cons = Value::cons(leaf, Value::Integer(31));
+            let vector = Value::vector([cons]);
+            let result = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    read_car as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[vector],
+                )
+                .expect("native field read through a canonical vector slot");
+            assert_eq!(result.word(), leaf.word());
         }
     }
 

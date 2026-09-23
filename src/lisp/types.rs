@@ -1948,7 +1948,6 @@ const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
 const SUB_TERMINAL: usize = 7;
-const SUB_FINALIZER: usize = 8;
 const SUB_BUILTIN: usize = 9;
 const SUB_SHIFT: u32 = 3;
 const PAYLOAD_SHIFT: u32 = 8;
@@ -2009,8 +2008,8 @@ pub enum Kind {
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
     Record(RecordRef),
-    /// A finalizer object, identified by unique id.
-    Finalizer(u64),
+    /// GNU PVEC_FINALIZER: the object containing its callback and list links.
+    Finalizer(crate::lisp::alloc::FinalizerRef),
     /// Typed reader state awaiting Interpreter-owned object allocation.
     ReaderForm(ReaderFormRef),
     /// Internal marker for EIEIO slots that have not been bound.
@@ -2116,8 +2115,8 @@ impl Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Finalizer(id: u64) -> Value {
-        Value::from_bits(special(SUB_FINALIZER, id as usize))
+    pub fn Finalizer(object: crate::lisp::alloc::FinalizerRef) -> Value {
+        Value::from_bits(object.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn ReaderForm(form: ReaderFormRef) -> Value {
@@ -2205,6 +2204,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Bignum => {
                             Kind::BigInteger(SharedBigInt::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Finalizer => {
+                            Kind::Finalizer(crate::lisp::alloc::FinalizerRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Buffer => {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2238,7 +2240,6 @@ impl Value {
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),
                     SUB_TERMINAL => Kind::Terminal(payload),
-                    SUB_FINALIZER => Kind::Finalizer(payload),
                     // SAFETY: as above, a symbol cell.
                     SUB_BUILTIN => Kind::BuiltinFunc(SymbolName::from_ref(unsafe {
                         crate::lisp::alloc::SymbolRef::from_raw(
@@ -2339,7 +2340,6 @@ impl Value {
                 | Kind::CharTable(_)
                 | Kind::Frame(_)
                 | Kind::Terminal(_)
-                | Kind::Finalizer(_)
                 | Kind::Unbound
         )
     }
@@ -2960,7 +2960,7 @@ impl Value {
             Kind::Frame(id) => format!("frame<{}>", id),
             Kind::Terminal(id) => format!("terminal<{}>", id),
             Kind::Record(record) => format!("record<{}>", record.id),
-            Kind::Finalizer(id) => format!("finalizer<{}>", id),
+            Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
         }

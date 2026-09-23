@@ -365,8 +365,8 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
-        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
-        | (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
+        | (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
+        (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         _ => false,
     }

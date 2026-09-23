@@ -138,8 +138,6 @@ fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
     );
 }
 
-// Temporary diagnostic checkpoint: report each failing case and native predicate.
-// The unchanged GNU-comparison fixture below remains a separate requirement.
 #[test]
 fn native_string_words_preserve_mutation_and_cycles_across_execution_modes() {
     assert_oracle_contract_matches_interpreter(
@@ -1656,7 +1654,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::Overlay(1),
         Value::CharTable(1),
         interp.create_record("representative", Vec::new()),
-        Value::Finalizer(1),
+        Value::Finalizer(crate::lisp::alloc::FinalizerRef::new(Value::Nil)),
         Value::Unbound,
     ];
 

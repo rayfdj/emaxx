@@ -25,7 +25,10 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+mod finalizers;
 mod symbols;
+pub(crate) use finalizers::FinalizerList;
+pub use finalizers::{FinalizerRef, FinalizerState};
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};

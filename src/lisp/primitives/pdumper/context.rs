@@ -45,7 +45,7 @@ pub(crate) enum ObjectKey {
     Frame(u64),
     Terminal(u64),
     Record(u64),
-    Finalizer(u64),
+    Finalizer(usize),
     ReaderForm(usize),
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Frame(id) => ObjectKey::Frame(id),
         Kind::Terminal(id) => ObjectKey::Terminal(id),
         Kind::Record(record) => ObjectKey::Record(record.id),
-        Kind::Finalizer(id) => ObjectKey::Finalizer(id),
+        Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
 }
@@ -879,12 +879,12 @@ impl DumpContext {
                 LispError::Signal("doomed finalizers are pending at dump time".into()).into(),
             );
         }
-        let ids = interp.finalizer_ids();
+        let objects = interp.finalizer_objects();
         self.set_referrer(Value::string("emacs root"));
-        if let Some(last) = ids.last() {
+        if let Some(last) = objects.last() {
             self.emacs_reloc_to_lv(RootSlot::FinalizersPrev, &Value::Finalizer(*last));
         }
-        if let Some(first) = ids.first() {
+        if let Some(first) = objects.first() {
             self.emacs_reloc_to_lv(RootSlot::FinalizersNext, &Value::Finalizer(*first));
         }
         self.clear_referrer();
@@ -1056,10 +1056,7 @@ impl DumpContext {
             ),
             Kind::Marker(id) => (self.dump_marker(interp, id, object)?, DumpType::Marker),
             Kind::Overlay(id) => (self.dump_overlay(interp, id, object)?, DumpType::Overlay),
-            Kind::Finalizer(id) => (
-                self.dump_finalizer(interp, id, object)?,
-                DumpType::Finalizer,
-            ),
+            Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
             Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
             Kind::Terminal(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Terminal),
@@ -1863,19 +1860,15 @@ impl DumpContext {
     /// is an Emacs pointer, written as nil here).
     fn dump_finalizer(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
+        object: crate::lisp::alloc::FinalizerRef,
     ) -> Result<u32, DumpError> {
-        let ids = interp.finalizer_ids();
-        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
-            return Err(self.unsupported(object, "finalizer without an object"));
-        };
-        let function = interp.finalizer_function(id).unwrap_or(Value::Nil);
-        let prev = index.checked_sub(1).map(|i| Value::Finalizer(ids[i]));
-        let next = ids.get(index + 1).map(|id| Value::Finalizer(*id));
+        let function = object.function();
+        let (prev, next) = object.neighbors();
+        let prev = prev.map(Value::Finalizer);
+        let next = next.map(Value::Finalizer);
         let start = self.object_start()?;
-        let mut words = [id, 0, 0, 0];
+        // GNU's PVEC_FINALIZER header: one traced slot and two raw links.
+        let mut words = [(1_u64 << 62) | (5 << 24) | (2 << 12) | 1, 0, 0, 0];
         self.field_lv(start, &mut words, 1, &function, WEIGHT_NONE);
         self.field_lv(
             start,

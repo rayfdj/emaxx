@@ -1578,6 +1578,34 @@ fn next_record_owner() -> u32 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// alloc.c queues all doomed objects before marking any finalizer list.
+/// The shared allocator can also sweep objects owned by parked interpreters.
+/// Keep their doomed objects until their own evaluator can run the callbacks.
+fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability<'_, '_>) {
+    let epoch = marked.epoch;
+    let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
+    let states = crate::lisp::alloc::live_states();
+    active.queue_doomed_finalizers(epoch);
+    for &state in &states {
+        if state != active_state {
+            // SAFETY: the registered state is parked during serialized GC.
+            let other = unsafe { Interpreter::registered_gc_view(state) };
+            other.queue_doomed_finalizers(epoch);
+        }
+    }
+    // SAFETY: the list stays intact while tracing; callbacks run after GC.
+    for object in unsafe { active.doomed_finalizers.iter() } {
+        marked.mark(active, &Value::Finalizer(object));
+    }
+    for state in states {
+        if state != active_state {
+            // SAFETY: as above; only Lisp marks are updated in this phase.
+            let other = unsafe { Interpreter::registered_gc_view(state) };
+            other.mark_doomed_finalizers(epoch);
+        }
+    }
+}
+
 /// After the sweeps: the records they freed leave every live state's
 /// registry and side tables.
 pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
@@ -3008,6 +3036,7 @@ struct ImageGraphCopier {
     lambdas: std::collections::HashMap<usize, Value>,
     reader_forms: std::collections::HashMap<usize, Value>,
     records: std::collections::HashMap<usize, Value>,
+    finalizers: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -3022,6 +3051,7 @@ impl ImageGraphCopier {
             lambdas: Default::default(),
             reader_forms: Default::default(),
             records: Default::default(),
+            finalizers: Default::default(),
             record_owner,
         }
     }
@@ -3029,6 +3059,16 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::Finalizer(object) => {
+                if let Some(copied) = self.finalizers.get(&object.identity()) {
+                    return *copied;
+                }
+                let new_object = crate::lisp::alloc::FinalizerRef::new(Value::Nil);
+                let copied = Value::Finalizer(new_object);
+                self.finalizers.insert(object.identity(), copied);
+                new_object.set_function(self.copy(&object.function()));
+                copied
+            }
             Kind::Vector(vector) => {
                 if vector.len() == 0 {
                     return *value;
@@ -3307,7 +3347,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     char_tables: MarkedIds,
     frames: MarkedIds,
     terminals: MarkedIds,
-    finalizers: MarkedIds,
 }
 
 impl LispReachability<'_, '_> {
@@ -3343,7 +3382,6 @@ impl LispReachability<'_, '_> {
             char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
             terminals: MarkedIds::default(),
-            finalizers: MarkedIds::default(),
         }
     }
 }
@@ -3353,9 +3391,6 @@ pub(crate) struct WeakHashReachability {
     /// which the sweep tests.
     pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    /// Finalizer objects the mark phase reached (alloc.c marks a reached
-    /// `Lisp_Finalizer' as any pseudovector, and its function with it).
-    pub(crate) live_finalizers: MarkedIds,
     /// Marker objects the mark phase reached, from the Lisp graph and from
     /// the slots C keeps them in (buffer marks, process marks, the
     /// excursions and restrictions on the specpdl, the undo lists).
@@ -3387,7 +3422,7 @@ impl LispReachability<'_, '_> {
             Kind::Frame(id) => self.frames.contains(&id),
             Kind::Terminal(id) => self.terminals.contains(&id),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
-            Kind::Finalizer(id) => self.finalizers.contains(&id),
+            Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
     }
@@ -3455,7 +3490,7 @@ impl LispReachability<'_, '_> {
             Kind::Frame(id) => self.frames.insert(id),
             Kind::Terminal(id) => self.terminals.insert(id),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
-            Kind::Finalizer(id) => self.finalizers.insert(id),
+            Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
@@ -3483,14 +3518,10 @@ impl LispReachability<'_, '_> {
                 symbol.internal_text().mark_bit().mark(self.epoch);
                 self.enqueue(symbol.lisp_name_ref());
             }
-            Kind::Finalizer(id) => {
-                // A reached Lisp_Finalizer is a pseudovector whose one Lisp
-                // slot is `function'; an unreached one is doomed after this
-                // pass and its function marked separately
-                // (alloc.c:mark_finalizer_list).
-                if let Some(function) = interp.finalizer_function(id) {
-                    self.enqueue(&function);
-                }
+            Kind::Finalizer(object) => {
+                // alloc.c traces the function in the reached object itself.
+                // The prev/next links never make other finalizers reachable.
+                self.enqueue(&object.function());
             }
             Kind::StringObject(value) => {
                 let state = value.borrow();
@@ -3929,8 +3960,9 @@ impl Interpreter {
     }
 
     /// alloc.c's `finalizers' list in order (head.next first).
-    pub(crate) fn finalizer_ids(&self) -> Vec<u64> {
-        self.finalizer_functions.iter().map(|(id, _)| *id).collect()
+    pub(crate) fn finalizer_objects(&self) -> Vec<crate::lisp::alloc::FinalizerRef> {
+        // SAFETY: copying handles neither invokes Lisp nor changes the list.
+        unsafe { self.finalizers.iter() }.collect()
     }
 
     /// Whether `doomed_finalizers' holds functions still to run.
@@ -4038,13 +4070,9 @@ impl Interpreter {
         buffer.overlays.push(overlay);
     }
 
-    /// Install a finalizer at the end of the `finalizers' list.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_finalizer(&mut self, id: u64, function: Value) {
-        self.finalizer_functions
-            .retain(|(candidate, _)| *candidate != id);
-        self.finalizer_functions.push((id, function));
-        self.next_finalizer_id = self.next_finalizer_id.max(id + 1);
+    /// Install an image object's actual finalizer at the end of the list.
+    pub(crate) fn install_finalizer(&mut self, object: crate::lisp::alloc::FinalizerRef) {
+        self.finalizers.append(object);
     }
 
     /// Install the dead frame a nilled frame pseudovector loads as: no
@@ -4210,6 +4238,8 @@ impl Interpreter {
         }
 
         self.mark_static_roots_into(&mut marked);
+        // alloc.c marks doomed functions before its weak-table fixed point.
+        prepare_finalizers_in_live_states(self, &mut marked);
 
         let weak_tables = self
             .records
@@ -4268,7 +4298,6 @@ impl Interpreter {
         WeakHashReachability {
             epoch: marked.epoch,
             tables,
-            live_finalizers: std::mem::take(&mut marked.finalizers),
             live_markers: std::mem::take(&mut marked.markers),
             live_overlays: std::mem::take(&mut marked.overlays),
         }
@@ -4356,10 +4385,11 @@ impl Interpreter {
         for value in self.detached_forwarded_variables.values() {
             mark(value);
         }
-        // alloc.c:mark_finalizer_list (&doomed_finalizers): a doomed
-        // finalizer's function survives until it has run.
-        for function in &self.doomed_finalizers {
-            mark(function);
+        // alloc.c:mark_finalizer_list: retain each doomed object and its
+        // function until the callback has run, including nested collections.
+        // SAFETY: marking invokes no Lisp and does not mutate these links.
+        for object in unsafe { self.doomed_finalizers.iter() } {
+            mark(&Value::Finalizer(object));
         }
         for value in self.modules.roots() {
             mark(value);
@@ -4761,6 +4791,8 @@ impl Interpreter {
             "cannot clone an interpreter with live terminal devices"
         );
         let mut clone = self.clone();
+        clone.finalizers = crate::lisp::alloc::FinalizerList::default();
+        clone.doomed_finalizers = crate::lisp::alloc::FinalizerList::default();
         clone.record_owner = next_record_owner();
         let mut copier = ImageGraphCopier::new(clone.record_owner);
         {
@@ -4771,11 +4803,20 @@ impl Interpreter {
             for function in clone.globals.functions_mut() {
                 *function = c.copy(function);
             }
-            for (_, function) in &mut clone.finalizer_functions {
-                *function = c.copy(function);
+            // SAFETY: graph copying invokes no Lisp and changes only the
+            // new lists; the template's list links remain untouched.
+            for object in unsafe { self.finalizers.iter() } {
+                let Kind::Finalizer(copied) = c.copy(&Value::Finalizer(object)).kind() else {
+                    unreachable!("a finalizer copy has finalizer storage")
+                };
+                clone.finalizers.append(copied);
             }
-            for function in &mut clone.doomed_finalizers {
-                *function = c.copy(function);
+            // SAFETY: the same non-reentrant graph copy for the doomed list.
+            for object in unsafe { self.doomed_finalizers.iter() } {
+                let Kind::Finalizer(copied) = c.copy(&Value::Finalizer(object)).kind() else {
+                    unreachable!("a finalizer copy has finalizer storage")
+                };
+                clone.doomed_finalizers.append(copied);
             }
             // Copy the actual C-side fields. The graph copier preserves
             // aliasing with Lisp cells while forwarded, but makunbound may
@@ -5574,15 +5615,10 @@ pub struct InterpreterState {
     treesit_languages: Vec<TreeSitterLanguageState>,
     /// Next record ID for identity tracking.
     next_record_id: u64,
-    /// Next finalizer ID for identity tracking.
-    next_finalizer_id: u64,
-    /// alloc.c's `finalizers' list: every extant finalizer object's
-    /// function, in creation order (finalizer_insert appends before the
-    /// head).  A function set to nil has run or was created nil.
-    finalizer_functions: Vec<(u64, Value)>,
-    /// alloc.c's `doomed_finalizers': functions of finalizer objects the
-    /// last mark phase did not reach, run once the collection completes.
-    doomed_finalizers: Vec<Value>,
+    /// alloc.c's intrusive active and doomed lists. Each callback lives in
+    /// its finalizer object, with no id table or copied callback queue.
+    finalizers: crate::lisp::alloc::FinalizerList,
+    doomed_finalizers: crate::lisp::alloc::FinalizerList,
     /// alloc.c:number_finalizers_run.
     pub(crate) finalizers_run: u64,
     /// Set while startup reconstructs the image by running loadup.el: the
@@ -6408,9 +6444,8 @@ impl Interpreter {
             treesit_parsers: Vec::new(),
             treesit_nodes: Vec::new(),
             next_record_id: 3,
-            next_finalizer_id: 1,
-            finalizer_functions: Vec::new(),
-            doomed_finalizers: Vec::new(),
+            finalizers: crate::lisp::alloc::FinalizerList::default(),
+            doomed_finalizers: crate::lisp::alloc::FinalizerList::default(),
             finalizers_run: 0,
             image_reconstruction_handoff: false,
             pdumper_loaded: None,

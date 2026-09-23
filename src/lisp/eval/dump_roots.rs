@@ -333,8 +333,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "tree-sitter languages are loaded libraries of the process",
     ),
     ("next_record_id", "carried in the remembered scalars"),
-    ("next_finalizer_id", "carried in the remembered scalars"),
-    ("finalizer_functions", "installed from the finalizer chain"),
+    ("finalizers", "installed from the finalizer chain"),
     ("finalizers_run", "carried in the remembered scalars"),
     (
         "image_reconstruction_handoff",
@@ -833,10 +832,6 @@ impl Interpreter {
                 pair(
                     Value::symbol("next-record-id"),
                     Value::Integer(self.next_record_id as i64),
-                ),
-                pair(
-                    Value::symbol("next-finalizer-id"),
-                    Value::Integer(self.next_finalizer_id as i64),
                 ),
                 pair(
                     Value::symbol("next-lisp-face-id"),
@@ -1370,9 +1365,6 @@ mod install {
                             }
                             "next-record-id" => {
                                 self.next_record_id = self.next_record_id.max(id(&name)?)
-                            }
-                            "next-finalizer-id" => {
-                                self.next_finalizer_id = self.next_finalizer_id.max(id(&name)?);
                             }
                             "next-lisp-face-id" => self.next_lisp_face_id = int(&name)?,
                             "next-special-binding-id" => {

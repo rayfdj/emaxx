@@ -1008,7 +1008,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let source_syntax_table = interp
         .buffer_syntax_table_id(source_id)
         .expect("the buffer set a syntax table");
-    let source_finalizers = interp.finalizer_ids();
+    let source_finalizers = interp.finalizer_objects();
     let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
     let roots = vec![(RootSlot::LoadPath, graph), (RootSlot::QuitFlag, terminal)];
     let bytes = dump(&mut interp, roots);
@@ -1118,10 +1118,12 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Finalizer(f2) = slots[4].kind() else {
         panic!("finalizer")
     };
-    assert_eq!(target.finalizer_ids(), source_finalizers);
-    assert_eq!(target.finalizer_ids(), vec![f1, f2]);
-    assert_eq!(target.finalizer_function(f1), Some(Value::symbol("car")));
-    assert_eq!(target.finalizer_function(f2), Some(Value::symbol("cdr")));
+    assert_eq!(target.finalizer_objects().len(), source_finalizers.len());
+    assert_eq!(target.finalizer_objects(), vec![f1, f2]);
+    assert_ne!(f1, source_finalizers[0]);
+    assert_ne!(f2, source_finalizers[1]);
+    assert_eq!(f1.function(), Value::symbol("car"));
+    assert_eq!(f2.function(), Value::symbol("cdr"));
 
     // The frame is nilled: a dead frame object of its own, beside the
     // live initial frame of the loading process.  The terminal is nilled
