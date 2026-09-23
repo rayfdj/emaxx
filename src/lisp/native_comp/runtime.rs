@@ -4150,6 +4150,17 @@ impl NativeMark<'_> {
         };
         if let Some(&index) = self.heap.handle_by_value.get(&identity) {
             self.marked_handles[index] = true;
+            // Buffer references currently share a logical id while owning
+            // distinct allocation addresses. Keeping their bridge must also
+            // keep the exact reference it holds, not only this equivalent
+            // Lisp reference. This edge disappears with the buffer bridge.
+            let retained = self.heap.handles[index]
+                .as_ref()
+                .expect("indexed native handle")
+                .value;
+            if retained.word() != value.word() {
+                return (false, vec![retained]);
+            }
         }
         (false, Vec::new())
     }
@@ -9760,6 +9771,87 @@ mod tests {
             first_word,
             "different GNU Lisp_Buffer objects must retain different words"
         );
+    }
+
+    #[test]
+    fn native_gc_retains_the_exact_buffer_reference_owned_by_a_live_bridge() {
+        #[inline(never)]
+        fn make_aliases(
+            heap: &mut NativeHeapOwner,
+        ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 3]) {
+            let first = Value::buffer(42, "buffer-alias-before");
+            let second = Value::buffer(42, "buffer-alias-after");
+            let word = heap.encode(&first).expect("first buffer reference");
+            assert_eq!(heap.encode(&second).expect("equivalent reference"), word);
+            (
+                crate::lisp::alloc::RootedVec::from_vec(vec![second]),
+                [word ^ HIDE, first.word() ^ HIDE, second.word() ^ HIDE],
+            )
+        }
+
+        #[inline(never)]
+        fn collect_and_check(
+            heap: &mut NativeHeapOwner,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_marker: *const NativeWord,
+            hidden: [usize; 3],
+        ) {
+            heap.collect(stack_marker, &[], interpreter, environment);
+            let retained = heap
+                .decode(hidden[0] ^ HIDE)
+                .expect("retained buffer bridge");
+            assert_eq!(retained.word(), hidden[1] ^ HIDE);
+            let address = retained.word() & !TAG_MASK;
+            assert!(matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Buffer
+            ));
+            let Kind::Buffer(buffer) = retained.kind() else {
+                panic!("the bridge must retain an allocated buffer reference")
+            };
+            assert_eq!(buffer.name.as_str(), "buffer-alias-before");
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (roots, hidden) = make_aliases(&mut heap);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            collect_and_check(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+                hidden,
+            );
+        }
+        drop(roots);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert!(heap.decode(hidden[0] ^ HIDE).is_err());
+        for hidden_value in &hidden[1..] {
+            let address = (hidden_value ^ HIDE) & !TAG_MASK;
+            assert!(!matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Buffer
+            ));
+        }
     }
 
     #[test]
