@@ -1939,12 +1939,9 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let prop = args[2].as_symbol()?.to_string();
-                let prop_value = match args[3].kind() {
-                    Kind::StringObject(state) if state.borrow().props.is_empty() => {
-                        Value::String(state.borrow().text.clone().into())
-                    }
-                    _ => args[3],
-                };
+                // textprop.c:Fput_text_property stores VALUE itself. Copying
+                // a property-free string here loses identity and later edits.
+                let prop_value = args[3];
                 if let Some(object) = args.get(4) {
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
@@ -1975,7 +1972,7 @@ define_dispatch!(
                         buffer.put_text_property(start, end, &prop, prop_value)
                     });
                 }
-                Ok(Value::T)
+                Ok(Value::Nil)
             }
             "add-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {

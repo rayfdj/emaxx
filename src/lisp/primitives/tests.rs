@@ -141,20 +141,41 @@ fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
 // Temporary diagnostic checkpoint: report each failing case and native predicate.
 // The unchanged GNU-comparison fixture below remains a separate requirement.
 #[test]
-fn diagnose_native_string_mutation_predicates() {
-    assert_oracle_contract_matches_interpreter(
-        include_str!("../../../tests/fixtures/shared-string-native-words-diagnostic.el"),
-        "(((t t t t 36) (t t t t 36)) nil)",
-        "diagnostic details for the string fixture mismatch; not final-source certification",
-    );
-}
-
-#[test]
 fn native_string_words_preserve_mutation_and_cycles_across_execution_modes() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/shared-string-native-words.el"),
         "((t t t t 36) (t t t t 36))",
         "native strings share mutation, properties and collection roots across execution modes",
+    );
+}
+
+#[test]
+fn put_text_property_preserves_string_identity_and_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let (results)
+             (dolist (property '(shared-property renamed-property))
+               (dolist (multibyte '(nil t))
+                 (with-temp-buffer
+                   (insert "abc")
+                   (dolist (target (list nil (current-buffer) (make-string 3 65)))
+                     (let* ((text (if multibyte
+                                      (make-string 3 955)
+                                    (string-make-unibyte (make-string 3 65))))
+                            (start (if (stringp target) 0 1))
+                            (character (if multibyte 128578 255))
+                            (reply (put-text-property start (1+ start) property text target)))
+                       (garbage-collect)
+                       (aset text 0 character)
+                       (let ((stored (get-text-property start property target)))
+                         (push (list (null reply) (eq stored text)
+                                     (= (aref stored 0) character)
+                                     (= (length stored) 3)
+                                     (eq (multibyte-string-p stored) multibyte))
+                               results)))))))
+             (nreverse results))"#,
+        "((t t t t t) (t t t t t) (t t t t t) (t t t t t) (t t t t t) (t t t t t) \
+         (t t t t t) (t t t t t) (t t t t t) (t t t t t) (t t t t t) (t t t t t))",
+        "text property values retain their identity, encoding and subsequent mutation",
     );
 }
 
