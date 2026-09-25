@@ -2342,90 +2342,91 @@ mod eval_value_buffer_tests {
 
     #[test]
     fn c_slot_and_incoming_main_objects_are_gc_roots() {
+        // GNU alloc.c:mark_c_stack includes live C locals. Finish setup's
+        // frame before asking whether a key has only the intended roots;
+        // keeping `keys` and the last `puthash` argument here made the
+        // supposedly unrooted control an actual conservative stack root.
+        #[inline(never)]
+        fn setup(interpreter: &mut Interpreter, env: &mut Env) -> u64 {
+            let table = primitives::call(
+                interpreter,
+                "make-hash-table",
+                &[
+                    Value::symbol(":test"),
+                    Value::symbol("eq"),
+                    Value::symbol(":weakness"),
+                    Value::symbol("key"),
+                ],
+                env,
+            )
+            .expect("weak-key table");
+            let Kind::Record(table_id) = table.kind() else {
+                panic!("hash table record")
+            };
+            interpreter.set_global_binding("weak-table-root", Value::Record(table_id));
+            let keys: Vec<Value> = (0..9)
+                .map(|n| Value::cons(Value::Integer(n), Value::Nil))
+                .collect();
+            for (index, key) in keys.iter().enumerate() {
+                primitives::call(
+                    interpreter,
+                    "puthash",
+                    &[*key, Value::Integer(index as i64), Value::Record(table_id)],
+                    env,
+                )
+                .expect("weak entry");
+            }
+            for (name, key) in [
+                "quit-flag",
+                "inhibit-quit",
+                "throw-on-input",
+                "overriding-plist-environment",
+            ]
+            .into_iter()
+            .zip(&keys)
+            {
+                interpreter.set_symbol_value_cell(name, *key);
+                primitives::call(interpreter, "makunbound", &[Value::symbol(name)], env)
+                    .expect("C slot remains independently rooted");
+            }
+            interpreter
+                .detached_forwarded_variables
+                .insert("text-quoting-style".into(), keys[4]);
+            interpreter.pending_thread_events.push(keys[5]);
+            interpreter.coding_systems[0].charset_list = keys[6];
+            interpreter.coding_systems[0].type_args = vec![keys[7]];
+            table_id.id
+        }
+
+        #[inline(never)]
+        fn check(interpreter: &Interpreter, env: &Env, table_id: u64, quit_live: bool) {
+            let marked = interpreter.weak_hash_reachability(env, &[]);
+            let (_, entries, keep) = marked
+                .tables
+                .iter()
+                .find(|(id, _, _)| *id == table_id)
+                .expect("marked weak table");
+            assert_eq!(entries.len(), 9);
+            for ((_, index), retained) in entries.iter().zip(keep) {
+                assert_eq!(
+                    *retained,
+                    index != &Value::Integer(8) && (quit_live || index != &Value::Integer(0)),
+                    "all live roots must survive and unrooted controls must be rejected"
+                );
+            }
+        }
+
         let mut interpreter = Interpreter::new();
         let mut env = Env::new();
-        let table = primitives::call(
-            &mut interpreter,
-            "make-hash-table",
-            &[
-                Value::symbol(":test"),
-                Value::symbol("eq"),
-                Value::symbol(":weakness"),
-                Value::symbol("key"),
-            ],
-            &mut env,
-        )
-        .expect("weak-key table");
-        let Kind::Record(table_id) = table.kind() else {
-            panic!("hash table record")
-        };
-        interpreter.set_global_binding("weak-table-root", Value::Record(table_id));
-        let keys: Vec<Value> = (0..9)
-            .map(|n| Value::cons(Value::Integer(n), Value::Nil))
-            .collect();
-        for (index, key) in keys.iter().enumerate() {
-            primitives::call(
-                &mut interpreter,
-                "puthash",
-                &[*key, Value::Integer(index as i64), Value::Record(table_id)],
-                &mut env,
-            )
-            .expect("weak entry");
-        }
-        for (name, key) in [
-            "quit-flag",
-            "inhibit-quit",
-            "throw-on-input",
-            "overriding-plist-environment",
-        ]
-        .into_iter()
-        .zip(&keys)
-        {
-            interpreter.set_symbol_value_cell(name, *key);
-            primitives::call(
-                &mut interpreter,
-                "makunbound",
-                &[Value::symbol(name)],
-                &mut env,
-            )
-            .expect("C slot remains independently rooted");
-        }
-        interpreter
-            .detached_forwarded_variables
-            .insert("text-quoting-style".into(), keys[4]);
-        interpreter.pending_thread_events.push(keys[5]);
-        interpreter.coding_systems[0].charset_list = keys[6];
-        interpreter.coding_systems[0].type_args = vec![keys[7]];
-        let marked = interpreter.weak_hash_reachability(&env, &[]);
-        let (_, entries, keep) = marked
-            .tables
-            .iter()
-            .find(|(id, _, _)| *id == table_id.id)
-            .expect("marked weak table");
-        assert_eq!(entries.len(), 9);
-        for ((_, index), retained) in entries.iter().zip(keep) {
-            assert_eq!(
-                *retained,
-                index != &Value::Integer(8),
-                "unrooted negative control must be rejected"
-            );
-        }
+        let table_id = setup(&mut interpreter, &mut env);
+        crate::lisp::alloc::clobber_stack();
+        check(&interpreter, &env, table_id, true);
 
         // Once C clears the quit slot, no detachment snapshot may keep its
         // former object alive. The other seven independently rooted keys stay.
         interpreter.quit_flag = Value::Nil;
-        let marked = interpreter.weak_hash_reachability(&env, &[]);
-        let (_, entries, keep) = marked
-            .tables
-            .iter()
-            .find(|(id, _, _)| *id == table_id.id)
-            .expect("marked weak table");
-        for ((_, index), retained) in entries.iter().zip(keep) {
-            assert_eq!(
-                *retained,
-                index != &Value::Integer(0) && index != &Value::Integer(8)
-            );
-        }
+        crate::lisp::alloc::clobber_stack();
+        check(&interpreter, &env, table_id, false);
     }
 
     #[test]

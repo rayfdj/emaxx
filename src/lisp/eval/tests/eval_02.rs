@@ -8155,6 +8155,16 @@ fn cl_type_of_honors_redefinition_and_aliases_without_changing_saved_subrs() {
 }
 
 #[test]
+fn weak_hash_controls_release_setup_roots_before_collection() {
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/weak-hash-setup-roots.el"
+        )),
+        Value::list([Value::Integer(9), Value::Integer(8), Value::Integer(7)]),
+    );
+}
+
+#[test]
 fn killed_buffer_keeps_file_slot_and_detaches_markers() {
     assert_eq!(
         eval_str(include_str!(
