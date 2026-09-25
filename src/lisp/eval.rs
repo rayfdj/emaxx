@@ -4224,6 +4224,29 @@ impl Interpreter {
         }
     }
 
+    #[cfg(test)]
+    fn unmarked_weak_keys_for_diagnosis(&self, marked: &LispReachability) -> Vec<Value> {
+        if crate::lisp::alloc::stack_top() == 0 || std::env::var_os("EMAXX_GC_VERIFY").is_none() {
+            return Vec::new();
+        }
+        self.records
+            .iter()
+            .flatten()
+            .filter(|record| {
+                record.kind == RecordKind::HashTable
+                    && record
+                        .slots
+                        .get(5)
+                        .is_some_and(|weakness| !weakness.is_nil())
+            })
+            .filter_map(|record| {
+                crate::lisp::json::hash_table_entries(self, &Value::Record(*record))
+            })
+            .flat_map(|(_, entries)| entries.into_iter().map(|(key, _)| key))
+            .filter(|key| !marked.contains(key))
+            .collect()
+    }
+
     pub(crate) fn weak_hash_reachability_with_native(
         &self,
         env: &Env,
@@ -4245,6 +4268,8 @@ impl Interpreter {
         self.stack_roots.mark(self, &mut marked);
         #[cfg(test)]
         self.trace_weak_root_stage("registered-execution", &marked);
+        #[cfg(test)]
+        let mut diagnostic_keys = self.unmarked_weak_keys_for_diagnosis(&marked);
         // alloc.c:mark_stack: every word of the running stack (and the
         // registers) that names a cons cell marks it; the parked threads'
         // stacks with it.
@@ -4252,6 +4277,20 @@ impl Interpreter {
             continuations::current_stack_base().map(|base| base as usize),
             |value| {
                 marked.mark(self, &value);
+                #[cfg(test)]
+                diagnostic_keys.retain(|key| {
+                    if !marked.contains(key) {
+                        return true;
+                    }
+                    let (region, address) = crate::lisp::alloc::diagnostic_root_origin();
+                    eprintln!(
+                        "GC conservative reach region={region} address={address:x} root={:x} kind={:?} key={:x} value={key}",
+                        value.word(),
+                        std::mem::discriminant(&value.kind()),
+                        key.word()
+                    );
+                    false
+                });
             },
         );
         #[cfg(test)]

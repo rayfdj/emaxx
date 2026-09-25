@@ -710,6 +710,8 @@ pub(crate) fn live_string_bytes() -> usize {
 }
 
 thread_local! {
+    #[cfg(test)]
+    static ROOT_SCAN_ORIGIN: Cell<(&'static str, usize)> = const { Cell::new(("unclassified", 0)) };
     /// The stacks of parked Lisp threads (coroutines suspended on this OS
     /// thread): base to saved stack pointer.
     static PARKED_STACKS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -1252,7 +1254,11 @@ pub(crate) fn os_stack_base() -> Option<usize> {
 #[inline(never)]
 pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(Value)) {
     let base = current_base.or_else(os_stack_base);
+    #[cfg(test)]
+    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("current-stack", 0)));
     mark_stack(base, &mut mark);
+    #[cfg(test)]
+    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("parked-stack", 0)));
     let parked = PARKED_STACKS.with_borrow(Clone::clone);
     for (base, sp) in parked {
         if base > sp {
@@ -1262,6 +1268,8 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
         }
     }
     let drivers = DRIVER_REGIONS.with_borrow(Clone::clone);
+    #[cfg(test)]
+    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("driving-stack", 0)));
     for (sp, base) in drivers {
         if base > sp {
             // SAFETY: the driving stack's frames wait below the resume
@@ -1276,6 +1284,8 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
         .flatten()
         .copied()
         .collect::<Vec<_>>();
+    #[cfg(test)]
+    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("registered-heap-buffer", 0)));
     for (address, bytes) in heap {
         if bytes != 0 {
             // SAFETY: a registered buffer is a live allocation of that size
@@ -1283,6 +1293,11 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
             unsafe { scan_words(address, address + bytes, &mut mark) };
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_root_origin() -> (&'static str, usize) {
+    ROOT_SCAN_ORIGIN.with(Cell::get)
 }
 
 /// `Lisp_Object' for a cons: the cell's address, copied freely, valid
@@ -2000,6 +2015,10 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
     while address + std::mem::size_of::<usize>() <= high {
         // SAFETY: the caller's contract.
         let word = unsafe { std::ptr::read_volatile(address as *const usize) };
+        #[cfg(test)]
+        if verify_heap_enabled() {
+            ROOT_SCAN_ORIGIN.with(|origin| origin.set((origin.get().0, address)));
+        }
         address += std::mem::size_of::<usize>();
         // alloc.c:mark_maybe_pointer under USE_LSB_TAG: a `Lisp_Object'
         // word carries its type in the low three bits, so the tag is
