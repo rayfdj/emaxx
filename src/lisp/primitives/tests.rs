@@ -2958,9 +2958,11 @@ fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
     // load-with-code-conversion and `eval-buffer', whose reader had not
     // recorded the literals (lread-tests--unescaped-char-literals).  (The
     // message's quotes and backslashes are substituted so the expected
-    // text needs no escaping.)
+    // text needs no escaping.)  Exercise each explicit quoting style: the
+    // nil default is locale-dependent (curve on the Linux UTF-8 oracle).
     let program = r#"
-        (let* ((f (make-temp-file "emaxx-lit" nil ".el" "?) ?( ?; ?\" ?[ ?]"))
+        (let* ((text-quoting-style 'QUOTE_STYLE)
+               (f (make-temp-file "emaxx-lit" nil ".el" "?) ?( ?; ?\" ?[ ?]"))
                (r (load f nil :nomessage :nosuffix))
                (m (with-current-buffer "*Messages*"
                     (save-excursion
@@ -2969,11 +2971,19 @@ fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
                       (buffer-substring (point) (line-end-position))))))
           (delete-file f)
           (list r (string-replace "\\" "B" (string-replace "\"" "Q" (string-replace f "FILE" m)))))"#;
-    assert_oracle_contract_matches_interpreter(
-        program,
-        "(t \"Loading `FILE': unescaped character literals `?Q', `?(', `?)', `?;', `?[', `?]' detected, `?BQ', `?B(', `?B)', `?B;', `?B[', `?B]' expected!\")",
-        "unescaped character literal warning",
-    );
+    let grave = "(t \"Loading `FILE': unescaped character literals `?Q', `?(', `?)', `?;', `?[', `?]' detected, `?BQ', `?B(', `?B)', `?B;', `?B[', `?B]' expected!\")";
+    for (style, open, close) in [
+        ("grave", "`", "'"),
+        ("curve", "‘", "’"),
+        ("straight", "'", "'"),
+    ] {
+        let expected = grave.replace('`', open).replace('\'', close);
+        assert_oracle_contract_matches_interpreter(
+            &program.replace("QUOTE_STYLE", style),
+            &expected,
+            &format!("unescaped character literal warning with {style} quotes"),
+        );
+    }
 }
 
 #[test]
@@ -10477,38 +10487,48 @@ fn find_composition_reports_the_automatic_composition_for_a_displayed_buffer() {
     // and `compose-gstring-for-terminal' -- but ONLY while a window shows
     // the buffer, because the C returns 0 when Fget_buffer_window does.
     // Both halves are asserted, and the expectation is the oracle's own
-    // live answer rather than a transcribed literal.
+    // live answer rather than a transcribed literal.  Set the terminal's
+    // coding system explicitly in both editors; startup derives it from
+    // the locale, and the Linux oracle starts with utf-8-unix.
     let program = r#"
         (let ((old (window-buffer (selected-window)))
+              (old-coding (terminal-coding-system))
               (line (concat "__A" (string #x30A) "stro" (string #x308) "m")))
           (unwind-protect
-              (list
-               (with-temp-buffer
-                 (set-window-buffer (selected-window) (current-buffer))
-                 (insert line)
-                 (find-composition 9 10))
-               (with-temp-buffer
-                 (insert line)
-                 (find-composition 9 10)))
-            (set-window-buffer (selected-window) old)))"#;
-    let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
-    assert!(
-        expected.starts_with("((8 10 [[us-ascii 111 776]") && expected.ends_with(") nil)"),
-        "oracle reported an unexpected composition shape: {expected}"
-    );
+              (progn
+                (set-terminal-coding-system 'CODING_SYSTEM)
+                (list
+                 (with-temp-buffer
+                   (set-window-buffer (selected-window) (current-buffer))
+                   (insert line)
+                   (find-composition 9 10))
+                 (with-temp-buffer
+                   (insert line)
+                   (find-composition 9 10))))
+            (set-window-buffer (selected-window) old)
+            (set-terminal-coding-system old-coding)))"#;
+    for coding in ["us-ascii", "utf-8-unix"] {
+        let program = program.replace("CODING_SYSTEM", coding);
+        let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
+        assert!(
+            expected.starts_with(&format!("((8 10 [[{coding} 111 776]"))
+                && expected.ends_with(") nil)"),
+            "oracle reported an unexpected composition shape: {expected}"
+        );
 
-    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let form = Reader::new(program)
-        .read()
-        .expect("automatic composition contract should parse")
-        .expect("automatic composition contract should contain a form");
-    assert_eq!(
-        interp
-            .eval(&form, &mut crate::lisp::types::Env::new())
-            .expect("automatic composition contract should evaluate")
-            .to_string(),
-        expected
-    );
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let form = Reader::new(&program)
+            .read()
+            .expect("automatic composition contract should parse")
+            .expect("automatic composition contract should contain a form");
+        assert_eq!(
+            interp
+                .eval(&form, &mut crate::lisp::types::Env::new())
+                .expect("automatic composition contract should evaluate")
+                .to_string(),
+            expected
+        );
+    }
 }
 
 #[test]

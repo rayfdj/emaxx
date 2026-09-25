@@ -81,3 +81,37 @@ follow-up uses the existing workflow with rust_filter=roots (19
 Rust controls, including both changed/new tests) and the unchanged GNU
 buffer test file. The earlier source48 Linux buffer run remains separate
 evidence; neither run substitutes for the required full gates.
+
+## Linux follow-up — source51 diagnostic checkpoint
+
+The completed source48 Linux run
+https://github.com/rayfdj/emaxx/actions/runs/36119568345
+passed 301/304 Rust buffer controls. The three failures are the missing Linux
+set-text-conversion-style primitive, an ASCII-only terminal-coding assumption,
+and a grave-quote assumption under the UTF-8 locale. The source49 run
+https://github.com/rayfdj/emaxx/actions/runs/36122311700
+passed 17/19 root controls: the mandatory suspended caller and bytecode tests
+retain keys after their workers exit. GNU passes their unchanged expectations.
+Both runs passed Rust build/format/Clippy and failed before executing the
+unchanged GNU buffer file. Neither run certifies Linux compatibility. Raw
+artifacts and complete logs are retained under target/runtime-goal, with hashes
+in buffer-ci-completed-48.json and buffer-ci-completed-49.json.
+
+The two platform-sensitive contracts now specify the same conditions in both
+editors. The warning test covers all three quote styles; composition covers
+both us-ascii and utf-8-unix, including the displayed and undisplayed cases.
+Every full output comparison remains. All ten local GNU controls (five inputs
+in C and UTF-8 locales) pass; this local GNU is a behavioral diagnostic, not
+the pinned Darwin oracle. Its commands, input hashes and complete outputs are
+retained in platform-buffer-gnu-51.json. Runtime validation remains pending.
+
+Temporary test-build tracing under EMAXX_GC_VERIFY records the marking stage
+that reaches each weak key. It runs below the collector's recorded stack top
+and is absent from production builds. The purpose is to identify the Linux
+retention cause before changing rooting; remove this temporary diagnostic once
+that cause is resolved. No GC assertion, inventory, ignore, timeout, upstream
+test, workload, or performance tolerance is changed.
+
+This is a CI diagnostic checkpoint, not a validated implementation milestone.
+The terminal object draft is kept separately and is not part of this commit.
+The full architecture, zero-warning validation and performance goal stay open.
