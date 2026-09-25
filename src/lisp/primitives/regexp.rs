@@ -181,7 +181,7 @@ fn syntax_property_authorities(
     start: usize,
     end: usize,
 ) -> SyntaxPropertyAuthorities {
-    let buffer = &interp.buffer;
+    let buffer = interp.buffer.borrow();
     let mut authorities = SyntaxPropertyAuthorities {
         present: false,
         descriptors: Vec::new(),
@@ -3010,12 +3010,12 @@ pub(super) fn regexp_syntax_class_render_count() -> usize {
 /// property, directly or through its `category' (syntax.c:374's textget),
 /// judged per text-property interval.
 fn haystack_has_syntax_property(interp: &Interpreter, start: usize, end: usize) -> bool {
-    let buffer = &interp.buffer;
+    let buffer = interp.buffer.borrow();
     let mut pos = start.max(buffer.point_min());
     let end = end.min(buffer.point_max());
     while pos < end {
         let (_, interval_end) = buffer.text_property_interval_around(pos);
-        if super::strings::buffer_property_at_with_category(interp, buffer, pos, "syntax-table")
+        if super::strings::buffer_property_at_with_category(interp, &buffer, pos, "syntax-table")
             .is_some_and(|value| !value.is_nil())
         {
             return true;
@@ -3055,8 +3055,8 @@ fn encode_syntax_property_haystack(
         buffer_id: interp.current_buffer_id(),
         start,
         end,
-        edit_serial: interp.buffer.edit_serial(),
-        multibyte: interp.buffer.is_multibyte(),
+        edit_serial: interp.buffer.borrow().edit_serial(),
+        multibyte: interp.buffer.borrow().is_multibyte(),
         syntax_chain: interp.char_table_chain_signature(interp.current_syntax_table_id()),
     };
     if interp
@@ -3113,7 +3113,10 @@ fn encode_syntax_property_haystack(
                 && entry.key.edit_serial < key.edit_serial
                 && entry_authorities_current(interp, entry)
         })?;
-        let records = interp.buffer.edits_since(cache[index].key.edit_serial)?;
+        let records = interp
+            .buffer
+            .borrow()
+            .edits_since(cache[index].key.edit_serial)?;
         let mut entry = cache.remove(index);
         let replayed =
             replay_syntax_encoding(interp, &mut entry, &records, &key, haystack, pattern);
@@ -3540,8 +3543,8 @@ fn buffer_regexp_haystack(
         buffer_id: interp.current_buffer_id(),
         start,
         end,
-        text_edit_serial: interp.buffer.text_edit_serial(),
-        multibyte: interp.buffer.is_multibyte(),
+        text_edit_serial: interp.buffer.borrow().text_edit_serial(),
+        multibyte: interp.buffer.borrow().is_multibyte(),
     };
     let cached = REGEXP_HAYSTACK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -3712,12 +3715,12 @@ impl PlainBufferSpan {
     /// buffer, when its haystack is the buffer's own text.
     fn new(interp: &Interpreter, start: usize, end: usize, encoded: bool) -> Option<Self> {
         if encoded
-            || !interp.buffer.is_multibyte()
-            || interp.buffer.has_extended_chars_in(start, end)
+            || !interp.buffer.borrow().is_multibyte()
+            || interp.buffer.borrow().has_extended_chars_in(start, end)
         {
             return None;
         }
-        let rope = interp.buffer.text_rope();
+        let rope = interp.buffer.borrow().text_rope();
         let ascii = rope.len_bytes() == rope.len_chars();
         let start_char = start.saturating_sub(1).min(rope.len_chars());
         let start_byte = if ascii {
@@ -3802,10 +3805,11 @@ fn build_buffer_regexp_haystack(
 ) -> Result<String, LispError> {
     let text = interp
         .buffer
+        .borrow()
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let extended_chars = interp.buffer.substring_extended_chars(start, end);
-    if interp.buffer.is_multibyte() && extended_chars.is_empty() {
+    let extended_chars = interp.buffer.borrow().substring_extended_chars(start, end);
+    if interp.buffer.borrow().is_multibyte() && extended_chars.is_empty() {
         return Ok(text);
     }
 
@@ -3821,7 +3825,7 @@ fn build_buffer_regexp_haystack(
             let public = raw_codes[offset].unwrap_or(original as i64);
             if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&public) {
                 raw_byte_regex_char((public - RAW_BYTE8_BASE as i64) as u8)
-            } else if !interp.buffer.is_multibyte()
+            } else if !interp.buffer.borrow().is_multibyte()
                 && raw_byte_from_regex_char(original).is_none()
                 && (0x80..=0xFF).contains(&public)
             {
@@ -5018,18 +5022,18 @@ pub(super) fn skip_chars_forward_impl(
     let spec = parse_skip_chars_spec(&string_text(spec_value)?);
     let limit = if let Some(limit_value) = limit_value {
         if limit_value.is_nil() {
-            interp.buffer.point_max()
+            interp.buffer.borrow().point_max()
         } else {
             position_from_value(interp, limit_value)?
         }
     } else {
-        interp.buffer.point_max()
+        interp.buffer.borrow().point_max()
     };
     // Resolve the syntax table into range segments before the scan: the
     // closure below holds a mutable borrow of the buffer, so it cannot reach
     // back into the interpreter.
     let snapshot = SkipSyntaxSnapshot::capture(interp, &spec);
-    let skipped = interp.buffer.skip_forward_while(limit, |ch| {
+    let skipped = interp.buffer.borrow_mut().skip_forward_while(limit, |ch| {
         skip_char_matches_spec_with_syntax(
             ch,
             &spec,
@@ -5047,18 +5051,18 @@ pub(super) fn skip_chars_backward_impl(
     let spec = parse_skip_chars_spec(&string_text(spec_value)?);
     let limit = if let Some(limit_value) = limit_value {
         if limit_value.is_nil() {
-            interp.buffer.point_min()
+            interp.buffer.borrow().point_min()
         } else {
             position_from_value(interp, limit_value)?
         }
     } else {
-        interp.buffer.point_min()
+        interp.buffer.borrow().point_min()
     };
     // Resolve the syntax table into range segments before the scan: the
     // closure below holds a mutable borrow of the buffer, so it cannot reach
     // back into the interpreter.
     let snapshot = SkipSyntaxSnapshot::capture(interp, &spec);
-    let skipped = interp.buffer.skip_backward_while(limit, |ch| {
+    let skipped = interp.buffer.borrow_mut().skip_backward_while(limit, |ch| {
         skip_char_matches_spec_with_syntax(
             ch,
             &spec,
@@ -5078,12 +5082,12 @@ pub(super) fn looking_at_impl(
     let pattern_text = borrowed_text(pattern_value)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *pattern_value))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern_text, env);
-    let pos = interp.buffer.point();
+    let pos = interp.buffer.borrow().point();
     if posix {
         // The POSIX matcher takes the text from point; built for every
         // `looking-at' before, POSIX or not, it copied the rest of the
         // buffer on each call.
-        let tail = buffer_regexp_haystack(interp, pos, interp.buffer.point_max())?;
+        let tail = buffer_regexp_haystack(interp, pos, interp.buffer.borrow().point_max())?;
         let Some(selected) = posix_longest_match(
             interp,
             &pattern,
@@ -5092,7 +5096,7 @@ pub(super) fn looking_at_impl(
             PosixMatchContext {
                 position_base: pos,
                 point_boundary: SearchPointBoundary::Start,
-                haystack_at_absolute_start: pos == interp.buffer.point_min(),
+                haystack_at_absolute_start: pos == interp.buffer.borrow().point_min(),
                 category_scope: RegexpCategoryScope::CurrentBuffer,
                 env,
             },
@@ -5126,11 +5130,13 @@ pub(super) fn looking_at_impl(
     let facts = pattern_facts(&pattern);
     let point_asserted = facts.point_assertion;
     let haystack_start = if point_asserted {
-        pos.saturating_sub(1).max(interp.buffer.point_min())
+        pos.saturating_sub(1)
+            .max(interp.buffer.borrow().point_min())
     } else {
-        interp.buffer.point_min()
+        interp.buffer.borrow().point_min()
     };
-    let haystack = buffer_regexp_haystack(interp, haystack_start, interp.buffer.point_max())?;
+    let haystack =
+        buffer_regexp_haystack(interp, haystack_start, interp.buffer.borrow().point_max())?;
     let has_left_context = point_asserted && haystack_start < pos;
     let point_assertion = if has_left_context {
         r"(?<=\A[\s\S])"
@@ -5148,7 +5154,7 @@ pub(super) fn looking_at_impl(
         &pattern,
         env,
         point_assertion,
-        haystack_start == interp.buffer.point_min(),
+        haystack_start == interp.buffer.borrow().point_min(),
         syntax_encoding.as_deref(),
         RegexpCategoryScope::CurrentBuffer,
     )?;
@@ -5166,7 +5172,7 @@ pub(super) fn looking_at_impl(
     let span = PlainBufferSpan::new(
         interp,
         haystack_start,
-        interp.buffer.point_max(),
+        interp.buffer.borrow().point_max(),
         substituted,
     );
     let search_offset = if has_left_context {
@@ -5229,18 +5235,18 @@ pub(super) fn buffer_regex_search(
     let pattern = regex_pattern_with_search_spaces(interp, &pattern_text, env);
     let noerror = args.get(2).is_some_and(Value::is_truthy);
     let move_on_failure = search_noerror_moves(args.get(2));
-    let original_point = interp.buffer.point();
+    let original_point = interp.buffer.borrow().point();
     if forward {
-        let start = interp.buffer.point();
+        let start = interp.buffer.borrow().point();
         let limit = match args.get(1).map(|v| v.kind()) {
             // GNU clamps a BOUND outside the accessible region.
-            Some(Kind::Integer(pos)) if pos < interp.buffer.point_min() as i64 => {
-                interp.buffer.point_min()
+            Some(Kind::Integer(pos)) if pos < interp.buffer.borrow().point_min() as i64 => {
+                interp.buffer.borrow().point_min()
             }
             Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
-            _ => interp.buffer.point_max(),
+            _ => interp.buffer.borrow().point_max(),
         };
-        let limit = limit.min(interp.buffer.point_max());
+        let limit = limit.min(interp.buffer.borrow().point_max());
         let count = args
             .get(3)
             .filter(|value| !value.is_nil())
@@ -5248,7 +5254,7 @@ pub(super) fn buffer_regex_search(
             .transpose()?
             .unwrap_or(1);
         if count == 0 {
-            let point = interp.buffer.point();
+            let point = interp.buffer.borrow().point();
             interp.last_match_data = Some(vec![Some((point, point))]);
             interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
             return Ok(Value::Integer(point as i64));
@@ -5267,7 +5273,7 @@ pub(super) fn buffer_regex_search(
                 let Some(match_start) = next_single_syntax_class_match(
                     interp,
                     env,
-                    interp.buffer.point(),
+                    interp.buffer.borrow().point(),
                     limit,
                     line_anchored,
                     negated,
@@ -5285,9 +5291,9 @@ pub(super) fn buffer_regex_search(
                 let match_end = match_start + 1;
                 interp.last_match_data = Some(vec![Some((match_start, match_end))]);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                interp.buffer.goto_char(match_end);
+                interp.buffer.borrow_mut().goto_char(match_end);
             }
-            return Ok(Value::Integer(interp.buffer.point() as i64));
+            return Ok(Value::Integer(interp.buffer.borrow().point() as i64));
         }
         if limit < start {
             return buffer_regex_search_failure(
@@ -5310,7 +5316,7 @@ pub(super) fn buffer_regex_search(
         let haystack_start = if point_asserted {
             start
         } else {
-            interp.buffer.point_min()
+            interp.buffer.borrow().point_min()
         };
         let haystack = buffer_regexp_haystack(interp, haystack_start, limit)?;
         let syntax_encoding = (!posix)
@@ -5330,7 +5336,7 @@ pub(super) fn buffer_regex_search(
             &pattern,
             env,
             r"\A",
-            haystack_start == interp.buffer.point_min(),
+            haystack_start == interp.buffer.borrow().point_min(),
             syntax_encoding.as_deref(),
             RegexpCategoryScope::CurrentBuffer,
         )?;
@@ -5355,7 +5361,8 @@ pub(super) fn buffer_regex_search(
                     PosixMatchContext {
                         position_base: haystack_start,
                         point_boundary: SearchPointBoundary::Start,
-                        haystack_at_absolute_start: haystack_start == interp.buffer.point_min(),
+                        haystack_at_absolute_start: haystack_start
+                            == interp.buffer.borrow().point_min(),
                         category_scope: RegexpCategoryScope::CurrentBuffer,
                         env,
                     },
@@ -5372,7 +5379,7 @@ pub(super) fn buffer_regex_search(
                 };
                 interp.last_match_data = Some(selected.match_data);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                interp.buffer.goto_char(selected.end_position);
+                interp.buffer.borrow_mut().goto_char(selected.end_position);
                 search_offset = if selected.end_byte > search_offset {
                     selected.end_byte
                 } else {
@@ -5411,7 +5418,7 @@ pub(super) fn buffer_regex_search(
                 regex.capture_mapping(),
                 Some(interp.current_buffer_id()),
             );
-            interp.buffer.goto_char(pos);
+            interp.buffer.borrow_mut().goto_char(pos);
             search_offset = if matched.end() > search_offset {
                 matched.end()
             } else {
@@ -5422,7 +5429,7 @@ pub(super) fn buffer_regex_search(
                     .unwrap_or(haystack.len())
             };
         }
-        Ok(Value::Integer(interp.buffer.point() as i64))
+        Ok(Value::Integer(interp.buffer.borrow().point() as i64))
     } else {
         let count = args
             .get(3)
@@ -5431,7 +5438,7 @@ pub(super) fn buffer_regex_search(
             .transpose()?
             .unwrap_or(1);
         if count == 0 {
-            let point = interp.buffer.point();
+            let point = interp.buffer.borrow().point();
             interp.last_match_data = Some(vec![Some((point, point))]);
             interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
             return Ok(Value::Integer(point as i64));
@@ -5445,14 +5452,14 @@ pub(super) fn buffer_regex_search(
             return buffer_regex_search(interp, &forward_args, env, true, posix);
         }
         let limit = match args.get(1).map(|v| v.kind()) {
-            Some(Kind::Integer(pos)) if pos < interp.buffer.point_min() as i64 => {
-                interp.buffer.point_min()
+            Some(Kind::Integer(pos)) if pos < interp.buffer.borrow().point_min() as i64 => {
+                interp.buffer.borrow().point_min()
             }
             Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
-            _ => interp.buffer.point_min(),
+            _ => interp.buffer.borrow().point_min(),
         };
-        let limit = limit.max(interp.buffer.point_min());
-        if limit > interp.buffer.point() {
+        let limit = limit.max(interp.buffer.borrow().point_min());
+        if limit > interp.buffer.borrow().point() {
             return buffer_regex_search_failure(
                 interp,
                 &pattern,
@@ -5468,7 +5475,7 @@ pub(super) fn buffer_regex_search(
                 let Some(match_start) = previous_single_syntax_class_match(
                     interp,
                     env,
-                    interp.buffer.point(),
+                    interp.buffer.borrow().point(),
                     limit,
                     line_anchored,
                     negated,
@@ -5485,20 +5492,20 @@ pub(super) fn buffer_regex_search(
                 };
                 interp.last_match_data = Some(vec![Some((match_start, match_start + 1))]);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                interp.buffer.goto_char(match_start);
+                interp.buffer.borrow_mut().goto_char(match_start);
             }
-            return Ok(Value::Integer(interp.buffer.point() as i64));
+            return Ok(Value::Integer(interp.buffer.borrow().point() as i64));
         }
         for _ in 0..count {
-            let search_point = interp.buffer.point();
-            let absolute_start = interp.buffer.point_min();
+            let search_point = interp.buffer.borrow().point();
+            let absolute_start = interp.buffer.borrow().point_min();
             // A backward match must end at or before SEARCH_POINT, but the
             // regexp engine still needs the following character to decide
             // line-end, word/symbol-boundary, and absolute-end assertions.
             // Truncating the delegate haystack at point made its artificial
             // end look like a real `$' (for example, a nonblank line looked
             // blank when point was at its beginning).
-            let context_end = if search_point < interp.buffer.point_max() {
+            let context_end = if search_point < interp.buffer.borrow().point_max() {
                 search_point + 1
             } else {
                 search_point
@@ -5559,7 +5566,7 @@ pub(super) fn buffer_regex_search(
             {
                 interp.last_match_data = Some(vec![Some((pos, pos))]);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                interp.buffer.goto_char(pos);
+                interp.buffer.borrow_mut().goto_char(pos);
                 continue;
             }
             if posix {
@@ -5601,7 +5608,10 @@ pub(super) fn buffer_regex_search(
                 if let Some(selected) = best_match {
                     interp.last_match_data = Some(selected.match_data);
                     interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                    interp.buffer.goto_char(selected.start_position);
+                    interp
+                        .buffer
+                        .borrow_mut()
+                        .goto_char(selected.start_position);
                     continue;
                 }
                 return buffer_regex_search_failure(
@@ -5737,7 +5747,7 @@ pub(super) fn buffer_regex_search(
                     Some(interp.current_buffer_id()),
                     empty_line_pattern,
                 );
-                interp.buffer.goto_char(match_start);
+                interp.buffer.borrow_mut().goto_char(match_start);
                 continue;
             }
             return buffer_regex_search_failure(
@@ -5749,7 +5759,7 @@ pub(super) fn buffer_regex_search(
                 move_on_failure,
             );
         }
-        Ok(Value::Integer(interp.buffer.point() as i64))
+        Ok(Value::Integer(interp.buffer.borrow().point() as i64))
     }
 }
 
@@ -5782,7 +5792,7 @@ fn buffer_regex_search_failure(
     // GNU's search_buffer is transactional across COUNT repetitions: a later
     // miss does not leave point at an earlier partial match.  Only a non-t,
     // non-nil NOERROR asks search_command to move point to the bound.
-    interp.buffer.goto_char(if move_on_failure {
+    interp.buffer.borrow_mut().goto_char(if move_on_failure {
         limit
     } else {
         original_point
@@ -5827,11 +5837,13 @@ fn next_single_syntax_class_match(
     negated: bool,
     syntax_class: char,
 ) -> Option<usize> {
-    let point_min = interp.buffer.point_min();
+    let point_min = interp.buffer.borrow().point_min();
     let mut candidate = start;
-    if line_anchored && candidate > point_min && interp.buffer.char_at(candidate - 1) != Some('\n')
+    if line_anchored
+        && candidate > point_min
+        && interp.buffer.borrow().char_at(candidate - 1) != Some('\n')
     {
-        while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
+        while candidate < limit && interp.buffer.borrow().char_at(candidate) != Some('\n') {
             candidate += 1;
         }
         candidate += usize::from(candidate < limit);
@@ -5850,7 +5862,7 @@ fn next_single_syntax_class_match(
             candidate += 1;
             continue;
         }
-        while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
+        while candidate < limit && interp.buffer.borrow().char_at(candidate) != Some('\n') {
             candidate += 1;
         }
         candidate += usize::from(candidate < limit);
@@ -5867,13 +5879,13 @@ fn previous_single_syntax_class_match(
     negated: bool,
     syntax_class: char,
 ) -> Option<usize> {
-    let point_min = interp.buffer.point_min();
+    let point_min = interp.buffer.borrow().point_min();
     let mut candidate = start;
     while candidate > limit {
         candidate -= 1;
         if line_anchored
             && candidate > point_min
-            && interp.buffer.char_at(candidate - 1) != Some('\n')
+            && interp.buffer.borrow().char_at(candidate - 1) != Some('\n')
         {
             continue;
         }
@@ -6065,6 +6077,7 @@ fn match_text_from_buffer(
     };
     interp
         .buffer
+        .borrow()
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))
 }

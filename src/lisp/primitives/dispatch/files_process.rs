@@ -551,16 +551,17 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let id = interp.resolve_buffer_id(&args[0])?;
                 interp.set_current_buffer_id(id)?;
-                Ok(Value::buffer(id, interp.buffer.name.clone()))
+                Ok(interp.buffer_value(id).expect("live buffer object"))
             }
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
                 let requested = args.first().filter(|value| !value.is_nil());
                 if let Some(Kind::Buffer(buffer)) = requested.map(|v| v.kind())
-                    && !interp.has_buffer_id(buffer.id)
-                    && let Some(file) = interp.killed_buffer_file_name(buffer.id)
+                    && !buffer.ptr_eq(&interp.buffer)
                 {
-                    return Ok(file
+                    return Ok(buffer
+                        .borrow()
+                        .file
                         .clone()
                         .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil));
@@ -588,6 +589,7 @@ define_dispatch!(
             }
             "visited-file-modtime" => Ok(interp
                 .buffer
+                .borrow()
                 .visited_file_modtime()
                 .and_then(|modtime| system_time_list_value(modtime.modified).ok())
                 .unwrap_or(Value::Integer(0))),
@@ -626,7 +628,7 @@ define_dispatch!(
                 }
                 let modtime = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => {
-                        if let Some(path) = interp.buffer.file.clone() {
+                        if let Some(path) = interp.buffer.borrow().file.clone() {
                             file_modtime(&path)?
                         } else {
                             None
@@ -635,7 +637,7 @@ define_dispatch!(
                     Some(Kind::Integer(0)) => None,
                     Some(value) => Some(file_modtime_from_value(interp, &value.value())?),
                 };
-                interp.buffer.set_visited_file_modtime(modtime);
+                interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
                 Ok(Value::Nil)
             }
             "set-buffer-major-mode" => {
@@ -676,7 +678,7 @@ define_dispatch!(
                 let expanded =
                     string_text(&super::call(interp, "expand-file-name", &[args[0]], env)?)?;
                 Ok(buffer_visiting_exact_file_name(interp, &expanded)
-                    .map(|(id, name)| Value::buffer(id, name))
+                    .map(|(id, name)| interp.buffer_value(id).expect("live buffer object"))
                     .unwrap_or(Value::Nil))
             }
             "get-truename-buffer" => {
@@ -688,9 +690,8 @@ define_dispatch!(
                     .find_map(|(id, name)| {
                         interp
                             .get_buffer_by_id(*id)
-                            .and_then(|buffer| buffer.file_truename.as_deref())
-                            .filter(|truename| *truename == file)
-                            .map(|_| Value::buffer(*id, name.clone()))
+                            .filter(|buffer| buffer.file_truename.as_deref() == Some(file.as_str()))
+                            .map(|_| interp.buffer_value(*id).expect("live buffer object"))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -717,7 +718,7 @@ define_dispatch!(
                         };
                         value
                             .filter(|value| values_equal(interp, value, &args[1]))
-                            .map(|_| Value::buffer(*id, name.clone()))
+                            .map(|_| interp.buffer_value(*id).expect("live buffer object"))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -2503,6 +2504,7 @@ define_dispatch!(
                 let end = position_from_value(interp, &args[2])?;
                 let input = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
@@ -2514,19 +2516,21 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
-                if interp.buffer.is_multibyte() {
+                if interp.buffer.borrow().is_multibyte() {
                     return Err(LispError::Signal(
                         "This function can be called only in unibyte buffers".into(),
                     ));
                 }
                 let compressed = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let input = encode_raw_text_bytes(&compressed)?;
                 ensure_region_modifiable(interp, start, end, env)?;
                 ensure_no_supersession_threat(interp, env)?;
-                let overlay_calls = overlay_change_hook_calls(&interp.buffer, start, end, start);
+                let overlay_calls =
+                    overlay_change_hook_calls(&interp.buffer.borrow(), start, end, start);
                 run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
                 run_change_hooks(
                     interp,
@@ -2561,16 +2565,16 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
 
-                let saved_point = interp.buffer.point();
+                let saved_point = interp.buffer.borrow().point();
                 interp
                     .delete_region_current_buffer(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
-                interp.buffer.goto_char(start);
+                interp.buffer.borrow_mut().goto_char(start);
                 let text = decode_raw_text_bytes(&output);
                 interp.insert_current_buffer(&text);
                 {
-                    let point = saved_point.min(interp.buffer.point_max());
-                    interp.buffer.goto_char(point);
+                    let point = saved_point.min(interp.buffer.borrow().point_max());
+                    interp.buffer.borrow_mut().goto_char(point);
                 }
                 run_change_hooks(
                     interp,
@@ -2592,11 +2596,11 @@ define_dispatch!(
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;
                 let start = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.point_min(),
+                    None | Some(Kind::Nil) => interp.buffer.borrow().point_min(),
                     Some(start) => position_from_value(interp, &start.value())?,
                 };
                 let end = match args.get(1).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.point_max(),
+                    None | Some(Kind::Nil) => interp.buffer.borrow().point_max(),
                     Some(end) => position_from_value(interp, &end.value())?,
                 };
                 // GNU's `validate_region' canonicalizes reversed bounds before
@@ -2614,6 +2618,7 @@ define_dispatch!(
                 }
                 let source = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let discard_comments = args.get(3).is_some_and(Value::is_truthy);
@@ -2628,7 +2633,10 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let (start, end) = if args[0].is_nil() && args[1].is_nil() {
-                    (interp.buffer.point_min(), interp.buffer.point_max())
+                    (
+                        interp.buffer.borrow().point_min(),
+                        interp.buffer.borrow().point_max(),
+                    )
                 } else {
                     (
                         position_from_value(interp, &args[0])?,
@@ -2637,6 +2645,7 @@ define_dispatch!(
                 };
                 let input = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let program = string_text(&args[2])?;
@@ -2659,6 +2668,7 @@ define_dispatch!(
                 if delete_region {
                     interp
                         .buffer
+                        .borrow_mut()
                         .delete_region(start, end)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                 }
@@ -2710,7 +2720,7 @@ define_dispatch!(
                         let answer = call_named_function(
                             interp,
                             "kill-buffer--possibly-save",
-                            &[Value::buffer(id, interp.buffer.name.clone())],
+                            &[interp.buffer_value(id).expect("live buffer object")],
                             env,
                         )?;
                         if answer.is_nil() {
@@ -2731,8 +2741,7 @@ define_dispatch!(
                             .and_then(|value| string_text(value).ok());
                         let visited_path = interp
                             .get_buffer_by_id(id)
-                            .and_then(|buffer| buffer.file.as_ref())
-                            .cloned();
+                            .and_then(|buffer| buffer.file.clone());
                         if let Some(path) = auto_save_path.as_ref()
                             && fs::metadata(path).is_ok()
                             && visited_path.as_ref() != Some(path)
@@ -2823,14 +2832,17 @@ define_dispatch!(
                 interp.copy_marker_value(&args[0], insertion_type)
             }
             "point-marker" => {
-                interp.copy_marker_value(&Value::Integer(interp.buffer.point() as i64), false)
+                let position = interp.buffer.borrow().point() as i64;
+                interp.copy_marker_value(&Value::Integer(position), false)
             }
             "mark-marker" => Ok(interp.buffer_mark_marker_value()),
             "point-min-marker" => {
-                interp.copy_marker_value(&Value::Integer(interp.buffer.point_min() as i64), false)
+                let position = interp.buffer.borrow().point_min() as i64;
+                interp.copy_marker_value(&Value::Integer(position), false)
             }
             "point-max-marker" => {
-                interp.copy_marker_value(&Value::Integer(interp.buffer.point_max() as i64), false)
+                let position = interp.buffer.borrow().point_max() as i64;
+                interp.copy_marker_value(&Value::Integer(position), false)
             }
             "marker-buffer" => {
                 need_args(name, args, 1)?;
@@ -2843,7 +2855,7 @@ define_dispatch!(
                             .find(|(id, _)| *id == buffer_id)
                             .map(|(_, name)| name.clone())
                             .unwrap_or_else(|| "*unknown*".to_string());
-                        Ok(Value::buffer(buffer_id, buffer_name))
+                        Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
                     }
                     None => Ok(Value::Nil),
                 }
@@ -2889,13 +2901,13 @@ define_dispatch!(
                 interp.set_marker(marker_id, position, buffer_id)?;
                 Ok(args[0])
             }
-            "region-beginning" => match interp.buffer.region() {
+            "region-beginning" => match interp.buffer.borrow().region() {
                 Some((beg, _)) => Ok(Value::Integer(beg as i64)),
                 None => Err(LispError::Signal(
                     "The mark is not set now, so there is no region".into(),
                 )),
             },
-            "region-end" => match interp.buffer.region() {
+            "region-end" => match interp.buffer.borrow().region() {
                 Some((_, end)) => Ok(Value::Integer(end as i64)),
                 None => Err(LispError::Signal(
                     "The mark is not set now, so there is no region".into(),

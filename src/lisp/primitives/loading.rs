@@ -258,8 +258,9 @@ pub(crate) fn eval_buffer_impl(
         .unwrap_or_else(|| {
             interp
                 .get_buffer_by_id(buffer_id)
-                .and_then(|buffer| buffer.file.as_ref())
-                .map_or(Value::Nil, |file| Value::string(file))
+                .map_or(Value::Nil, |buffer| {
+                    buffer.file.as_deref().map_or(Value::Nil, Value::string)
+                })
         });
     if !source_file.is_nil() {
         string_text(&source_file)?;
@@ -339,9 +340,8 @@ pub(crate) fn eval_region_impl(
                 .filter(|value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "read"))
         });
     let buffer_id = interp.current_buffer_id();
-    let buffer_name = interp.buffer.name.clone();
-    let source_file = interp.buffer.file.clone();
-    let saved_point = interp.buffer.point();
+    let source_file = interp.buffer.borrow().file.clone();
+    let saved_point = interp.buffer.borrow().point();
 
     // lread.c dynamically binds these around `readevalloop'.  In
     // particular, the file load context lets macros expanded by eval-defun
@@ -358,7 +358,10 @@ pub(crate) fn eval_region_impl(
         .unwrap_or(Value::Nil);
     restores.push(interp.bind_special_variable(
         "eval-buffer-list",
-        Value::cons(Value::buffer(buffer_id, buffer_name), eval_buffer_list),
+        Value::cons(
+            interp.buffer_value(buffer_id).expect("live buffer object"),
+            eval_buffer_list,
+        ),
         env,
     )?);
     if let Some(file) = source_file {
@@ -389,6 +392,7 @@ pub(crate) fn eval_region_impl(
         }
         let text = interp
             .buffer
+            .borrow()
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         // lread.c reads through `read-symbol-shorthands' (oblookup_
@@ -420,8 +424,8 @@ pub(crate) fn eval_region_impl(
 
     if interp.current_buffer_id() == buffer_id {
         {
-            let point = saved_point.min(interp.buffer.point_max());
-            interp.buffer.goto_char(point);
+            let point = saved_point.min(interp.buffer.borrow().point_max());
+            interp.buffer.borrow_mut().goto_char(point);
         }
     }
     for restore in restores.into_iter().rev() {
@@ -443,17 +447,17 @@ fn eval_region_via_read_function(
     print_flag: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    interp.buffer.goto_char(start);
-    let stream = Value::buffer(buffer_id, interp.buffer.name.clone());
+    interp.buffer.borrow_mut().goto_char(start);
+    let stream = interp.buffer_value(buffer_id).expect("live buffer object");
     let mut result = Value::Nil;
-    while interp.buffer.point() < end {
+    while interp.buffer.borrow().point() < end {
         let _ = crate::lisp::primitives::call(
             interp,
             "forward-comment",
             &[Value::Integer(i64::MAX / 2)],
             env,
         );
-        if interp.buffer.point() >= end {
+        if interp.buffer.borrow().point() >= end {
             break;
         }
         // readevalloop calls the Lisp reader without a handler: its
@@ -659,9 +663,9 @@ fn eval_buffer_via_load_read_function(
 ) -> Result<Value, LispError> {
     let previous_buffer = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
-    let saved_point = interp.buffer.point();
-    let minimum = interp.buffer.point_min();
-    interp.buffer.goto_char(minimum);
+    let saved_point = interp.buffer.borrow().point();
+    let minimum = interp.buffer.borrow().point_min();
+    interp.buffer.borrow_mut().goto_char(minimum);
     let stream = crate::lisp::primitives::call(interp, "current-buffer", &[], env)?;
     let mut result = Ok(Value::Nil);
     loop {
@@ -671,7 +675,7 @@ fn eval_buffer_via_load_read_function(
             &[Value::Integer(i64::MAX / 2)],
             env,
         );
-        if interp.buffer.point() >= interp.buffer.point_max() {
+        if interp.buffer.borrow().point() >= interp.buffer.borrow().point_max() {
             break;
         }
         let form = match interp.call_function_value(
@@ -709,8 +713,8 @@ fn eval_buffer_via_load_read_function(
             }
         }
     }
-    let target = saved_point.min(interp.buffer.point_max());
-    interp.buffer.goto_char(target);
+    let target = saved_point.min(interp.buffer.borrow().point_max());
+    interp.buffer.borrow_mut().goto_char(target);
     interp.switch_to_buffer_id(previous_buffer)?;
     result
 }

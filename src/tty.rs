@@ -1269,7 +1269,7 @@ fn synthesize_mouse_event(
                 && row < (info.top + info.height) as i64
         })?;
         let pos = if window.buffer_id == interpreter.current_buffer_id() {
-            interpreter.buffer.point()
+            interpreter.buffer.borrow().point()
         } else {
             interpreter
                 .get_buffer_by_id(window.buffer_id)
@@ -1502,7 +1502,7 @@ fn window_render_geometry(
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-            Some(&interpreter.buffer)
+            Some(interpreter.buffer.borrow())
         } else {
             interpreter.get_buffer_by_id(info.buffer_id)
         }) else {
@@ -1516,7 +1516,7 @@ fn window_render_geometry(
         };
         let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
         let point_line = buffer.line_number_at_pos(point_pos);
-        let line_text = displayed_line_text(buffer, point_line);
+        let line_text = displayed_line_text(&buffer, point_line);
         let point_dcol =
             display_column(&line_text, point_pos - buffer.line_start_at(point_pos)) as i64;
         let line_w = display_width(&line_text);
@@ -2732,7 +2732,7 @@ fn fontify_window_ranges(
         {
             continue;
         }
-        let z = interpreter.buffer.point_max();
+        let z = interpreter.buffer.borrow().point_max();
         // Every cell could hold one character (continuation lines
         // included); past that the window cannot reach this frame.
         let start = info.start.min(z);
@@ -2759,12 +2759,15 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
             rounds += 1;
             let fontified = crate::lisp::primitives::buffer_char_property_at(
                 interpreter,
-                &interpreter.buffer,
+                &interpreter.buffer.borrow(),
                 pos,
                 "fontified",
             );
             if !fontified.is_nil() {
-                let (_, span_end) = interpreter.buffer.text_property_interval_around(pos);
+                let (_, span_end) = interpreter
+                    .buffer
+                    .borrow()
+                    .text_property_interval_around(pos);
                 pos = span_end.max(pos + 1);
                 continue;
             }
@@ -2780,7 +2783,7 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
             let _ = interpreter.restore_special_dynamic(restore, env);
             let fontified = crate::lisp::primitives::buffer_char_property_at(
                 interpreter,
-                &interpreter.buffer,
+                &interpreter.buffer.borrow(),
                 pos,
                 "fontified",
             );
@@ -3002,7 +3005,7 @@ fn redraw_with_echo_policy(
     if !layout_fits {
         // No window tree, or one that disagrees with the glass (frame
         // records mid-rebuild): render the selected buffer full-frame.
-        let buffer = &interpreter.buffer;
+        let buffer = interpreter.buffer.borrow();
         layout = vec![crate::lisp::primitives::WindowRenderInfo {
             window_id: interpreter.selected_window_id(),
             buffer_id: interpreter.current_buffer_id(),
@@ -3148,7 +3151,7 @@ fn redraw_with_echo_policy(
         let text_body_width = body_width.saturating_sub(left_margin + right_margin).max(1);
         let lnum_for = |interpreter: &Interpreter, top_line: usize| {
             let buffer = if info.buffer_id == interpreter.current_buffer_id() {
-                Some(&interpreter.buffer)
+                Some(interpreter.buffer.borrow())
             } else {
                 interpreter.get_buffer_by_id(info.buffer_id)
             }?;
@@ -3182,16 +3185,16 @@ fn redraw_with_echo_policy(
                 window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
             let view = state.views.entry(info.window_id).or_default();
             let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-                Some(&interpreter.buffer)
+                Some(interpreter.buffer.borrow())
             } else {
                 interpreter.get_buffer_by_id(info.buffer_id)
             }) else {
                 continue 'windows;
             };
-            let invisibility = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+            let invisibility = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
             let glyphless = GlyphlessDisplayContext::new(interpreter, info.buffer_id);
             let plan = plan_window_text(
-                buffer,
+                &buffer,
                 &invisibility,
                 Some(&glyphless),
                 view,
@@ -3241,12 +3244,12 @@ fn redraw_with_echo_policy(
         {
             let visible_ranges: Vec<(usize, usize)> = {
                 let window_buffer = if info.buffer_id == interpreter.current_buffer_id() {
-                    Some(&interpreter.buffer)
+                    Some(interpreter.buffer.borrow())
                 } else {
                     interpreter.get_buffer_by_id(info.buffer_id)
                 };
                 if let Some(buffer) = window_buffer {
-                    let spec = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+                    let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
                     let z = buffer.point_max();
                     let mut pos = plan.top_pos.min(z);
                     let end = plan.window_end.min(z);
@@ -3255,10 +3258,10 @@ fn redraw_with_echo_policy(
                         ranges.push((pos, end));
                     } else {
                         while pos < end {
-                            if crate::lisp::primitives::invisible_class_at(buffer, &spec, pos) != 0
+                            if crate::lisp::primitives::invisible_class_at(&buffer, &spec, pos) != 0
                             {
                                 let run_end =
-                                    crate::lisp::primitives::invisible_run_at(buffer, &spec, pos)
+                                    crate::lisp::primitives::invisible_run_at(&buffer, &spec, pos)
                                         .map(|(run_end, _)| run_end)
                                         .unwrap_or(pos + 1);
                                 pos = run_end.max(pos + 1);
@@ -3266,7 +3269,7 @@ fn redraw_with_echo_policy(
                             }
                             let visible_start = pos;
                             while pos < end
-                                && crate::lisp::primitives::invisible_class_at(buffer, &spec, pos)
+                                && crate::lisp::primitives::invisible_class_at(&buffer, &spec, pos)
                                     == 0
                             {
                                 pos += 1;
@@ -3328,7 +3331,7 @@ fn redraw_with_echo_policy(
                     continue;
                 };
                 let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-                    Some(&interpreter.buffer)
+                    Some(interpreter.buffer.borrow())
                 } else {
                     interpreter.get_buffer_by_id(info.buffer_id)
                 }) else {
@@ -3359,7 +3362,7 @@ fn redraw_with_echo_policy(
         }
         {
             let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-                Some(&interpreter.buffer)
+                Some(interpreter.buffer.borrow())
             } else {
                 interpreter.get_buffer_by_id(info.buffer_id)
             }) else {
@@ -3559,12 +3562,12 @@ fn redraw_with_echo_policy(
         });
         let overlay_string_faces: Vec<Value> = {
             let source = if job.buffer_id == interpreter.current_buffer_id() {
-                Some(&interpreter.buffer)
+                Some(interpreter.buffer.borrow())
             } else {
                 interpreter.get_buffer_by_id(job.buffer_id)
             };
             source
-                .into_iter()
+                .iter()
                 .flat_map(|buffer| &buffer.overlays)
                 .filter(|overlay| !overlay.is_dead())
                 .flat_map(|overlay| {
@@ -3583,14 +3586,14 @@ fn redraw_with_echo_policy(
             });
         }
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
-            &interpreter.buffer
+            interpreter.buffer.borrow()
         } else {
             match interpreter.get_buffer_by_id(job.buffer_id) {
                 Some(buffer) => buffer,
                 None => continue,
             }
         };
-        let job_invisibility = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
+        let job_invisibility = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
         let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
         for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
@@ -3603,7 +3606,7 @@ fn redraw_with_echo_policy(
                 .filter(|next| *next != usize::MAX)
                 .unwrap_or(job.window_end);
             let visual =
-                glyphless_visual_line_at(buffer, &job_invisibility, *line, Some(&glyphless));
+                glyphless_visual_line_at(&buffer, &job_invisibility, *line, Some(&glyphless));
             let line_text = visual.text.clone();
             let wrapped =
                 (!job.truncate).then(|| wrap_glyphless_visual_line(&visual, job.body_width));
@@ -3863,13 +3866,13 @@ fn redraw_with_echo_policy(
         let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
         let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
         let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
-            Some(&interpreter.buffer)
+            Some(interpreter.buffer.borrow())
         } else {
             interpreter.get_buffer_by_id(job.buffer_id)
         }) else {
             continue;
         };
-        let spec = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
+        let spec = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
         let point = job.point.clamp(buffer.point_min(), buffer.point_max());
         let point_line_abs = buffer.line_number_at_pos(point);
         let begv_line = buffer.line_number_at_pos(buffer.point_min());
@@ -3910,7 +3913,7 @@ fn redraw_with_echo_policy(
                 let mut line = from.0;
                 let mut first_seg = from.1 as i64;
                 while line < to.0 {
-                    let visual = glyphless_visual_line_at(buffer, &spec, line, Some(&glyphless));
+                    let visual = glyphless_visual_line_at(&buffer, &spec, line, Some(&glyphless));
                     rows += segs_of(&visual) as i64 - first_seg;
                     first_seg = 0;
                     line += visual.lines_spanned.max(1);
@@ -3922,12 +3925,12 @@ fn redraw_with_echo_policy(
             } else if let Some(index) = (0..job.rows.len()).find(|&index| contains_point(index)) {
                 index as i64
             } else {
-                let point_vline = visual_line_first_line(buffer, &spec, point_line_abs);
+                let point_vline = visual_line_first_line(&buffer, &spec, point_line_abs);
                 let point_seg = if job.truncate {
                     0
                 } else {
                     let visual =
-                        glyphless_visual_line_at(buffer, &spec, point_vline, Some(&glyphless));
+                        glyphless_visual_line_at(&buffer, &spec, point_vline, Some(&glyphless));
                     let offset = point.saturating_sub(buffer.line_start_of(point_vline));
                     let index = visual
                         .map
@@ -4021,7 +4024,7 @@ fn redraw_with_echo_policy(
             if !beyond
                 && row_hscroll > 0
                 && display_width(
-                    &glyphless_visual_line_at(buffer, &spec, line, Some(&glyphless)).text,
+                    &glyphless_visual_line_at(&buffer, &spec, line, Some(&glyphless)).text,
                 ) > 0
             {
                 frame[job.top + row_index].blit(job.left, "$", CellAttrs::default());
@@ -4351,11 +4354,11 @@ fn compose_echo_row(
             .filter(|id| interpreter.has_buffer_id(*id))
             .and_then(|id| {
                 let buffer = if id == interpreter.current_buffer_id() {
-                    &interpreter.buffer
+                    interpreter.buffer.borrow()
                 } else {
                     interpreter
                         .get_buffer_by_id(id)
-                        .unwrap_or(&interpreter.buffer)
+                        .unwrap_or(interpreter.buffer.borrow())
                 };
                 // The minibuffer command loop mirrors its prompt text into
                 // the echo channel before blocking.  A different live value
@@ -4391,11 +4394,11 @@ fn compose_echo_row(
         }
         let (text, point_min, point, mut strings) = {
             let buffer = if buffer_id == interpreter.current_buffer_id() {
-                &interpreter.buffer
+                interpreter.buffer.borrow()
             } else if let Some(buffer) = interpreter.get_buffer_by_id(buffer_id) {
                 buffer
             } else {
-                &interpreter.buffer
+                interpreter.buffer.borrow()
             };
             let mut strings = Vec::new();
             for overlay in &buffer.overlays {
@@ -4976,10 +4979,10 @@ mod tests {
         )
         .expect("erase scratch");
         interpreter.set_terminal_coding_system(None);
-        interpreter.buffer.insert("AöB€C😀D\n");
+        interpreter.buffer.borrow_mut().insert("AöB€C😀D\n");
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
         let visual = glyphless_visual_line_at(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             1,
             Some(&context),
@@ -4995,7 +4998,7 @@ mod tests {
         interpreter.set_terminal_coding_system(Some("utf-8-unix".into()));
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
         let visual = glyphless_visual_line_at(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             1,
             Some(&context),
@@ -5024,7 +5027,7 @@ mod tests {
             &mut crate::lisp::types::Env::new(),
         )
         .expect("erase the scratch banner");
-        interpreter.buffer.insert("ö😀\n");
+        interpreter.buffer.borrow_mut().insert("ö😀\n");
         let Kind::CharTable(table_id) = interpreter
             .default_toplevel_value("glyphless-char-display")
             .expect("initialized glyphless table")
@@ -5044,7 +5047,7 @@ mod tests {
             .expect("set no-font fallback");
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
         let visual = glyphless_visual_line_at(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             1,
             Some(&context),
@@ -5067,10 +5070,11 @@ mod tests {
         .expect("erase the scratch banner");
         interpreter
             .buffer
+            .borrow_mut()
             .insert(&format!("{}öZ\n", "x".repeat(76)));
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
         let visual = glyphless_visual_line_at(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             1,
             Some(&context),
@@ -5211,7 +5215,7 @@ mod tests {
                 .eval(form, &mut env)
                 .expect("evaluate align-to probe");
         }
-        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        let (text, map) = displayed_line_with_map(&interp.buffer.borrow(), 1);
         // "ab " is 3 columns; the propertized tab becomes 7 blanks up
         // to column 10, exactly where xdisp.c's stretch glyph ends.
         assert_eq!(text, "ab        cd");
@@ -5240,7 +5244,7 @@ mod tests {
                 .expect("evaluate specified-width probe");
         }
 
-        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        let (text, map) = displayed_line_with_map(&interp.buffer.borrow(), 1);
         assert_eq!(text, "ab c  d");
         assert_eq!(
             map.expect("display widths changed the line"),
@@ -5264,14 +5268,14 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate display replacement probe");
-        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        let (text, map) = displayed_line_with_map(&interp.buffer.borrow(), 1);
         assert_eq!(text, "x: (166 GiB available)y");
         assert_eq!(
             map.expect("replacement changes the display"),
             vec![0, 1, 22, 23]
         );
         let visual = visual_line_at(
-            &interp.buffer,
+            &interp.buffer.borrow(),
             &InvisibilitySpec {
                 active: true,
                 ..InvisibilitySpec::default()
@@ -5300,7 +5304,7 @@ mod tests {
             .eval(&form, &mut env)
             .expect("evaluate folded line probe");
         let visual = visual_line_at(
-            &interp.buffer,
+            &interp.buffer.borrow(),
             &InvisibilitySpec {
                 entries: vec![(Value::Symbol("fold".into()), true)],
                 active: true,
@@ -5330,9 +5334,16 @@ mod tests {
             .eval(&form, &mut env)
             .expect("evaluate true-overlay invisibility probe");
         interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
-        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        let spec = resolve_buffer_invisibility(
+            &interp,
+            &interp.buffer.borrow(),
+            interp.current_buffer_id(),
+        );
         assert!(spec.all, "canonical Value::T means every non-nil source");
-        assert_eq!(visual_line_at(&interp.buffer, &spec, 1).text, "headnext");
+        assert_eq!(
+            visual_line_at(&interp.buffer.borrow(), &spec, 1).text,
+            "headnext"
+        );
     }
 
     #[test]
@@ -5355,8 +5366,12 @@ mod tests {
             .eval(&form, &mut env)
             .expect("evaluate window overlay-string probe");
         interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
-        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
-        let visual = visual_line_at(&interp.buffer, &spec, 1);
+        let spec = resolve_buffer_invisibility(
+            &interp,
+            &interp.buffer.borrow(),
+            interp.current_buffer_id(),
+        );
+        let visual = visual_line_at(&interp.buffer.borrow(), &spec, 1);
         assert_eq!(visual.text, "head…next");
         assert_eq!(
             visual.display_face_spans,
@@ -5388,7 +5403,7 @@ mod tests {
             .eval(&form, &mut env)
             .expect("point-max overlay probe should evaluate");
 
-        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        let visual = visual_line_at(&interp.buffer.borrow(), &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "a\n alpha \n amber ");
         assert_eq!(
             visual.map,
@@ -5426,7 +5441,7 @@ mod tests {
             .eval(&form, &mut env)
             .expect("point-max after-string probe should evaluate");
 
-        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        let visual = visual_line_at(&interp.buffer.borrow(), &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "alphaBeta");
         assert_eq!(
             visual.map,
@@ -5454,7 +5469,7 @@ mod tests {
             .eval(&form, &mut env)
             .expect("overlay display probe should evaluate");
 
-        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        let visual = visual_line_at(&interp.buffer.borrow(), &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "amber");
         assert_eq!(visual.map, vec![0, 5]);
         assert!(
@@ -5482,9 +5497,16 @@ mod tests {
             .eval(&form, &mut env)
             .expect("evaluate invisible overlay-string probe");
         interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
-        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        let spec = resolve_buffer_invisibility(
+            &interp,
+            &interp.buffer.borrow(),
+            interp.current_buffer_id(),
+        );
         assert!(spec.active && spec.all);
-        assert_eq!(visual_line_at(&interp.buffer, &spec, 1).text, "[-] root");
+        assert_eq!(
+            visual_line_at(&interp.buffer.borrow(), &spec, 1).text,
+            "[-] root"
+        );
     }
 
     #[test]
@@ -5506,7 +5528,7 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate margin overlay-string probe");
-        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        let visual = visual_line_at(&interp.buffer.borrow(), &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "Recent commits");
         assert!(visual.display_face_spans.is_empty());
     }
@@ -5530,7 +5552,7 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate fringe overlay-string probe");
-        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        let visual = visual_line_at(&interp.buffer.borrow(), &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "alpha");
         assert!(visual.display_face_spans.is_empty());
     }
@@ -5779,11 +5801,11 @@ mod tests {
 
     #[test]
     fn hscrolled_hidden_point_uses_the_last_line_number_gutter_cell() {
-        let mut interpreter = Interpreter::new();
-        interpreter.buffer.insert("abcdef\n");
+        let interpreter = Interpreter::new();
+        interpreter.buffer.borrow_mut().insert("abcdef\n");
         let mut view = WindowView::default();
         let plan = plan_window_text(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             None,
             &mut view,
@@ -6033,29 +6055,30 @@ mod tests {
 
     #[test]
     fn visual_row_positions_follow_wrap_geometry() {
-        let mut interpreter = Interpreter::new();
+        let interpreter = Interpreter::new();
         interpreter
             .buffer
+            .borrow_mut()
             .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
-        let buffer = &interpreter.buffer;
+        let buffer = interpreter.buffer.borrow();
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 1, 0, 79),
+            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 1, 0, 79),
             1
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 0, 79),
+            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 0, 79),
             5
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 1, 79),
+            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 1, 79),
             84
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 2, 79),
+            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 2, 79),
             163
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 3, 0, 79),
+            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 3, 0, 79),
             206
         );
     }
@@ -6095,12 +6118,12 @@ mod tests {
         interpreter.set_variable("buffer-invisibility-spec", Value::T, &mut env);
         let spec = resolve_buffer_invisibility(
             &interpreter,
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             interpreter.current_buffer_id(),
         );
         let mut view = WindowView::default();
         let plan = plan_window_text(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &spec,
             None,
             &mut view,
@@ -6124,21 +6147,24 @@ mod tests {
 
     #[test]
     fn non_selected_windows_render_from_their_start_without_recentering() {
-        let mut interpreter = Interpreter::new();
+        let interpreter = Interpreter::new();
         for n in 1..=60 {
-            interpreter.buffer.insert(&format!("line {n:02}\n"));
+            interpreter
+                .buffer
+                .borrow_mut()
+                .insert(&format!("line {n:02}\n"));
         }
         // Point far below the start: a selected window would recenter,
         // a non-selected one must show its commanded start regardless.
-        let start = interpreter.buffer.line_start_of(30);
+        let start = interpreter.buffer.borrow().line_start_of(30);
         let mut view = WindowView::default();
         let plan = plan_window_text(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             None,
             &mut view,
             start,
-            interpreter.buffer.line_start_of(55),
+            interpreter.buffer.borrow().line_start_of(55),
             10,
             80,
             false,
@@ -6160,25 +6186,28 @@ mod tests {
         );
         assert_eq!(
             plan.window_end,
-            interpreter.buffer.line_start_of(40),
+            interpreter.buffer.borrow().line_start_of(40),
             "window-end is the first position past the last row"
         );
     }
 
     #[test]
     fn selected_windows_recenter_around_an_off_window_point() {
-        let mut interpreter = Interpreter::new();
+        let interpreter = Interpreter::new();
         for n in 1..=60 {
-            interpreter.buffer.insert(&format!("line {n:02}\n"));
+            interpreter
+                .buffer
+                .borrow_mut()
+                .insert(&format!("line {n:02}\n"));
         }
         let mut view = WindowView::default();
-        let point = interpreter.buffer.line_start_of(40);
+        let point = interpreter.buffer.borrow().line_start_of(40);
         let plan = plan_window_text(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             None,
             &mut view,
-            interpreter.buffer.point_min(),
+            interpreter.buffer.borrow().point_min(),
             point,
             11,
             80,
@@ -6200,16 +6229,19 @@ mod tests {
 
     #[test]
     fn truncating_windows_keep_one_row_per_logical_line() {
-        let mut interpreter = Interpreter::new();
-        interpreter.buffer.insert("short one\n");
-        interpreter.buffer.insert(&"W".repeat(100));
-        interpreter.buffer.insert("\n");
+        let interpreter = Interpreter::new();
+        interpreter.buffer.borrow_mut().insert("short one\n");
+        interpreter.buffer.borrow_mut().insert(&"W".repeat(100));
+        interpreter.buffer.borrow_mut().insert("\n");
         for n in 3..=20 {
-            interpreter.buffer.insert(&format!("line {n:02}\n"));
+            interpreter
+                .buffer
+                .borrow_mut()
+                .insert(&format!("line {n:02}\n"));
         }
         let mut view = WindowView::default();
         let plan = plan_window_text(
-            &interpreter.buffer,
+            &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
             None,
             &mut view,
@@ -6388,13 +6420,13 @@ mod tests {
             .expect("isearch.el loads");
         crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut env)
             .expect("erase the scratch banner");
-        interpreter.buffer.insert(
+        interpreter.buffer.borrow_mut().insert(
             "alpha one
 beta word two
 gamma word three
 ",
         );
-        interpreter.buffer.goto_char(1);
+        interpreter.buffer.borrow_mut().goto_char(1);
 
         let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
             let event = Value::Integer(code);
@@ -6431,7 +6463,7 @@ gamma word three
         );
         // The first match ends after "wor" on the second line
         // ("beta word": w=16, o=17, r=18, end=19).
-        assert_eq!(interpreter.buffer.point(), 19);
+        assert_eq!(interpreter.buffer.borrow().point(), 19);
 
         // C-a is not an isearch key: the pre-command-hook exits the
         // search and the key's own command runs.
@@ -6440,7 +6472,7 @@ gamma word three
             "move-beginning-of-line"
         );
         assert_eq!(
-            interpreter.buffer.point(),
+            interpreter.buffer.borrow().point(),
             11,
             "point at the match line's start"
         );
@@ -6466,8 +6498,8 @@ gamma word three
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
-        interpreter.buffer.insert("abcdefghijklmnop\n");
-        interpreter.buffer.goto_char(1);
+        interpreter.buffer.borrow_mut().insert("abcdefghijklmnop\n");
+        interpreter.buffer.borrow_mut().goto_char(1);
 
         let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
             let event = Value::Integer(code);
@@ -6505,7 +6537,11 @@ gamma word three
         );
         // The next ordinary command consumes the accumulated prefix.
         assert_eq!(send(&mut interpreter, &mut env, 6), "forward-char");
-        assert_eq!(interpreter.buffer.point(), 9, "C-u 8 C-f moves 8 chars");
+        assert_eq!(
+            interpreter.buffer.borrow().point(),
+            9,
+            "C-u 8 C-f moves 8 chars"
+        );
         assert_eq!(
             interpreter
                 .lookup_var("prefix-arg", &env)
@@ -6575,7 +6611,7 @@ gamma word three
             Value::Integer(104),
         )
         .expect("self-insert through call-interactively");
-        assert_eq!(interpreter.buffer.buffer_string(), "h");
+        assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
         assert_eq!(
             interpreter.lookup_var("last-command", &env),
             Some(Value::Symbol("self-insert-command".into()))

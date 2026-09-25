@@ -73,7 +73,7 @@ define_dispatch!(
                     let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", buffer_id))
                     })?;
-                    clamp_overlay_range(buffer, beg, end)
+                    clamp_overlay_range(&buffer, beg, end)
                 };
                 let ov = crate::overlay::Overlay::new(
                     ov_id,
@@ -116,7 +116,7 @@ define_dispatch!(
                             .iter()
                             .find(|(id, _)| *id == buf_id)
                             .map_or("*unknown*".to_string(), |(_, n)| n.clone());
-                        Ok(Value::buffer(buf_id, buf_name))
+                        Ok(interp.buffer_value(buf_id).expect("live buffer object"))
                     }
                     _ => Ok(Value::Nil),
                 }
@@ -139,7 +139,7 @@ define_dispatch!(
                             if buffer.is_multibyte() {
                                 ov.beg
                             } else {
-                                buffer_position_to_byte(buffer, ov.beg).unwrap_or(ov.beg)
+                                buffer_position_to_byte(&buffer, ov.beg).unwrap_or(ov.beg)
                             }
                         } else {
                             ov.beg
@@ -167,7 +167,7 @@ define_dispatch!(
                             if buffer.is_multibyte() {
                                 ov.end
                             } else {
-                                buffer_position_to_byte(buffer, ov.end).unwrap_or(ov.end)
+                                buffer_position_to_byte(&buffer, ov.end).unwrap_or(ov.end)
                             }
                         } else {
                             ov.end
@@ -206,7 +206,7 @@ define_dispatch!(
                     let buffer = interp.get_buffer_by_id(target_buffer_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", target_buffer_id))
                     })?;
-                    clamp_overlay_range(buffer, beg, end)
+                    clamp_overlay_range(&buffer, beg, end)
                 };
                 let mut overlay = take_overlay(interp, ov_id).unwrap_or_else(|| {
                     crate::overlay::Overlay::new(ov_id, beg, end, target_buffer_id, false, false)
@@ -260,7 +260,7 @@ define_dispatch!(
                 let key = args[1];
                 let value = args[2];
                 let mut evaporated = false;
-                if let Some(ov) = interp.find_overlay_mut(ov_id) {
+                if let Some(mut ov) = interp.find_overlay_mut(ov_id) {
                     ov.put_prop(key, value);
                     // buffer.c Foverlay_put: giving an already-empty
                     // overlay the evaporate property deletes it on the
@@ -291,7 +291,7 @@ define_dispatch!(
                 match interp.find_overlay(ov_id) {
                     Some(ov) => {
                         if let Kind::Symbol(name) = key.kind() {
-                            Ok(overlay_property_with_category(interp, ov, &name)
+                            Ok(overlay_property_with_category(interp, &ov, &name)
                                 .unwrap_or(Value::Nil))
                         } else {
                             Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil))
@@ -325,8 +325,8 @@ define_dispatch!(
             "overlays-at" => {
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
-                let mut overlays = interp
-                    .buffer
+                let buffer = interp.buffer.borrow();
+                let mut overlays = buffer
                     .overlays
                     .iter()
                     .filter(|ov| !ov.is_dead() && ov.beg <= pos && pos < ov.end)
@@ -346,9 +346,9 @@ define_dispatch!(
                 // GNU treats the accessible end as the endpoint for empty
                 // overlays.  After narrowing, an overlay at ZV is visible to
                 // `overlays-in ZV ZV' even when it is not at the buffer's Z.
-                let zv = interp.buffer.point_max();
-                let mut overlays = interp
-                    .buffer
+                let zv = interp.buffer.borrow().point_max();
+                let buffer = interp.buffer.borrow();
+                let mut overlays = buffer
                     .overlays
                     .iter()
                     .filter(|ov| {
@@ -359,7 +359,7 @@ define_dispatch!(
                             // Zero-length overlay at pos P:
                             // Include if P is in [beg, end), or if beg==end and P==beg,
                             // or if P==end and end >= ZV (at the accessible end).
-                            return ov.beg >= interp.buffer.point_min()
+                            return ov.beg >= interp.buffer.borrow().point_min()
                                 && ov.beg <= zv
                                 && ((ov.beg >= beg && ov.beg < end)
                                     || (beg == end && ov.beg == beg)
@@ -385,7 +385,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
                 Ok(Value::Integer(
-                    next_overlay_change_position(&interp.buffer, pos) as i64,
+                    next_overlay_change_position(&interp.buffer.borrow(), pos) as i64,
                 ))
             }
 
@@ -393,16 +393,16 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
                 Ok(Value::Integer(
-                    previous_overlay_change_position(&interp.buffer, pos) as i64,
+                    previous_overlay_change_position(&interp.buffer.borrow(), pos) as i64,
                 ))
             }
 
             "overlay-lists" => {
                 // Returns (BEFORE-LIST . AFTER-LIST) relative to point.
-                let pt = interp.buffer.point();
+                let pt = interp.buffer.borrow().point();
                 let mut before = Vec::new();
                 let mut after = Vec::new();
-                for ov in &interp.buffer.overlays {
+                for ov in &interp.buffer.borrow().overlays {
                     if ov.is_dead() {
                         continue;
                     }

@@ -1066,6 +1066,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     );
     assert!(buffer.overlays.iter().all(|overlay| overlay.is_dead()));
     let loaded_undo = buffer.undo_list_value();
+    drop(buffer);
     assert_eq!(printed(&mut target, &loaded_undo), source_undo);
     let locals = target.buffer_local_cells(source_id);
     assert_eq!(

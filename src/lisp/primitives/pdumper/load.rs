@@ -1285,7 +1285,13 @@ impl Loader<'_> {
             inhibit_hooks: flags & BUFFER_FLAG_INHIBIT_HOOKS != 0,
             multibyte,
         });
-        self.interp.install_buffer(id, buffer);
+        let Kind::Buffer(object) = self.objects[&offset].kind() else {
+            return Err(LoadError::Error(
+                "buffer relocation has the wrong object kind".into(),
+            ));
+        };
+        *object.borrow_mut() = buffer;
+        self.interp.install_buffer(object);
         if let Some(base) = base {
             self.interp.register_indirect_buffer(id, base);
         }

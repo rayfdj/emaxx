@@ -124,7 +124,7 @@ impl Interpreter {
     ) -> Option<Value> {
         if resolved == "buffer-undo-list" {
             return Some(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
+                &self.buffer.borrow(),
             ));
         }
         // data.c:find_symbol_value dispatches on the symbol's redirect tag.
@@ -320,16 +320,17 @@ impl Interpreter {
             "syntax-propertize--done" => Some(Value::Integer(-1)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
             "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
-            "enable-multibyte-characters" => Some(if self.buffer.is_multibyte() {
+            "enable-multibyte-characters" => Some(if self.buffer.borrow().is_multibyte() {
                 Value::T
             } else {
                 Value::Nil
             }),
             "buffer-undo-list" => Some(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
+                &self.buffer.borrow(),
             )),
             "buffer-file-name" => Some(
                 self.buffer
+                    .borrow()
                     .file
                     .clone()
                     .map(|value| Value::String(value.into()))
@@ -337,6 +338,7 @@ impl Interpreter {
             ),
             "buffer-file-truename" => Some(
                 self.buffer
+                    .borrow()
                     .file_truename
                     .clone()
                     .map(|value| Value::String(value.into()))
@@ -346,7 +348,7 @@ impl Interpreter {
                 self.buffer_local_value(self.current_buffer_id(), "buffer-file-coding-system")
                     .unwrap_or(Value::Nil),
             ),
-            "mark-active" => Some(if self.buffer.mark_active() {
+            "mark-active" => Some(if self.buffer.borrow().mark_active() {
                 Value::T
             } else {
                 Value::Nil
@@ -1165,7 +1167,7 @@ impl Interpreter {
             return;
         }
         if resolved == "buffer-file-truename" {
-            self.buffer.file_truename = match value.kind() {
+            self.buffer.borrow_mut().file_truename = match value.kind() {
                 Kind::Nil => None,
                 Kind::String(path) => Some(path.to_string()),
                 Kind::StringObject(state) => Some(state.borrow().text.clone()),
@@ -1174,40 +1176,41 @@ impl Interpreter {
             return;
         }
         if resolved == "mark-active" {
-            self.buffer.set_mark_active(value.is_truthy());
+            self.buffer.borrow_mut().set_mark_active(value.is_truthy());
             return;
         }
         if resolved == "buffer-undo-list" {
             if value.is_nil() {
-                self.buffer.enable_undo();
-                self.buffer.clear_undo_history();
+                self.buffer.borrow_mut().enable_undo();
+                self.buffer.borrow_mut().clear_undo_history();
             } else if matches!(value.kind(), Kind::T) {
-                self.buffer.disable_undo();
+                self.buffer.borrow_mut().disable_undo();
             } else if let Some((head, tail)) = value.cons_values()
                 && crate::lisp::primitives::values_eql(
                     &tail,
-                    &crate::lisp::primitives::buffer_undo_list_value(&self.buffer),
+                    &crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow()),
                 )
             {
-                self.buffer.enable_undo();
+                self.buffer.borrow_mut().enable_undo();
                 let entry = buffer_undo_head_to_entry(&head);
-                self.buffer.push_undo_entry(entry);
-                self.buffer.set_undo_list_view(value);
+                self.buffer.borrow_mut().push_undo_entry(entry);
+                self.buffer.borrow().set_undo_list_view(value);
             } else {
                 // A structural replacement (undo truncation after
                 // cancel-change-group, boundary removal by
                 // undo-amalgamate-change-group, ...): rebuild the native undo
                 // state from the assigned list so the Lisp view round-trips.
                 if let Ok(items) = value.to_vec() {
-                    self.buffer.enable_undo();
-                    self.buffer.clear_undo_history();
+                    self.buffer.borrow_mut().enable_undo();
+                    self.buffer.borrow_mut().clear_undo_history();
                     // The Lisp view is newest-first; the native list is
                     // oldest-first.
                     for item in items.into_iter().rev() {
                         self.buffer
+                            .borrow_mut()
                             .push_undo_entry(buffer_undo_head_to_entry(&item));
                     }
-                    self.buffer.set_undo_list_view(value);
+                    self.buffer.borrow().set_undo_list_view(value);
                 }
             }
             return;

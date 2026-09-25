@@ -3745,7 +3745,7 @@ fn gnu_simple_set_mark_updates_the_persistent_buffer_mark_marker() {
 #[test]
 fn killing_a_buffer_retires_its_persistent_mark_mapping() {
     let mut interp = Interpreter::new();
-    interp.buffer.set_mark(1);
+    interp.buffer.borrow_mut().set_mark(1);
     let buffer_id = interp.current_buffer_id();
     let Kind::Marker(marker_id) = interp.buffer_mark_marker_value().kind() else {
         unreachable!("mark-marker always returns a marker")

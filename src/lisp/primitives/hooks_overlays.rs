@@ -26,7 +26,7 @@ pub(crate) fn run_change_hooks(
     // the auto-boundary timer), independent of any change hooks being
     // registered.  The function itself never modifies buffer text, so the
     // reentrancy guard above cannot be tripped by it.
-    if hook_name == "before-change-functions" && !interp.buffer.undo_recording_disabled() {
+    if hook_name == "before-change-functions" && !interp.buffer.borrow().undo_recording_disabled() {
         thread_local! {
             static UNDOABLE_CHANGE: crate::lisp::types::SymbolName =
                 crate::lisp::types::SymbolName::intern_str("undo-auto--undoable-change");
@@ -48,7 +48,7 @@ pub(crate) fn run_change_hooks(
         }
         flush_combined_after_change(interp, env)?;
     } else if hook_name == "after-change-functions" {
-        let can_defer = combining && interp.buffer.overlays.is_empty() && {
+        let can_defer = combining && interp.buffer.borrow().overlays.is_empty() && {
             hook_values(
                 interp,
                 "before-change-functions",
@@ -74,9 +74,9 @@ pub(crate) fn run_change_hooks(
             let end = end.as_integer()?;
             let old_length = old_length.as_integer()?;
             let new_length = end - begin;
-            let unchanged_before = begin - interp.buffer.point_min() as i64;
+            let unchanged_before = begin - interp.buffer.borrow().point_min() as i64;
             let unchanged_after =
-                interp.buffer.point_max() as i64 - (begin - old_length + new_length);
+                interp.buffer.borrow().point_max() as i64 - (begin - old_length + new_length);
             interp.record_combined_after_change(
                 buffer_id,
                 (unchanged_before, unchanged_after, new_length - old_length),
@@ -134,7 +134,7 @@ pub(crate) fn flush_combined_after_change(
     }
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(pending.buffer_id)?;
-    let mut unchanged_before = interp.buffer.buffer_size() as i64;
+    let mut unchanged_before = interp.buffer.borrow().buffer_size() as i64;
     let mut unchanged_after = unchanged_before;
     let mut net_change = 0_i64;
     for (begin, end, change) in pending.changes {
@@ -142,8 +142,8 @@ pub(crate) fn flush_combined_after_change(
         unchanged_after = unchanged_after.min(end);
         net_change += change;
     }
-    let begin = interp.buffer.point_min() as i64 + unchanged_before;
-    let end = interp.buffer.point_max() as i64 - unchanged_after;
+    let begin = interp.buffer.borrow().point_min() as i64 + unchanged_before;
+    let end = interp.buffer.borrow().point_max() as i64 - unchanged_after;
     let new_length = end - begin;
     let old_length = new_length - net_change;
     let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
@@ -597,7 +597,7 @@ pub(crate) fn delete_region_with_hooks(
         return Ok(String::new());
     }
     let range_length = to - from;
-    let overlay_calls = overlay_change_hook_calls(&interp.buffer, from, to, from);
+    let overlay_calls = overlay_change_hook_calls(&interp.buffer.borrow(), from, to, from);
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     let has_before_hooks = interp
         .lookup_var_key(cached_symbol!("before-change-functions"), env)
@@ -652,7 +652,7 @@ pub(crate) fn delete_region_with_hooks(
         // belong to signal_before_change itself and must remain live while a
         // nested edit records its undo marker riders.
         let start = interp.marker_position(preserve_id).unwrap_or(from);
-        let end = (start + range_length).min(interp.buffer.point_max());
+        let end = (start + range_length).min(interp.buffer.borrow().point_max());
         let _ = interp.set_marker(preserve_id, None, None);
         let _ = interp.set_marker(start_id, None, None);
         let _ = interp.set_marker(end_id, None, None);
@@ -685,8 +685,8 @@ pub(crate) fn ensure_region_modifiable(
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     let (from, to) = if from <= to { (from, to) } else { (to, from) };
-    let from = from.max(interp.buffer.point_min());
-    let to = to.min(interp.buffer.point_max());
+    let from = from.max(interp.buffer.borrow().point_min());
+    let to = to.min(interp.buffer.borrow().point_max());
     if from >= to {
         return Ok(());
     }
@@ -696,13 +696,16 @@ pub(crate) fn ensure_region_modifiable(
     let buffer_read_only = buffer_read_only_active(interp, env, &inhibit_read_only);
     // insdel.c: with no intervals there is no read-only text to verify,
     // and the buffer's own flag was decided above.
-    if !buffer_read_only && !interp.buffer.has_text_properties() {
+    if !buffer_read_only && !interp.buffer.borrow().has_text_properties() {
         return Ok(());
     }
 
     for pos in from..to {
-        let read_only = interp.buffer.text_property_at(pos, "read-only");
-        let suppressor = interp.buffer.text_property_at(pos, "inhibit-read-only");
+        let read_only = interp.buffer.borrow().text_property_at(pos, "read-only");
+        let suppressor = interp
+            .buffer
+            .borrow()
+            .text_property_at(pos, "inhibit-read-only");
         if let Some(read_only_value) = read_only {
             if suppressor.is_some_and(|value| value.is_truthy())
                 || inhibit_read_only_matches(&inhibit_read_only, &read_only_value)
@@ -737,8 +740,11 @@ pub(crate) fn ensure_insert_modifiable(
     if !buffer_read_only_active(interp, env, &inhibit_read_only) {
         return Ok(());
     }
-    let point = interp.buffer.point();
-    let suppressor = interp.buffer.text_property_at(point, "inhibit-read-only");
+    let point = interp.buffer.borrow().point();
+    let suppressor = interp
+        .buffer
+        .borrow()
+        .text_property_at(point, "inhibit-read-only");
     if suppressor.is_some_and(|value| value.is_truthy()) {
         return Ok(());
     }
@@ -759,7 +765,7 @@ fn buffer_read_only_active(
 fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("buffer-read-only".into()),
-        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+        Value::Buffer(interp.buffer),
     ]))
 }
 
@@ -846,7 +852,7 @@ pub(crate) fn font_lock_buffer_segment(
         .get_buffer_by_id(buffer_id)
         .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
     let previous = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
-    let next = font_lock_next_buffer_property_change(buffer, start, end, prop);
+    let next = font_lock_next_buffer_property_change(&buffer, start, end, prop);
     Ok((previous, next))
 }
 

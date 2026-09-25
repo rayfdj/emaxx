@@ -271,11 +271,11 @@ fn unwind_one(
         } => {
             if interp.has_buffer_id(buffer_id) {
                 let _ = interp.set_current_buffer_id(buffer_id);
-                let restore_pt = interp
-                    .marker_position(marker_id)
-                    .unwrap_or(saved_pt)
-                    .clamp(interp.buffer.point_min(), interp.buffer.point_max());
-                interp.buffer.goto_char(restore_pt);
+                let restore_pt = interp.marker_position(marker_id).unwrap_or(saved_pt).clamp(
+                    interp.buffer.borrow().point_min(),
+                    interp.buffer.borrow().point_max(),
+                );
+                interp.buffer.borrow_mut().goto_char(restore_pt);
             }
             let _ = interp.set_marker(marker_id, None, None);
             Ok(())
@@ -292,8 +292,8 @@ fn unwind_one(
                 if final_buffer_id != buffer_id {
                     let _ = interp.set_current_buffer_id(buffer_id);
                 }
-                let full_end = interp.buffer.size_total() + 1;
-                interp.buffer.restore_restriction(1, full_end);
+                let full_end = interp.buffer.borrow().size_total() + 1;
+                interp.buffer.borrow_mut().restore_restriction(1, full_end);
                 interp.restore_labeled_restrictions(buffer_id, labeled);
                 if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
                     let _ = interp.set_current_buffer_id(final_buffer_id);
@@ -316,7 +316,10 @@ fn unwind_one(
                 if final_buffer_id != buffer_id {
                     let _ = interp.set_current_buffer_id(buffer_id);
                 }
-                interp.buffer.restore_restriction(restore_begv, restore_zv);
+                interp
+                    .buffer
+                    .borrow_mut()
+                    .restore_restriction(restore_begv, restore_zv);
                 interp.restore_labeled_restrictions(buffer_id, labeled);
                 if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
                     let _ = interp.set_current_buffer_id(final_buffer_id);
@@ -1388,7 +1391,7 @@ fn run_frames(
                 }
                 Op::SaveExcursion => {
                     let buffer_id = interp.current_buffer_id();
-                    let saved_pt = interp.buffer.point();
+                    let saved_pt = interp.buffer.borrow().point();
                     let Kind::Marker(marker_id) = interp.make_marker().kind() else {
                         unreachable!("make_marker returns a marker")
                     };
@@ -1407,13 +1410,13 @@ fn run_frames(
                 }
                 Op::SaveRestriction => {
                     let buffer_id = interp.current_buffer_id();
-                    let saved_begv = interp.buffer.point_min();
-                    let saved_zv = interp.buffer.point_max();
+                    let saved_begv = interp.buffer.borrow().point_min();
+                    let saved_zv = interp.buffer.borrow().point_max();
                     let labeled = interp.labeled_restrictions_snapshot(buffer_id);
                     // Mirrors sf_save_restriction: a wide buffer records "no
                     // restriction" (marker-tracking would spuriously
                     // re-narrow after edits at BEGV).
-                    if saved_begv == 1 && saved_zv == interp.buffer.size_total() + 1 {
+                    if saved_begv == 1 && saved_zv == interp.buffer.borrow().size_total() + 1 {
                         interp
                             .bc_unwinds
                             .push(UnwindEntry::RestrictionWide { buffer_id, labeled });

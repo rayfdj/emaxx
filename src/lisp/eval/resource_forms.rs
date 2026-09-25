@@ -6,7 +6,7 @@ use crate::lisp::types::LispErrorKind;
 impl Interpreter {
     pub(crate) fn save_excursion_state(&mut self) -> SavedExcursion {
         let buffer_id = self.current_buffer_id();
-        let point = self.buffer.point();
+        let point = self.buffer.borrow().point();
         let marker_id = match self.make_marker().kind() {
             Kind::Marker(id) => id,
             _ => unreachable!("make_marker returns a marker"),
@@ -26,18 +26,21 @@ impl Interpreter {
             let point = self
                 .marker_position(saved.marker_id)
                 .unwrap_or(saved.point)
-                .clamp(self.buffer.point_min(), self.buffer.point_max());
-            self.buffer.goto_char(point);
+                .clamp(
+                    self.buffer.borrow().point_min(),
+                    self.buffer.borrow().point_max(),
+                );
+            self.buffer.borrow_mut().goto_char(point);
         }
         let _ = self.set_marker(saved.marker_id, None, None);
     }
 
     pub(crate) fn save_restriction_state(&mut self) -> SavedRestriction {
         let buffer_id = self.current_buffer_id();
-        let beginning = self.buffer.point_min();
-        let end = self.buffer.point_max();
+        let beginning = self.buffer.borrow().point_min();
+        let end = self.buffer.borrow().point_max();
         let labeled = self.labeled_restrictions_snapshot(buffer_id);
-        let bounds = if beginning == 1 && end == self.buffer.size_total() + 1 {
+        let bounds = if beginning == 1 && end == self.buffer.borrow().size_total() + 1 {
             SavedRestrictionBounds::Wide
         } else {
             let beginning_marker_id = match self.make_marker().kind() {
@@ -75,8 +78,8 @@ impl Interpreter {
             }
             match saved.bounds {
                 SavedRestrictionBounds::Wide => {
-                    let full_end = self.buffer.size_total() + 1;
-                    self.buffer.restore_restriction(1, full_end);
+                    let full_end = self.buffer.borrow().size_total() + 1;
+                    self.buffer.borrow_mut().restore_restriction(1, full_end);
                 }
                 SavedRestrictionBounds::Narrow {
                     beginning,
@@ -88,7 +91,7 @@ impl Interpreter {
                         .marker_position(beginning_marker_id)
                         .unwrap_or(beginning);
                     let end = self.marker_position(end_marker_id).unwrap_or(end);
-                    self.buffer.restore_restriction(beginning, end);
+                    self.buffer.borrow_mut().restore_restriction(beginning, end);
                     let _ = self.set_marker(beginning_marker_id, None, None);
                     let _ = self.set_marker(end_marker_id, None, None);
                 }

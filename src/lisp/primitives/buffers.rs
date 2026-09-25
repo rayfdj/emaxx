@@ -195,13 +195,15 @@ pub(crate) fn translate_region_with_table(
     interp
         .delete_region_current_buffer(from, to)
         .map_err(|e| LispError::Signal(e.to_string()))?;
-    interp.buffer.goto_char(from);
+    interp.buffer.borrow_mut().goto_char(from);
     interp.insert_current_buffer(&translated);
     interp.set_inserted_extended_chars(from, &translated_extended_chars);
     for span in translated_props {
-        interp
-            .buffer
-            .set_text_properties(from + span.start, from + span.end, &span.props);
+        interp.buffer.borrow_mut().set_text_properties(
+            from + span.start,
+            from + span.end,
+            &span.props,
+        );
     }
     Ok(Value::Integer(changed))
 }
@@ -850,17 +852,17 @@ pub(crate) fn resolve_char_modifiers(value: i64) -> i64 {
 }
 
 pub(crate) fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {
-    buffer_position_to_byte(&interp.buffer, pos)
+    buffer_position_to_byte(&interp.buffer.borrow(), pos)
 }
 
 pub(crate) fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usize> {
-    buffer_byte_to_position(&interp.buffer, byte)
+    buffer_byte_to_position(&interp.buffer.borrow(), byte)
 }
 
 pub(crate) fn column_at(interp: &Interpreter, env: &Env, line_start: usize, pos: usize) -> usize {
     let mut col = 0usize;
     for p in line_start..pos {
-        match interp.buffer.char_at(p) {
+        match interp.buffer.borrow().char_at(p) {
             Some(ch) => col = column_after(interp, env, col, p, ch),
             None => break,
         }
@@ -890,7 +892,7 @@ pub(crate) fn column_after(
 }
 
 pub(crate) fn char_is_invisible(interp: &Interpreter, pos: usize, env: &Env) -> bool {
-    let value = buffer_char_property_at(interp, &interp.buffer, pos, "invisible");
+    let value = buffer_char_property_at(interp, &interp.buffer.borrow(), pos, "invisible");
     invisibility_value_is_hidden(interp, &value, env)
 }
 

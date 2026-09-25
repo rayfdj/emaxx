@@ -873,7 +873,7 @@ define_dispatch!(
                 // before consulting the current table in a unibyte buffer.
                 // This keeps entries installed with
                 // `unibyte-char-to-multibyte' visible to `char-syntax'.
-                if !interp.buffer.is_multibyte() && (0x80..=0xFF).contains(&code) {
+                if !interp.buffer.borrow().is_multibyte() && (0x80..=0xFF).contains(&code) {
                     code += RAW_BYTE8_BASE;
                 }
                 let class =

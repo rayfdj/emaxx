@@ -183,7 +183,7 @@ fn describe_vector_value(
         .filter(|value| !value.is_nil())
         .cloned()
         .unwrap_or_else(|| Value::Symbol("princ".into()));
-    let output_buffer = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let output_buffer = Value::Buffer(interp.buffer);
     let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
         let mut first = true;
@@ -585,7 +585,7 @@ define_dispatch!(
 
             "recent-auto-save-p" => {
                 need_args(name, args, 0)?;
-                Ok(if interp.buffer.is_autosaved() {
+                Ok(if interp.buffer.borrow().is_autosaved() {
                     Value::T
                 } else {
                     Value::Nil
@@ -593,7 +593,7 @@ define_dispatch!(
             }
             "set-buffer-auto-saved" => {
                 need_args(name, args, 0)?;
-                interp.buffer.set_autosaved();
+                interp.buffer.borrow_mut().set_autosaved();
                 Ok(Value::Nil)
             }
             "clear-buffer-auto-save-failure" => {
@@ -634,15 +634,15 @@ define_dispatch!(
                 let path = interp
                     .buffer_local_value(interp.current_buffer_id(), "buffer-auto-save-file-name")
                     .and_then(|value| string_text(&value).ok())
-                    .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer));
-                std::fs::write(&path, interp.buffer.buffer_string())
+                    .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer.borrow()));
+                std::fs::write(&path, interp.buffer.borrow().buffer_string())
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "buffer-auto-save-file-name",
                     Value::String(path.into()),
                 );
-                interp.buffer.set_autosaved();
+                interp.buffer.borrow_mut().set_autosaved();
                 Ok(Value::Nil)
             }
             "unix-sync" => {
@@ -1161,7 +1161,7 @@ define_dispatch!(
                 let result = interp.call_function_value(callback, None, &[], env)?;
                 let elapsed = start.elapsed().as_secs_f64();
                 if elapsed >= timeout
-                    && let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id)
+                    && let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id)
                 {
                     let current = buffer.buffer_string();
                     let suffix = current

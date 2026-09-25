@@ -938,13 +938,13 @@ pub(crate) fn internal_default_process_filter(
     if switched {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let old_point = interp.buffer.point();
+    let old_point = interp.buffer.borrow().point();
     let insert_at = interp
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
-    interp.buffer.goto_char(insert_at);
+    interp.buffer.borrow_mut().goto_char(insert_at);
     interp.insert_current_buffer_before_markers(output);
-    let new_pos = interp.buffer.point();
+    let new_pos = interp.buffer.borrow().point();
     let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
     let inserted_chars = output.chars().count();
     let restored_point = if old_point >= insert_at {
@@ -952,7 +952,7 @@ pub(crate) fn internal_default_process_filter(
     } else {
         old_point
     };
-    interp.buffer.goto_char(restored_point);
+    interp.buffer.borrow_mut().goto_char(restored_point);
     if switched {
         interp.set_current_buffer_id(saved_buffer_id)?;
     }
@@ -989,13 +989,13 @@ pub(crate) fn internal_default_process_sentinel(
     if switched {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let old_point = interp.buffer.point();
+    let old_point = interp.buffer.borrow().point();
     let insert_at = interp
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
-    interp.buffer.goto_char(insert_at);
+    interp.buffer.borrow_mut().goto_char(insert_at);
     interp.insert_current_buffer(&text);
-    let new_pos = interp.buffer.point();
+    let new_pos = interp.buffer.borrow().point();
     let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
     let inserted_chars = text.chars().count();
     let restored_point = if old_point >= insert_at {
@@ -1003,7 +1003,7 @@ pub(crate) fn internal_default_process_sentinel(
     } else {
         old_point
     };
-    interp.buffer.goto_char(restored_point);
+    interp.buffer.borrow_mut().goto_char(restored_point);
     if switched {
         interp.set_current_buffer_id(saved_buffer_id)?;
     }
@@ -1140,7 +1140,7 @@ pub(crate) fn append_process_bytes_to_buffer(
             .transpose()?;
     }
     let mut coding = coding.unwrap_or_else(|| "undecided".into());
-    if !interp.buffer.is_multibyte() {
+    if !interp.buffer.borrow().is_multibyte() {
         coding = coding_variant_name(
             interp,
             "raw-text",

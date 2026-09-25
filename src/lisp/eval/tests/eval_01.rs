@@ -8566,11 +8566,11 @@ fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
     )
     .expect("minibuffer accepts the propertized prompt");
     assert_eq!(
-        interp.buffer.text_property_at(1, "face"),
+        interp.buffer.borrow().text_property_at(1, "face"),
         Some(Value::Symbol("minibuffer-prompt".into()))
     );
     assert_eq!(
-        interp.buffer.text_property_at(11, "face"),
+        interp.buffer.borrow().text_property_at(11, "face"),
         Some(Value::list([
             Value::Symbol("help-key-binding".into()),
             Value::Symbol("minibuffer-prompt".into()),
@@ -8578,7 +8578,7 @@ fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
         "the y key keeps its specific face before the appended prompt face"
     );
     assert_eq!(
-        interp.buffer.text_property_at(16, "face"),
+        interp.buffer.borrow().text_property_at(16, "face"),
         Some(Value::list([
             Value::Symbol("help-key-binding".into()),
             Value::Symbol("minibuffer-prompt".into()),

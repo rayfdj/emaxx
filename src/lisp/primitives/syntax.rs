@@ -613,7 +613,7 @@ impl SyntaxScan {
     }
 
     fn refresh(&mut self, interp: &Interpreter, pos: usize) {
-        let (start, end) = interp.buffer.text_property_interval_around(pos);
+        let (start, end) = interp.buffer.borrow().text_property_interval_around(pos);
         self.b_property = start;
         self.e_property = end.max(pos + 1);
         // syntax.c:374 (update_syntax_table): the property comes off the
@@ -621,7 +621,7 @@ impl SyntaxScan {
         // category indirection) only; overlays never feed syntax scans.
         let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
             interp,
-            &interp.buffer,
+            &interp.buffer.borrow(),
             pos,
             "syntax-table",
         )
@@ -682,7 +682,7 @@ fn syntax_entry_at_buffer_position(
     }
     let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
         interp,
-        &interp.buffer,
+        &interp.buffer.borrow(),
         pos,
         "syntax-table",
     )
@@ -1419,11 +1419,11 @@ fn scan_forw_comment(
 // scan_lists' single-char call site; forward-comment computes them itself
 // (two-char enders included) exactly like Fforward_comment.
 fn scan_back_comment(interp: &mut Interpreter, env: &mut Env, from: i64) -> Option<i64> {
-    let begv = interp.buffer.point_min();
+    let begv = interp.buffer.borrow().point_min();
     if from <= begv as i64 {
         return None;
     }
-    let chars = ScanChars::new(&interp.buffer);
+    let chars = ScanChars::new(&interp.buffer.borrow());
     let from = usize::try_from(from).ok()?;
     let ch = chars.get(from - 1)?;
     let table_id = interp.current_syntax_table_id();
@@ -1494,14 +1494,14 @@ fn find_defun_start_gnu(
     begv: usize,
 ) -> usize {
     if comment_use_syntax_ppss_enabled(interp) && interp.has_lisp_function("syntax-ppss") {
-        let saved_point = interp.buffer.point();
+        let saved_point = interp.buffer.borrow().point();
         let result = interp.call_function_value(
             Value::Symbol("syntax-ppss".into()),
             Some("syntax-ppss"),
             &[Value::Integer(pos as i64)],
             env,
         );
-        interp.buffer.goto_char(saved_point);
+        interp.buffer.borrow_mut().goto_char(saved_point);
         if let Ok(state) = result
             && let Ok(items) = state.to_vec()
             && let Some(start) = items.get(8).and_then(|value| value.as_integer().ok())
@@ -1698,7 +1698,7 @@ fn back_comment_gnu(
 
     // Mixed delimiters or overlapping markers: decode going forwards from
     // a known safe place, as GNU's lossage path does.
-    let saved_point = interp.buffer.point();
+    let saved_point = interp.buffer.borrow().point();
     let mut defun_start = if defun_start != 0 {
         defun_start
     } else {
@@ -1748,7 +1748,7 @@ fn back_comment_gnu(
             break;
         }
     }
-    interp.buffer.goto_char(saved_point);
+    interp.buffer.borrow_mut().goto_char(saved_point);
     (from != comment_end).then_some(from)
 }
 
@@ -1760,7 +1760,7 @@ pub(super) fn ensure_syntax_propertized(interp: &mut Interpreter, env: &mut Env)
         .is_some_and(|value| value.is_truthy())
         && interp.has_lisp_function("syntax-propertize")
     {
-        let max = interp.buffer.point_max();
+        let max = interp.buffer.borrow().point_max();
         let _ = interp.call_function_value(
             Value::Symbol("syntax-propertize".into()),
             Some("syntax-propertize"),
@@ -1796,11 +1796,11 @@ pub(super) fn scan_lists_gnu(
     // Buffer positions remain absolute while narrowed.  Keep this text
     // indexed in the same coordinate system and use BEGV/ZV as the scan
     // bounds, just as GNU's scan_lists does.
-    let chars = ScanChars::new(&interp.buffer);
+    let chars = ScanChars::new(&interp.buffer.borrow());
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
-    let begv = interp.buffer.point_min() as i64;
-    let zv = interp.buffer.point_max() as i64;
+    let begv = interp.buffer.borrow().point_min() as i64;
+    let zv = interp.buffer.borrow().point_max() as i64;
     let ignore_comments = interp
         .lookup_var("parse-sexp-ignore-comments", env)
         .is_some_and(|value| value.is_truthy());
@@ -2206,7 +2206,7 @@ pub(super) fn parse_forward(
         return Err(LispError::Signal("`from` is greater than `to`".into()));
     }
     // FROM and TO are absolute buffer positions even under narrowing.
-    let mut chars = ScanChars::new(&interp.buffer);
+    let mut chars = ScanChars::new(&interp.buffer.borrow());
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
     let comment_end_can_be_escaped = interp
@@ -2254,7 +2254,7 @@ pub(super) fn parse_forward(
             });
             idx += 1;
             if commentstop != CommentStop::No {
-                interp.buffer.goto_char(idx + 1);
+                interp.buffer.borrow_mut().goto_char(idx + 1);
                 return Ok(encode_parse_state(&state));
             }
         }
@@ -2287,7 +2287,7 @@ pub(super) fn parse_forward(
                 idx += 1;
                 state.comment = None;
                 if commentstop != CommentStop::No {
-                    interp.buffer.goto_char(idx + 1);
+                    interp.buffer.borrow_mut().goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
             }
@@ -2305,13 +2305,13 @@ pub(super) fn parse_forward(
                         &mut scan,
                         &chars,
                         idx as i64 + 1,
-                        interp.buffer.point_min() as i64,
+                        interp.buffer.borrow().point_min() as i64,
                     )
                 {
                     state.string = None;
                     idx += 1;
                     if commentstop == CommentStop::SyntaxTable {
-                        interp.buffer.goto_char(idx + 1);
+                        interp.buffer.borrow_mut().goto_char(idx + 1);
                         return Ok(encode_parse_state(&state));
                     }
                     continue;
@@ -2326,13 +2326,13 @@ pub(super) fn parse_forward(
                     &mut scan,
                     &chars,
                     idx as i64 + 1,
-                    interp.buffer.point_min() as i64,
+                    interp.buffer.borrow().point_min() as i64,
                 )
             {
                 state.string = None;
                 idx += 1;
                 if commentstop == CommentStop::SyntaxTable {
-                    interp.buffer.goto_char(idx + 1);
+                    interp.buffer.borrow_mut().goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
                 continue;
@@ -2359,7 +2359,7 @@ pub(super) fn parse_forward(
                         idx += 1;
                         state.comment = None;
                         if commentstop != CommentStop::No {
-                            interp.buffer.goto_char(idx + 1);
+                            interp.buffer.borrow_mut().goto_char(idx + 1);
                             return Ok(encode_parse_state(&state));
                         }
                         continue;
@@ -2373,7 +2373,7 @@ pub(super) fn parse_forward(
                         idx += 1;
                         state.comment = None;
                         if commentstop != CommentStop::No {
-                            interp.buffer.goto_char(idx + 1);
+                            interp.buffer.borrow_mut().goto_char(idx + 1);
                             return Ok(encode_parse_state(&state));
                         }
                         continue;
@@ -2428,7 +2428,7 @@ pub(super) fn parse_forward(
                         idx += 2;
                         state.comment = None;
                         if commentstop != CommentStop::No {
-                            interp.buffer.goto_char(idx + 1);
+                            interp.buffer.borrow_mut().goto_char(idx + 1);
                             return Ok(encode_parse_state(&state));
                         }
                         continue;
@@ -2448,7 +2448,7 @@ pub(super) fn parse_forward(
             });
             idx += start.len;
             if commentstop != CommentStop::No {
-                interp.buffer.goto_char(idx + 1);
+                interp.buffer.borrow_mut().goto_char(idx + 1);
                 return Ok(encode_parse_state(&state));
             }
             continue;
@@ -2468,7 +2468,7 @@ pub(super) fn parse_forward(
             in_symbol = false;
             idx += 1;
             if commentstop == CommentStop::SyntaxTable {
-                interp.buffer.goto_char(idx + 1);
+                interp.buffer.borrow_mut().goto_char(idx + 1);
                 return Ok(encode_parse_state(&state));
             }
             continue;
@@ -2485,7 +2485,7 @@ pub(super) fn parse_forward(
                 _ => false,
             }
         {
-            interp.buffer.goto_char(idx + 1);
+            interp.buffer.borrow_mut().goto_char(idx + 1);
             return Ok(encode_parse_state(&state));
         }
         match entry.class {
@@ -2495,7 +2495,7 @@ pub(super) fn parse_forward(
                     &mut scan,
                     &chars,
                     idx as i64 + 1,
-                    interp.buffer.point_min() as i64,
+                    interp.buffer.borrow().point_min() as i64,
                 ) {
                     // GNU records the string as the level's last sexp at
                     // its opening quote.
@@ -2508,7 +2508,7 @@ pub(super) fn parse_forward(
                     in_symbol = false;
                     idx += 1;
                     if commentstop == CommentStop::SyntaxTable {
-                        interp.buffer.goto_char(idx + 1);
+                        interp.buffer.borrow_mut().goto_char(idx + 1);
                         return Ok(encode_parse_state(&state));
                     }
                     continue;
@@ -2529,7 +2529,7 @@ pub(super) fn parse_forward(
                 // GNU stops when the depth crossing reaches TARGETDEPTH in
                 // either direction.
                 if target_depth.is_some_and(|depth| depth == state.depth()) {
-                    interp.buffer.goto_char(idx + 1);
+                    interp.buffer.borrow_mut().goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
             }
@@ -2540,7 +2540,7 @@ pub(super) fn parse_forward(
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
                     if target_depth.is_some_and(|depth| depth == state.depth()) {
-                        interp.buffer.goto_char(idx + 1);
+                        interp.buffer.borrow_mut().goto_char(idx + 1);
                         return Ok(encode_parse_state(&state));
                     }
                     continue;
@@ -2554,7 +2554,7 @@ pub(super) fn parse_forward(
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
                     if target_depth.is_some_and(|depth| depth == state.depth()) {
-                        interp.buffer.goto_char(idx + 1);
+                        interp.buffer.borrow_mut().goto_char(idx + 1);
                         return Ok(encode_parse_state(&state));
                     }
                     continue;
@@ -2565,7 +2565,7 @@ pub(super) fn parse_forward(
                 state.set_last_sexp(closed.open_pos);
                 idx += 1;
                 if target_depth.is_some_and(|depth| depth == state.depth()) {
-                    interp.buffer.goto_char(idx + 1);
+                    interp.buffer.borrow_mut().goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
             }
@@ -2593,7 +2593,7 @@ pub(super) fn parse_forward(
         }
     }
 
-    interp.buffer.goto_char(end + 1);
+    interp.buffer.borrow_mut().goto_char(end + 1);
     Ok(encode_parse_state(&state))
 }
 
@@ -2626,7 +2626,7 @@ pub(super) fn syntax_class_at_buffer_position_matches(
     position: usize,
     class: char,
 ) -> bool {
-    let Some(ch) = interp.buffer.char_at(position) else {
+    let Some(ch) = interp.buffer.borrow().char_at(position) else {
         return false;
     };
     let table_id = interp.current_syntax_table_id();
@@ -2649,7 +2649,7 @@ pub(super) fn syntax_class_chars_with_scan(
     effective: &mut SyntaxScan,
     position: usize,
 ) -> Option<(char, char)> {
-    let ch = interp.buffer.char_at(position)?;
+    let ch = interp.buffer.borrow().char_at(position)?;
     let table_class = syntax_class_char(effective.plain_table_entry(interp, ch).class);
     let effective_class = syntax_class_char(effective.entry_at(interp, ch, position).class);
     Some((table_class, effective_class))
@@ -2666,19 +2666,19 @@ pub(super) fn skip_syntax_impl(
     let limit = if let Some(limit_value) = limit_value {
         if limit_value.is_nil() {
             if forward {
-                interp.buffer.point_max()
+                interp.buffer.borrow().point_max()
             } else {
-                interp.buffer.point_min()
+                interp.buffer.borrow().point_min()
             }
         } else {
             position_from_value(interp, limit_value)?
         }
     } else if forward {
-        interp.buffer.point_max()
+        interp.buffer.borrow().point_max()
     } else {
-        interp.buffer.point_min()
+        interp.buffer.borrow().point_min()
     };
-    let start = interp.buffer.point();
+    let start = interp.buffer.borrow().point();
     // syntax.c:skip_syntaxes: one SETUP_SYNTAX_TABLE for the scan (the
     // property machinery armed once from `parse-sexp-lookup-properties'),
     // the syntax-table property refreshed as the scan crosses an
@@ -2698,28 +2698,30 @@ pub(super) fn skip_syntax_impl(
             != negated
     };
     if forward {
-        while interp.buffer.point() < limit {
-            let position = interp.buffer.point();
-            let Some(ch) = interp.buffer.char_at(position) else {
+        while interp.buffer.borrow().point() < limit {
+            let position = interp.buffer.borrow().point();
+            let Some(ch) = interp.buffer.borrow().char_at(position) else {
                 break;
             };
             if !matches(interp, ch, position) {
                 break;
             }
-            let _ = interp.buffer.forward_char(1);
+            let _ = interp.buffer.borrow_mut().forward_char(1);
         }
     } else {
-        while interp.buffer.point() > limit {
-            let Some(ch) = interp.buffer.char_before() else {
+        while interp.buffer.borrow().point() > limit {
+            let Some(ch) = interp.buffer.borrow().char_before() else {
                 break;
             };
-            if !matches(interp, ch, interp.buffer.point() - 1) {
+            if !matches(interp, ch, interp.buffer.borrow().point() - 1) {
                 break;
             }
-            let _ = interp.buffer.forward_char(-1);
+            let _ = interp.buffer.borrow_mut().forward_char(-1);
         }
     }
-    Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
+    Ok(Value::Integer(
+        interp.buffer.borrow().point() as i64 - start as i64,
+    ))
 }
 
 pub(super) fn scan_lists_impl(
@@ -2754,15 +2756,15 @@ pub(super) fn forward_comment_impl(
     // made internally by the propertizer.
     ensure_syntax_propertized_preserving_match_data(interp, env);
 
-    let minimum = interp.buffer.point_min();
-    let mut chars = ScanChars::new(&interp.buffer);
-    chars.truncate(interp.buffer.point_max().saturating_sub(1));
+    let minimum = interp.buffer.borrow().point_min();
+    let mut chars = ScanChars::new(&interp.buffer.borrow());
+    chars.truncate(interp.buffer.borrow().point_max().saturating_sub(1));
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
         .is_some_and(|value| value.is_truthy());
-    let original_point = interp.buffer.point();
+    let original_point = interp.buffer.borrow().point();
 
     if count > 0 {
         let mut point = original_point;
@@ -2772,7 +2774,7 @@ pub(super) fn forward_comment_impl(
             let Some(start) = comment_start_at(interp, &mut scan, &chars, idx) else {
                 // GNU stops before the non-comment token, keeping the
                 // whitespace crossed so far behind point.
-                interp.buffer.goto_char(candidate);
+                interp.buffer.borrow_mut().goto_char(candidate);
                 return Ok(Value::Nil);
             };
             let (end, closed) = skip_comment_with_status(
@@ -2785,11 +2787,11 @@ pub(super) fn forward_comment_impl(
             );
             point = end + 1;
             if !closed {
-                interp.buffer.goto_char(point);
+                interp.buffer.borrow_mut().goto_char(point);
                 return Ok(Value::Nil);
             }
         }
-        interp.buffer.goto_char(point);
+        interp.buffer.borrow_mut().goto_char(point);
         return Ok(Value::T);
     }
 
@@ -2801,7 +2803,7 @@ pub(super) fn forward_comment_impl(
     for _ in 0..count.unsigned_abs() {
         loop {
             if from <= minimum {
-                interp.buffer.goto_char(minimum);
+                interp.buffer.borrow_mut().goto_char(minimum);
                 return Ok(Value::Nil);
             }
             from -= 1;
@@ -2854,7 +2856,7 @@ pub(super) fn forward_comment_impl(
                     }
                 }
                 if !fence_found {
-                    interp.buffer.goto_char(ini + 1);
+                    interp.buffer.borrow_mut().goto_char(ini + 1);
                     return Ok(Value::Nil);
                 }
                 // We have skipped one comment.
@@ -2892,19 +2894,19 @@ pub(super) fn forward_comment_impl(
                         if two_char_ender {
                             from += 1;
                         }
-                        interp.buffer.goto_char(from + 1);
+                        interp.buffer.borrow_mut().goto_char(from + 1);
                         return Ok(Value::Nil);
                     }
                 }
             } else if code == SyntaxClass::Whitespace && !quoted {
                 continue;
             } else {
-                interp.buffer.goto_char(from + 1);
+                interp.buffer.borrow_mut().goto_char(from + 1);
                 return Ok(Value::Nil);
             }
         }
     }
-    interp.buffer.goto_char(from);
+    interp.buffer.borrow_mut().goto_char(from);
     Ok(Value::T)
 }
 
@@ -2913,11 +2915,11 @@ pub(super) fn forward_comment_impl(
 pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, LispError> {
     // Point and point-min are absolute buffer positions even while narrowed.
     // Index the full buffer rather than the accessible substring.
-    let chars = ScanChars::new(&interp.buffer);
+    let chars = ScanChars::new(&interp.buffer.borrow());
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
-    let minimum = interp.buffer.point_min();
-    let mut position = interp.buffer.point();
+    let minimum = interp.buffer.borrow().point_min();
+    let mut position = interp.buffer.borrow().point();
     while position > minimum {
         let ch = chars.at(position - 2);
         let char_position = position - 1;
@@ -2935,6 +2937,6 @@ pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, L
         }
         position -= 1;
     }
-    interp.buffer.goto_char(position);
+    interp.buffer.borrow_mut().goto_char(position);
     Ok(Value::Nil)
 }

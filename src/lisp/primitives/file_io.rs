@@ -617,7 +617,10 @@ pub(crate) fn write_region_value_with_logical_path(
     validate_file_name(&path)?;
     let existed_before_write = fs::symlink_metadata(&path).is_ok();
     let (text, source_multibyte) = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
-        (interp.buffer.buffer_string(), interp.buffer.is_multibyte())
+        (
+            interp.buffer.borrow().buffer_string(),
+            interp.buffer.borrow().is_multibyte(),
+        )
     } else if string_like(&args[0]).is_some() {
         let string = string_like(&args[0]).expect("checked string-like value");
         (string.text, string.multibyte)
@@ -627,9 +630,10 @@ pub(crate) fn write_region_value_with_logical_path(
         (
             interp
                 .buffer
+                .borrow()
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
-            interp.buffer.is_multibyte(),
+            interp.buffer.borrow().is_multibyte(),
         )
     };
     let visiting = args
@@ -762,9 +766,12 @@ pub(crate) fn write_region_value_with_logical_path(
             string_text(visit)?
         };
         let visited_name = expand_file_name_runtime(interp, env, &visited_name, None)?;
-        interp.buffer.file = Some(visited_name);
-        interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-        interp.buffer.set_unmodified();
+        interp.buffer.borrow_mut().file = Some(visited_name);
+        interp
+            .buffer
+            .borrow_mut()
+            .set_visited_file_modtime(file_modtime(&path)?);
+        interp.buffer.borrow_mut().set_unmodified();
         unlock_current_buffer(interp, env)?;
     }
     if interp
@@ -804,7 +811,7 @@ pub(crate) fn append_external_debugging_output(
                 .find_buffer(" *external-debugging-output*")
                 .map(|(id, _)| id)
                 .unwrap_or_else(|| interp.create_buffer(" *external-debugging-output*").0);
-            let buffer = interp
+            let mut buffer = interp
                 .get_buffer_by_id_mut(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
             let end = buffer.point_max();
@@ -846,7 +853,7 @@ pub(crate) fn write_printer_output(
         }
         None | Some(Kind::Nil) => {
             interp.append_message_capture(text, false, env);
-            interp.buffer.insert(text);
+            interp.buffer.borrow_mut().insert(text);
             Ok(())
         }
         Some(Kind::Buffer(_)) => {
@@ -861,10 +868,11 @@ pub(crate) fn write_printer_output(
                     buffer.point()
                 };
                 let nchars = text.chars().count();
-                let buffer = interp
+                let mut buffer = interp
                     .get_buffer_by_id_mut(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
                 buffer.insert(text);
+                drop(buffer);
                 interp.adjust_markers_for_insert(buffer_id, pos, nchars, false);
             }
             Ok(())
@@ -883,7 +891,7 @@ pub(crate) fn write_printer_output(
                 (buffer_id, position)
             };
             let new_position = {
-                let buffer = interp
+                let mut buffer = interp
                     .get_buffer_by_id_mut(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
                 let saved_point = buffer.point();
@@ -1055,15 +1063,15 @@ pub(crate) fn printer_stream_at_line_start(
 ) -> Result<bool, LispError> {
     match stream.map(|v| v.kind()) {
         None | Some(Kind::Nil | Kind::T) => Ok(buffer_position_at_line_start(
-            &interp.buffer,
-            interp.buffer.point(),
+            &interp.buffer.borrow(),
+            interp.buffer.borrow().point(),
         )),
         Some(Kind::Buffer(_)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(buffer, buffer.point()))
+            Ok(buffer_position_at_line_start(&buffer, buffer.point()))
         }
         Some(Kind::Marker(id)) => {
             let marker = interp
@@ -1078,14 +1086,14 @@ pub(crate) fn printer_stream_at_line_start(
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(buffer, position))
+            Ok(buffer_position_at_line_start(&buffer, position))
         }
         Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
             let Some(buffer) = external_debugging_output_buffer(interp) else {
                 return Ok(false);
             };
             let empty = buffer.point_min() == buffer.point_max();
-            Ok(!empty && buffer_position_at_line_start(buffer, buffer.point()))
+            Ok(!empty && buffer_position_at_line_start(&buffer, buffer.point()))
         }
         Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Lambda(_)) => Ok(false),
         Some(other) => Err(LispError::TypeError(
@@ -1097,7 +1105,7 @@ pub(crate) fn printer_stream_at_line_start(
 
 pub(crate) fn external_debugging_output_buffer(
     interp: &Interpreter,
-) -> Option<&crate::buffer::Buffer> {
+) -> Option<std::cell::Ref<'_, crate::buffer::Buffer>> {
     let buffer_id = interp
         .find_buffer(" *external-debugging-output*")
         .map(|(id, _)| id)?;
@@ -1144,11 +1152,12 @@ fn auto_coding_for_file(
     let (temp_id, _) = interp.create_buffer(&temp_name);
     interp.set_buffer_hooks_inhibited(temp_id, true);
     interp.set_current_buffer_id(temp_id)?;
-    interp.buffer.set_multibyte(false);
+    interp.buffer.borrow_mut().set_multibyte(false);
     interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
     {
-        let buffer = &mut interp.buffer;
-        buffer.goto_char(buffer.point_min());
+        let mut buffer = interp.buffer.borrow_mut();
+        let position = buffer.point_min();
+        buffer.goto_char(position);
     }
 
     let mut detection_env = env.clone();
@@ -1182,7 +1191,7 @@ pub(crate) fn decode_file_contents(
 ) -> Result<(String, String), LispError> {
     if literal {
         return Ok((
-            decode_inserted_bytes(bytes, interp.buffer.is_multibyte(), true),
+            decode_inserted_bytes(bytes, interp.buffer.borrow().is_multibyte(), true),
             "no-conversion".into(),
         ));
     }
@@ -1229,7 +1238,7 @@ pub(crate) fn decode_file_contents(
     // eol either explicitly requested or detected, and the coding recorded
     // as raw-text/raw-text-<eol> accordingly (oracle-probed).  raw-text and
     // no-conversion requests keep their own conversion-free paths below.
-    if !interp.buffer.is_multibyte()
+    if !interp.buffer.borrow().is_multibyte()
         && !requested.as_deref().is_some_and(|request| {
             matches!(
                 interp.coding_system_kind_name(request).as_deref(),
@@ -1402,9 +1411,9 @@ pub(crate) fn insert_file_contents(
             // `find-file-noselect' relies on this to create a correctly
             // named buffer for a file that does not exist yet.
             if visit {
-                interp.buffer.file = Some(path.clone());
-                interp.buffer.set_visited_file_modtime(None);
-                interp.buffer.set_unmodified();
+                interp.buffer.borrow_mut().file = Some(path.clone());
+                interp.buffer.borrow_mut().set_visited_file_modtime(None);
+                interp.buffer.borrow_mut().set_unmodified();
             }
             return Err(error);
         }
@@ -1428,10 +1437,10 @@ pub(crate) fn insert_file_contents(
         None
     };
     let mut inserted_chars = text.chars().count();
-    let original_point = interp.buffer.point();
+    let original_point = interp.buffer.borrow().point();
     let edit_result = (|| {
         if replace {
-            let old = interp.buffer.buffer_string();
+            let old = interp.buffer.borrow().buffer_string();
             let old_chars = old.chars().collect::<Vec<_>>();
             let new_chars = text.chars().collect::<Vec<_>>();
             let prefix = old_chars
@@ -1447,8 +1456,8 @@ pub(crate) fn insert_file_contents(
                 .count();
             let old_end = old_chars.len() - suffix;
             let new_end = new_chars.len() - suffix;
-            let start = interp.buffer.point_min() + prefix;
-            let end = interp.buffer.point_min() + old_end;
+            let start = interp.buffer.borrow().point_min() + prefix;
+            let end = interp.buffer.borrow().point_min() + old_end;
             let replacement = new_chars[prefix..new_end].iter().collect::<String>();
             let replacement_len = replacement.chars().count();
             // fileio.c saves point as a marker across the delete+insert
@@ -1481,7 +1490,7 @@ pub(crate) fn insert_file_contents(
                 // actually differs (track-changes relies on these bounds).
                 crate::lisp::primitives::delete_region_with_hooks(interp, start, end, env)?;
             }
-            interp.buffer.goto_char(start);
+            interp.buffer.borrow_mut().goto_char(start);
             if !replacement.is_empty() {
                 crate::lisp::primitives::insert_text_with_hooks(
                     interp,
@@ -1494,8 +1503,8 @@ pub(crate) fn insert_file_contents(
                 )?;
             }
             {
-                let point = replacement_point.min(interp.buffer.point_max());
-                interp.buffer.goto_char(point);
+                let point = replacement_point.min(interp.buffer.borrow().point_max());
+                interp.buffer.borrow_mut().goto_char(point);
             }
             return Ok(());
         }
@@ -1507,7 +1516,7 @@ pub(crate) fn insert_file_contents(
                 Value::String("Circular list".into()),
             ])));
         }
-        let insert_at = interp.buffer.point();
+        let insert_at = interp.buffer.borrow().point();
         // produce_charset's `charset' properties come in with the text
         // (the REPLACE path above inserts only the differing middle and
         // keeps none, a disclosed simplification).
@@ -1520,7 +1529,7 @@ pub(crate) fn insert_file_contents(
             false,
             env,
         )?;
-        interp.buffer.goto_char(insert_at);
+        interp.buffer.borrow_mut().goto_char(insert_at);
         Ok(())
     })();
     let restore_result = file_name_restore
@@ -1559,14 +1568,17 @@ pub(crate) fn insert_file_contents(
         detected
     };
     if visit {
-        interp.buffer.file = Some(path.clone());
-        interp.buffer.file_truename = Some(canonical_file_name(&path));
-        interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-        interp.buffer.set_unmodified();
+        interp.buffer.borrow_mut().file = Some(path.clone());
+        interp.buffer.borrow_mut().file_truename = Some(canonical_file_name(&path));
+        interp
+            .buffer
+            .borrow_mut()
+            .set_visited_file_modtime(file_modtime(&path)?);
+        interp.buffer.borrow_mut().set_unmodified();
         // GNU restores the pre-read undo list when visiting (fileio.c keeps
         // it aside around the insertion), so the very first interactive undo
         // must not remove the file's own contents.
-        interp.buffer.clear_undo();
+        interp.buffer.borrow_mut().clear_undo();
     }
     // last-coding-system-used keeps the caller's own spelling (`unix',
     // `binary', a bare `utf-8') unless the detector actually resolved
@@ -1664,19 +1676,18 @@ pub(crate) fn finish_insert_file_contents(
     Ok(inserted)
 }
 
-pub(crate) fn current_buffer_file(interp: &Interpreter) -> Option<&str> {
-    interp
-        .buffer
-        .file_truename
-        .as_deref()
-        .or(interp.buffer.file.as_deref())
+pub(crate) fn current_buffer_file(interp: &Interpreter) -> Option<std::cell::Ref<'_, str>> {
+    std::cell::Ref::filter_map(interp.buffer.borrow(), |buffer| {
+        buffer.file_truename.as_deref().or(buffer.file.as_deref())
+    })
+    .ok()
 }
 
 pub(crate) fn maybe_lock_current_buffer(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if !interp.buffer.is_modified() {
+    if !interp.buffer.borrow().is_modified() {
         return Ok(());
     }
     maybe_lock_current_buffer_file(interp, env)
@@ -1716,7 +1727,7 @@ pub(crate) fn maybe_lock_current_buffer_file(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
+    let Some(logical_path) = current_buffer_file(interp).map(|path| path.to_string()) else {
         return Ok(());
     };
     call_named_function(
@@ -1754,8 +1765,7 @@ pub(crate) fn lock_file_path(
         let subject_id = interp.buffer_list.iter().find_map(|(id, _)| {
             interp
                 .get_buffer_by_id(*id)
-                .and_then(|buffer| buffer.file_truename.as_deref())
-                .filter(|candidate| *candidate == truename)
+                .filter(|buffer| buffer.file_truename.as_deref() == Some(truename.as_str()))
                 .map(|_| *id)
         });
         if let Some(subject_id) = subject_id {
@@ -1793,7 +1803,7 @@ pub(crate) fn unlock_current_buffer(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Some(path) = current_buffer_file(interp).map(str::to_string) else {
+    let Some(path) = current_buffer_file(interp).map(|path| path.to_string()) else {
         return Ok(Value::Nil);
     };
     call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
@@ -1818,6 +1828,7 @@ pub(crate) fn unlock_buffer_by_id(
     else {
         return Ok(Value::Nil);
     };
+    drop(buffer);
     call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
 }
 
@@ -1865,7 +1876,7 @@ pub(crate) fn ensure_no_supersession_threat(
     // let-binding of it to nil suppresses the conflict prompt entirely
     // (auto-revert-tail-handler relies on this while appending).
     // The buffer's slot first (a field read), then the variable's binding.
-    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
+    let Some(logical_path) = current_buffer_file(interp).map(|path| path.to_string()) else {
         return Ok(());
     };
     if interp
@@ -1896,7 +1907,7 @@ pub(crate) fn ensure_no_supersession_threat(
     let Some(current_modtime) = file_modtime(&path)? else {
         return Ok(());
     };
-    let visited_modtime = interp.buffer.visited_file_modtime();
+    let visited_modtime = interp.buffer.borrow().visited_file_modtime();
     // An unknown recorded timestamp is GNU's explicit "do not verify"
     // state (used by `set-visited-file-name', among others).
     let unchanged = if interp

@@ -255,10 +255,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "frame.c:init_frame_once_for_pdumper resets selected_frame",
     ),
     ("old_selected_frame_id", "frame state, as selected_frame_id"),
-    (
-        "killed_buffer_file_names",
-        "Emaxx's memory of killed buffers' file names; a killed buffer's filename is nil in GNU",
-    ),
     ("next_buffer_id", "carried in the remembered scalars"),
     ("next_overlay_id", "carried in the remembered scalars"),
     (

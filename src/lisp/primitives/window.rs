@@ -123,19 +123,20 @@ pub(crate) fn current_window_start(interp: &Interpreter) -> usize {
 }
 
 pub(crate) fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usize, usize) {
-    interp
-        .buffer_bounds_by_id(buffer_id)
-        .unwrap_or((interp.buffer.point_min(), interp.buffer.point_max()))
+    interp.buffer_bounds_by_id(buffer_id).unwrap_or((
+        interp.buffer.borrow().point_min(),
+        interp.buffer.borrow().point_max(),
+    ))
 }
 
 fn buffer_line_start_at(interp: &Interpreter, buffer_id: u64, pos: usize) -> usize {
     if buffer_id == interp.current_buffer_id() {
-        interp.buffer.line_start_at(pos)
+        interp.buffer.borrow().line_start_at(pos)
     } else {
         interp
             .get_buffer_by_id(buffer_id)
             .map(|buffer| buffer.line_start_at(pos))
-            .unwrap_or_else(|| interp.buffer.line_start_at(pos))
+            .unwrap_or_else(|| interp.buffer.borrow().line_start_at(pos))
     }
 }
 
@@ -271,8 +272,8 @@ pub(crate) fn move_screen_lines(
     count: isize,
 ) -> (usize, isize) {
     use crate::lisp::primitives::dispatch::{visual_line_bounds, visual_segment_starts};
-    let point_min = interp.buffer.point_min();
-    let point_max = interp.buffer.point_max();
+    let point_min = interp.buffer.borrow().point_min();
+    let point_max = interp.buffer.borrow().point_max();
     let from = from.clamp(point_min, point_max);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = visual_segment_starts(interp, env, bol, eol);
@@ -316,8 +317,8 @@ pub(crate) fn scroll_selected_window(
     default_sign: isize,
     text_height: usize,
 ) -> Result<(), LispError> {
-    let point_min = interp.buffer.point_min();
-    let point_max = interp.buffer.point_max();
+    let point_min = interp.buffer.borrow().point_min();
+    let point_max = interp.buffer.borrow().point_max();
     let metrics = interactive_window_metrics();
     let text_height = text_height.max(1);
     let context = interp
@@ -333,7 +334,8 @@ pub(crate) fn scroll_selected_window(
     let window_start = if metrics.is_some() {
         current_window_start(interp).clamp(point_min, point_max)
     } else {
-        let point_line = beginning_of_line_at(interp, interp.buffer.point());
+        let point = interp.buffer.borrow().point();
+        let point_line = beginning_of_line_at(interp, point);
         move_screen_lines(interp, env, point_line, -((text_height / 2) as isize)).0
     };
 
@@ -352,30 +354,32 @@ pub(crate) fn scroll_selected_window(
 
     set_current_window_start(interp, new_start);
 
-    let point_line = beginning_of_line_at(interp, interp.buffer.point());
+    let point = interp.buffer.borrow().point();
+    let point_line = beginning_of_line_at(interp, point);
     if scroll_preserve_screen_position(interp, env) {
         let offset = line_distance(interp, window_start, point_line);
         let (target, target_shortage) = move_screen_lines(interp, env, new_start, offset as isize);
         if target_shortage > 0 {
             {
-                let buffer = &mut interp.buffer;
-                buffer.goto_char(buffer.point_max());
+                let mut buffer = interp.buffer.borrow_mut();
+                let position = buffer.point_max();
+                buffer.goto_char(position);
             }
         } else {
-            interp.buffer.goto_char(target);
+            interp.buffer.borrow_mut().goto_char(target);
         }
-    } else if interp.buffer.point() < new_start {
+    } else if interp.buffer.borrow().point() < new_start {
         // Point fell above the window: GNU puts it on the new first line.
-        interp.buffer.goto_char(new_start);
+        interp.buffer.borrow_mut().goto_char(new_start);
     } else {
         // Point fell below the window: GNU puts it on the last visible
         // screen line.
         let (past_bottom, bottom_shortage) =
             move_screen_lines(interp, env, new_start, text_height as isize);
-        if bottom_shortage == 0 && interp.buffer.point() >= past_bottom {
+        if bottom_shortage == 0 && interp.buffer.borrow().point() >= past_bottom {
             let (last_visible, _) =
                 move_screen_lines(interp, env, new_start, text_height as isize - 1);
-            interp.buffer.goto_char(last_visible);
+            interp.buffer.borrow_mut().goto_char(last_visible);
         }
     }
 

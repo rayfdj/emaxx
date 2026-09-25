@@ -42,7 +42,7 @@ impl Interpreter {
             if *buffer_id == current_id {
                 continue;
             }
-            if let Some(buffer) = self.get_buffer_by_id_mut(*buffer_id) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
                 buffer.goto_char(pos);
                 if let Some(props) = props.clone() {
@@ -72,7 +72,7 @@ impl Interpreter {
             if *buffer_id == current_id {
                 continue;
             }
-            if let Some(buffer) = self.get_buffer_by_id_mut(*buffer_id) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
                 let _ = buffer.delete_region(from, to);
                 let restored = if saved_point > to {
@@ -99,7 +99,7 @@ impl Interpreter {
         &mut self,
         apply: &dyn Fn(&mut crate::buffer::Buffer),
     ) {
-        apply(&mut self.buffer);
+        apply(&mut self.buffer.borrow_mut());
         if self.indirect_buffers.is_empty() {
             return;
         }
@@ -108,8 +108,8 @@ impl Interpreter {
             if buffer_id == current_id {
                 continue;
             }
-            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                apply(buffer);
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                apply(&mut buffer);
             }
         }
     }
@@ -124,11 +124,11 @@ impl Interpreter {
         let current_id = self.current_buffer_id();
         if self.indirect_buffers.is_empty() {
             if target_id == current_id {
-                apply(&mut self.buffer);
+                apply(&mut self.buffer.borrow_mut());
                 return true;
             }
-            if let Some(buffer) = self.get_buffer_by_id_mut(target_id) {
-                apply(buffer);
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(target_id) {
+                apply(&mut buffer);
                 return true;
             }
             return false;
@@ -136,10 +136,10 @@ impl Interpreter {
         let mut applied = false;
         for buffer_id in self.related_buffer_ids(target_id) {
             if buffer_id == current_id {
-                apply(&mut self.buffer);
+                apply(&mut self.buffer.borrow_mut());
                 applied = true;
-            } else if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                apply(buffer);
+            } else if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                apply(&mut buffer);
                 applied = true;
             }
         }
@@ -147,45 +147,51 @@ impl Interpreter {
     }
 
     pub fn insert_current_buffer(&mut self, s: &str) {
-        let pos = self.buffer.point();
+        let pos = self.buffer.borrow().point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.insert(s);
+        self.buffer.borrow_mut().insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
         self.mirror_insert_to_related_buffers(&related, pos, s, None, false);
     }
 
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
-        let pos = self.buffer.point();
+        let pos = self.buffer.borrow().point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
         let props = self
             .buffer
+            .borrow()
             .inherited_text_properties(pos, defaults.as_ref());
-        self.buffer.insert_with_properties(s, Some(props.clone()));
+        self.buffer
+            .borrow_mut()
+            .insert_with_properties(s, Some(props.clone()));
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
         self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), false);
     }
 
     pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
-        let pos = self.buffer.point();
+        let pos = self.buffer.borrow().point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.insert(s);
+        self.buffer.borrow_mut().insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
         self.mirror_insert_to_related_buffers(&related, pos, s, None, true);
     }
 
     pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
-        let pos = self.buffer.point();
+        let pos = self.buffer.borrow().point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
         let props = self
             .buffer
+            .borrow()
             .inherited_text_properties(pos, defaults.as_ref());
-        self.buffer.insert_with_properties(s, Some(props.clone()));
+        self.buffer
+            .borrow_mut()
+            .insert_with_properties(s, Some(props.clone()));
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
         self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), true);
     }
@@ -198,12 +204,14 @@ impl Interpreter {
         }
         let current_id = self.current_buffer_id();
         let related = self.related_buffer_ids(current_id);
-        self.buffer.set_inserted_extended_chars(start, chars);
+        self.buffer
+            .borrow_mut()
+            .set_inserted_extended_chars(start, chars);
         for buffer_id in related {
             if buffer_id == current_id {
                 continue;
             }
-            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                 buffer.set_inserted_extended_chars(start, chars);
             }
         }
@@ -214,8 +222,8 @@ impl Interpreter {
         from: usize,
         to: usize,
     ) -> Result<String, crate::buffer::BufferError> {
-        let from = from.max(self.buffer.point_min());
-        let to = to.min(self.buffer.point_max());
+        let from = from.max(self.buffer.borrow().point_min());
+        let to = to.min(self.buffer.borrow().point_max());
         let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
         // undo.c records marker adjustments immediately before recording
         // the deletion, so the Lisp undo list exposes the deletion followed
@@ -223,33 +231,37 @@ impl Interpreter {
         // adjacency, and the first-change `(t . TIME)' entry the deletion
         // itself records must stay below both.  The riders are spliced in
         // under the deletion record once it exists.
-        let marker_adjustments: Vec<crate::buffer::UndoEntry> = if self.buffer.undo_enabled() {
-            affected_markers
-                .iter()
-                .filter_map(|marker| {
-                    let automatic_position = if self.marker_insertion_type(marker.id) == Some(true)
-                    {
-                        to
-                    } else {
-                        from
-                    };
-                    let adjustment = automatic_position as i64 - marker.original_pos as i64;
-                    (adjustment != 0).then(|| {
-                        crate::buffer::UndoEntry::Opaque(Value::cons(
-                            Value::Marker(marker.id),
-                            Value::Integer(adjustment),
-                        ))
+        let marker_adjustments: Vec<crate::buffer::UndoEntry> =
+            if self.buffer.borrow().undo_enabled() {
+                affected_markers
+                    .iter()
+                    .filter_map(|marker| {
+                        let automatic_position =
+                            if self.marker_insertion_type(marker.id) == Some(true) {
+                                to
+                            } else {
+                                from
+                            };
+                        let adjustment = automatic_position as i64 - marker.original_pos as i64;
+                        (adjustment != 0).then(|| {
+                            crate::buffer::UndoEntry::Opaque(Value::cons(
+                                Value::Marker(marker.id),
+                                Value::Integer(adjustment),
+                            ))
+                        })
                     })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let related = self.related_buffer_ids(self.current_buffer_id());
-        let deleted = self.buffer.delete_region(from, to)?;
+        let deleted = self.buffer.borrow_mut().delete_region(from, to)?;
         self.buffer
+            .borrow_mut()
             .splice_undo_entries_before_last(marker_adjustments);
-        self.buffer.attach_markers_to_last_delete(affected_markers);
+        self.buffer
+            .borrow_mut()
+            .attach_markers_to_last_delete(affected_markers);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);
         Ok(deleted)
@@ -281,27 +293,42 @@ impl Interpreter {
             .collect()
     }
 
-    /// Borrow a live buffer by ID.
-    pub fn get_buffer_by_id(&self, id: u64) -> Option<&crate::buffer::Buffer> {
+    /// Return the actual live object; constructing a Lisp reference allocates nothing.
+    pub fn buffer_object(&self, id: u64) -> Option<crate::lisp::types::BufferRef> {
         if id == self.current_buffer_id {
-            Some(&self.buffer)
+            Some(self.buffer)
         } else {
             self.inactive_buffers
                 .iter()
                 .find(|(buffer_id, _)| *buffer_id == id)
-                .map(|(_, buffer)| buffer)
+                .map(|(_, buffer)| *buffer)
+        }
+    }
+
+    /// Borrow a live buffer by ID.
+    pub fn get_buffer_by_id(&self, id: u64) -> Option<std::cell::Ref<'_, crate::buffer::Buffer>> {
+        if id == self.current_buffer_id {
+            Some(self.buffer.borrow())
+        } else {
+            self.inactive_buffers
+                .iter()
+                .find(|(buffer_id, _)| *buffer_id == id)
+                .map(|(_, buffer)| buffer.borrow())
         }
     }
 
     /// Borrow a live buffer mutably by ID.
-    pub fn get_buffer_by_id_mut(&mut self, id: u64) -> Option<&mut crate::buffer::Buffer> {
+    pub fn get_buffer_by_id_mut(
+        &mut self,
+        id: u64,
+    ) -> Option<std::cell::RefMut<'_, crate::buffer::Buffer>> {
         if id == self.current_buffer_id {
-            Some(&mut self.buffer)
+            Some(self.buffer.borrow_mut())
         } else {
             self.inactive_buffers
                 .iter_mut()
                 .find(|(buffer_id, _)| *buffer_id == id)
-                .map(|(_, buffer)| buffer)
+                .map(|(_, buffer)| buffer.borrow_mut())
         }
     }
 
@@ -312,7 +339,7 @@ impl Interpreter {
     }
 
     pub fn set_buffer_hooks_inhibited(&mut self, id: u64, inhibit: bool) {
-        if let Some(buffer) = self.get_buffer_by_id_mut(id) {
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.inhibit_hooks = inhibit;
         }
     }
@@ -329,7 +356,9 @@ impl Interpreter {
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
             let state = &mut **self;
             let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer.swap_text_state(&mut inactive_buffers[pos].1);
+            buffer
+                .borrow_mut()
+                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
             return Ok(());
         }
         if right_id == self.current_buffer_id {
@@ -340,7 +369,9 @@ impl Interpreter {
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
             let state = &mut **self;
             let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer.swap_text_state(&mut inactive_buffers[pos].1);
+            buffer
+                .borrow_mut()
+                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
             return Ok(());
         }
 
@@ -361,65 +392,76 @@ impl Interpreter {
             let (right_slice, left_slice) = self.inactive_buffers.split_at_mut(left_index);
             (&mut left_slice[0].1, &mut right_slice[right_index].1)
         };
-        first.swap_text_state(second);
+        first.borrow_mut().swap_text_state(&mut second.borrow_mut());
         Ok(())
     }
 
-    /// Find an attached or detached overlay by ID.
-    pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
-        self.buffer
-            .overlays
-            .iter()
-            .find(|ov| ov.id == id)
-            .or_else(|| {
-                self.inactive_buffers
-                    .iter()
-                    .find_map(|(_, buffer)| buffer.overlays.iter().find(|ov| ov.id == id))
-            })
-            .or_else(|| self.detached_overlays.get(&id))
+    /// Borrow the overlay in its owning buffer, or its detached allocation.
+    pub fn find_overlay(&self, id: u64) -> Option<std::cell::Ref<'_, crate::overlay::Overlay>> {
+        for buffer in std::iter::once(&self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
+        {
+            if let Ok(overlay) = std::cell::Ref::filter_map(buffer.borrow(), |buffer| {
+                buffer.overlays.iter().find(|overlay| overlay.id == id)
+            }) {
+                return Some(overlay);
+            }
+        }
+        std::cell::Ref::filter_map(self.detached_overlays.borrow(), |overlays| {
+            overlays.get(&id)
+        })
+        .ok()
     }
 
-    /// Find a mutable attached or detached overlay by ID.
-    pub fn find_overlay_mut(&mut self, id: u64) -> Option<&mut crate::overlay::Overlay> {
-        let state = &mut **self;
-        if let Some(overlay) = state.buffer.overlays.iter_mut().find(|ov| ov.id == id) {
-            return Some(overlay);
+    pub fn find_overlay_mut(
+        &mut self,
+        id: u64,
+    ) -> Option<std::cell::RefMut<'_, crate::overlay::Overlay>> {
+        for buffer in std::iter::once(&self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
+        {
+            if let Ok(overlay) = std::cell::RefMut::filter_map(buffer.borrow_mut(), |buffer| {
+                buffer.overlays.iter_mut().find(|overlay| overlay.id == id)
+            }) {
+                return Some(overlay);
+            }
         }
-        state
-            .inactive_buffers
-            .iter_mut()
-            .find_map(|(_, buffer)| buffer.overlays.iter_mut().find(|ov| ov.id == id))
-            .or_else(|| state.detached_overlays.get_mut(&id))
+        std::cell::RefMut::filter_map(self.detached_overlays.borrow_mut(), |overlays| {
+            overlays.get_mut(&id)
+        })
+        .ok()
     }
 
     /// Remove an overlay from its current owner, for moving or deleting it.
     pub fn take_overlay(&mut self, id: u64) -> Option<crate::overlay::Overlay> {
-        if let Some(pos) = self.buffer.overlays.iter().position(|ov| ov.id == id) {
-            return Some(self.buffer.overlays.swap_remove(pos));
-        }
-        for (_, buffer) in &mut self.inactive_buffers {
-            if let Some(pos) = buffer.overlays.iter().position(|ov| ov.id == id) {
+        for buffer in std::iter::once(&self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
+        {
+            let mut buffer = buffer.borrow_mut();
+            if let Some(pos) = buffer.overlays.iter().position(|overlay| overlay.id == id) {
                 return Some(buffer.overlays.swap_remove(pos));
             }
         }
-        self.detached_overlays.remove(&id)
+        self.detached_overlays.get_mut().remove(&id)
     }
 
     pub(crate) fn delete_overlay(&mut self, id: u64) {
         if let Some(mut overlay) = self.take_overlay(id) {
             overlay.buffer_id = None;
-            self.detached_overlays.insert(id, overlay);
+            self.detached_overlays.get_mut().insert(id, overlay);
         }
     }
 
     /// buffer.c:delete_all_overlays detaches the objects; it does not destroy
     /// their plists. Lisp references may still use or move them afterwards.
     pub(crate) fn delete_buffer_overlays(&mut self, id: u64) {
-        let Some(buffer) = self.get_buffer_by_id_mut(id) else {
+        let Some(mut buffer) = self.get_buffer_by_id_mut(id) else {
             return;
         };
         let overlays = std::mem::take(&mut buffer.overlays);
+        drop(buffer);
         self.detached_overlays
+            .get_mut()
             .extend(overlays.into_iter().map(|mut overlay| {
                 overlay.buffer_id = None;
                 (overlay.id, overlay)
@@ -428,18 +470,24 @@ impl Interpreter {
 
     pub(crate) fn sweep_unreached_overlays(&mut self, live: &super::MarkedIds) {
         let state = &mut **self;
-        state.detached_overlays.retain(|id, _| live.contains(id));
+        state
+            .detached_overlays
+            .get_mut()
+            .retain(|id, _| live.contains(id));
         for buffer in std::iter::once(&mut state.buffer)
             .chain(state.inactive_buffers.iter_mut().map(|(_, buffer)| buffer))
         {
             // Edits can evaporate overlays without passing through the
             // interpreter. Move reachable detached objects out of the edit
             // path and discard unreachable ones after the shared mark phase.
-            for overlay in buffer.overlays.extract_if(.., |overlay| {
+            for overlay in buffer.borrow_mut().overlays.extract_if(.., |overlay| {
                 overlay.is_dead() || !live.contains(&overlay.id)
             }) {
                 if live.contains(&overlay.id) {
-                    state.detached_overlays.insert(overlay.id, overlay);
+                    state
+                        .detached_overlays
+                        .get_mut()
+                        .insert(overlay.id, overlay);
                 }
             }
         }

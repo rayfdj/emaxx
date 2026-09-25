@@ -150,8 +150,11 @@ fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
 fn decode_coding_region_inserts_into_destination_buffer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*source*", "abc");
-    let (buffer_id, buffer_name) = interp.create_buffer("*dest*");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*source*", "abc");
+    let (buffer_id, _) = interp.create_buffer("*dest*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
 
     assert!(
         call(
@@ -161,7 +164,7 @@ fn decode_coding_region_inserts_into_destination_buffer() {
                 Value::Integer(1),
                 Value::Integer(4),
                 Value::Symbol("utf-8".into()),
-                Value::buffer(buffer_id, buffer_name),
+                buffer,
             ],
             &mut env,
         )
@@ -182,10 +185,10 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         let mut env = crate::lisp::types::Env::new();
         let mut bytes = vec![0x1b, b'$', b'B', b'$', b'"', 0x1b, b'(', b'B'];
         bytes.extend_from_slice(line_ending);
-        interp.buffer =
+        *interp.buffer.borrow_mut() =
             crate::buffer::Buffer::from_text("*encoded*", &decode_raw_text_bytes(&bytes));
-        interp.buffer.set_multibyte(false);
-        let end = interp.buffer.point_max();
+        interp.buffer.borrow_mut().set_multibyte(false);
+        let end = interp.buffer.borrow().point_max();
 
         call(
             &mut interp,
@@ -624,10 +627,11 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     let old_path = make_compat_temp_file(&mut interp, &mut env, "emaxx-rename-visited-file-");
     let new_path = format!("{old_path}.zip");
 
-    interp.buffer.file = Some(old_path.clone());
-    interp.buffer.file_truename = Some(old_path.clone());
+    interp.buffer.borrow_mut().file = Some(old_path.clone());
+    interp.buffer.borrow_mut().file_truename = Some(old_path.clone());
     interp
         .buffer
+        .borrow_mut()
         .set_visited_file_modtime(file_modtime(&old_path).expect("source modtime"));
 
     crate::test_support::call_lisp_function(
@@ -640,13 +644,16 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
 
     assert!(!Path::new(&old_path).exists());
     assert!(Path::new(&new_path).exists());
-    assert_eq!(interp.buffer.file.as_deref(), Some(new_path.as_str()));
+    assert_eq!(
+        interp.buffer.borrow().file.as_deref(),
+        Some(new_path.as_str())
+    );
     let canonical_new_path = canonical_file_name(&new_path);
     assert_eq!(
-        interp.buffer.file_truename.as_deref(),
+        interp.buffer.borrow().file_truename.as_deref(),
         Some(canonical_new_path.as_str())
     );
-    assert!(interp.buffer.visited_file_modtime().is_some());
+    assert!(interp.buffer.borrow().visited_file_modtime().is_some());
 
     std::fs::remove_file(new_path).expect("cleanup renamed file");
 }
@@ -659,12 +666,13 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     let bytes = [0xFF, b'a'];
     std::fs::write(&path, bytes).expect("write raw bytes");
 
-    interp.buffer = crate::buffer::Buffer::from_text("*raw*", "");
-    interp.buffer.file = Some(path.clone());
-    interp.buffer.file_truename = Some(path.clone());
-    interp.buffer.set_multibyte(false);
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*raw*", "");
+    interp.buffer.borrow_mut().file = Some(path.clone());
+    interp.buffer.borrow_mut().file_truename = Some(path.clone());
+    interp.buffer.borrow_mut().set_multibyte(false);
     interp
         .buffer
+        .borrow_mut()
         .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
 
     // A bare revert-buffer call with no NOCONFIRM asks "(yes or no)" and,
@@ -673,8 +681,11 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     crate::test_support::eval_lisp(&mut interp, &mut env, "(revert-buffer nil t)")
         .expect("revert raw buffer");
 
-    assert_eq!(interp.buffer.buffer_string(), decode_raw_text_bytes(&bytes));
-    assert!(!interp.buffer.is_multibyte());
+    assert_eq!(
+        interp.buffer.borrow().buffer_string(),
+        decode_raw_text_bytes(&bytes)
+    );
+    assert!(!interp.buffer.borrow().is_multibyte());
 
     std::fs::remove_file(path).expect("cleanup raw file");
 }
@@ -686,10 +697,10 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-save-unmodified-");
     std::fs::write(&path, "fresh").expect("write source file");
 
-    interp.buffer = crate::buffer::Buffer::from_text("*save*", "fresh");
-    interp.buffer.file = Some(path.clone());
-    interp.buffer.file_truename = Some(path.clone());
-    interp.buffer.set_unmodified();
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*save*", "fresh");
+    interp.buffer.borrow_mut().file = Some(path.clone());
+    interp.buffer.borrow_mut().file_truename = Some(path.clone());
+    interp.buffer.borrow_mut().set_unmodified();
 
     let original_permissions = std::fs::metadata(&path).expect("metadata").permissions();
     let mut permissions = original_permissions.clone();
@@ -698,7 +709,7 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
 
     crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
         .expect("unmodified save is a no-op");
-    interp.buffer.set_modified();
+    interp.buffer.borrow_mut().set_modified();
     // GNU does not skip the write for a modified buffer whose text happens
     // to equal the file: it reaches the write path, finds the file
     // write-protected, asks "try to save anyway? (yes or no)" and -- in
@@ -730,11 +741,13 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
         )
         .expect("set initial visited timestamp");
 
-    interp.buffer = crate::buffer::Buffer::from_text("*lock-supersession*", "local bytes\n");
-    interp.buffer.file = Some(path.clone());
-    interp.buffer.file_truename = Some(canonical_file_name(&path));
+    *interp.buffer.borrow_mut() =
+        crate::buffer::Buffer::from_text("*lock-supersession*", "local bytes\n");
+    interp.buffer.borrow_mut().file = Some(path.clone());
+    interp.buffer.borrow_mut().file_truename = Some(canonical_file_name(&path));
     interp
         .buffer
+        .borrow_mut()
         .set_visited_file_modtime(file_modtime(&path).expect("initial visited modtime"));
 
     std::fs::write(&path, "external bytes\n").expect("replace visited file externally");
@@ -790,15 +803,16 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-buffer-stale-");
     std::fs::write(&path, "fresh").expect("write initial file contents");
 
-    interp.buffer = crate::buffer::Buffer::from_text("*stale*", "fresh");
-    interp.buffer.file = Some(path.clone());
-    interp.buffer.file_truename = Some(path.clone());
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*stale*", "fresh");
+    interp.buffer.borrow_mut().file = Some(path.clone());
+    interp.buffer.borrow_mut().file_truename = Some(path.clone());
     interp
         .buffer
+        .borrow_mut()
         .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
 
     std::fs::write(&path, "changed").expect("update file contents");
-    interp.buffer.set_unmodified();
+    interp.buffer.borrow_mut().set_unmodified();
 
     assert_eq!(
         crate::test_support::eval_lisp(
@@ -810,7 +824,7 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
         Value::T
     );
 
-    interp.buffer.set_modified();
+    interp.buffer.borrow_mut().set_modified();
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
@@ -832,9 +846,9 @@ fn revert_buffer_honors_buffer_local_revert_function() {
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-function-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
-        interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
-        interp.buffer.file = Some(path.clone());
-        interp.buffer.file_truename = Some(path.clone());
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*revert*", "stale");
+        interp.buffer.borrow_mut().file = Some(path.clone());
+        interp.buffer.borrow_mut().file_truename = Some(path.clone());
 
         let result = crate::test_support::eval_lisp(
             &mut interp,
@@ -853,7 +867,7 @@ fn revert_buffer_honors_buffer_local_revert_function() {
         .expect("evaluate wrapper form");
 
         assert_eq!(result, Value::T);
-        assert_eq!(interp.buffer.buffer_string(), "fresh");
+        assert_eq!(interp.buffer.borrow().buffer_string(), "fresh");
 
         std::fs::remove_file(path).expect("cleanup wrapper file");
     });
@@ -867,9 +881,9 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-dynamic-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
-        interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
-        interp.buffer.file = Some(path.clone());
-        interp.buffer.file_truename = Some(path.clone());
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*revert*", "stale");
+        interp.buffer.borrow_mut().file = Some(path.clone());
+        interp.buffer.borrow_mut().file_truename = Some(path.clone());
 
         let result = crate::test_support::eval_lisp(
             &mut interp,
@@ -895,8 +909,8 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
 fn get_byte_reads_unibyte_buffer_positions() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}");
-    interp.buffer.set_multibyte(false);
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}");
+    interp.buffer.borrow_mut().set_multibyte(false);
 
     assert_eq!(
         call(&mut interp, "get-byte", &[Value::Integer(1)], &mut env).expect("read first byte"),
@@ -935,14 +949,15 @@ fn get_byte_reads_unibyte_buffer_positions() {
 fn extracted_strings_preserve_the_buffer_multibyte_mode() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*text*", "ASCII");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*text*", "ASCII");
 
     let multibyte =
         call(&mut interp, "buffer-string", &[], &mut env).expect("extract multibyte buffer string");
     assert!(string_like(&multibyte).expect("string result").multibyte);
 
-    interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "caf\u{00c3}\u{00a9}");
-    interp.buffer.set_multibyte(false);
+    *interp.buffer.borrow_mut() =
+        crate::buffer::Buffer::from_text("*bytes*", "caf\u{00c3}\u{00a9}");
+    interp.buffer.borrow_mut().set_multibyte(false);
     let unibyte =
         call(&mut interp, "buffer-string", &[], &mut env).expect("extract unibyte buffer string");
     assert!(!string_like(&unibyte).expect("string result").multibyte);
@@ -961,18 +976,18 @@ fn extracted_strings_preserve_the_buffer_multibyte_mode() {
 fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00d0}\u{0097}");
-    interp.buffer.set_multibyte(false);
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*bytes*", "\u{00d0}\u{0097}");
+    interp.buffer.borrow_mut().set_multibyte(false);
 
     call(&mut interp, "set-buffer-multibyte", &[Value::T], &mut env)
         .expect("reinterpret valid UTF-8 bytes");
-    assert_eq!(interp.buffer.buffer_string(), "З");
-    assert!(interp.buffer.is_multibyte());
+    assert_eq!(interp.buffer.borrow().buffer_string(), "З");
+    assert!(interp.buffer.borrow().is_multibyte());
 
     call(&mut interp, "set-buffer-multibyte", &[Value::Nil], &mut env)
         .expect("expose the same UTF-8 byte sequence");
-    assert_eq!(interp.buffer.buffer_string(), "\u{00d0}\u{0097}");
-    assert!(!interp.buffer.is_multibyte());
+    assert_eq!(interp.buffer.borrow().buffer_string(), "\u{00d0}\u{0097}");
+    assert!(!interp.buffer.borrow().is_multibyte());
 }
 
 #[test]
@@ -1010,7 +1025,7 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
     )
     .expect("write process output");
     assert_eq!(
-        interp.buffer.buffer_string(),
+        interp.buffer.borrow().buffer_string(),
         decode_raw_text_bytes(&[0xFF])
     );
     assert_eq!(std::fs::read(&stderr_path).expect("stderr file"), b"warn\n");
@@ -1069,7 +1084,7 @@ fn write_process_output_merges_stderr_for_t_cons_destination() {
         &mut env,
     )
     .expect("write merged process output");
-    assert_eq!(interp.buffer.buffer_string(), "out\nerr\n");
+    assert_eq!(interp.buffer.borrow().buffer_string(), "out\nerr\n");
 }
 
 #[test]
@@ -1091,7 +1106,7 @@ fn write_process_output_decodes_with_the_default_process_coding_system() {
     )
     .expect("decode process output");
 
-    assert_eq!(interp.buffer.buffer_string(), "Symbol’s\n");
+    assert_eq!(interp.buffer.borrow().buffer_string(), "Symbol’s\n");
     assert_eq!(
         interp.lookup_var("last-coding-system-used", &env),
         Some(Value::Symbol("utf-8-unix".into()))
@@ -1132,7 +1147,7 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
     )
     .expect("decode process output through process-coding-system-alist");
 
-    assert_eq!(interp.buffer.buffer_string().chars().count(), 3);
+    assert_eq!(interp.buffer.borrow().buffer_string().chars().count(), 3);
     assert_eq!(
         interp.lookup_var("last-coding-system-used", &env),
         Some(Value::Symbol("raw-text-unix".into()))
@@ -1215,8 +1230,10 @@ fn write_region_reports_output_errors_as_file_error() {
 fn value_less_vectors_break_ties_after_equal_prefix_values() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*value-less-buffer*");
-    let buffer = Value::buffer(buffer_id, buffer_name);
+    let (buffer_id, _) = interp.create_buffer("*value-less-buffer*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
     let marker = interp.make_marker();
     let Kind::Marker(marker_id) = marker.kind() else {
         panic!("make_marker should return a marker");
@@ -1274,12 +1291,18 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
 fn value_less_selected_upstream_ordered_cases_match_emacs() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    let (buf1_id, buf1_name) = interp.create_buffer(" *one*");
-    let (buf2_id, buf2_name) = interp.create_buffer(" *two*");
-    let (buf3_id, buf3_name) = interp.create_buffer(" *three*");
-    let buf1 = Value::buffer(buf1_id, buf1_name);
-    let buf2 = Value::buffer(buf2_id, buf2_name);
-    let buf3 = Value::buffer(buf3_id, buf3_name);
+    let (buf1_id, _) = interp.create_buffer(" *one*");
+    let (buf2_id, _) = interp.create_buffer(" *two*");
+    let (buf3_id, _) = interp.create_buffer(" *three*");
+    let buf1 = interp
+        .buffer_value(buf1_id)
+        .expect("existing buffer object");
+    let buf2 = interp
+        .buffer_value(buf2_id)
+        .expect("existing buffer object");
+    let buf3 = interp
+        .buffer_value(buf3_id)
+        .expect("existing buffer object");
     interp.kill_buffer_id(buf3_id);
 
     let mark1 = interp.make_marker();
@@ -1574,13 +1597,19 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         ("live_buffers", buf1, buf2),
         (
             "dead_buffer_before_live",
-            Value::buffer(buf3_id, " *three*"),
+            interp
+                .buffer_value(buf3_id)
+                .expect("existing buffer object"),
             buf1,
         ),
         (
             "dead_buffer_before_live_2",
-            Value::buffer(buf3_id, " *three*"),
-            Value::buffer(buf2_id, " *two*"),
+            interp
+                .buffer_value(buf3_id)
+                .expect("existing buffer object"),
+            interp
+                .buffer_value(buf2_id)
+                .expect("existing buffer object"),
         ),
         ("dead_buffer_before_live_3", buf3, buf1),
         ("process", proc1, proc2),
@@ -1673,14 +1702,14 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     )
     .expect("make uninterned a");
     let dead_buf1 = {
-        let (id, name) = interp.create_buffer(" *dead-one*");
-        let buffer = Value::buffer(id, name);
+        let (id, _) = interp.create_buffer(" *dead-one*");
+        let buffer = interp.buffer_value(id).expect("existing buffer object");
         interp.kill_buffer_id(id);
         buffer
     };
     let dead_buf2 = {
-        let (id, name) = interp.create_buffer(" *dead-two*");
-        let buffer = Value::buffer(id, name);
+        let (id, _) = interp.create_buffer(" *dead-two*");
+        let buffer = interp.buffer_value(id).expect("existing buffer object");
         interp.kill_buffer_id(id);
         buffer
     };

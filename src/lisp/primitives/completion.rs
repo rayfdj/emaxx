@@ -362,7 +362,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
@@ -1031,7 +1031,7 @@ pub(crate) fn internal_complete_buffer(
             .map(|(id, name)| {
                 Value::cons(
                     make_shared_string_value_with_multibyte(name.clone(), Vec::new(), false),
-                    Value::buffer(*id, name.clone()),
+                    interp.buffer_value(*id).expect("live buffer object"),
                 )
             })
             .collect::<Vec<_>>(),
@@ -1293,7 +1293,7 @@ pub(crate) fn activate_minibuffer(
     // whose glass keeps showing its own buffer during the read.  The
     // window's point slot is saved by hand — the raw selection swap
     // below skips select-window's bookkeeping.
-    let entry_point = interp.buffer.point();
+    let entry_point = interp.buffer.borrow().point();
     if let Some(window) = interp.find_record_mut(saved_selected_window_id) {
         if window.slots.len() <= super::WINDOW_POINT_SLOT {
             window
@@ -1303,21 +1303,22 @@ pub(crate) fn activate_minibuffer(
         window.slots[super::WINDOW_POINT_SLOT] = Value::Integer(entry_point as i64);
     }
     interp.set_current_buffer_id(buffer_id)?;
-    let end = interp.buffer.point_max();
-    let start = interp.buffer.point_min();
+    let end = interp.buffer.borrow().point_max();
+    let start = interp.buffer.borrow().point_min();
     if end > start {
         interp
             .buffer
+            .borrow_mut()
             .delete_region(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
-    interp.buffer.goto_char(start);
+    interp.buffer.borrow_mut().goto_char(start);
     // minibuf.c inserts with `inhibit-modification-hooks' bound: copy the
     // prompt's string intervals directly rather than entering ordinary
     // buffer-change hooks.
-    interp.buffer.insert(&prompt_string.text);
+    interp.buffer.borrow_mut().insert(&prompt_string.text);
     for span in &prompt_string.props {
-        interp.buffer.add_text_properties(
+        interp.buffer.borrow_mut().add_text_properties(
             1 + span.start,
             1 + span.end.min(prompt_length),
             &span.props,
@@ -1325,6 +1326,7 @@ pub(crate) fn activate_minibuffer(
     }
     interp
         .buffer
+        .borrow_mut()
         .set_inserted_extended_chars(1, &prompt_string.extended_chars);
     // read_minibuf stamps the prompt: `minibuffer-prompt-properties'
     // (the read-only guard and the prompt face), plus the field and
@@ -1346,9 +1348,12 @@ pub(crate) fn activate_minibuffer(
                         &[Value::Integer(1), prompt_end, pair[1], Value::T],
                     )?;
                 } else {
-                    interp
-                        .buffer
-                        .put_text_property(1, 1 + prompt_length, name, pair[1]);
+                    interp.buffer.borrow_mut().put_text_property(
+                        1,
+                        1 + prompt_length,
+                        name,
+                        pair[1],
+                    );
                 }
             }
         }
@@ -1359,14 +1364,15 @@ pub(crate) fn activate_minibuffer(
         ] {
             interp
                 .buffer
+                .borrow_mut()
                 .put_text_property(1, 1 + prompt_length, name, value);
         }
     }
     if !initial_string.text.is_empty() {
         let initial_start = 1 + prompt_length;
-        interp.buffer.insert(&initial_string.text);
+        interp.buffer.borrow_mut().insert(&initial_string.text);
         for span in &initial_string.props {
-            interp.buffer.set_text_properties(
+            interp.buffer.borrow_mut().set_text_properties(
                 initial_start + span.start,
                 initial_start + span.end.min(initial_length),
                 &span.props,
@@ -1374,11 +1380,13 @@ pub(crate) fn activate_minibuffer(
         }
         interp
             .buffer
+            .borrow_mut()
             .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
     }
     {
-        let buffer = &mut interp.buffer;
-        buffer.goto_char(buffer.point_max());
+        let mut buffer = interp.buffer.borrow_mut();
+        let position = buffer.point_max();
+        buffer.goto_char(position);
     }
 
     // Select the minibuffer window for the read, GNU's read_minibuf: the
@@ -2053,14 +2061,14 @@ pub(crate) fn interactive_minibuffer_command_loop(
                         .active_minibuffer_buffer_id()
                         .and_then(|id| {
                             if id == interp.current_buffer_id() {
-                                Some(interp.buffer.buffer_string())
+                                Some(interp.buffer.borrow().buffer_string())
                             } else {
                                 interp
                                     .get_buffer_by_id(id)
                                     .map(|buffer| buffer.buffer_string())
                             }
                         })
-                        .unwrap_or_else(|| interp.buffer.buffer_string());
+                        .unwrap_or_else(|| interp.buffer.borrow().buffer_string());
                     super::set_echo_area_message(Some(minibuffer_text));
                 }
                 // Window-configuration changes made mid-read (the

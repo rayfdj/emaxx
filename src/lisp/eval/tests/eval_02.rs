@@ -8155,6 +8155,62 @@ fn cl_type_of_honors_redefinition_and_aliases_without_changing_saved_subrs() {
 }
 
 #[test]
+fn killed_buffer_keeps_file_slot_and_detaches_markers() {
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/killed-buffer-file-identity.el"
+        )),
+        Value::list(
+            (0..3)
+                .map(|_| { Value::list([Value::T, Value::Nil, Value::Nil, Value::T, Value::Nil]) })
+        ),
+    );
+}
+
+#[test]
+fn buffer_creation_returns_its_object_after_hook_kills_and_collects_it() {
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/buffer-create-hook-identity.el"
+        )),
+        Value::list([Value::T, Value::Nil, Value::T]),
+    );
+}
+
+#[test]
+fn buffer_objects_keep_identity_through_rename_gc_and_recreation() {
+    // buffer.c:Fcurrent_buffer/Fget_buffer preserve the actual object;
+    // Fset_buffer rejects a killed object even after its name is reused.
+    // The identical fixture and expected result were checked in GNU.
+    let result = eval_str(include_str!(
+        "../../../../tests/fixtures/shared-buffer-object-identity.el"
+    ));
+    let expected = Value::list(
+        [
+            "buffer-object-37",
+            " buffer object 81",
+            "buffer-object-lambda",
+        ]
+        .into_iter()
+        .flat_map(|label| {
+            [
+                Value::T,
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::Integer(37),
+                    Value::Integer(81),
+                    Value::string(label),
+                ]),
+                Value::list([Value::Nil, Value::Nil, Value::T, Value::symbol("rejected")]),
+            ]
+        }),
+    );
+    assert_eq!(result, expected);
+}
+
+#[test]
 fn fmakunbound_keeps_builtin_function_cells_void_and_saved_subrs_callable() {
     // data.c:Ffmakunbound writes Qnil into the actual function cell;
     // eval.c resolves that cell without recreating a subr from its name.

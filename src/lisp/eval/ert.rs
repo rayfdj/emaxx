@@ -251,7 +251,7 @@ impl Interpreter {
                 let _ = primitives::call(
                     self,
                     "kill-buffer",
-                    &[Value::buffer(id, String::new())],
+                    &[self.buffer_value(id).expect("live buffer object")],
                     &mut env,
                 );
             }

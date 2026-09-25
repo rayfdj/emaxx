@@ -31,7 +31,7 @@ pub(super) fn source_callback(
 fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    interp.buffer.file = Some("buffer-visited-name.el".into());
+    interp.buffer.borrow_mut().file = Some("buffer-visited-name.el".into());
     let filename = Value::string("explicit-history-name.el");
     let outer = Value::list([Value::string("outer-load.el")]);
     interp.set_variable("current-load-list", outer, &mut env);
@@ -59,7 +59,7 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
         &env,
     ));
     assert_eq!(
-        interp.buffer.file.as_deref(),
+        interp.buffer.borrow().file.as_deref(),
         Some("buffer-visited-name.el")
     );
 }
@@ -122,7 +122,7 @@ fn eval_buffer_loads_unchanged_gnu_source_before_the_macroexpander_is_defined() 
     );
     let source = fs::read_to_string(gnu_root().join("test/src/comp-resources/comp-test-45603.el"))
         .expect("read unchanged GNU source");
-    interp.buffer.insert(&source);
+    interp.buffer.borrow_mut().insert(&source);
     super::super::call(&mut interp, "eval-buffer", &[], &mut env)
         .expect("readevalloop directly evaluates when the eager owner is undefined");
     assert!(interp.has_feature("comp-test-45603"));
@@ -146,8 +146,8 @@ fn eval_buffer_uses_the_history_suffix_to_disable_eager_macroexpansion() {
     .expect("install the deliberately failing callback");
     let source = fs::read_to_string(gnu_root().join("test/src/comp-resources/comp-test-45603.el"))
         .expect("read unchanged GNU source");
-    interp.buffer.insert(&source);
-    interp.buffer.file = Some("visited-source.el".into());
+    interp.buffer.borrow_mut().insert(&source);
+    interp.buffer.borrow_mut().file = Some("visited-source.el".into());
     super::super::call(
         &mut interp,
         "eval-buffer",

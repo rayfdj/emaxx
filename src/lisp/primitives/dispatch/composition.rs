@@ -13,7 +13,7 @@ fn args_out_of_range(values: impl IntoIterator<Item = Value>) -> LispError {
 }
 
 fn current_buffer_value(interp: &Interpreter) -> Value {
-    Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone())
+    Value::Buffer(interp.buffer)
 }
 
 fn checked_buffer_region(
@@ -23,10 +23,10 @@ fn checked_buffer_region(
 ) -> Result<(usize, usize), LispError> {
     let from = position_from_value(interp, start)?;
     let to = position_from_value(interp, end)?;
-    if from < interp.buffer.point_min()
-        || from > interp.buffer.point_max()
-        || to < interp.buffer.point_min()
-        || to > interp.buffer.point_max()
+    if from < interp.buffer.borrow().point_min()
+        || from > interp.buffer.borrow().point_max()
+        || to < interp.buffer.borrow().point_min()
+        || to > interp.buffer.borrow().point_max()
     {
         return Err(args_out_of_range([
             current_buffer_value(interp),
@@ -77,6 +77,7 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     let property = composition_property(end - start, components, modification);
     interp
         .buffer
+        .borrow_mut()
         .put_text_property(start, end, "composition", property);
     Ok(Value::Nil)
 }
@@ -117,6 +118,7 @@ fn composition_ranges(
     let spans = if string.is_nil() {
         interp
             .buffer
+            .borrow()
             .full_property_spans()
             .into_iter()
             .map(|span| (span.start, span.end, span.props))
@@ -182,6 +184,7 @@ fn composition_chars(
     let text = if string.is_nil() {
         interp
             .buffer
+            .borrow()
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?
     } else {
@@ -390,7 +393,7 @@ fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
 
 fn target_min(interp: &Interpreter, string: &Value) -> usize {
     if string.is_nil() {
-        interp.buffer.point_min()
+        interp.buffer.borrow().point_min()
     } else {
         0
     }
@@ -398,7 +401,7 @@ fn target_min(interp: &Interpreter, string: &Value) -> usize {
 
 fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<char> {
     if string.is_nil() {
-        interp.buffer.char_at(pos)
+        interp.buffer.borrow().char_at(pos)
     } else {
         string_like(string)?.text.chars().nth(pos)
     }
@@ -413,6 +416,7 @@ fn target_text(
     if string.is_nil() {
         interp
             .buffer
+            .borrow()
             .buffer_substring(from, to)
             .map_err(|error| LispError::Signal(error.to_string()))
     } else {
@@ -464,11 +468,14 @@ fn autocmp_chars(
 ) -> Result<Value, LispError> {
     let saved_match_data = interp.last_match_data.clone();
     let saved_match_buffer = interp.last_match_data_buffer_id;
-    let saved_point = string.is_nil().then(|| interp.buffer.point());
+    let saved_point = string.is_nil().then(|| interp.buffer.borrow().point());
     let result = autocmp_chars_inner(interp, env, rule_items, charpos, limit, string);
     if let Some(point) = saved_point {
-        let clamped = point.clamp(interp.buffer.point_min(), interp.buffer.point_max());
-        interp.buffer.goto_char(clamped);
+        let clamped = point.clamp(
+            interp.buffer.borrow().point_min(),
+            interp.buffer.borrow().point_max(),
+        );
+        interp.buffer.borrow_mut().goto_char(clamped);
     }
     interp.last_match_data = saved_match_data;
     interp.last_match_data_buffer_id = saved_match_buffer;
@@ -573,16 +580,17 @@ fn find_automatic_composition(
         // BACKLIM is -1 here, so the backward search stops at the first
         // newline before POS: a newline can never be composed.  (GNU's
         // long-line-optimizations narrowing is not modeled.)
-        let min = interp.buffer.point_min();
+        let min = interp.buffer.borrow().point_min();
         let before = interp
             .buffer
+            .borrow()
             .buffer_substring(min, pos)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         let head = before
             .rfind('\n')
             .map(|byte| min + before[..byte].chars().count() + 1)
             .unwrap_or(min);
-        (head, interp.buffer.point_max())
+        (head, interp.buffer.borrow().point_max())
     } else {
         (
             0,
@@ -791,7 +799,10 @@ fn find_composition(
     let string = &args[2];
     let position = position_from_value(interp, &args[0])?;
     let (minimum, maximum) = if string.is_nil() {
-        (interp.buffer.point_min(), interp.buffer.point_max())
+        (
+            interp.buffer.borrow().point_min(),
+            interp.buffer.borrow().point_max(),
+        )
     } else {
         let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         (0, string.text.chars().count())
@@ -870,7 +881,7 @@ fn find_composition(
     // GNU Lisp owners (`auto-compose-chars',
     // `compose-gstring-for-terminal') over the ported C substrate.
     let multibyte = if string.is_nil() {
-        interp.buffer.is_multibyte()
+        interp.buffer.borrow().is_multibyte()
     } else {
         string_like(string).is_some_and(|text| text.multibyte)
     };

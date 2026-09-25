@@ -4703,7 +4703,7 @@ fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
                 if predicate == "characterp" && value == character
         ));
     }
-    interp.buffer.insert("A");
+    interp.buffer.borrow_mut().insert("A");
     assert_eq!(
         call(
             &mut interp,
@@ -4752,7 +4752,7 @@ fn internal_char_font_matches_the_headless_gnu_font_boundary() {
         .expect("query the headless default font"),
         Value::Nil
     );
-    interp.buffer.insert("A");
+    interp.buffer.borrow_mut().insert("A");
     assert_eq!(
         call(
             &mut interp,
@@ -7739,8 +7739,8 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     .expect_err("visiting a nonexistent input file must still signal");
 
     assert_eq!(error.condition_type(), "file-missing");
-    assert_eq!(interp.buffer.file.as_deref(), Some(path.as_str()));
-    assert!(!interp.buffer.is_modified());
+    assert_eq!(interp.buffer.borrow().file.as_deref(), Some(path.as_str()));
+    assert!(!interp.buffer.borrow().is_modified());
 }
 
 #[test]
@@ -7755,8 +7755,8 @@ fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
             .as_nanos()
     ));
     std::fs::write(&path, "alpha beta\n").expect("write replace fixture");
-    interp.buffer.insert("changed alpha beta\n");
-    interp.buffer.goto_char(9);
+    interp.buffer.borrow_mut().insert("changed alpha beta\n");
+    interp.buffer.borrow_mut().goto_char(9);
 
     call(
         &mut interp,
@@ -7772,8 +7772,11 @@ fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
     )
     .expect("replace buffer contents");
 
-    assert_eq!(interp.buffer.buffer_string(), "alpha beta\n");
-    assert_eq!(interp.buffer.point(), interp.buffer.point_min());
+    assert_eq!(interp.buffer.borrow().buffer_string(), "alpha beta\n");
+    assert_eq!(
+        interp.buffer.borrow().point(),
+        interp.buffer.borrow().point_min()
+    );
     let _ = std::fs::remove_file(path);
 }
 
@@ -7977,8 +7980,10 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
-    let buffer = Value::buffer(buffer_id, buffer_name);
+    let (buffer_id, _) = interp.create_buffer("*process-output*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
 
     let process = call_via_lisp(
         &mut interp,
@@ -8176,12 +8181,13 @@ fn process_connection_probe_with_default(
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("process-connection-type", default_connection_type, &mut env);
-    let (buffer_id, buffer_name) = interp.create_buffer(&format!("*{name}*"));
-    let mut process_args = vec![
+    let (buffer_id, _) = interp.create_buffer(&format!("*{name}*"));
+    let mut process_args =
+        vec![
         Value::Symbol(":name".into()),
         Value::String(name.into()),
         Value::Symbol(":buffer".into()),
-        Value::buffer(buffer_id, buffer_name),
+        interp.buffer_value(buffer_id).expect("existing buffer object"),
         Value::Symbol(":command".into()),
         Value::list([
             Value::String("/bin/sh".into()),
@@ -8289,7 +8295,10 @@ fn make_process_accepts_nil_coding_like_emacs() {
 fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*pty-eof*");
+    let (buffer_id, _) = interp.create_buffer("*pty-eof*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
     let process = call(
         &mut interp,
         "make-process",
@@ -8297,7 +8306,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
             Value::Symbol(":name".into()),
             Value::String("pty-eof".into()),
             Value::Symbol(":buffer".into()),
-            Value::buffer(buffer_id, buffer_name),
+            buffer,
             Value::Symbol(":command".into()),
             Value::list([Value::String("/bin/cat".into())]),
             Value::Symbol(":connection-type".into()),
@@ -8349,7 +8358,10 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
 fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*split-pty-eof*");
+    let (buffer_id, _) = interp.create_buffer("*split-pty-eof*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
     let process = call(
         &mut interp,
         "make-process",
@@ -8357,7 +8369,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
             Value::Symbol(":name".into()),
             Value::String("split-pty-eof".into()),
             Value::Symbol(":buffer".into()),
-            Value::buffer(buffer_id, buffer_name),
+            buffer,
             Value::Symbol(":command".into()),
             Value::list([Value::String("/bin/cat".into())]),
             Value::Symbol(":connection-type".into()),
@@ -8541,8 +8553,10 @@ fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
 fn deleted_process_is_not_returned_for_buffer() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*deleted-process*");
-    let buffer = Value::buffer(buffer_id, buffer_name);
+    let (buffer_id, _) = interp.create_buffer("*deleted-process*");
+    let buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -8681,7 +8695,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
+    let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -8724,7 +8738,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     // this container: 4/5 runs deliver the exit sentinel in the SAME
     // accept-process-output call as the output, 1/5 split them), so the
     // sentinel line is accepted but not required.
-    let text = interp.buffer.full_buffer_string();
+    let text = interp.buffer.borrow().full_buffer_string();
     let text = text
         .strip_suffix("\nProcess accept-output-test finished\n")
         .unwrap_or(&text);
@@ -8751,7 +8765,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 fn accept_process_output_without_timeout_waits_for_requested_process() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
+    let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -8780,7 +8794,7 @@ fn accept_process_output_without_timeout_waits_for_requested_process() {
     // this container: 4/5 runs deliver the exit sentinel in the SAME
     // accept-process-output call as the output, 1/5 split them), so the
     // sentinel line is accepted but not required.
-    let text = interp.buffer.full_buffer_string();
+    let text = interp.buffer.borrow().full_buffer_string();
     let text = text
         .strip_suffix("\nProcess accept-output-no-timeout finished\n")
         .unwrap_or(&text);
@@ -9411,10 +9425,11 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
 #[test]
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
     {
-        let buffer = &mut interp.buffer;
-        buffer.goto_char(buffer.point_max());
+        let mut buffer = interp.buffer.borrow_mut();
+        let position = buffer.point_max();
+        buffer.goto_char(position);
     }
     let mut env = crate::lisp::types::Env::new();
 
@@ -9429,21 +9444,25 @@ fn indent_rigidly_shifts_each_line_in_region() {
     assert_eq!(
         interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .borrow()
+            .buffer_substring(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max()
+            )
             .expect("buffer contents"),
         "  a\n  b\n"
     );
-    assert_eq!(interp.buffer.point(), 9);
+    assert_eq!(interp.buffer.borrow().point(), 9);
 }
 
 #[test]
 fn inhibit_read_only_allows_buffer_read_only_edits() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
     interp.set_variable("inhibit-read-only", Value::T, &mut env);
-    interp.buffer.goto_char(1);
+    interp.buffer.borrow_mut().goto_char(1);
 
     call(&mut interp, "delete-char", &[Value::Integer(1)], &mut env)
         .expect("delete-char should ignore buffer-read-only when inhibited");
@@ -9451,7 +9470,11 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
     assert_eq!(
         interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .borrow()
+            .buffer_substring(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max()
+            )
             .expect("buffer contents"),
         "bc"
     );
@@ -9460,7 +9483,7 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
 #[test]
 fn insert_signals_buffer_read_only_unless_inhibited() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "");
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
 
@@ -9484,7 +9507,11 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
     assert_eq!(
         interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .borrow()
+            .buffer_substring(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max()
+            )
             .expect("buffer contents"),
         "x"
     );
@@ -9493,9 +9520,9 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
 #[test]
 fn failed_search_with_move_noerror_moves_to_bound() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc def");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc def");
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer.goto_char(1);
+    interp.buffer.borrow_mut().goto_char(1);
 
     assert_eq!(
         call(
@@ -9511,9 +9538,9 @@ fn failed_search_with_move_noerror_moves_to_bound() {
         .expect("search-forward should return nil when noerror is move"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.point(), 5);
+    assert_eq!(interp.buffer.borrow().point(), 5);
 
-    interp.buffer.goto_char(1);
+    interp.buffer.borrow_mut().goto_char(1);
     assert_eq!(
         call(
             &mut interp,
@@ -9528,22 +9555,26 @@ fn failed_search_with_move_noerror_moves_to_bound() {
         .expect("re-search-forward should return nil when noerror is move"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.point(), 6);
+    assert_eq!(interp.buffer.borrow().point(), 6);
 }
 
 #[test]
 fn delete_line_removes_the_current_line() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer.goto_char(6);
+    interp.buffer.borrow_mut().goto_char(6);
 
     call_via_lisp(&mut interp, "delete-line", &[], &mut env).expect("delete-line should succeed");
 
     assert_eq!(
         interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .borrow()
+            .buffer_substring(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max()
+            )
             .expect("buffer contents"),
         "one\nthree\n"
     );
@@ -9556,7 +9587,7 @@ fn make_button_signals_on_an_incomplete_range() {
     // primitives, which reject a nil position.  An earlier Emaxx facade
     // returned nil here instead.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "button");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "button");
     let mut env = crate::lisp::types::Env::new();
 
     let error = call_via_lisp(
@@ -9577,7 +9608,7 @@ fn make_button_signals_on_an_incomplete_range() {
 #[test]
 fn looking_at_p_preserves_existing_match_data() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
@@ -9587,7 +9618,7 @@ fn looking_at_p_preserves_existing_match_data() {
     )
     .expect("re-search-forward should set match data");
     let saved = interp.last_match_data.clone();
-    interp.buffer.goto_char(1);
+    interp.buffer.borrow_mut().goto_char(1);
 
     let result = call_via_lisp(
         &mut interp,
@@ -15459,8 +15490,8 @@ fn set_minibuffer_window_validates_and_updates_the_shared_window_state() {
 #[test]
 fn looking_back_matches_text_before_point_with_limit() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "alpha beta");
-    interp.buffer.goto_char(11);
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "alpha beta");
+    interp.buffer.borrow_mut().goto_char(11);
     let mut env = crate::lisp::types::Env::new();
 
     let result = call_via_lisp(
@@ -15491,7 +15522,7 @@ fn looking_back_matches_text_before_point_with_limit() {
 #[test]
 fn set_text_properties_replaces_existing_properties() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -15524,7 +15555,7 @@ fn set_text_properties_replaces_existing_properties() {
     .expect("set-text-properties should replace buffer props");
 
     assert_eq!(
-        interp.buffer.text_properties_at(1),
+        interp.buffer.borrow().text_properties_at(1),
         vec![("face".into(), Value::Symbol("italic".into()))]
     );
 
@@ -15571,7 +15602,7 @@ fn set_text_properties_replaces_existing_properties() {
 #[test]
 fn buffer_substring_accepts_reversed_bounds() {
     let mut interp = Interpreter::new();
-    interp.buffer.insert("abcdef");
+    interp.buffer.borrow_mut().insert("abcdef");
     let mut env = crate::lisp::types::Env::new();
 
     assert_eq!(
@@ -15589,7 +15620,7 @@ fn buffer_substring_accepts_reversed_bounds() {
 #[test]
 fn delete_and_extract_region_preserves_text_properties() {
     let mut interp = Interpreter::new();
-    interp.buffer.insert("abcdef");
+    interp.buffer.borrow_mut().insert("abcdef");
     let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
@@ -15616,7 +15647,11 @@ fn delete_and_extract_region_preserves_text_properties() {
     assert_eq!(
         interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .borrow()
+            .buffer_substring(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max()
+            )
             .expect("remaining buffer text"),
         "aef"
     );
@@ -15635,7 +15670,7 @@ fn delete_and_extract_region_preserves_text_properties() {
 #[test]
 fn buffer_substring_preserves_properties_with_reversed_bounds() {
     let mut interp = Interpreter::new();
-    interp.buffer.insert("abcdef");
+    interp.buffer.borrow_mut().insert("abcdef");
     let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
@@ -15741,7 +15776,7 @@ fn next_single_property_change_returns_nil_for_uniform_string_property() {
 #[test]
 fn property_change_helpers_accept_markers() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -15787,7 +15822,7 @@ fn property_change_helpers_accept_markers() {
 #[test]
 fn get_text_property_inherits_from_category_symbol() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     interp.put_symbol_property(
         "sample-button-category",
         "type",
@@ -15823,7 +15858,7 @@ fn get_text_property_inherits_from_category_symbol() {
 #[test]
 fn overlay_get_inherits_from_category_symbol() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
     interp.put_symbol_property(
         "sample-button-category",
         "type",
@@ -15865,7 +15900,7 @@ fn overlay_get_inherits_from_category_symbol() {
 #[test]
 fn copy_overlay_clones_region_and_properties_with_new_identity() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcdef");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abcdef");
     let mut env = crate::lisp::types::Env::new();
 
     let overlay = call(
@@ -16221,7 +16256,7 @@ fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
 #[test]
 fn text_property_search_helpers_find_matches_and_gaps() {
     let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcd");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abcd");
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -16363,7 +16398,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
 #[test]
 fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "foo");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "foo");
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -16392,7 +16427,7 @@ fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     .expect("font-lock-append-text-property should accept an omitted object");
 
     assert_eq!(
-        interp.buffer.text_property_at(1, "face"),
+        interp.buffer.borrow().text_property_at(1, "face"),
         Some(Value::list([
             Value::Symbol("italic".into()),
             Value::list([Value::Symbol(":strike-through".into()), Value::T,]),
@@ -16413,7 +16448,7 @@ fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     .expect("font-lock-prepend-text-property should accept an omitted object");
 
     assert_eq!(
-        interp.buffer.text_property_at(1, "face"),
+        interp.buffer.borrow().text_property_at(1, "face"),
         Some(Value::list([
             Value::list([Value::Symbol(":underline".into()), Value::T]),
             Value::Symbol("italic".into()),
@@ -16440,12 +16475,12 @@ fn bidi_override_positions_match_upstream_cases() {
     ];
 
     for (index, (text, expected_exact)) in cases.into_iter().enumerate() {
-        let mut interp = Interpreter::new();
-        interp.buffer = crate::buffer::Buffer::from_text("*test*", text);
+        let interp = Interpreter::new();
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", text);
         let found = find_bidi_override(
             &interp,
-            interp.buffer.point_min(),
-            interp.buffer.point_max(),
+            interp.buffer.borrow().point_min(),
+            interp.buffer.borrow().point_max(),
         );
         if let Some(expected) = expected_exact {
             assert_eq!(found, Some(expected));
@@ -16462,13 +16497,13 @@ fn bidi_override_positions_match_upstream_cases() {
     // before asking the primitive, so exercise the exact balanced shape that
     // previously produced a false positive.
     let balanced = "אבגד \u{2067}שונה\u{2069} מרגילa1א:!";
-    let mut interp = Interpreter::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", balanced);
+    let interp = Interpreter::new();
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", balanced);
     assert_eq!(
         find_bidi_override(
             &interp,
-            interp.buffer.point_min(),
-            interp.buffer.point_max(),
+            interp.buffer.borrow().point_min(),
+            interp.buffer.borrow().point_max(),
         ),
         None
     );
@@ -17685,12 +17720,14 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
         ])
     );
 
+    let point = interp.buffer.borrow().point_max() as i64;
     let marker = interp
-        .copy_marker_value(&Value::Integer(interp.buffer.point_max() as i64), false)
+        .copy_marker_value(&Value::Integer(point), false)
         .expect("copy marker at process output boundary");
     {
-        let buffer = &mut interp.buffer;
-        buffer.goto_char(buffer.point_min());
+        let mut buffer = interp.buffer.borrow_mut();
+        let position = buffer.point_min();
+        buffer.goto_char(position);
     }
     call(
         &mut interp,
@@ -17706,8 +17743,8 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
         .resolve_process_id(&process)
         .expect("pipe process id");
     let process_mark = interp.process_mark_id(process_id).expect("process mark");
-    assert_eq!(interp.buffer.buffer_string(), "headout");
-    assert_eq!(interp.buffer.point(), 1);
+    assert_eq!(interp.buffer.borrow().buffer_string(), "headout");
+    assert_eq!(interp.buffer.borrow().point(), 1);
     assert_eq!(interp.marker_position(marker_id), Some(8));
     assert_eq!(interp.marker_position(process_mark), Some(8));
 
@@ -17733,10 +17770,10 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     )
     .expect("run native default process sentinel");
     assert_eq!(
-        interp.buffer.buffer_string(),
+        interp.buffer.borrow().buffer_string(),
         "headout\nProcess audit finished\n"
     );
-    assert_eq!(interp.buffer.point(), 1);
+    assert_eq!(interp.buffer.borrow().point(), 1);
     assert_eq!(interp.marker_position(marker_id), Some(8));
     assert_eq!(interp.marker_position(process_mark), Some(32));
 }
@@ -18571,9 +18608,13 @@ fn native_overlay_and_char_table_census_uses_gnu_layouts() {
     interp.make_char_table(None, Value::Nil);
     let overlay_id = interp.alloc_overlay_id();
     let buffer_id = interp.current_buffer_id();
-    interp.buffer.overlays.push(crate::overlay::Overlay::new(
-        overlay_id, 1, 1, buffer_id, false, false,
-    ));
+    interp
+        .buffer
+        .borrow_mut()
+        .overlays
+        .push(crate::overlay::Overlay::new(
+            overlay_id, 1, 1, buffer_id, false, false,
+        ));
     let after = interp.live_object_census();
 
     assert_eq!(after.vectors - before.vectors, 2);
@@ -18948,8 +18989,8 @@ fn native_keyboard_macro_family_publishes_gnu_status_messages() {
 fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer.insert("xy");
-    interp.buffer.goto_char(1);
+    interp.buffer.borrow_mut().insert("xy");
+    interp.buffer.borrow_mut().goto_char(1);
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
         .expect("start keyboard macro recording");
 
@@ -20103,7 +20144,8 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
 #[test]
 fn native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*json*", r#"{"hello": [1, true]}"#);
+    *interp.buffer.borrow_mut() =
+        crate::buffer::Buffer::from_text("*json*", r#"{"hello": [1, true]}"#);
     interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
 
     let program = r#"
@@ -20226,7 +20268,8 @@ fn native_treesit_queries_and_traversal_use_official_runtime() {
     );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    interp.buffer = crate::buffer::Buffer::from_text("*json-query*", r#"{"hello": [1, true]}"#);
+    *interp.buffer.borrow_mut() =
+        crate::buffer::Buffer::from_text("*json-query*", r#"{"hello": [1, true]}"#);
     interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
 
     let program = r#"
@@ -21962,7 +22005,7 @@ fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let current = Value::Buffer(interp.buffer);
     set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&prompts);
@@ -22080,7 +22123,8 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
             .unwrap_or(Value::Nil);
         let face = interp
             .buffer
-            .text_property_at(interp.buffer.point_min(), "face")
+            .borrow()
+            .text_property_at(interp.buffer.borrow().point_min(), "face")
             .unwrap_or(Value::Nil);
         sink.borrow_mut().push((active, face));
     })));
@@ -22390,7 +22434,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
 fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer.insert("aa\nbbbb\nc\n");
+    interp.buffer.borrow_mut().insert("aa\nbbbb\nc\n");
     let plain = call(&mut interp, "window-text-pixel-size", &[], &mut env).expect("size");
     assert_eq!(
         plain,
@@ -22600,7 +22644,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
         )
         .expect("insert seeds the buffer");
     }
-    let point_max = interp.buffer.point_max();
+    let point_max = interp.buffer.borrow().point_max();
 
     // Batch sessions answer like GNU --batch: the whole buffer shows.
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
@@ -22704,7 +22748,7 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
     // the live 15-row body while Consult temporarily selected this window.
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
         text_height: 21,
-        window_end: interp.buffer.point_max(),
+        window_end: interp.buffer.borrow().point_max(),
     }));
     call(&mut interp, "goto-char", &[Value::Integer(161)], &mut env).expect("line 21");
     call(&mut interp, "recenter", &[], &mut env).expect("recenter");
@@ -22746,7 +22790,11 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
         &mut env,
     )
     .expect("vertical-motion");
-    assert_eq!(interp.buffer.point(), 84, "batch lands at the row start");
+    assert_eq!(
+        interp.buffer.borrow().point(),
+        84,
+        "batch lands at the row start"
+    );
 
     // An interactive session moves to the goal column within the row,
     // line-move-visual's contract; a float goal (posn pixels divided by
@@ -22754,12 +22802,16 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
-    assert_eq!(interp.buffer.point(), 87, "goal column 3 within the row");
+    assert_eq!(
+        interp.buffer.borrow().point(),
+        87,
+        "goal column 3 within the row"
+    );
 
     let float_goal = Value::cons(Value::float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(
-        interp.buffer.point(),
+        interp.buffer.borrow().point(),
         8,
         "float goal moves back up to column 3"
     );
@@ -22822,7 +22874,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
         &mut env,
     )
     .expect("insert narrowed mode-line sample");
-    let point_max = interp.buffer.point_max();
+    let point_max = interp.buffer.borrow().point_max();
     call(
         &mut interp,
         "narrow-to-region",
@@ -23035,7 +23087,7 @@ fn undo_file_marker_records_the_visited_modtime() {
     )
     .expect("find-file");
     call(&mut interp, "delete-char", &[Value::Integer(3)], &mut env).expect("delete-char");
-    let undo_list = interp.buffer.undo_list_value();
+    let undo_list = interp.buffer.borrow().undo_list_value();
     let marker = undo_list
         .to_vec()
         .expect("undo list is a list")
@@ -23140,19 +23192,20 @@ fn interactive_undo_restores_the_unmodified_state() {
     };
 
     // One command cycle: boundary, then the edit.
-    interp.buffer.push_undo_boundary();
+    interp.buffer.borrow_mut().push_undo_boundary();
     run(&mut interp, &mut env, "(kill-line)");
-    assert!(interp.buffer.is_modified(), "kill-line modifies");
+    assert!(interp.buffer.borrow().is_modified(), "kill-line modifies");
 
     // Next command cycle: boundary, then undo.
-    interp.buffer.push_undo_boundary();
+    interp.buffer.borrow_mut().push_undo_boundary();
     run(&mut interp, &mut env, "(undo)");
 
     let text = interp
         .buffer
-        .buffer_substring(1, interp.buffer.point_max())
+        .borrow()
+        .buffer_substring(1, interp.buffer.borrow().point_max())
         .expect("buffer text");
-    let modified = interp.buffer.is_modified();
+    let modified = interp.buffer.borrow().is_modified();
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(text, "one\ntwo\nthree\n", "undo restores the killed line");
     assert!(
@@ -23234,7 +23287,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
     let upper = interp.selected_window_value();
     // C-x 2's shape on the 24-row tty: under the menu-bar line the
     // 22-line root splits 11/11.
@@ -23277,7 +23330,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\n");
+    interp.buffer.borrow_mut().insert("alpha\nbeta\n");
     let upper_left = interp.selected_window_value();
     // C-x 2 then C-x 3: the bottom window exists before the upper-right
     // one, so creation order and tree order disagree.
@@ -23336,7 +23389,10 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\ngamma\ndelta\n");
+    interp
+        .buffer
+        .borrow_mut()
+        .insert("alpha\nbeta\ngamma\ndelta\n");
     let upper = interp.selected_window_value();
     let lower = call(
         &mut interp,
@@ -23367,7 +23423,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         )
         .expect("get-buffer");
         call(&mut interp, "set-buffer", &[other], &mut env).expect("set-buffer");
-        interp.buffer.insert("one\ntwo\nthree\n");
+        interp.buffer.borrow_mut().insert("one\ntwo\nthree\n");
         let _ = interp.set_current_buffer_id(saved);
     }
     call(
@@ -23394,7 +23450,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
 
     let selected_before = interp.selected_window_id();
     let buffer_before = interp.current_buffer_id();
-    let point_before = interp.buffer.point();
+    let point_before = interp.buffer.borrow().point();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics {
         text_height: 10,
         window_end: 14,
@@ -23425,7 +23481,11 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         buffer_before,
         "current buffer restored"
     );
-    assert_eq!(interp.buffer.point(), point_before, "point restored");
+    assert_eq!(
+        interp.buffer.borrow().point(),
+        point_before,
+        "point restored"
+    );
     assert_eq!(
         call(
             &mut interp,
@@ -23508,7 +23568,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     // exit teardown's window-configuration restore removes it.
     let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\n");
+    interp.buffer.borrow_mut().insert("alpha\nbeta\n");
 
     // "am" TAB completes to the common prefix; the second TAB makes no
     // progress and pops *Completions*; M-v selects that window and RET
@@ -23534,7 +23594,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
             .into_iter()
             .map(|info| {
                 let name = if info.buffer_id == interp.current_buffer_id() {
-                    interp.buffer.name.clone()
+                    interp.buffer.borrow().name.clone()
                 } else {
                     interp
                         .get_buffer_by_id(info.buffer_id)
@@ -23617,7 +23677,8 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
         .expect("switch");
     let text = interp
         .buffer
-        .buffer_substring(1, interp.buffer.point_max())
+        .borrow()
+        .buffer_substring(1, interp.buffer.borrow().point_max())
         .expect("contents");
     let _ = interp.set_current_buffer_id(saved);
     // minibuffer.el's completion--insert-strings separates candidates
@@ -23637,7 +23698,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
     // while tmm.el scans the buffer in `with-current-buffer'.
     let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
     interp.load_target("tmm").expect("tmm.el loads");
 
     // Select File at the first prompt, then abort the nested prompt after
@@ -23657,14 +23718,10 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
     let sink = std::rc::Rc::clone(&observed);
     crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         for info in crate::lisp::primitives::window_render_layout(interp) {
-            let name = if info.buffer_id == interp.current_buffer_id() {
-                &interp.buffer.name
-            } else if let Some(buffer) = interp.get_buffer_by_id(info.buffer_id) {
-                &buffer.name
-            } else {
-                continue;
-            };
-            if name == "*Completions*" {
+            if interp
+                .get_buffer_by_id(info.buffer_id)
+                .is_some_and(|buffer| buffer.name == "*Completions*")
+            {
                 sink.borrow_mut().push(info.point);
             }
         }
@@ -23691,8 +23748,8 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     interp.set_tty_frame_size(80, 24);
-    interp.buffer.insert("alpha\nbeta\ngamma\n");
-    interp.buffer.goto_char(7); // line 2
+    interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
+    interp.buffer.borrow_mut().goto_char(7); // line 2
     let entry_window = interp.selected_window_value();
 
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
@@ -23753,7 +23810,7 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
         "finishing the read restores the entry window"
     );
     assert_eq!(
-        interp.buffer.point(),
+        interp.buffer.borrow().point(),
         7,
         "the entry buffer's point survives"
     );
@@ -24801,7 +24858,7 @@ fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
 fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
+    let buffer = Value::Buffer(interp.buffer);
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -24836,7 +24893,7 @@ fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
         started.elapsed() < std::time::Duration::from_secs(8),
         "the loop must end with the process, not with the timeout"
     );
-    let text = interp.buffer.full_buffer_string();
+    let text = interp.buffer.borrow().full_buffer_string();
     assert!(text.starts_with("ready"), "the output was read: {text:?}");
 }
 
@@ -24858,7 +24915,7 @@ fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
         &mut env,
     )
     .expect("insert");
-    let end = interp.buffer.point_max() as i64;
+    let end = interp.buffer.borrow().point_max() as i64;
     for (pattern, bound, expected) in [
         ("a+", Value::Nil, Some((300, 300, 301))),
         ("a+b", Value::Nil, Some((300, 300, 302))),

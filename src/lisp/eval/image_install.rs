@@ -192,7 +192,7 @@ impl Interpreter {
         // emacs.c: "Erase any pre-dump messages in the message log, to
         // avoid confusion" (message_dolog with message-log-max 0).
         if let Some(buffer_id) = self.find_buffer("*Messages*").map(|(id, _)| id)
-            && let Some(buffer) = self.get_buffer_by_id_mut(buffer_id)
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
         {
             let end = buffer.point_max();
             let _ = buffer.delete_region(1, end);
@@ -402,7 +402,7 @@ mod tests {
                 "{name} retained the builder's value"
             );
         }
-        assert_eq!(interpreter.buffer.name, "*scratch*");
+        assert_eq!(interpreter.buffer.borrow().name, "*scratch*");
         assert_eq!(
             interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
             Some(Value::string(&primitives::default_directory()))

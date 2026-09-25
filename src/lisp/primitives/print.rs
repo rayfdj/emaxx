@@ -1500,7 +1500,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
-            if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
             result.map(|(value, _)| value)
@@ -2179,7 +2179,7 @@ fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
         (Kind::Integer(left), Kind::Integer(right)) => left == right,
         (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
         (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right))
         | (Kind::Overlay(left), Kind::Overlay(right))
         | (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
@@ -2364,7 +2364,7 @@ fn read_from_lisp_source_raw(
                 Err(LispErrorKind::EndOfInput) => text.chars().count(),
                 Err(_) => 0,
             };
-            if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
             result.map(|(value, _)| value)
@@ -2468,6 +2468,7 @@ pub(crate) fn md5_source_bytes(
                 ])));
             }
             let multibyte = buffer.is_multibyte();
+            drop(buffer);
             let b = Value::Integer(b as i64);
             let e = Value::Integer(e as i64);
             if coding.is_nil() {

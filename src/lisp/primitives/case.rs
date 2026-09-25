@@ -88,13 +88,15 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) -> Option<i64> {
     interp
         .buffer
+        .borrow()
         .extended_char_at(position)
         .map(i64::from)
         .or_else(|| {
             interp
                 .buffer
+                .borrow()
                 .char_at(position)
-                .map(|ch| public_buffer_char_code(ch, interp.buffer.is_multibyte()))
+                .map(|ch| public_buffer_char_code(ch, interp.buffer.borrow().is_multibyte()))
         })
 }
 
@@ -403,12 +405,13 @@ pub(crate) fn replace_buffer_region_with_text(
     end: usize,
     text: &str,
 ) -> Result<usize, LispError> {
-    interp.buffer.goto_char(start);
+    interp.buffer.borrow_mut().goto_char(start);
     interp
         .buffer
+        .borrow_mut()
         .delete_region(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    interp.buffer.insert(text);
+    interp.buffer.borrow_mut().insert(text);
     Ok(start + text.chars().count())
 }
 
@@ -426,6 +429,7 @@ pub(crate) fn casify_buffer_region(
     }
     let text = interp
         .buffer
+        .borrow()
         .buffer_substring(lo, hi)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let mapped = casify_string(interp, &text, action, env)?;
@@ -449,7 +453,7 @@ pub(crate) fn casify_buffer_region(
     let new_changed_end = new_end - unchanged_suffix;
     ensure_region_modifiable(interp, lo, hi, env)?;
     ensure_no_supersession_threat(interp, env)?;
-    let overlay_calls = overlay_change_hook_calls(&interp.buffer, lo, hi, new_end);
+    let overlay_calls = overlay_change_hook_calls(&interp.buffer.borrow(), lo, hi, new_end);
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     run_change_hooks(
         interp,
@@ -463,6 +467,7 @@ pub(crate) fn casify_buffer_region(
     if new_length == old_length {
         interp
             .buffer
+            .borrow_mut()
             .replace_region_in_place(lo, hi, &mapped, false);
     } else {
         replace_buffer_region_with_text(interp, lo, hi, &mapped)?;
@@ -528,13 +533,13 @@ pub(crate) fn case_word_region(
     let mut remaining = count.unsigned_abs();
     if count >= 0 {
         while remaining > 0 {
-            while let Some(ch) = interp.buffer.char_at(cursor) {
+            while let Some(ch) = interp.buffer.borrow().char_at(cursor) {
                 if is_word(ch) {
                     break;
                 }
                 cursor += 1;
             }
-            while let Some(ch) = interp.buffer.char_at(cursor) {
+            while let Some(ch) = interp.buffer.borrow().char_at(cursor) {
                 if !is_word(ch) {
                     break;
                 }
@@ -545,8 +550,8 @@ pub(crate) fn case_word_region(
         (point, cursor)
     } else {
         while remaining > 0 {
-            while cursor > interp.buffer.point_min() {
-                let Some(ch) = interp.buffer.char_at(cursor - 1) else {
+            while cursor > interp.buffer.borrow().point_min() {
+                let Some(ch) = interp.buffer.borrow().char_at(cursor - 1) else {
                     break;
                 };
                 if is_word(ch) {
@@ -554,8 +559,8 @@ pub(crate) fn case_word_region(
                 }
                 cursor -= 1;
             }
-            while cursor > interp.buffer.point_min() {
-                let Some(ch) = interp.buffer.char_at(cursor - 1) else {
+            while cursor > interp.buffer.borrow().point_min() {
+                let Some(ch) = interp.buffer.borrow().char_at(cursor - 1) else {
                     break;
                 };
                 if !is_word(ch) {

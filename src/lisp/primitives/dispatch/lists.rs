@@ -627,6 +627,7 @@ fn read_minibuffer_text_from_unread_events_inner(
                     .unwrap_or(0);
                 let contents: Vec<char> = interp
                     .buffer
+                    .borrow()
                     .buffer_string()
                     .chars()
                     .skip(prompt_length)
@@ -1005,7 +1006,7 @@ fn execute_kbd_macro_command(
     };
     // GNU's command loop separates each command into its own undo group
     // (undo-auto--boundaries); viper's undo tests observe that grouping.
-    interp.buffer.push_undo_boundary();
+    interp.buffer.borrow_mut().push_undo_boundary();
     set_command_key_state(interp, events.to_vec(), events.to_vec(), env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("last-command-event", event, env);
@@ -1026,8 +1027,12 @@ fn execute_kbd_macro_command(
     let command_result = if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")
     {
         prepare_native_kbd_command_body(interp, env)?;
-        let mark = interp.buffer.mark().unwrap_or(interp.buffer.point());
-        let point = interp.buffer.point();
+        let mark = interp
+            .buffer
+            .borrow()
+            .mark()
+            .unwrap_or(interp.buffer.borrow().point());
+        let point = interp.buffer.borrow().point();
         super::call(
             interp,
             "narrow-to-region",
@@ -1117,7 +1122,7 @@ fn execute_kbd_macro_self_insert(
         interp.lookup_var("last-command", env).map(|v| v.kind()),
         Some(Kind::Symbol(last)) if last == "self-insert-command"
     ) {
-        interp.buffer.push_undo_boundary();
+        interp.buffer.borrow_mut().push_undo_boundary();
     }
     set_command_key_state(interp, vec![*event], vec![*event], env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
@@ -1904,7 +1909,7 @@ define_dispatch!(
                 if read_only && !inhibited {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("buffer-read-only".into()),
-                        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+                        Value::Buffer(interp.buffer),
                     ])));
                 }
                 Ok(Value::Nil)
@@ -2169,7 +2174,7 @@ define_dispatch!(
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
                 let default = match args.get(1).cloned().unwrap_or(Value::Nil).kind() {
-                    Kind::Buffer(buffer) => Value::String(buffer.name),
+                    Kind::Buffer(buffer) => Value::string(&buffer.borrow().name),
                     other => other.value(),
                 };
                 if let Some(function) = interp
@@ -2224,7 +2229,7 @@ define_dispatch!(
                     .into_iter()
                     .filter_map(|buffer| match buffer.kind() {
                         Kind::Buffer(handle) => Some(Value::cons(
-                            Value::String(handle.name),
+                            Value::string(&handle.borrow().name),
                             Value::Buffer(handle),
                         )),
                         _ => None,

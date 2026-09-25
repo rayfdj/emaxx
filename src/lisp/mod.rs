@@ -555,7 +555,7 @@ fn append_message(interp: &mut eval::Interpreter, text: &str) {
         .find_buffer("*Messages*")
         .map(|(id, _)| id)
         .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
-    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         let end = buffer.point_max();
         buffer.goto_char(end);
         buffer.insert(&(text.to_string() + "\n"));

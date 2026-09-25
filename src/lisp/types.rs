@@ -1383,10 +1383,36 @@ impl LambdaValue {
     }
 }
 
-#[derive(Debug)]
 pub struct BufferValue {
     pub id: u64,
-    pub name: SharedText,
+    /// The editable object, not a name/id proxy for an interpreter-owned copy.
+    /// Rust callers must end these borrows before entering Lisp or collecting.
+    pub(crate) state: RefCell<crate::buffer::Buffer>,
+}
+
+impl std::fmt::Debug for BufferValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferValue")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BufferRef {
+    pub fn new(id: u64, buffer: crate::buffer::Buffer) -> Self {
+        Self::allocate(BufferValue {
+            id,
+            state: RefCell::new(buffer),
+        })
+    }
+
+    pub fn borrow(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
+        self.state.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, crate::buffer::Buffer> {
+        self.state.borrow_mut()
+    }
 }
 
 /// `Lisp_Object' for an ordinary vector: alloc.c's `struct Lisp_Vector'
@@ -2729,10 +2755,7 @@ impl Value {
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
-        Value::Buffer(crate::lisp::alloc::VectorlikeRef::allocate(BufferValue {
-            id,
-            name: name.into(),
-        }))
+        Value::Buffer(BufferRef::new(id, crate::buffer::Buffer::new(&name.into())))
     }
 
     /// Build a proper list from an iterator of values.
@@ -2949,7 +2972,7 @@ impl Value {
             Kind::Vector(_) => "vector".into(),
             Kind::BuiltinFunc(name) => format!("builtin<{}>", name),
             Kind::Lambda(_) => "lambda".into(),
-            Kind::Buffer(buffer) => format!("buffer<{}>", buffer.name),
+            Kind::Buffer(buffer) => format!("buffer<{}>", buffer.borrow().name),
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::CharTable(id) => format!("char-table<{}>", id),
@@ -3055,7 +3078,7 @@ fn values_equal_recursive(
                     .zip(b.slots())
                     .all(|(a, b)| values_equal_recursive(&a, &b, seen))
         }
-        (Kind::Buffer(a), Kind::Buffer(b)) => a.id == b.id,
+        (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => a == b,
         (Kind::Overlay(a), Kind::Overlay(b)) => a == b,
         (Kind::CharTable(a), Kind::CharTable(b)) => a == b,
@@ -3160,7 +3183,7 @@ fn format_value(
         }
         Kind::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
         Kind::Lambda(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
-        Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.name),
+        Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Kind::CharTable(id) => write!(f, "#<char-table id:{}>", id),

@@ -3662,7 +3662,6 @@ const NATIVE_TYPE_FLOAT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NativeIdentity {
-    Buffer(u64),
     Marker(u64),
     Overlay(u64),
     CharTable(u64),
@@ -3673,7 +3672,6 @@ enum NativeIdentity {
 impl NativeIdentity {
     fn hash_word(&self) -> usize {
         let (kind, payload) = match self {
-            Self::Buffer(value) => (9, *value as usize),
             Self::Marker(value) => (10, *value as usize),
             Self::Overlay(value) => (11, *value as usize),
             Self::CharTable(value) => (12, *value as usize),
@@ -4069,6 +4067,7 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::Bignum
                                 | crate::lisp::alloc::VectorTag::Record
                                 | crate::lisp::alloc::VectorTag::ReaderForm
+                                | crate::lisp::alloc::VectorTag::Buffer
                                 | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
                             ) => Some(TAG_VECTORLIKE),
@@ -4147,6 +4146,7 @@ impl NativeMark<'_> {
             | Kind::Record(_)
             | Kind::ReaderForm(_)
             | Kind::BuiltinFunc(_)
+            | Kind::Buffer(_)
             | Kind::Finalizer(_) => {
                 return Vec::new();
             }
@@ -4158,17 +4158,6 @@ impl NativeMark<'_> {
         };
         if let Some(&index) = self.heap.handle_by_value.get(&identity) {
             self.marked_handles[index] = true;
-            // Buffer references currently share a logical id while owning
-            // distinct allocation addresses. Keeping their bridge must also
-            // keep the exact reference it holds, not only this equivalent
-            // Lisp reference. This edge disappears with the buffer bridge.
-            let retained = self.heap.handles[index]
-                .as_ref()
-                .expect("indexed native handle")
-                .value;
-            if retained.word() != value.word() {
-                return vec![retained];
-            }
         }
         Vec::new()
     }
@@ -4848,6 +4837,7 @@ impl NativeHeap {
             | Kind::Record(_)
             | Kind::ReaderForm(_)
             | Kind::Finalizer(_)
+            | Kind::Buffer(_)
             | Kind::BuiltinFunc(_) => Ok(value.word()),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
@@ -5118,6 +5108,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
                         | crate::lisp::alloc::VectorTag::ReaderForm
+                        | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Finalizer
                 )
             {
@@ -5266,7 +5257,6 @@ impl NativeHeap {
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
     Ok(match value.kind() {
-        Kind::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
         Kind::Marker(id) => (NativeIdentity::Marker(id), TAG_VECTORLIKE),
         Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
         Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
@@ -5287,6 +5277,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::ReaderForm(_)
         | Kind::Finalizer(_)
         | Kind::BuiltinFunc(_)
+        | Kind::Buffer(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
@@ -9418,11 +9409,107 @@ mod tests {
     const HIDE: usize = 0x5555_5555_5555_5555;
 
     #[test]
+    fn killed_buffer_releases_editing_roots_before_its_object_is_reclaimed() {
+        #[inline(never)]
+        fn make_buffer(interpreter: &mut Interpreter) -> (u64, [usize; 3]) {
+            let (id, _) = interpreter.create_buffer("retained-dead-buffer");
+            let buffer = interpreter.buffer_object(id).expect("created buffer");
+            let property = Value::cons(Value::Integer(37), Value::Nil);
+            let undo = Value::cons(Value::Integer(81), Value::Nil);
+            {
+                let mut state = buffer.borrow_mut();
+                *state = crate::buffer::Buffer::from_text(
+                    "retained-dead-buffer",
+                    &"large buffer payload\n".repeat(8192),
+                );
+                state.file = Some("/tmp/retained-dead-buffer.el".into());
+                state.put_text_property(1, 2, "retained-property", property);
+                state.set_undo_list_view(undo);
+            }
+            let value = Value::Buffer(buffer);
+            interpreter.set_global_binding("retained-dead-buffer", value);
+            (
+                id,
+                [value.word(), property.word(), undo.word()].map(|word| word ^ HIDE),
+            )
+        }
+
+        #[inline(never)]
+        fn check_roots(hidden: [usize; 3], buffer_live: bool, editing_live: bool) {
+            let address = (hidden[0] ^ HIDE) & !TAG_MASK;
+            let allocated = matches!(
+                unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Buffer
+            );
+            assert_eq!(allocated, buffer_live, "buffer object lifetime");
+            for word in &hidden[1..] {
+                let address = (word ^ HIDE) & !TAG_MASK;
+                assert_eq!(
+                    crate::lisp::alloc::allocated_serial(address).is_some(),
+                    editing_live,
+                    "editing payload survives while live and is reclaimed after kill"
+                );
+            }
+        }
+
+        #[inline(never)]
+        fn kill_and_check_storage(interpreter: &mut Interpreter, id: u64) {
+            let buffer = interpreter.buffer_object(id).expect("live buffer");
+            interpreter.kill_buffer_id(id);
+            let state = buffer.borrow();
+            assert!(state.full_buffer_string().is_empty());
+            assert!(state.saved_text().is_empty());
+            assert!(state.undo_entries().is_empty());
+            assert!(state.undo_list_value().is_nil());
+            assert!(state.full_property_spans().is_empty());
+            assert_eq!(state.file.as_deref(), Some("/tmp/retained-dead-buffer.el"));
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let (id, hidden) = make_buffer(&mut interpreter);
+        let stack_marker = 0;
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_roots(hidden, true, true);
+        }
+        kill_and_check_storage(&mut interpreter, id);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        check_roots(hidden, true, false);
+        interpreter.set_global_binding("retained-dead-buffer", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        check_roots(hidden, false, false);
+    }
+
+    #[test]
     fn native_gc_retains_buffer_fields_in_reachable_cons_views() {
         #[inline(never)]
         fn make_cons(heap: &mut NativeHeapOwner, interpreter: &mut Interpreter) -> [usize; 4] {
             let native_reference = Value::buffer(52, "cons-field-buffer");
-            let typed_reference = Value::buffer(52, "cons-field-buffer");
+            // Two references to one object, as GNU Fcurrent_buffer returns.
+            let typed_reference = native_reference;
             heap.encode(&native_reference).expect("initial buffer word");
             let cons = Value::cons(typed_reference, Value::Nil);
             let word = heap.encode(&cons).expect("cons containing the same buffer");
@@ -9467,7 +9554,7 @@ mod tests {
                 panic!("the cons must still contain its buffer");
             };
             assert_eq!(buffer.id, 52);
-            assert_eq!(buffer.name.as_str(), "cons-field-buffer");
+            assert_eq!(buffer.borrow().name.as_str(), "cons-field-buffer");
         }
 
         let mut interpreter = Interpreter::new();
@@ -10209,6 +10296,76 @@ mod tests {
     }
 
     #[test]
+    fn native_remaining_object_kinds_use_their_ordinary_words_across_heaps() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let mut mismatches = Vec::new();
+        // Ordinary primitives create the objects. Check all remaining kinds
+        // in one run, so an early bridge failure cannot conceal the others.
+        for (primitive, arguments, expected_type) in [
+            ("current-buffer", Vec::new(), "buffer"),
+            ("make-marker", Vec::new(), "marker"),
+            (
+                "make-overlay",
+                vec![Value::Integer(1), Value::Integer(1)],
+                "overlay",
+            ),
+            ("make-char-table", vec![Value::Nil], "char-table"),
+            ("selected-frame", Vec::new(), "frame"),
+            ("frame-terminal", Vec::new(), "terminal"),
+        ] {
+            let value = crate::lisp::primitives::call(
+                &mut interpreter,
+                primitive,
+                &arguments,
+                &mut environment,
+            )
+            .expect("ordinary object constructor");
+            interpreter.set_global_binding(&format!("word-identity-{expected_type}"), value);
+            let actual_type = crate::lisp::primitives::call(
+                &mut interpreter,
+                "type-of",
+                &[value],
+                &mut environment,
+            )
+            .expect("ordinary type-of");
+            assert_eq!(actual_type, Value::symbol(expected_type));
+            let first_word = first.encode(&value).expect("first native heap");
+            let second_word = second.encode(&value).expect("second native heap");
+            if first_word != value.word() || second_word != value.word() {
+                mismatches.push((expected_type, value.word(), first_word, second_word));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "ordinary, first-native and second-native words must identify the same objects: {mismatches:#x?}"
+        );
+        assert!(first.handles.is_empty());
+        assert!(second.handles.is_empty());
+    }
+
+    #[test]
+    fn ordinary_buffer_references_use_one_object_word() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut current = || {
+            crate::lisp::primitives::call(&mut interpreter, "current-buffer", &[], &mut environment)
+                .expect("current-buffer returns its live object")
+        };
+        let first = current();
+        let second = current();
+        assert!(matches!(first.kind(), Kind::Buffer(_)));
+        assert!(matches!(second.kind(), Kind::Buffer(_)));
+        assert_eq!(
+            first.word(),
+            second.word(),
+            "buffer.c:Fcurrent_buffer returns the same buffer object"
+        );
+    }
+
+    #[test]
     fn native_builtins_use_their_own_words_and_subr_fields() {
         extern "C" fn invoke_unary_subr(subr: NativeWord, argument: NativeWord) -> NativeWord {
             // lisp.h:Lisp_Subr.function immediately follows its header.
@@ -10896,13 +11053,28 @@ mod tests {
     #[test]
     fn native_buffer_words_preserve_lisp_buffer_identity() {
         let mut heap = NativeHeapOwner::new();
-        let first_reference = Value::buffer(42, "buffer-before-rename");
-        let same_buffer = Value::buffer(42, "buffer-after-rename");
-        let different_buffer = Value::buffer(43, "buffer-before-rename");
+        let mut interpreter = Interpreter::new();
+        let other = Interpreter::new();
+        let first_reference = Value::Buffer(interpreter.buffer);
+        let different_buffer = Value::Buffer(other.buffer);
+        assert_eq!(
+            interpreter.buffer.id, other.buffer.id,
+            "overlapping id spaces"
+        );
 
         let first_word = heap
             .encode(&first_reference)
             .expect("encode first buffer reference");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "rename-buffer",
+            &[Value::string("buffer-after-rename")],
+            &mut Env::new(),
+        )
+        .expect("ordinary rename-buffer");
+        let same_buffer = Value::Buffer(interpreter.buffer);
+        assert_eq!(first_word, first_reference.word());
+        assert!(heap.handles.is_empty());
         assert_eq!(
             heap.encode(&same_buffer)
                 .expect("encode another reference to the same buffer"),
@@ -11292,7 +11464,8 @@ mod tests {
             heap: &mut NativeHeapOwner,
         ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 3]) {
             let first = Value::buffer(42, "buffer-alias-before");
-            let second = Value::buffer(42, "buffer-alias-after");
+            // Copy the object word; equal ids do not manufacture aliases.
+            let second = first;
             let word = heap.encode(&first).expect("first buffer reference");
             assert_eq!(heap.encode(&second).expect("equivalent reference"), word);
             (
@@ -11325,7 +11498,7 @@ mod tests {
             let Kind::Buffer(buffer) = retained.kind() else {
                 panic!("the bridge must retain an allocated buffer reference")
             };
-            assert_eq!(buffer.name.as_str(), "buffer-alias-before");
+            assert_eq!(buffer.borrow().name.as_str(), "buffer-alias-before");
         }
 
         let mut interpreter = Interpreter::new();

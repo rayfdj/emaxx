@@ -150,7 +150,10 @@ pub(crate) fn buffer_hash_value(
 ) -> Result<Value, LispError> {
     let bytes = match buffer_or_name {
         Some(value) if !value.is_nil() => secure_hash_source_bytes(interp, value, None, None)?,
-        _ => internal_text_bytes(&interp.buffer.buffer_string(), interp.buffer.is_multibyte())?,
+        _ => internal_text_bytes(
+            &interp.buffer.borrow().buffer_string(),
+            interp.buffer.borrow().is_multibyte(),
+        )?,
     };
     let digest = secure_hash_digest("sha1", &bytes)?;
     Ok(Value::String(digest_hex(&digest).into()))
@@ -226,7 +229,10 @@ pub(crate) fn buffer_line_statistics_value(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
             (buffer.buffer_string(), buffer.is_multibyte())
         }
-        _ => (interp.buffer.buffer_string(), interp.buffer.is_multibyte()),
+        _ => (
+            interp.buffer.borrow().buffer_string(),
+            interp.buffer.borrow().is_multibyte(),
+        ),
     };
 
     if text.is_empty() {

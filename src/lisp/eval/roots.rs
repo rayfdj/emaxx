@@ -427,7 +427,7 @@ mod tests {
                     &key,
                     &Env::new(),
                 ));
-                active.buffer.insert("shared editor state");
+                active.buffer.borrow_mut().insert("shared editor state");
                 active.set_global_binding("state-shell-write", Value::Integer(23));
                 parked.state = active.state.take();
                 assert!(active.state.is_none());
@@ -440,7 +440,7 @@ mod tests {
         crate::lisp::alloc::clobber_stack();
         assert_eq!(std::ptr::from_ref(&*interpreter) as usize, payload);
         assert_eq!(
-            interpreter.buffer.buffer_size(),
+            interpreter.buffer.borrow().buffer_size(),
             "shared editor state".len()
         );
         assert_eq!(

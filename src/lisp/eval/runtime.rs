@@ -76,8 +76,8 @@ impl Interpreter {
         self.current_buffer_id
     }
 
-    pub fn current_buffer(&self) -> &crate::buffer::Buffer {
-        &self.buffer
+    pub fn current_buffer(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
+        self.buffer.borrow()
     }
 
     pub fn set_current_load_file(&mut self, path: Option<String>) -> Option<String> {
@@ -341,20 +341,16 @@ impl Interpreter {
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
         match value.kind() {
-            Kind::Buffer(buffer) if self.has_buffer_id(buffer.id) => Ok(buffer.id),
-            Kind::Buffer(buffer) => {
-                self.find_buffer(&buffer.name)
-                    .map(|(id, _)| id)
-                    .ok_or_else(|| {
-                        if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
-                            eprintln!(
-                                "[buf] resolve failed for dead buffer {} (current {})",
-                                buffer.name, self.buffer.name
-                            );
-                        }
-                        LispError::Signal(format!("No buffer named {}", buffer.name))
-                    })
+            Kind::Buffer(buffer)
+                if self
+                    .buffer_object(buffer.id)
+                    .is_some_and(|live| live.ptr_eq(&buffer)) =>
+            {
+                Ok(buffer.id)
             }
+            // buffer.c:Fset_buffer checks the given object's liveness.
+            // A reused name must never select a different allocation.
+            Kind::Buffer(_) => Err(LispError::Signal("Selecting deleted buffer".into())),
             _ => Err(LispError::TypeError(
                 "string-or-buffer".into(),
                 value.type_name(),
@@ -375,8 +371,10 @@ impl Interpreter {
         // of making unrelated dynamic per-buffer bindings leak at lookup.
         let inherited_directory = self.lookup_var("default-directory", &Env::new());
         let id = self.alloc_buffer_id();
-        self.inactive_buffers
-            .push((id, crate::buffer::Buffer::new(name)));
+        self.inactive_buffers.push((
+            id,
+            crate::lisp::types::BufferRef::new(id, crate::buffer::Buffer::new(name)),
+        ));
         self.buffer_list.push((id, name.to_string()));
         if let Some(directory) = inherited_directory {
             self.set_buffer_local_value(id, "default-directory", directory);
@@ -404,7 +402,7 @@ impl Interpreter {
             .position(|(buffer_id, _)| *buffer_id == id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
         let current_id = self.current_buffer_id;
-        let current_point = self.buffer.point();
+        let current_point = self.buffer.borrow().point();
         if self.selected_window_buffer_id() == current_id
             && let Some(window) = self.find_record_mut(self.selected_window_id)
         {
@@ -464,7 +462,7 @@ impl Interpreter {
         if selected_window_already_displays_target {
             return Ok(());
         }
-        let point_min = self.buffer.point_min() as i64;
+        let point_min = self.buffer.borrow().point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             let previous = window
                 .slots
@@ -611,7 +609,10 @@ impl Interpreter {
     pub fn selected_window_start(&self) -> usize {
         let (point_min, point_max) = self
             .buffer_bounds_by_id(self.selected_window_buffer_id())
-            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+            .unwrap_or((
+                self.buffer.borrow().point_min(),
+                self.buffer.borrow().point_max(),
+            ));
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.get(1))
             .and_then(|value| value.as_integer().ok())
@@ -622,7 +623,10 @@ impl Interpreter {
     pub fn set_selected_window_start(&mut self, start: usize) {
         let (point_min, point_max) = self
             .buffer_bounds_by_id(self.selected_window_buffer_id())
-            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+            .unwrap_or((
+                self.buffer.borrow().point_min(),
+                self.buffer.borrow().point_max(),
+            ));
         let start = start.clamp(point_min, point_max) as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             if window.slots.len() < 2 {
@@ -633,9 +637,10 @@ impl Interpreter {
     }
 
     pub fn set_selected_window_buffer_id(&mut self, buffer_id: u64) {
-        let (point_min, _) = self
-            .buffer_bounds_by_id(buffer_id)
-            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+        let (point_min, _) = self.buffer_bounds_by_id(buffer_id).unwrap_or((
+            self.buffer.borrow().point_min(),
+            self.buffer.borrow().point_max(),
+        ));
         let current_buffer_id = self.current_buffer_id as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             let previous = window
@@ -1220,7 +1225,7 @@ impl Interpreter {
     }
 
     /// Remove a non-current buffer from the live buffer list.
-    pub fn remove_buffer_id(&mut self, id: u64) -> Option<crate::buffer::Buffer> {
+    pub fn remove_buffer_id(&mut self, id: u64) -> Option<crate::lisp::types::BufferRef> {
         if id == self.current_buffer_id {
             return None;
         }
@@ -1234,10 +1239,6 @@ impl Interpreter {
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
         self.delete_buffer_overlays(id);
-        let file_name = self
-            .get_buffer_by_id(id)
-            .and_then(|buffer| buffer.file.clone());
-        self.killed_buffer_file_names.insert(id, file_name);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
         if let Some(marker_id) = self.buffer_mark_marker_ids.remove(&id)
@@ -1251,6 +1252,9 @@ impl Interpreter {
             .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+            buffer.release_killed_storage();
+        }
         if id == self.current_buffer_id {
             // GNU replaces a killed current buffer from the visible buffer
             // list (`other-buffer' policy), never from the interpreter's
@@ -1274,7 +1278,10 @@ impl Interpreter {
                 self.current_buffer_id = next_id;
             } else {
                 let scratch_id = self.alloc_buffer_id();
-                self.buffer = crate::buffer::Buffer::new("*scratch*");
+                self.buffer = crate::lisp::types::BufferRef::new(
+                    scratch_id,
+                    crate::buffer::Buffer::new("*scratch*"),
+                );
                 self.current_buffer_id = scratch_id;
                 self.buffer_list.push((scratch_id, "*scratch*".to_string()));
             }
@@ -1312,10 +1319,6 @@ impl Interpreter {
         if selected_window_showed_buffer {
             self.set_selected_window_buffer_id(replacement_id);
         }
-    }
-
-    pub(crate) fn killed_buffer_file_name(&self, id: u64) -> Option<&Option<String>> {
-        self.killed_buffer_file_names.get(&id)
     }
 
     /// Allocate a new unique overlay ID.
@@ -1434,7 +1437,7 @@ impl Interpreter {
 
     pub fn buffer_mark_marker_value(&mut self) -> Value {
         let buffer_id = self.current_buffer_id();
-        let mark = self.buffer.mark();
+        let mark = self.buffer.borrow().mark();
         let marker_id = match self.buffer_mark_marker_ids.get(&buffer_id).copied() {
             Some(marker_id) => marker_id,
             None => {
@@ -1541,7 +1544,7 @@ impl Interpreter {
         }
         self.update_marker_buffer_index(id, previous_buffer_id, buffer_id);
         if let Some(mark_buffer_id) = mark_buffer_id
-            && let Some(buffer) = self.get_buffer_by_id_mut(mark_buffer_id)
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(mark_buffer_id)
         {
             if buffer_id == Some(mark_buffer_id) {
                 if let Some(position) = position {

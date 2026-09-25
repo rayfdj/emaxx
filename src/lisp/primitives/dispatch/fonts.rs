@@ -973,7 +973,7 @@ define_dispatch!(
                         ));
                     }
                     let position = position_from_value(interp, &args[0])?;
-                    let (begin, end) = interp.buffer.restriction();
+                    let (begin, end) = interp.buffer.borrow().restriction();
                     if !(begin..end).contains(&position) {
                         return Err(args_out_of_range(args[0], args[0]));
                     }

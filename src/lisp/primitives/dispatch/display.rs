@@ -225,7 +225,7 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) 
         // xdisp.c message_dolog: `buffer-undo-list' is t and
         // `cache-long-scans' nil in the log buffer on every message.
         interp.set_buffer_local_value(buffer_id, "cache-long-scans", Value::Nil);
-        if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
             buffer.disable_undo();
             let end = buffer.point_max();
             buffer.goto_char(end);
@@ -372,7 +372,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
 }
 
 fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
-    if !interp.buffer.is_multibyte()
+    if !interp.buffer.borrow().is_multibyte()
         || interp
             .lookup_var("bidi-display-reordering", env)
             .is_some_and(|value| value.is_nil())
@@ -386,9 +386,9 @@ fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Va
         return direction;
     }
 
-    let point_min = interp.buffer.point_min();
-    let point_max = interp.buffer.point_max();
-    let position = interp.buffer.point().clamp(point_min, point_max);
+    let point_min = interp.buffer.borrow().point_min();
+    let point_max = interp.buffer.borrow().point_max();
+    let position = interp.buffer.borrow().point().clamp(point_min, point_max);
     // GNU display paragraphs span ordinary newlines.  A blank line starts a
     // new paragraph only once point has reached nonblank text after it; the
     // separator itself and trailing blank lines retain the preceding
@@ -396,27 +396,27 @@ fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Va
     let mut start = point_min;
     let mut scan = point_min;
     while scan < point_max {
-        if interp.buffer.char_at(scan) != Some('\n') {
+        if interp.buffer.borrow().char_at(scan) != Some('\n') {
             scan += 1;
             continue;
         }
         let mut separator_end = scan + 1;
         while separator_end < point_max
             && matches!(
-                interp.buffer.char_at(separator_end),
+                interp.buffer.borrow().char_at(separator_end),
                 Some(' ' | '\t' | '\u{c}')
             )
         {
             separator_end += 1;
         }
-        if interp.buffer.char_at(separator_end) != Some('\n') {
+        if interp.buffer.borrow().char_at(separator_end) != Some('\n') {
             scan += 1;
             continue;
         }
         let mut next_text = separator_end + 1;
         while next_text < point_max
             && matches!(
-                interp.buffer.char_at(next_text),
+                interp.buffer.borrow().char_at(next_text),
                 Some('\n' | ' ' | '\t' | '\u{c}')
             )
         {
@@ -431,6 +431,7 @@ fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Va
     }
     let text = interp
         .buffer
+        .borrow()
         .buffer_substring(start, point_max)
         .unwrap_or_default();
     let bidi = unicode_bidi::BidiInfo::new(&text, None);
@@ -614,7 +615,7 @@ fn current_frame_and_buffer_state(interp: &Interpreter) -> Vec<Value> {
         let Some(buffer) = interp.get_buffer_by_id(*buffer_id) else {
             continue;
         };
-        state.push(Value::buffer(*buffer_id, name.clone()));
+        state.push(interp.buffer_value(*buffer_id).expect("live buffer object"));
         state.push(
             interp
                 .buffer_local_value(*buffer_id, "buffer-read-only")
@@ -990,7 +991,7 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
                 )
             };
             let live_point = if buffer_id == interp.current_buffer_id() {
-                interp.buffer.point()
+                interp.buffer.borrow().point()
             } else {
                 interp
                     .get_buffer_by_id(buffer_id)
@@ -1410,7 +1411,7 @@ pub(crate) fn window_face_spans(
     let mut overlay_spans: Vec<(i64, u64, usize, usize, Value)> = Vec::new();
     {
         let buffer = if is_current {
-            &interp.buffer
+            interp.buffer.borrow()
         } else {
             match interp.get_buffer_by_id(buffer_id) {
                 Some(buffer) => buffer,
@@ -1455,13 +1456,13 @@ pub(crate) fn window_face_spans(
         }
         let face_at = |pos: usize| {
             crate::lisp::primitives::strings::buffer_property_at_with_category(
-                interp, buffer, pos, "face",
+                interp, &buffer, pos, "face",
             )
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::buffer_property_at_with_category(
-                        interp, buffer, pos, name,
+                        interp, &buffer, pos, name,
                     )
                     .filter(|face| !face.is_nil())
                 })
@@ -1522,9 +1523,9 @@ pub(crate) fn window_face_spans(
             .is_some_and(|active| active.is_truthy())
         // The buffer's mark marker is native buffer.c state; `mark' itself
         // is GNU simple.el's and must not enter the native dispatcher.
-        && let Some(mark) = interp.buffer.mark()
+        && let Some(mark) = interp.buffer.borrow().mark()
     {
-        let point = interp.buffer.point();
+        let point = interp.buffer.borrow().point();
         let mark = mark.max(1);
         let (beg, end) = if mark <= point {
             (mark, point)
@@ -1600,8 +1601,8 @@ fn render_window_line_with_format(
         window_buffer_id(interp, &interp.record_value(window_id)).unwrap_or(saved_buffer);
     interp.set_selected_window_id(window_id);
     let switched = buffer_id != saved_buffer && interp.set_current_buffer_id(buffer_id).is_ok();
-    let saved_point = interp.buffer.point();
-    interp.buffer.goto_char(point);
+    let saved_point = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(point);
     set_interactive_window_metrics(Some(metrics));
     let result = (|| {
         let format = interp
@@ -1611,7 +1612,7 @@ fn render_window_line_with_format(
         let text = render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut spans)?;
         Ok((text, spans))
     })();
-    interp.buffer.goto_char(saved_point);
+    interp.buffer.borrow_mut().goto_char(saved_point);
     // Restore selection before switching the current buffer back.  While a
     // non-selected window's mode line is rendered we temporarily select it;
     // switching away with that temporary selection still installed makes
@@ -1665,7 +1666,7 @@ fn select_window_value(
     if window_id != previous_window_id {
         let previous_buffer_id = interp.selected_window_buffer_id();
         let previous_point = if previous_buffer_id == interp.current_buffer_id() {
-            interp.buffer.point()
+            interp.buffer.borrow().point()
         } else {
             interp
                 .get_buffer_by_id(previous_buffer_id)
@@ -1687,7 +1688,7 @@ fn select_window_value(
     let target_point = if window_id == previous_window_id
         && target_buffer_id == Some(interp.current_buffer_id())
     {
-        interp.buffer.point()
+        interp.buffer.borrow().point()
     } else {
         window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
             .as_integer()
@@ -1705,13 +1706,9 @@ fn select_window_value(
         && interp.has_buffer_id(buffer_id)
     {
         interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
-        interp.buffer.goto_char(target_point);
-        set_window_slot_value(
-            interp,
-            window_id,
-            WINDOW_POINT_SLOT,
-            Value::Integer(interp.buffer.point() as i64),
-        )?;
+        interp.buffer.borrow_mut().goto_char(target_point);
+        let point = interp.buffer.borrow().point() as i64;
+        set_window_slot_value(interp, window_id, WINDOW_POINT_SLOT, Value::Integer(point))?;
         if !norecord {
             interp.record_buffer_front(buffer_id);
         }
@@ -2042,7 +2039,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
         interp.set_selected_window_id(replacement_id);
         if let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(replacement_id)) {
             interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
-            interp.buffer.goto_char(point);
+            interp.buffer.borrow_mut().goto_char(point);
         }
     }
     Ok(())
@@ -3071,9 +3068,10 @@ define_dispatch!(
             "buffer-last-name" => Ok(Value::String(
                 interp
                     .buffer
+                    .borrow()
                     .last_name
                     .clone()
-                    .unwrap_or_else(|| interp.buffer.name.clone())
+                    .unwrap_or_else(|| interp.buffer.borrow().name.clone())
                     .into(),
             )),
 
@@ -3191,13 +3189,14 @@ define_dispatch!(
                     }
                 } else {
                     let position = position_from_value(interp, &args[0])?;
-                    if position < interp.buffer.point_min() || position >= interp.buffer.point_max()
+                    if position < interp.buffer.borrow().point_min()
+                        || position >= interp.buffer.borrow().point_max()
                     {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("args-out-of-range".into()),
                             args[0],
-                            Value::Integer(interp.buffer.point_min() as i64),
-                            Value::Integer(interp.buffer.point_max() as i64),
+                            Value::Integer(interp.buffer.borrow().point_min() as i64),
+                            Value::Integer(interp.buffer.borrow().point_max() as i64),
                         ])));
                     }
                     if let Some(character) = args.get(1)
@@ -3353,7 +3352,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::TypeError("window".into(), "deleted".into()))?;
                 let point = if window_id == interp.selected_window_id() {
                     if buffer_id == interp.current_buffer_id() {
-                        interp.buffer.point()
+                        interp.buffer.borrow().point()
                     } else {
                         interp
                             .get_buffer_by_id(buffer_id)
@@ -3569,7 +3568,7 @@ define_dispatch!(
                 };
                 let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
                 let pos = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.point(),
+                    None | Some(Kind::Nil) => interp.buffer.borrow().point(),
                     Some(Kind::T) => point_max,
                     Some(value) => position_from_value(interp, &value.value())?,
                 };
@@ -3622,13 +3621,13 @@ define_dispatch!(
                 // X is the display column and Y the window row; simple.el's
                 // line-move-partial consumes exactly this shape.
                 if args.get(2).is_some_and(Value::is_truthy) {
-                    let saved = interp.buffer.point();
-                    interp.buffer.goto_char(pos);
+                    let saved = interp.buffer.borrow().point();
+                    interp.buffer.borrow_mut().goto_char(pos);
                     let x = super::call(interp, "current-column", &[], env)
                         .ok()
                         .and_then(|value| value.as_integer().ok())
                         .unwrap_or(0);
-                    interp.buffer.goto_char(saved);
+                    interp.buffer.borrow_mut().goto_char(saved);
                     return Ok(Value::list([
                         Value::Integer(x),
                         Value::Integer(rows as i64),
@@ -3868,7 +3867,7 @@ define_dispatch!(
                 let line = resolve_window_line(args.first(), height / 2, height)?;
                 let window_start = current_window_start(interp);
                 let (target, shortage) = move_lines_from(interp, window_start, line);
-                interp.buffer.goto_char(target);
+                interp.buffer.borrow_mut().goto_char(target);
                 let actual = if shortage > 0 {
                     line - shortage
                 } else if shortage < 0 {
@@ -3888,7 +3887,7 @@ define_dispatch!(
                 let line = resolve_window_line(arg, height / 2, height)?;
                 // Walk back whole screen lines: wrapped lines occupy one
                 // row per continuation, exactly as the display counts.
-                let point = interp.buffer.point();
+                let point = interp.buffer.borrow().point();
                 let (new_start, _) = move_screen_lines(interp, env, point, -line);
                 set_current_window_start(interp, new_start);
                 Ok(Value::Nil)
@@ -3929,7 +3928,7 @@ define_dispatch!(
                 let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .unwrap_or(interp.current_buffer_id());
                 let text = if buffer_id == interp.current_buffer_id() {
-                    interp.buffer.buffer_string()
+                    interp.buffer.borrow().buffer_string()
                 } else {
                     interp
                         .get_buffer_by_id(buffer_id)
@@ -3965,16 +3964,16 @@ define_dispatch!(
                 // Like GNU, honor `display' replacements: a string spec
                 // substitutes for the covered text and a margin spec removes it
                 // from the line flow entirely.
-                let point_min = interp.buffer.point_min();
-                let point_max = interp.buffer.point_max();
+                let point_min = interp.buffer.borrow().point_min();
+                let point_max = interp.buffer.borrow().point_max();
                 let mut effective = String::new();
                 let mut pos = point_min;
                 while pos < point_max {
-                    let display = interp.buffer.text_property_at(pos, "display");
+                    let display = interp.buffer.borrow().text_property_at(pos, "display");
                     if let Some(display_value) = display.filter(|value| !value.is_nil()) {
                         let mut end = pos;
                         while end < point_max
-                            && interp.buffer.text_property_at(end, "display") == display
+                            && interp.buffer.borrow().text_property_at(end, "display") == display
                         {
                             end += 1;
                         }
@@ -3996,7 +3995,7 @@ define_dispatch!(
                             continue;
                         }
                     }
-                    match interp.buffer.char_at(pos) {
+                    match interp.buffer.borrow().char_at(pos) {
                         Some(ch) => effective.push(ch),
                         None => break,
                     }
@@ -4019,6 +4018,7 @@ define_dispatch!(
                 let property = args[1].as_symbol()?;
                 let display = interp
                     .buffer
+                    .borrow()
                     .text_property_at(pos, "display")
                     .unwrap_or(Value::Nil);
                 Ok(display_property_value(&display, property).unwrap_or(Value::Nil))
@@ -4068,19 +4068,19 @@ define_dispatch!(
             "display--line-is-continued-p" => {
                 need_args(name, args, 0)?;
                 with_selected_window_buffer(interp, |interp| {
-                    let original_point = interp.buffer.point();
+                    let original_point = interp.buffer.borrow().point();
                     let result = (|| -> Result<Value, LispError> {
                         super::call(interp, "vertical-motion", &[Value::Integer(0)], env)?;
-                        let screen_line_start = interp.buffer.point();
+                        let screen_line_start = interp.buffer.borrow().point();
                         let moved =
                             super::call(interp, "vertical-motion", &[Value::Integer(1)], env)?
                                 .as_integer()?;
-                        let next_screen_line = interp.buffer.point();
+                        let next_screen_line = interp.buffer.borrow().point();
                         let crosses_logical_line = (screen_line_start..next_screen_line)
-                            .any(|position| interp.buffer.char_at(position) == Some('\n'));
+                            .any(|position| interp.buffer.borrow().char_at(position) == Some('\n'));
                         Ok(
                             if moved == 1
-                                && next_screen_line < interp.buffer.point_max()
+                                && next_screen_line < interp.buffer.borrow().point_max()
                                 && !crosses_logical_line
                             {
                                 Value::T
@@ -4089,7 +4089,7 @@ define_dispatch!(
                             },
                         )
                     })();
-                    interp.buffer.goto_char(original_point);
+                    interp.buffer.borrow_mut().goto_char(original_point);
                     result
                 })
             }
@@ -4103,19 +4103,19 @@ define_dispatch!(
                         Kind::Symbol(ref direction) if direction == "right-to-left"
                     );
                     let logical_forward = right != right_to_left;
-                    let point = interp.buffer.point();
+                    let point = interp.buffer.borrow().point();
                     let target = if logical_forward {
-                        if point >= interp.buffer.point_max() {
+                        if point >= interp.buffer.borrow().point_max() {
                             return Err(signal_condition("end-of-buffer"));
                         }
                         point + 1
                     } else {
-                        if point <= interp.buffer.point_min() {
+                        if point <= interp.buffer.borrow().point_min() {
                             return Err(signal_condition("beginning-of-buffer"));
                         }
                         point - 1
                     };
-                    interp.buffer.goto_char(target);
+                    interp.buffer.borrow_mut().goto_char(target);
                     Ok(Value::Integer(target as i64))
                 })
             }
@@ -4560,14 +4560,14 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 };
                 if buffer_id == interp.current_buffer_id() {
-                    Ok(Value::buffer(buffer_id, interp.buffer.name.clone()))
+                    Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
                 } else if let Some((_, name)) = interp
                     .buffer_list
                     .iter()
                     .find(|(id, _)| *id == buffer_id)
                     .cloned()
                 {
-                    Ok(Value::buffer(buffer_id, name))
+                    Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
                 } else {
                     Ok(Value::Nil)
                 }
@@ -5054,11 +5054,11 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 };
                 let pos = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.point(),
+                    None | Some(Kind::Nil) => interp.buffer.borrow().point(),
                     Some(value) => position_from_value(interp, &value.value())?,
                 };
-                let point_min = interp.buffer.point_min();
-                let point_max = interp.buffer.point_max();
+                let point_min = interp.buffer.borrow().point_min();
+                let point_max = interp.buffer.borrow().point_max();
                 let start = crate::lisp::primitives::current_window_start(interp)
                     .clamp(point_min, point_max);
                 let visible = pos >= start
@@ -5295,8 +5295,8 @@ define_dispatch!(
                     let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                         .unwrap_or_else(|| interp.current_buffer_id());
                     if buffer_id == interp.current_buffer_id() {
-                        interp.buffer.goto_char(pos);
-                    } else if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                        interp.buffer.borrow_mut().goto_char(pos);
+                    } else if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                         buffer.goto_char(pos);
                     }
                 }
@@ -5729,7 +5729,7 @@ fn decode_mode_line_spec(
     };
     Ok(match spec {
         '%' => "%".to_string(),
-        'b' => interp.buffer.name.clone(),
+        'b' => interp.buffer.borrow().name.clone(),
         'f' => match super::call(interp, "buffer-file-name", &[], env) {
             Ok(path) if path.is_string() => string_text(&path)?,
             _ => String::new(),
@@ -5744,8 +5744,14 @@ fn decode_mode_line_spec(
             _ => "F1".to_string(),
         },
         'l' => {
-            let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
-            let first_accessible_line = interp.buffer.line_number_at_pos(interp.buffer.point_min());
+            let point_line = interp
+                .buffer
+                .borrow()
+                .line_number_at_pos(interp.buffer.borrow().point());
+            let first_accessible_line = interp
+                .buffer
+                .borrow()
+                .line_number_at_pos(interp.buffer.borrow().point_min());
             point_line
                 .saturating_sub(first_accessible_line)
                 .saturating_add(1)
@@ -5757,8 +5763,12 @@ fn decode_mode_line_spec(
                 .unwrap_or(0);
             (column + i64::from(spec == 'C')).to_string()
         }
-        'i' => (interp.buffer.point_max() - interp.buffer.point_min()).to_string(),
-        'I' => human_readable_size(interp.buffer.point_max() - interp.buffer.point_min()),
+        'i' => {
+            (interp.buffer.borrow().point_max() - interp.buffer.borrow().point_min()).to_string()
+        }
+        'I' => human_readable_size(
+            interp.buffer.borrow().point_max() - interp.buffer.borrow().point_min(),
+        ),
         'p' | 'P' => window_percent_spec(interp, spec == 'P'),
         'n' => {
             // xdisp.c:28812 decode_mode_spec case 'n': pure C accessibility
@@ -5767,8 +5777,8 @@ fn decode_mode_line_spec(
             // native dispatch of that name was both a gate escape (it went
             // through `super::call', which the anti-cheat regex missed) and
             // half wrong: it ignored narrowing at the buffer's end.
-            let narrowed = interp.buffer.point_min() > 1
-                || interp.buffer.point_max() < interp.buffer.size_total() + 1;
+            let narrowed = interp.buffer.borrow().point_min() > 1
+                || interp.buffer.borrow().point_max() < interp.buffer.borrow().size_total() + 1;
             if narrowed {
                 " Narrow".to_string()
             } else {
@@ -5778,14 +5788,14 @@ fn decode_mode_line_spec(
         '*' => {
             if var(interp, "buffer-read-only").is_truthy() {
                 "%".to_string()
-            } else if interp.buffer.is_modified() {
+            } else if interp.buffer.borrow().is_modified() {
                 "*".to_string()
             } else {
                 "-".to_string()
             }
         }
         '+' => {
-            if interp.buffer.is_modified() {
+            if interp.buffer.borrow().is_modified() {
                 "*".to_string()
             } else if var(interp, "buffer-read-only").is_truthy() {
                 "%".to_string()
@@ -5794,7 +5804,7 @@ fn decode_mode_line_spec(
             }
         }
         '&' => {
-            if interp.buffer.is_modified() {
+            if interp.buffer.borrow().is_modified() {
                 "*".to_string()
             } else {
                 "-".to_string()
@@ -5889,7 +5899,7 @@ fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value)
         && super::call(interp, "coding-system-p", std::slice::from_ref(coding), env)
             .is_ok_and(|value| value.is_truthy());
     if !defined {
-        return if interp.buffer.is_multibyte() {
+        return if interp.buffer.borrow().is_multibyte() {
             '-'
         } else {
             ' '
@@ -5934,8 +5944,8 @@ fn window_percent_spec(interp: &Interpreter, of_bottom: bool) -> String {
     let Some(metrics) = crate::lisp::primitives::interactive_window_metrics() else {
         return String::new();
     };
-    let point_min = interp.buffer.point_min();
-    let point_max = interp.buffer.point_max();
+    let point_min = interp.buffer.borrow().point_min();
+    let point_max = interp.buffer.borrow().point_max();
     let start = crate::lisp::primitives::current_window_start(interp).clamp(point_min, point_max);
     let window_end = metrics.window_end.clamp(point_min, point_max);
     if of_bottom {
@@ -5981,8 +5991,8 @@ pub(super) fn direct_preceding_char(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let pt = interp.buffer.point();
-    if pt <= interp.buffer.point_min() {
+    let pt = interp.buffer.borrow().point();
+    if pt <= interp.buffer.borrow().point_min() {
         Ok(Value::Integer(0))
     } else {
         match public_buffer_char_code_at(interp, pt - 1) {
@@ -5999,7 +6009,7 @@ pub(super) fn direct_following_char(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    match public_buffer_char_code_at(interp, interp.buffer.point()) {
+    match public_buffer_char_code_at(interp, interp.buffer.borrow().point()) {
         Some(code) => Ok(Value::Integer(code)),
         None => Ok(Value::Integer(0)),
     }

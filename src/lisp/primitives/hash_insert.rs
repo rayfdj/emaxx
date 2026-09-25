@@ -694,7 +694,7 @@ pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Va
 }
 
 pub(crate) fn find_bidi_override(interp: &Interpreter, start: usize, end: usize) -> Option<usize> {
-    let text = interp.buffer.buffer_substring(start, end).ok()?;
+    let text = interp.buffer.borrow().buffer_substring(start, end).ok()?;
     if !text
         .chars()
         .any(|character| matches!(character as u32, 0x202A..=0x202E | 0x2066..=0x2069))
@@ -739,7 +739,7 @@ pub(crate) fn insert_impl(
     before_markers: bool,
 ) -> Result<Value, LispError> {
     let combined = combine_insert_args(args)?;
-    let insert_at = interp.buffer.point();
+    let insert_at = interp.buffer.borrow().point();
     let nchars = combined.text.chars().count();
     insert_text_with_hooks(
         interp,
@@ -751,7 +751,7 @@ pub(crate) fn insert_impl(
         env,
     )?;
     if before_markers {
-        for overlay in &mut interp.buffer.overlays {
+        for overlay in &mut interp.buffer.borrow_mut().overlays {
             if overlay.is_dead() {
                 continue;
             }
@@ -811,8 +811,9 @@ pub(crate) fn insert_text_with_hooks(
     }
     ensure_insert_modifiable(interp, env)?;
     ensure_no_supersession_threat(interp, env)?;
-    let start = interp.buffer.point();
-    let overlay_calls = overlay_insert_hook_calls(&interp.buffer, start, text.chars().count());
+    let start = interp.buffer.borrow().point();
+    let overlay_calls =
+        overlay_insert_hook_calls(&interp.buffer.borrow(), start, text.chars().count());
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     run_change_hooks(
         interp,
@@ -842,9 +843,11 @@ pub(crate) fn insert_text_with_hooks(
             let (span_start, span_end) = (start + span.start, start + span.end);
             let mut position = span_start;
             while position < span_end {
-                let existing = interp.buffer.text_properties_at(position);
+                let existing = interp.buffer.borrow().text_properties_at(position);
                 let mut run_end = position + 1;
-                while run_end < span_end && interp.buffer.text_properties_at(run_end) == existing {
+                while run_end < span_end
+                    && interp.buffer.borrow().text_properties_at(run_end) == existing
+                {
                     run_end += 1;
                 }
                 let mut merged = span.props.clone();
@@ -855,6 +858,7 @@ pub(crate) fn insert_text_with_hooks(
                 }
                 interp
                     .buffer
+                    .borrow_mut()
                     .set_text_properties(position, run_end, &merged);
                 position = run_end;
             }
@@ -862,9 +866,11 @@ pub(crate) fn insert_text_with_hooks(
             // Freshly inserted text: graft the string's plist verbatim so
             // the stored order matches GNU (add_text_properties would
             // reverse it).
-            interp
-                .buffer
-                .set_text_properties(start + span.start, start + span.end, &span.props);
+            interp.buffer.borrow_mut().set_text_properties(
+                start + span.start,
+                start + span.end,
+                &span.props,
+            );
         }
     }
     interp.set_inserted_extended_chars(start, extended_chars);

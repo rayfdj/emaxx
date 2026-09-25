@@ -215,7 +215,7 @@ fn apply_buffer_replacement_hunks(
     let old_len = target_end - target_start;
     let new_len = source_chars.len();
     let overlay_calls = overlay_change_hook_calls(
-        &interp.buffer,
+        &interp.buffer.borrow(),
         target_start,
         target_end,
         target_start + new_len,
@@ -234,7 +234,7 @@ fn apply_buffer_replacement_hunks(
     // GNU records the excursion before applying its diff.  A marker, rather
     // than a numeric point, is essential here: if a matching character near
     // point survives, point must continue to follow that character.
-    let saved_point = interp.buffer.point();
+    let saved_point = interp.buffer.borrow().point();
     let saved_point_marker = match interp.make_marker().kind() {
         Kind::Marker(id) => id,
         _ => unreachable!("make_marker returns a marker"),
@@ -261,15 +261,16 @@ fn apply_buffer_replacement_hunks(
             if hunk.new_start < hunk.new_end {
                 let inserted: String = source_chars[hunk.new_start..hunk.new_end].iter().collect();
                 let inserted_len = hunk.new_end - hunk.new_start;
-                interp.buffer.goto_char(from);
+                interp.buffer.borrow_mut().goto_char(from);
                 interp.insert_current_buffer(&inserted);
                 // `insert' can inherit edge properties.  `replace-buffer-contents'
                 // grafts the source intervals instead, including property-free gaps.
                 interp
                     .buffer
+                    .borrow_mut()
                     .set_text_properties(from, from + inserted_len, &[]);
                 for span in clipped_property_spans(source_props, hunk.new_start, hunk.new_end) {
-                    interp.buffer.set_text_properties(
+                    interp.buffer.borrow_mut().set_text_properties(
                         from + span.start,
                         from + span.end,
                         &span.props,
@@ -283,8 +284,11 @@ fn apply_buffer_replacement_hunks(
     let restored_point = interp
         .marker_position(saved_point_marker)
         .unwrap_or(saved_point)
-        .clamp(interp.buffer.point_min(), interp.buffer.point_max());
-    interp.buffer.goto_char(restored_point);
+        .clamp(
+            interp.buffer.borrow().point_min(),
+            interp.buffer.borrow().point_max(),
+        );
+    interp.buffer.borrow_mut().goto_char(restored_point);
     let _ = interp.set_marker(saved_point_marker, None, None);
     edit_result?;
     restore_result?;
@@ -563,6 +567,7 @@ define_dispatch!(
                 }
                 let matched = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 // replace_range grafts NEWSTRING's text properties into
@@ -583,8 +588,12 @@ define_dispatch!(
                 let replacement_len = replacement.chars().count();
                 let saved_markers =
                     interp.live_marker_positions_for_buffer(interp.current_buffer_id());
-                let overlay_calls =
-                    overlay_change_hook_calls(&interp.buffer, start, end, start + replacement_len);
+                let overlay_calls = overlay_change_hook_calls(
+                    &interp.buffer.borrow(),
+                    start,
+                    end,
+                    start + replacement_len,
+                );
                 run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
                 run_change_hooks(
                     interp,
@@ -595,7 +604,7 @@ define_dispatch!(
                 interp
                     .delete_region_current_buffer(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                interp.buffer.goto_char(start);
+                interp.buffer.borrow_mut().goto_char(start);
                 interp.insert_current_buffer(&replacement);
                 let (source_len, spans) = source_spans;
                 if !spans.is_empty() && source_len == replacement_len {
@@ -679,10 +688,11 @@ define_dispatch!(
                         source.substring_property_spans(source.point_min(), source.point_max()),
                     )
                 };
-                let target_start = interp.buffer.point_min();
-                let target_end = interp.buffer.point_max();
+                let target_start = interp.buffer.borrow().point_min();
+                let target_end = interp.buffer.borrow().point_max();
                 let target_text = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(target_start, target_end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let old_chars: Vec<char> = target_text.chars().collect();
@@ -761,6 +771,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
                 let text = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(from, to)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 let replaced: String = text
@@ -780,6 +791,7 @@ define_dispatch!(
                     let noundo = args.get(4).is_some_and(Value::is_truthy);
                     interp
                         .buffer
+                        .borrow_mut()
                         .replace_region_in_place(from, to, &replaced, noundo);
                     run_change_hooks(
                         interp,
@@ -803,7 +815,10 @@ define_dispatch!(
                 if start > end {
                     std::mem::swap(&mut start, &mut end);
                 }
-                let outermost = (interp.buffer.point_min(), interp.buffer.point_max());
+                let outermost = (
+                    interp.buffer.borrow().point_min(),
+                    interp.buffer.borrow().point_max(),
+                );
                 if let Some((clamp_start, clamp_end)) =
                     interp.effective_labeled_restriction(interp.current_buffer_id(), None)
                 {
@@ -817,7 +832,7 @@ define_dispatch!(
                     end,
                     outermost,
                 )?;
-                interp.buffer.narrow_to_region(start, end);
+                interp.buffer.borrow_mut().narrow_to_region(start, end);
                 Ok(Value::Nil)
             }
 
@@ -827,9 +842,9 @@ define_dispatch!(
                 if let Some((start, end)) =
                     interp.pop_labeled_restriction(interp.current_buffer_id(), label)
                 {
-                    interp.buffer.narrow_to_region(start, end);
+                    interp.buffer.borrow_mut().narrow_to_region(start, end);
                 } else {
-                    interp.buffer.widen();
+                    interp.buffer.borrow_mut().widen();
                 }
                 Ok(Value::Nil)
             }
@@ -863,16 +878,25 @@ define_dispatch!(
                     interp.live_marker_positions_for_buffer(interp.current_buffer_id());
                 let region1_text = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start1, end1)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                let region1_props = interp.buffer.substring_property_spans(start1, end1);
+                let region1_props = interp
+                    .buffer
+                    .borrow()
+                    .substring_property_spans(start1, end1);
                 let region2_text = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start2, end2)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                let region2_props = interp.buffer.substring_property_spans(start2, end2);
+                let region2_props = interp
+                    .buffer
+                    .borrow()
+                    .substring_property_spans(start2, end2);
                 let gap = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(end1, start2)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 let gap_len = gap.chars().count();
@@ -882,20 +906,20 @@ define_dispatch!(
                 interp
                     .delete_region_current_buffer(start1, end1)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
-                interp.buffer.goto_char(start1);
+                interp.buffer.borrow_mut().goto_char(start1);
                 interp.insert_current_buffer(&region2_text);
                 for span in &region2_props {
-                    interp.buffer.add_text_properties(
+                    interp.buffer.borrow_mut().add_text_properties(
                         start1 + span.start,
                         start1 + span.end,
                         &span.props,
                     );
                 }
                 let insert_region1_at = start1 + region2_text.chars().count() + gap_len;
-                interp.buffer.goto_char(insert_region1_at);
+                interp.buffer.borrow_mut().goto_char(insert_region1_at);
                 interp.insert_current_buffer(&region1_text);
                 for span in &region1_props {
-                    interp.buffer.add_text_properties(
+                    interp.buffer.borrow_mut().add_text_properties(
                         insert_region1_at + span.start,
                         insert_region1_at + span.end,
                         &span.props,
@@ -942,12 +966,13 @@ define_dispatch!(
                     .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
                 let region = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let region = make_shared_string_value_with_multibyte(
                     region,
                     Vec::new(),
-                    interp.buffer.is_multibyte(),
+                    interp.buffer.borrow().is_multibyte(),
                 );
                 enum Destination {
                     Replace,
@@ -992,13 +1017,13 @@ define_dispatch!(
                 match destination {
                     Destination::Return => Ok(transformed),
                     Destination::Replace => {
-                        let text = text_for_buffer(interp.buffer.is_multibyte())?;
+                        let text = text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let old_length = end - start;
                         let new_end = start + text.chars().count();
                         ensure_region_modifiable(interp, start, end, env)?;
                         ensure_no_supersession_threat(interp, env)?;
                         let overlay_calls =
-                            overlay_change_hook_calls(&interp.buffer, start, end, new_end);
+                            overlay_change_hook_calls(&interp.buffer.borrow(), start, end, new_end);
                         run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
                         run_change_hooks(
                             interp,
@@ -1011,7 +1036,7 @@ define_dispatch!(
                         // into a unibyte destination, so the spans keep
                         // their character offsets there.
                         for span in &transformed_props {
-                            interp.buffer.add_text_properties(
+                            interp.buffer.borrow_mut().add_text_properties(
                                 start + span.start,
                                 start + span.end,
                                 &span.props,
@@ -1034,8 +1059,8 @@ define_dispatch!(
                     Destination::Buffer(buffer_id) => {
                         let saved_buffer_id = interp.current_buffer_id();
                         interp.switch_to_buffer_id(buffer_id)?;
-                        let insert_at = interp.buffer.point();
-                        let text = text_for_buffer(interp.buffer.is_multibyte())?;
+                        let insert_at = interp.buffer.borrow().point();
+                        let text = text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let insertion = insert_text_with_hooks(
                             interp,
                             &text,
@@ -1045,7 +1070,7 @@ define_dispatch!(
                             false,
                             env,
                         );
-                        interp.buffer.goto_char(insert_at);
+                        interp.buffer.borrow_mut().goto_char(insert_at);
                         let restore = interp.switch_to_buffer_id(saved_buffer_id);
                         insertion?;
                         restore?;
@@ -1080,13 +1105,13 @@ define_dispatch!(
                     let buffer_id = interp.resolve_buffer_id(buffer)?;
                     let saved_buffer_id = interp.current_buffer_id();
                     interp.switch_to_buffer_id(buffer_id)?;
-                    let insert_at = interp.buffer.point();
+                    let insert_at = interp.buffer.borrow().point();
                     let decoded_text = string_text(&decoded)?;
                     let props = string_like(&decoded)
                         .map(|string| string.props)
                         .unwrap_or_default();
                     insert_text_with_hooks(interp, &decoded_text, &props, &[], false, false, env)?;
-                    interp.buffer.goto_char(insert_at);
+                    interp.buffer.borrow_mut().goto_char(insert_at);
                     let _ = interp.switch_to_buffer_id(saved_buffer_id);
                 }
                 Ok(decoded)
@@ -1100,20 +1125,17 @@ define_dispatch!(
             }
             "json-parse-buffer" => {
                 let options = json_parse_options(args)?;
-                let start = interp.buffer.point();
+                let start = interp.buffer.borrow().point();
                 let text = interp
                     .buffer
-                    .buffer_substring(start, interp.buffer.point_max())
+                    .borrow()
+                    .buffer_substring(start, interp.buffer.borrow().point_max())
                     .map_err(|error| LispError::Signal(error.to_string()))?;
-                let parsed = json::parse_text_source(
-                    interp,
-                    &text,
-                    interp.buffer.is_multibyte(),
-                    &options,
-                    false,
-                )?;
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let parsed = json::parse_text_source(interp, &text, multibyte, &options, false)?;
                 interp
                     .buffer
+                    .borrow_mut()
                     .goto_char(start + parsed.consumed_source_pos.saturating_sub(1));
                 Ok(parsed.value)
             }
@@ -1130,7 +1152,7 @@ define_dispatch!(
                 }
                 let (null_object, false_object) = json_serialize_options(&args[1..])?;
                 let serialized = json::serialize(interp, &args[0], &null_object, &false_object)?;
-                let text = if interp.buffer.is_multibyte() {
+                let text = if interp.buffer.borrow().is_multibyte() {
                     &serialized.text
                 } else {
                     &serialized.bytes_text

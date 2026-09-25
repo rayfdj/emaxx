@@ -609,7 +609,7 @@ define_dispatch!(
             "buffer-live-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0].kind(), Kind::Buffer(buffer) if interp.has_buffer_id(buffer.id))
+                    if matches!(args[0].kind(), Kind::Buffer(buffer) if interp.buffer_object(buffer.id).is_some_and(|live| live.ptr_eq(&buffer)))
                     {
                         Value::T
                     } else {

@@ -3039,6 +3039,7 @@ struct ImageGraphCopier {
     reader_forms: std::collections::HashMap<usize, Value>,
     records: std::collections::HashMap<usize, Value>,
     finalizers: std::collections::HashMap<usize, Value>,
+    buffers: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -3054,6 +3055,7 @@ impl ImageGraphCopier {
             reader_forms: Default::default(),
             records: Default::default(),
             finalizers: Default::default(),
+            buffers: Default::default(),
             record_owner,
         }
     }
@@ -3061,6 +3063,18 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::Buffer(buffer) => {
+                if let Some(copied) = self.buffers.get(&buffer.identity()) {
+                    return *copied;
+                }
+                let object = crate::lisp::types::BufferRef::new(buffer.id, buffer.borrow().clone());
+                let copied = Value::Buffer(object);
+                self.buffers.insert(buffer.identity(), copied);
+                object
+                    .borrow_mut()
+                    .rewrite_lisp_values(&mut |child| self.copy(child));
+                copied
+            }
             Kind::Finalizer(object) => {
                 if let Some(copied) = self.finalizers.get(&object.identity()) {
                     return *copied;
@@ -3550,7 +3564,9 @@ impl LispReachability<'_, '_> {
                 }
             }
             Kind::Buffer(buffer) => {
-                buffer.name.mark_bit().mark(self.epoch);
+                buffer
+                    .borrow()
+                    .visit_lisp_values(&mut |child| self.enqueue(child));
             }
             Kind::Overlay(id) => {
                 // alloc.c:mark_overlay follows the plist whether the overlay
@@ -3898,8 +3914,7 @@ impl Interpreter {
 
     /// The Lisp object naming buffer ID, if it is live.
     pub(crate) fn buffer_value(&self, id: u64) -> Option<Value> {
-        self.get_buffer_by_id(id)
-            .map(|buffer| Value::buffer(id, buffer.name.clone()))
+        self.buffer_object(id).map(Value::Buffer)
     }
 
     /// `own_text.markers': the markers pointing into buffer ID, by id.
@@ -3975,20 +3990,21 @@ impl Interpreter {
     /// The buffer whose overlay list holds the object, if any. Detached
     /// overlays do not need a live buffer to retain their properties.
     pub(crate) fn overlay_holder_id(&self, id: u64) -> Option<u64> {
-        if self.buffer.overlays.iter().any(|ov| ov.id == id) {
+        if self.buffer.borrow().overlays.iter().any(|ov| ov.id == id) {
             return Some(self.current_buffer_id);
         }
         self.inactive_buffers
             .iter()
-            .find(|(_, buffer)| buffer.overlays.iter().any(|ov| ov.id == id))
+            .find(|(_, buffer)| buffer.borrow().overlays.iter().any(|ov| ov.id == id))
             .map(|(id, _)| *id)
     }
 
     /// Install a buffer with the id the image gave it, replacing a buffer
     /// with that id.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer(&mut self, id: u64, buffer: crate::buffer::Buffer) {
-        let name = buffer.name.clone();
+    pub(crate) fn install_buffer(&mut self, buffer: crate::lisp::types::BufferRef) {
+        let id = buffer.id;
+        let name = buffer.borrow().name.clone();
         if id == self.current_buffer_id {
             self.buffer = buffer;
         } else {
@@ -4058,7 +4074,9 @@ impl Interpreter {
         self.next_overlay_id = self.next_overlay_id.max(overlay.id + 1);
         self.take_overlay(overlay.id);
         if overlay.is_dead() {
-            self.detached_overlays.insert(overlay.id, overlay);
+            self.detached_overlays
+                .borrow_mut()
+                .insert(overlay.id, overlay);
             return;
         }
         let holder = if self.get_buffer_by_id(holder).is_some() {
@@ -4066,7 +4084,7 @@ impl Interpreter {
         } else {
             self.current_buffer_id
         };
-        let buffer = self
+        let mut buffer = self
             .get_buffer_by_id_mut(holder)
             .expect("the current buffer is live");
         buffer.overlays.push(overlay);
@@ -4623,12 +4641,9 @@ impl Interpreter {
         for id in self.buffer_mark_marker_ids.values() {
             mark(&Value::Marker(*id));
         }
-        let mut visit_buffer = |value: &Value| {
-            mark(value);
-        };
-        self.buffer.visit_lisp_values(&mut visit_buffer);
+        mark(&Value::Buffer(self.buffer));
         for (_, buffer) in &self.inactive_buffers {
-            buffer.visit_lisp_values(&mut visit_buffer);
+            mark(&Value::Buffer(*buffer));
         }
         for id in [self.standard_obarray_id, self.selected_window_id] {
             mark(&self.record_value(id));
@@ -4697,17 +4712,11 @@ impl Interpreter {
             .iter()
             .filter(|terminal| terminal.live)
             .count();
-        let live_overlays = self
-            .buffer
-            .overlays
-            .iter()
-            .chain(
-                self.inactive_buffers
-                    .iter()
-                    .flat_map(|(_, buffer)| &buffer.overlays),
-            )
-            .count()
-            .saturating_add(self.detached_overlays.len());
+        let live_overlays = std::iter::once(&self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
+            .map(|buffer| buffer.borrow().overlays.len())
+            .sum::<usize>()
+            .saturating_add(self.detached_overlays.borrow().len());
         let char_table_slots = self
             .char_tables
             .iter()
@@ -4743,9 +4752,9 @@ impl Interpreter {
             buffers: live_buffers,
             hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
-        census.intervals += self.buffer.text_property_span_count();
+        census.intervals += self.buffer.borrow().text_property_span_count();
         for (_, buffer) in &self.inactive_buffers {
-            census.intervals += buffer.text_property_span_count();
+            census.intervals += buffer.borrow().text_property_span_count();
         }
         census
     }
@@ -4802,6 +4811,16 @@ impl Interpreter {
         let mut copier = ImageGraphCopier::new(clone.record_owner);
         {
             let c = &mut copier;
+            let Kind::Buffer(buffer) = c.copy(&Value::Buffer(self.buffer)).kind() else {
+                unreachable!("a buffer copy has buffer storage")
+            };
+            clone.buffer = buffer;
+            for (_, buffer) in &mut clone.inactive_buffers {
+                let Kind::Buffer(copied) = c.copy(&Value::Buffer(*buffer)).kind() else {
+                    unreachable!("a buffer copy has buffer storage")
+                };
+                *buffer = copied;
+            }
             for value in clone.globals.values_mut() {
                 *value = c.copy(value);
             }
@@ -5067,11 +5086,7 @@ impl Interpreter {
                 process.contact = c.copy(&process.contact.clone());
             }
             let mut copy = |value: &Value| c.copy(value);
-            clone.buffer.rewrite_lisp_values(&mut copy);
-            for (_, buffer) in &mut clone.inactive_buffers {
-                buffer.rewrite_lisp_values(&mut copy);
-            }
-            for overlay in clone.detached_overlays.values_mut() {
+            for overlay in clone.detached_overlays.get_mut().values_mut() {
                 for (key, value) in &mut overlay.plist {
                     *key = copy(key);
                     *value = copy(value);
@@ -5395,7 +5410,7 @@ pub struct InterpreterState {
     /// Variable watchers keyed by canonical variable name.
     variable_watchers: Vec<(SymbolName, Vec<Value>)>,
     /// The current buffer being operated on.
-    pub buffer: crate::buffer::Buffer,
+    pub buffer: crate::lisp::types::BufferRef,
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
@@ -5441,12 +5456,7 @@ pub struct InterpreterState {
     frame_and_buffer_state: Value,
     pub(crate) terminals: Vec<terminal::TerminalState>,
     /// Inactive buffers keyed by ID.
-    inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
-    /// File names retained by dead buffer objects.  GNU kills the buffer's
-    /// text but keeps these buffer slots readable through the Lisp object;
-    /// Eglot relies on `(buffer-file-name BUFFER)' after killing BUFFER in
-    /// order to revisit the same file.
-    killed_buffer_file_names: HashMap<u64, Option<String>>,
+    inactive_buffers: Vec<(u64, crate::lisp::types::BufferRef)>,
     /// Known buffers: (id, name) pairs.
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
@@ -5455,7 +5465,7 @@ pub struct InterpreterState {
     next_overlay_id: u64,
     /// Deleted overlays remain Lisp objects even after their buffer dies.
     /// This allocation table is swept by Lisp reachability, not a GC root.
-    detached_overlays: HashMap<u64, crate::overlay::Overlay>,
+    detached_overlays: RefCell<HashMap<u64, crate::overlay::Overlay>>,
     /// Next marker ID for identity tracking.
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
@@ -6203,7 +6213,7 @@ impl Interpreter {
             uninterned_standard_symbol_names: HashSet::default(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
-            buffer: crate::buffer::Buffer::new("*scratch*"),
+            buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,
             keymap_public_cons_owners: HashMap::new(),
             keymap_public_cons_ids: HashMap::new(),
@@ -6243,15 +6253,17 @@ impl Interpreter {
             old_selected_frame_id: 1,
             frame_and_buffer_state: Value::Nil,
             terminals: vec![terminal::TerminalState::initial()],
-            inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
-            killed_buffer_file_names: HashMap::new(),
+            inactive_buffers: vec![(
+                1,
+                crate::lisp::types::BufferRef::new(1, crate::buffer::Buffer::new("*Messages*")),
+            )],
             // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
             // *Messages*); *Messages* joins the list once the minibuffer
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
             next_overlay_id: 1,
-            detached_overlays: HashMap::new(),
+            detached_overlays: RefCell::new(HashMap::new()),
             next_marker_id: 1,
             markers: Vec::new(),
             markers_by_buffer: HashMap::new(),
@@ -7735,12 +7747,13 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
+        let buffer_start = interp.buffer.borrow().point_min();
         let selected_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",
             primitives::window_record_slots(
                 Some(interp.current_buffer_id),
-                interp.buffer.point_min(),
+                buffer_start,
                 Value::Nil,
                 (
                     interp.frame_width(),

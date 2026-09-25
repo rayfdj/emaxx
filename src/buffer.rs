@@ -1840,6 +1840,29 @@ impl Buffer {
         self.invalidate_undo_list_view();
     }
 
+    /// Release editing storage when the buffer dies, even if Lisp still
+    /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
+    /// and overlays and frees text; file slots remain readable afterwards.
+    pub(crate) fn release_killed_storage(&mut self) {
+        self.text = Rope::new();
+        *self.char_cache.get_mut() = RopeCharCache::default();
+        self.saved_text = String::new();
+        self.edits = std::collections::VecDeque::new();
+        self.undo_list = Vec::new();
+        self.undo_list_view = UndoListViewCache::default();
+        self.undo_disabled = false;
+        self.point_before_last_boundary = None;
+        self.text_properties = Vec::new();
+        self.extended_chars = Vec::new();
+        self.overlays = Vec::new();
+        self.mark = None;
+        self.mark_active = false;
+        self.pt = 1;
+        self.begv = 1;
+        self.zv = 1;
+        self.last_name = Some(self.name.clone());
+    }
+
     pub fn take_undo_state(&mut self) -> UndoState {
         let view = self.undo_list_view.0.borrow_mut().take();
         UndoState {
@@ -2655,7 +2678,7 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right))
         | (Kind::Overlay(left), Kind::Overlay(right))
         | (Kind::CharTable(left), Kind::CharTable(right))

@@ -468,7 +468,7 @@ pub(crate) fn parse_interactive_string(
     // unless mark-even-if-inactive overrides.
     let check_mark =
         |interp: &mut Interpreter, env: &mut Env, for_region: bool| -> Result<usize, LispError> {
-            let mark = interp.buffer.mark().ok_or_else(|| {
+            let mark = interp.buffer.borrow().mark().ok_or_else(|| {
                 LispError::Signal(
                     if for_region {
                         "The mark is not set now, so there is no region"
@@ -484,7 +484,7 @@ pub(crate) fn parse_interactive_string(
             let even_if_inactive = interp
                 .lookup_var("mark-even-if-inactive", env)
                 .is_some_and(|value| value.is_truthy());
-            if transient && !even_if_inactive && !interp.buffer.mark_active() {
+            if transient && !even_if_inactive && !interp.buffer.borrow().mark_active() {
                 return Err(LispError::SignalValue(Value::list([Value::Symbol(
                     "mark-inactive".into(),
                 )])));
@@ -573,7 +573,7 @@ pub(crate) fn parse_interactive_string(
                 seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
                 values.push(event);
             }
-            'd' => values.push(Value::Integer(interp.buffer.point() as i64)),
+            'd' => values.push(Value::Integer(interp.buffer.borrow().point() as i64)),
             'D' | 'f' | 'F' | 'G' => {
                 let message = formatted_prompt(interp, env, &visible)?;
                 // callint.c's read_file_name helper: Fread_file_name
@@ -671,7 +671,7 @@ pub(crate) fn parse_interactive_string(
             }
             'r' => {
                 let mark = check_mark(interp, env, true)?;
-                let point = interp.buffer.point();
+                let point = interp.buffer.borrow().point();
                 values.push(Value::Integer(point.min(mark) as i64));
                 values.push(Value::Integer(point.max(mark) as i64));
             }
@@ -1125,7 +1125,7 @@ fn execute_command_binding_inner(
     // command boundary, independently of whether simple.el decides that a
     // new undo-list boundary is needed.  Without this, a motion between two
     // edits leaves record_point using the earlier edit's position.
-    interp.buffer.note_undo_command_point();
+    interp.buffer.borrow_mut().note_undo_command_point();
     // keyboard.c:1537: before this command runs, boundaries for the
     // LAST command's changes are ensured through simple.el's own
     // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
@@ -1142,7 +1142,7 @@ fn execute_command_binding_inner(
             env,
         );
     } else {
-        interp.buffer.push_undo_boundary();
+        interp.buffer.borrow_mut().push_undo_boundary();
     }
     // keyboard.c read_char wipes a lingering message when the next input
     // event arrives: the channel empties before the command runs, but the
@@ -1183,7 +1183,7 @@ fn execute_command_binding_inner(
     interp.set_variable("deactivate-mark", Value::Nil, env);
     let modified_before = (
         interp.current_buffer_id(),
-        interp.buffer.chars_modified_tick(),
+        interp.buffer.borrow().chars_modified_tick(),
     );
     // pre-command-hook may rewrite `this-command' (isearch's exit path
     // does); GNU executes whatever the hook left there.
@@ -1243,7 +1243,7 @@ fn execute_command_binding_inner(
             .lookup_var("deactivate-mark", env)
             .is_some_and(|value| value.is_truthy())
             || (interp.current_buffer_id() == modified_before.0
-                && interp.buffer.chars_modified_tick() != modified_before.1);
+                && interp.buffer.borrow().chars_modified_tick() != modified_before.1);
         let mark_active = interp
             .lookup_var("mark-active", env)
             .is_some_and(|value| value.is_truthy());
@@ -1273,7 +1273,7 @@ fn execute_command_binding_inner(
         .is_ok()
     {
         let current_changed = interp.current_buffer_id() == modified_before.0
-            && interp.buffer.chars_modified_tick() != modified_before.1;
+            && interp.buffer.borrow().chars_modified_tick() != modified_before.1;
         let switched_and_changed = interp.current_buffer_id() != modified_before.0
             && interp
                 .get_buffer_by_id(modified_before.0)

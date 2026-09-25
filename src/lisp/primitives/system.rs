@@ -1936,8 +1936,9 @@ pub(crate) fn dispatch_file_name_handler(
                     .map(|name| name.text)
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *visit))?
             };
-            interp.buffer.file = Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
-            interp.buffer.set_unmodified();
+            interp.buffer.borrow_mut().file =
+                Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
+            interp.buffer.borrow_mut().set_unmodified();
         }
         return Ok(FileNameDispatch::Handled(result));
     }

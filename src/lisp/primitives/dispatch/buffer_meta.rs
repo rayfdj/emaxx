@@ -101,12 +101,13 @@ define_dispatch!(
                     _ => {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        if start > end || end > interp.buffer.point_max() {
+                        if start > end || end > interp.buffer.borrow().point_max() {
                             return Err(LispError::Signal("Args out of range".into()));
                         }
                         (
                             interp
                                 .buffer
+                                .borrow()
                                 .buffer_substring(start, end)
                                 .map_err(|error| LispError::Signal(error.to_string()))?,
                             start,
@@ -166,7 +167,7 @@ define_dispatch!(
             }
             "field-beginning" | "field-end" => {
                 let pos = if args.is_empty() || args[0].is_nil() {
-                    interp.buffer.point()
+                    interp.buffer.borrow().point()
                 } else {
                     position_from_value(interp, &args[0])?
                 };
@@ -175,7 +176,7 @@ define_dispatch!(
                     Some(value) => Some(position_from_value(interp, value)?),
                     None => None,
                 };
-                let point_min = interp.buffer.point_min();
+                let point_min = interp.buffer.borrow().point_min();
                 let after_field = super::call(
                     interp,
                     "get-char-property",
@@ -278,7 +279,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let pos = match args.first().filter(|value| !value.is_nil()) {
                     Some(value) => position_from_value(interp, value)?,
-                    None => interp.buffer.point(),
+                    None => interp.buffer.borrow().point(),
                 };
                 let start = super::call(
                     interp,
@@ -291,19 +292,20 @@ define_dispatch!(
                     .as_integer()? as usize;
                 let text = interp
                     .buffer
+                    .borrow()
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 if name == "field-string" {
                     Ok(string_like_value_with_multibyte(
                         text,
-                        interp.buffer.substring_property_spans(start, end),
-                        interp.buffer.is_multibyte(),
+                        interp.buffer.borrow().substring_property_spans(start, end),
+                        interp.buffer.borrow().is_multibyte(),
                     ))
                 } else {
                     Ok(string_like_value_with_multibyte(
                         text,
                         Vec::new(),
-                        interp.buffer.is_multibyte(),
+                        interp.buffer.borrow().is_multibyte(),
                     ))
                 }
             }
@@ -332,26 +334,27 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let new_pos = if args[0].is_nil() {
-                    interp.buffer.point()
+                    interp.buffer.borrow().point()
                 } else {
                     position_from_value(interp, &args[0])?
                 };
                 let old_pos = if args.len() > 1 {
                     position_from_value(interp, &args[1])?
                 } else {
-                    interp.buffer.point()
+                    interp.buffer.borrow().point()
                 };
                 let inhibit_motion = interp
                     .lookup_var("inhibit-field-text-motion", env)
                     .is_some_and(|value| value.is_truthy());
                 let mut constrained = new_pos;
                 let fwd = new_pos > old_pos;
-                let point_min = interp.buffer.point_min();
+                let point_min = interp.buffer.borrow().point_min();
                 // GNU's gate: any field property at or just before either
                 // position makes the positions candidates for constraining.
                 let field_at = |interp: &Interpreter, pos: usize| -> Option<Value> {
                     interp
                         .buffer
+                        .borrow()
                         .text_property_at(pos, "field")
                         .filter(|value| !value.is_nil())
                 };
@@ -398,7 +401,7 @@ define_dispatch!(
                         } else {
                             (new_pos, field_bound)
                         };
-                        (low..high).any(|pos| interp.buffer.char_at(pos) == Some('\n'))
+                        (low..high).any(|pos| interp.buffer.borrow().char_at(pos) == Some('\n'))
                     };
                     if (if field_bound < new_pos { fwd } else { !fwd })
                         && (!only_in_line || !crosses_newline())
@@ -407,21 +410,20 @@ define_dispatch!(
                     }
                 }
                 if args[0].is_nil() {
-                    interp.buffer.goto_char(constrained);
+                    interp.buffer.borrow_mut().goto_char(constrained);
                 }
                 Ok(Value::Integer(constrained as i64))
             }
-            "current-buffer" => Ok(Value::buffer(
-                interp.current_buffer_id(),
-                interp.buffer.name.clone(),
-            )),
+            "current-buffer" => Ok(Value::Buffer(interp.buffer)),
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::Buffer(_) => Ok(args[0]),
                     _ => match string_like(&args[0]) {
                         Some(name) => match interp.find_buffer(&name.text) {
-                            Some((id, buffer_name)) => Ok(Value::buffer(id, buffer_name)),
+                            Some((id, buffer_name)) => {
+                                Ok(interp.buffer_value(id).expect("live buffer object"))
+                            }
                             None => Ok(Value::Nil),
                         },
                         None => Err(LispError::TypeError(
@@ -442,15 +444,21 @@ define_dispatch!(
                 let buf_name = string_text(&args[0]).map_err(|_| {
                     LispError::TypeError("string-or-buffer".into(), args[0].type_name())
                 })?;
-                if let Some((id, name)) = interp.find_buffer(&buf_name) {
-                    Ok(Value::buffer(id, name))
+                if let Some((id, _)) = interp.find_buffer(&buf_name) {
+                    Ok(interp.buffer_value(id).expect("live buffer object"))
                 } else {
                     let (id, _) = interp.create_buffer(&buf_name);
                     interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
-                    if !inhibit_hooks {
-                        run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
-                    }
-                    Ok(Value::buffer(id, buf_name))
+                    let buffer = interp.buffer_value(id).expect("new buffer object");
+                    // buffer.c:Fget_buffer_create returns its allocation even
+                    // when the update hook kills it. Keep the Rust local rooted
+                    // across hooks and collection, after it leaves buffer-list.
+                    interp.with_lisp_stack_roots(&buffer, |interp| {
+                        if !inhibit_hooks {
+                            run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                        }
+                        Ok(buffer)
+                    })
                 }
             }
             "generate-new-buffer-name" => {
@@ -509,7 +517,7 @@ define_dispatch!(
                 } else {
                     Vec::new()
                 };
-                if let Some(buffer) = interp.get_buffer_by_id_mut(new_id) {
+                if let Some(mut buffer) = interp.get_buffer_by_id_mut(new_id) {
                     *buffer = crate::buffer::Buffer::from_text(&new_name, &text);
                     // GNU indirect buffers share their base buffer's text,
                     // but never visit its file themselves.  In particular,
@@ -537,7 +545,7 @@ define_dispatch!(
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                 }
-                Ok(Value::buffer(new_id, new_name))
+                Ok(interp.buffer_value(new_id).expect("live buffer object"))
             }
             "rename-buffer" => {
                 need_args(name, args, 1)?;
@@ -545,7 +553,7 @@ define_dispatch!(
                 if new_name.is_empty() {
                     return Err(LispError::Signal("Empty string for buffer name".into()));
                 }
-                let old_name = interp.buffer.name.clone();
+                let old_name = interp.buffer.borrow().name.clone();
                 let unique = args.len() > 1 && args[1].is_truthy();
                 let final_name = if interp.has_buffer(&new_name) && new_name != old_name {
                     if unique {
@@ -569,8 +577,8 @@ define_dispatch!(
                 if let Some(pos) = interp.buffer_list.iter().position(|(_, n)| *n == old_name) {
                     interp.buffer_list[pos].1 = final_name.clone();
                 }
-                interp.buffer.last_name = Some(old_name);
-                interp.buffer.name = final_name.clone();
+                interp.buffer.borrow_mut().last_name = Some(old_name);
+                interp.buffer.borrow_mut().name = final_name.clone();
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                 // GNU buffer.c calls the preloaded Elisp owner directly
                 // after installing the provisional name.  Uniquify uses
@@ -585,23 +593,23 @@ define_dispatch!(
                         env,
                     )?;
                 }
-                Ok(Value::String(interp.buffer.name.clone().into()))
+                Ok(Value::String(interp.buffer.borrow().name.clone().into()))
             }
             "other-buffer" => {
                 let exclude = if !args.is_empty() {
                     match args[0].kind() {
-                        Kind::Buffer(buffer) => buffer.name.to_string(),
-                        _ => interp.buffer.name.clone(),
+                        Kind::Buffer(buffer) => buffer.borrow().name.to_string(),
+                        _ => interp.buffer.borrow().name.clone(),
                     }
                 } else {
-                    interp.buffer.name.clone()
+                    interp.buffer.borrow().name.clone()
                 };
                 for (id, buf_name) in &interp.buffer_list {
                     if *buf_name != exclude && !buf_name.starts_with(' ') {
-                        return Ok(Value::buffer(*id, buf_name.clone()));
+                        return Ok(interp.buffer_value(*id).expect("live buffer object"));
                     }
                 }
-                Ok(Value::buffer(0, "*scratch*"))
+                Ok(interp.buffer_value(0).expect("live buffer object"))
             }
             "buffer-base-buffer" => {
                 // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
@@ -615,7 +623,7 @@ define_dispatch!(
                     .and_then(|base_id| {
                         interp
                             .get_buffer_by_id(base_id)
-                            .map(|buffer| Value::buffer(base_id, buffer.name.clone()))
+                            .map(|buffer| interp.buffer_value(base_id).expect("live buffer object"))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -668,7 +676,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
                 vars.push(Value::cons(
                     Value::Symbol("buffer-undo-list".into()),
-                    buffer_undo_list_value(buffer),
+                    buffer_undo_list_value(&buffer),
                 ));
                 Ok(Value::list(vars))
             }
@@ -727,7 +735,7 @@ define_dispatch!(
                 let bufs: Vec<Value> = interp
                     .buffer_list
                     .iter()
-                    .map(|(id, n)| Value::buffer(*id, n.clone()))
+                    .map(|(id, n)| interp.buffer_value(*id).expect("live buffer object"))
                     .collect();
                 Ok(Value::list(bufs))
             }
@@ -1250,8 +1258,8 @@ define_dispatch!(
                     .first()
                     .map(Value::as_integer)
                     .transpose()?
-                    .unwrap_or(interp.buffer.point() as i64);
-                Ok(match interp.buffer.char_at(pos as usize) {
+                    .unwrap_or(interp.buffer.borrow().point() as i64);
+                Ok(match interp.buffer.borrow().char_at(pos as usize) {
                     Some(ch) => {
                         let code = raw_byte_from_regex_char(ch)
                             .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
@@ -1272,10 +1280,10 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let from = args[0].as_integer()?;
                 let to = args[1].as_integer()?;
-                let (start, end) = clamp_overlay_range(&interp.buffer, from, to);
+                let (start, end) = clamp_overlay_range(&interp.buffer.borrow(), from, to);
                 let mut text = String::new();
                 for pos in start..end {
-                    if let Some(ch) = interp.buffer.char_at(pos) {
+                    if let Some(ch) = interp.buffer.borrow().char_at(pos) {
                         text.push(ch);
                     }
                 }

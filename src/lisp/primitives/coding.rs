@@ -557,21 +557,22 @@ fn run_coding_conversion(
     // turns the conversion into a no-op.
     if !pre_write {
         {
-            let buffer = &mut interp.buffer;
-            buffer.goto_char(buffer.point_min());
+            let mut buffer = interp.buffer.borrow_mut();
+            let position = buffer.point_min();
+            buffer.goto_char(position);
         }
     }
     let arguments = if pre_write {
         vec![
-            Value::Integer(interp.buffer.point_min() as i64),
-            Value::Integer(interp.buffer.point_max() as i64),
+            Value::Integer(interp.buffer.borrow().point_min() as i64),
+            Value::Integer(interp.buffer.borrow().point_max() as i64),
         ]
     } else {
         vec![Value::Integer(text.len() as i64)]
     };
     let result = interp.call_function_value(*function, None, &arguments, env);
     let result_buffer_id = interp.current_buffer_id();
-    let converted = interp.buffer.buffer_string();
+    let converted = interp.buffer.borrow().buffer_string();
     let _ = interp.set_current_buffer_id(saved_buffer_id);
     if result_buffer_id != saved_buffer_id && result_buffer_id != temp_id {
         interp.kill_buffer_id(result_buffer_id);
@@ -969,9 +970,10 @@ pub(crate) fn base64_encode_region_value(
     let hi = start.max(end);
     let text = interp
         .buffer
+        .borrow()
         .buffer_substring(lo, hi)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let bytes = encode_base64_source_bytes(&text, interp.buffer.is_multibyte())?;
+    let bytes = encode_base64_source_bytes(&text, interp.buffer.borrow().is_multibyte())?;
     let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
     let new_end = replace_buffer_region_with_text(interp, lo, hi, &encoded)?;
     Ok(Value::Integer((new_end - lo) as i64))
@@ -1084,6 +1086,7 @@ pub(crate) fn base64_decode_region_value(
     let hi = start.max(end);
     let text = interp
         .buffer
+        .borrow()
         .buffer_substring(lo, hi)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let decoded =
@@ -2703,6 +2706,7 @@ pub(crate) fn text_from_region_or_string(
         .unwrap_or(start);
     interp
         .buffer
+        .borrow()
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))
 }
@@ -2748,7 +2752,7 @@ pub(crate) fn detect_coding_region_value(
 ) -> Result<Value, LispError> {
     let text = text_from_region_or_string(interp, start, Some(end))?;
     let highest = highest.is_some_and(Value::is_truthy);
-    let src = DetectSource::from_text(&text, interp.buffer.is_multibyte());
+    let src = DetectSource::from_text(&text, interp.buffer.borrow().is_multibyte());
     Ok(detected_names_value(
         detect::detect_coding_system(interp, &src, highest, None, env),
         highest,
@@ -2766,7 +2770,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
     } else {
         (
             text_from_region_or_string(interp, start, Some(end))?,
-            interp.buffer.is_multibyte(),
+            interp.buffer.borrow().is_multibyte(),
         )
     };
     // GNU returns t for an ASCII-only or unibyte source: every coding

@@ -86,13 +86,17 @@ impl Interpreter {
     /// callers must not have to remember a second remote-visit registration
     /// for modification-time, locking, or supersession policy to work.
     pub(crate) fn set_current_buffer_file_name(&mut self, file: Option<String>) {
-        self.buffer.file = file;
+        self.buffer.borrow_mut().file = file;
     }
 
     pub(crate) fn buffer_remote_prefix(&self, buffer_id: u64) -> Option<String> {
         self.get_buffer_by_id(buffer_id)
-            .and_then(|buffer| buffer.file.as_deref())
-            .and_then(primitives::parse_remote_file_name)
+            .and_then(|buffer| {
+                buffer
+                    .file
+                    .as_deref()
+                    .and_then(primitives::parse_remote_file_name)
+            })
             .map(|remote| remote.prefix)
     }
 
@@ -1507,10 +1511,7 @@ impl Interpreter {
     }
 
     pub fn buffer_identity_value(&self, buffer_id: u64) -> Option<Value> {
-        self.buffer_list
-            .iter()
-            .find(|(id, _)| *id == buffer_id)
-            .map(|(id, name)| Value::buffer(*id, name.clone()))
+        self.buffer_value(buffer_id)
     }
 
     pub(super) fn active_special_assignment_scope(
@@ -2097,9 +2098,9 @@ impl Interpreter {
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
         if name == "buffer-undo-list" {
-            let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer);
+            let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow());
             self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
-            let previous_undo_state = self.buffer.take_undo_state();
+            let previous_undo_state = self.buffer.borrow_mut().take_undo_state();
             self.set_symbol_value_cell_resolved(&resolved, value);
             let restore = SpecialBindingRestore {
                 binding_id,
@@ -2270,7 +2271,7 @@ impl Interpreter {
                         // buffer-undo-list binds through the buffer's undo
                         // machinery rather than a value cell.
                         let buffer_id = self.current_buffer_id();
-                        if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
                             buffer.restore_undo_state(undo_state);
                             record.previous_undo_state = Some(current);
@@ -2290,7 +2291,7 @@ impl Interpreter {
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
                     if let Some(undo_state) = record.previous_undo_state.take() {
-                        if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
                             buffer.restore_undo_state(undo_state);
                             record.previous_undo_state = Some(current);
@@ -2381,7 +2382,7 @@ impl Interpreter {
                 Some(buffer_id),
                 env,
             )?;
-            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                 buffer.restore_undo_state(previous_undo_state);
             }
             return Ok(());

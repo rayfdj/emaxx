@@ -173,36 +173,38 @@ fn directory_files_and_attributes_reports_entries_and_arity() {
 fn forward_line_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*lines*", "a\nb");
 
     assert_eq!(
         call(&mut interp, "forward-line", &[Value::Nil], &mut env).expect("forward-line with nil"),
         Value::Integer(0)
     );
-    assert_eq!(interp.buffer.point(), 3);
+    assert_eq!(interp.buffer.borrow().point(), 3);
 }
 
 #[test]
 fn forward_char_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*chars*", "ab");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*chars*", "ab");
 
     assert_eq!(
         call(&mut interp, "forward-char", &[Value::Nil], &mut env).expect("forward-char with nil"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.point(), 2);
+    assert_eq!(interp.buffer.borrow().point(), 2);
 }
 
 #[test]
 fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*lines*", "\n\n\n\n\n\n\n\n\n\n");
+    *interp.buffer.borrow_mut() =
+        crate::buffer::Buffer::from_text("*lines*", "\n\n\n\n\n\n\n\n\n\n");
     {
-        let buffer = &mut interp.buffer;
-        buffer.goto_char(buffer.point_max());
+        let mut buffer = interp.buffer.borrow_mut();
+        let position = buffer.point_max();
+        buffer.goto_char(position);
     }
 
     assert_eq!(
@@ -247,8 +249,8 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
 fn line_number_at_pos_counts_from_the_accessible_region_unless_absolute() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb\nc\nd\ne\nf");
-    interp.buffer.narrow_to_region(3, 10);
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*lines*", "a\nb\nc\nd\ne\nf");
+    interp.buffer.borrow_mut().narrow_to_region(3, 10);
 
     assert_eq!(
         Value::list([
@@ -1371,7 +1373,7 @@ fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
 fn selected_window_is_a_record_and_tracks_window_start() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.buffer = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
+    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
     let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
     assert!(matches!(window.kind(), Kind::Record(_)));
 
@@ -1410,8 +1412,10 @@ fn selected_window_is_a_record_and_tracks_window_start() {
 fn get_buffer_window_only_reports_selected_buffer() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    let (buffer_id, buffer_name) = interp.create_buffer("*not-visible*");
-    let other_buffer = Value::buffer(buffer_id, buffer_name);
+    let (buffer_id, _) = interp.create_buffer("*not-visible*");
+    let other_buffer = interp
+        .buffer_value(buffer_id)
+        .expect("existing buffer object");
 
     assert_eq!(
         call(&mut interp, "get-buffer-window", &[other_buffer], &mut env)
@@ -1450,7 +1454,7 @@ fn find_operation_coding_system_accepts_file_buffer_cons() {
 
     let file_arg = Value::cons(
         Value::String("/tmp/demo.txt".into()),
-        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+        Value::Buffer(interp.buffer),
     );
     assert_eq!(
         call(
@@ -1565,7 +1569,10 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
         &mut env,
     )
     .expect("insert file contents should preserve embedded carriage returns");
-    assert_eq!(interp.buffer.buffer_string(), "left\rmiddle\nnext\n");
+    assert_eq!(
+        interp.buffer.borrow().buffer_string(),
+        "left\rmiddle\nnext\n"
+    );
 
     std::fs::remove_file(path).expect("cleanup fixture");
 }

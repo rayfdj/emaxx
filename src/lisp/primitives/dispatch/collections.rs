@@ -1317,7 +1317,7 @@ define_dispatch!(
             }
 
             "undo-boundary" => {
-                interp.buffer.push_undo_boundary();
+                interp.buffer.borrow_mut().push_undo_boundary();
                 Ok(Value::Nil)
             }
 

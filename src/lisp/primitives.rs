@@ -236,20 +236,20 @@ fn signal_condition(condition: &str) -> LispError {
 }
 
 fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
-    let saved = interp.buffer.point();
-    interp.buffer.goto_char(pos);
-    let start = interp.buffer.beginning_of_line();
-    interp.buffer.goto_char(saved);
+    let saved = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(pos);
+    let start = interp.buffer.borrow_mut().beginning_of_line();
+    interp.buffer.borrow_mut().goto_char(saved);
     start
 }
 
 fn move_lines_from(interp: &mut Interpreter, start: usize, count: isize) -> (usize, isize) {
-    let saved = interp.buffer.point();
-    interp.buffer.goto_char(start);
-    interp.buffer.beginning_of_line();
-    let shortage = interp.buffer.forward_line(count);
-    let target = interp.buffer.point();
-    interp.buffer.goto_char(saved);
+    let saved = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(start);
+    interp.buffer.borrow_mut().beginning_of_line();
+    let shortage = interp.buffer.borrow_mut().forward_line(count);
+    let target = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(saved);
     (target, shortage)
 }
 
@@ -259,6 +259,7 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
     }
     interp
         .buffer
+        .borrow()
         .buffer_substring(start, target)
         .unwrap_or_default()
         .chars()

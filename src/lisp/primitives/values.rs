@@ -359,7 +359,7 @@ fn values_equal_recursive_with_env(
         }
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::Buffer(a), Kind::Buffer(b)) => a.id == b.id,
+        (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => markers_equal(interp, a, b),
         (Kind::Overlay(a), Kind::Overlay(b)) => overlays_equal(interp, a, b, seen, env),
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
@@ -515,7 +515,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
@@ -586,7 +586,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.id == right.id,
+        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
@@ -1829,10 +1829,8 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, lambda_value.identity() as u64);
         }
         Kind::Buffer(buffer_value) => {
-            let id = buffer_value.id;
-            let _ = &buffer_value.name;
             hash_mix(state, 8);
-            hash_mix(state, id);
+            hash_mix(state, buffer_value.identity() as u64);
         }
         Kind::Marker(id) => {
             hash_mix(state, 9);
@@ -2034,11 +2032,8 @@ pub(crate) fn hash_value_equal_at(
             }
         }
         Kind::Buffer(buffer_value) => {
-            let id = buffer_value.id;
-            let name = &buffer_value.name;
             hash_mix(state, 41);
-            hash_mix(state, id);
-            hash_str(state, name);
+            hash_mix(state, buffer_value.identity() as u64);
         }
         Kind::Marker(id) => {
             hash_marker_equal(interp, state, id);
@@ -4054,7 +4049,7 @@ pub(crate) fn help_describe_vector(
 
     let mut first = true;
     interp.switch_to_buffer_id(saved_buffer_id)?;
-    let output_buffer = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let output_buffer = Value::Buffer(interp.buffer);
     let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
         for (start, end, definition, shadowed_by) in ranges {
@@ -4074,8 +4069,8 @@ pub(crate) fn help_describe_vector(
             }
             call_function_value(interp, &args[2], &[definition], env)?;
             if !shadowed_by.is_nil() {
-                let point = interp.buffer.point();
-                if interp.buffer.char_before() == Some('\n') {
+                let point = interp.buffer.borrow().point();
+                if interp.buffer.borrow().char_before() == Some('\n') {
                     let _ = interp.delete_region_current_buffer(point - 1, point);
                 }
                 if let Kind::Symbol(command) = shadowed_by.kind() {
@@ -4199,7 +4194,7 @@ fn text_property_keymap_at_active_position(
     category: &str,
 ) -> Option<Value> {
     let buffer_keymap = |pos: usize| {
-        buffer_property_at_with_category(interp, &interp.buffer, pos, category)
+        buffer_property_at_with_category(interp, &interp.buffer.borrow(), pos, category)
             .filter(|value| is_keymap_value(interp, value))
     };
 
@@ -4209,10 +4204,10 @@ fn text_property_keymap_at_active_position(
     };
 
     match posn {
-        None => buffer_keymap(interp.buffer.point()),
-        Some(value) if value.is_nil() => buffer_keymap(interp.buffer.point()),
+        None => buffer_keymap(interp.buffer.borrow().point()),
+        Some(value) if value.is_nil() => buffer_keymap(interp.buffer.borrow().point()),
         Some(value) if string_like(value).is_some() => {
-            string_keymap(value).or_else(|| buffer_keymap(interp.buffer.point()))
+            string_keymap(value).or_else(|| buffer_keymap(interp.buffer.borrow().point()))
         }
         Some(value) => {
             let items = value.to_vec().ok()?;
@@ -4226,7 +4221,7 @@ fn text_property_keymap_at_active_position(
             }
             match items.get(5).map(|v| v.kind()) {
                 Some(Kind::Integer(pos)) if pos > 0 => buffer_keymap(pos as usize),
-                _ => buffer_keymap(interp.buffer.point()),
+                _ => buffer_keymap(interp.buffer.borrow().point()),
             }
         }
     }

@@ -426,7 +426,8 @@ impl Interpreter {
             return Ok(());
         }
         let text = buffer.buffer_string();
-        let ranges = included_ranges(buffer, &self.treesit_parsers[index].included_ranges)?;
+        let ranges = included_ranges(&buffer, &self.treesit_parsers[index].included_ranges)?;
+        drop(buffer);
         let state = &mut self.treesit_parsers[index];
         state
             .parser
@@ -615,7 +616,8 @@ impl Interpreter {
         let buffer = self
             .get_buffer_by_id(buffer_id)
             .ok_or_else(|| treesit_signal("treesit-parser-buffer-killed", [*parser]))?;
-        included_ranges(buffer, &ranges)?;
+        included_ranges(&buffer, &ranges)?;
+        drop(buffer);
         self.treesit_parsers[index].included_ranges = ranges;
         self.treesit_parsers[index].parsed_tick = None;
         Ok(())
