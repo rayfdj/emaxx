@@ -107,3 +107,58 @@ is a diagnostic oracle, not certification against the pinned Darwin configuratio
 Conses remain 80 bytes, and overlays, char-tables and frames retain native
 bridges. The locked 16-case suite and 3% tolerance are unchanged. No speedup,
 GNU performance parity or completion of the overall runtime goal is claimed.
+
+
+## Follow-up: broader run and exact census correction
+
+The source67g broader run finished 321/324, with zero ignored tests. Two network
+controls failed to bind localhost sockets under the local sandbox; one failed
+in GNU for the same permission reason. The third assertion expected one new
+vector allocation for a buffer. GNU `allocate_buffer` plus
+`Fget_buffer_create`'s `Fmake_marker` allocate two, and the marker adds exactly
+six words. The test now requires those exact object and byte deltas; its buffer
+count and retained killed-object assertions are unchanged. Production runtime
+code is unchanged by this follow-up. Evidence: `marker-census-audit-68.json`.
+
+The final source check for that broader run also failed: 48 older files had
+disappeared from the temporary checkout, including Cargo.toml and build.rs;
+the .git pointer was missing too. Surviving source and the saved binary still
+matched their hashes. The cause is not established, and this does not certify
+that the missing files were unchanged throughout the run. The failed receipt
+is retained explicitly; the earlier selected passes are observations, not a
+successful completed validation run. Source68 uses a fresh checkout under the
+workspace for verification, with the required socket access for the rerun.
+
+
+## Linux evidence for the production marker change
+
+Both existing CI workflows for `a1c6a17038db14cbc71f67959832f205927b48dd`
+completed successfully. Raw artifact ZIP digests, clean commit identity,
+executable/image hashes, discovered/selected/executed GNU inventories, process
+success, zero skips and outcome summaries were verified:
+
+- Run36257362542:33/33 Rust marker controls and3/3 unchanged GNU marker outcomes.
+  The GNU file includes substantial help rendering. Body2370ms versus174ms
+  (13.620x); setup650ms versus92ms.
+- Run36257364649:19/19 unchanged root controls and406/406 unchanged GNU buffer
+  outcomes. Body2818ms versus430ms (6.553x); setup4095ms versus177ms.
+- Both runs pass formatting and all-target/all-feature strict Clippy. Their Rust
+  affected-test logs record fresh compilation and binary paths, but the existing
+  workflow does not retain the Rust test executable SHA; the GNU comparison
+  does retain both editor executable and image hashes.
+- Raw receipts: `target/runtime-goal/marker-ci-completed-67.json` and
+  `target/runtime-goal/roots-buffer-ci-completed-67.json`.
+
+These unfavorable single samples are diagnostic, not interleaved locked-suite
+measurements. They establish neither a speedup nor a regression relative to the
+previous checkpoint. The census assertion follow-up changes no runtime code;
+its fresh local verification is still pending.
+
+
+Source68's fresh workspace build and strict all-target/all-feature Clippy pass
+with zero warnings. The corrected exact census control passes (one test, zero
+failures/ignores). The saved test binary SHA256 is
+`9b15552497e40715816ef6e93ede9392b0824fdfed9621eb298f974e878f0eb1`.
+The complete selected local rerun is in progress with localhost access; its
+result remains pending. Production source is unchanged from the Linux-verified
+marker67 commit. The new test assertion is being sent through the existing CI.

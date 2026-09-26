@@ -1420,3 +1420,31 @@ all19 unchanged root controls also pass. Broader buffer/dump controls and Linux
 CI are still pending. Conses
 remain80bytes and three object kinds still use native bridges. No performance
 improvement, full validation or completion of the goal is claimed.
+
+
+Marker follow-up: the source67g broader run passed321/324 with zero ignores.
+Two failures are local socket permissions; the exact allocation-census test
+omitted the buffer's newly real mark (one object, six words). The source68 test
+requires both allocations and their full byte cost, following GNU. No runtime
+code changes. Final source67g verification also failed after48 older files
+vanished from the temporary checkout; surviving source and binary hashes match,
+but that run is not a completed validation certificate. The raw failures remain.
+A fresh workspace-contained checkout is being used for the rerun. Marker67 is
+pushed as a1c6a17038db14cbc71f67959832f205927b48dd and its Linux CI is pending.
+
+
+Marker67 Linux verification completed: run36257362542 passes33/33 Rust marker
+controls plus3/3 GNU marker outcomes; run36257364649 passes19/19 unchanged roots
+plus406/406 GNU buffer outcomes. Both pass formatting/strict Clippy. Raw artifact
+digests, inventories, process success, clean source and editor/image identities
+were checked. Both have zero ignored Rust tests and zero skipped GNU outcomes.
+Unfavorable body timings remain visible: marker file2370ms/GNU174ms (13.620x,
+including help rendering); buffer file2818ms/GNU430ms (6.553x). These single
+samples do not measure an improvement or certify locked performance parity.
+The test-only census correction is undergoing fresh workspace validation.
+
+
+Source68 fresh workspace build/strict Clippy pass with zero warnings; the exact
+census correction passes locally. Broader local controls are running with the
+required socket access. Production runtime is unchanged from marker67; the
+census assertion and updated evidence are the only follow-up changes.

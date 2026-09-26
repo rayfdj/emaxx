@@ -18689,13 +18689,16 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     let after = interp.live_object_census();
 
     assert_eq!(after.buffers - before.buffers, 1);
-    assert_eq!(after.vectors - before.vectors, 1);
+    // buffer.c:Fget_buffer_create allocates the buffer and its mark. The
+    // mark is now the real 48-byte Lisp_Marker, counted by sweep_vectors.
+    assert_eq!(after.vectors - before.vectors, 2);
     assert_eq!(
         after.vector_slots - before.vector_slots,
         (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
             + std::mem::size_of::<crate::lisp::types::BufferValue>())
         .next_multiple_of(16)
             / std::mem::size_of::<Value>()
+            + 6 // configured GNU Lisp_Marker: header plus five payload words
     );
     interp.kill_buffer_id(id);
     let killed = interp.live_object_census();
