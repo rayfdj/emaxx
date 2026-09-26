@@ -1467,3 +1467,20 @@ improvement or regression measurement. Source67's earlier failures and failed
 source verification remain preserved. The next architecture work removes the
 remaining overlay/char-table/frame bridges and the80-byte cons representation;
 the full goal remains active.
+
+
+2026-09-27 overlay property-storage draft (source70):
+
+Overlay properties now use their actual Lisp plist. GNU buffer.c:Foverlay_put
+requires EQ keys, a new property at the front, and an in-place value update;
+the old Rust pair vector appended properties and conflated distinct equal floats.
+Foverlay_properties and copy_overlays copy only the spine. GC traces the actual
+list and images relocate it, preserving shared conses. The new shared fixture
+passes all13 checks in GNU; the image control additionally requires spine
+identity after restoration. The earlier70b test-compilation error is retained.
+Exact source70d passes formatting and strict all-target/all-feature Clippy
+with zero warnings. Fresh compilation, affected local controls and Linux CI
+are pending. No upstream selectors, expectations, timeouts or performance inputs
+change. Overlay ID scans/native handles remain for the next representation step.
+The80-byte cons implementation still makes these real lists expensive; no
+performance improvement is claimed. Audit:target/runtime-goal/overlay-plist-audit-70.json.

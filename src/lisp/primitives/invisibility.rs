@@ -42,11 +42,11 @@ pub(crate) fn resolve_buffer_invisibility(
                 let Some(value) = overlay.get_prop(&Value::Symbol((*name).into())) else {
                     return false;
                 };
-                let Ok(text) = super::string_text(value) else {
+                let Ok(text) = super::string_text(&value) else {
                     return false;
                 };
                 (0..text.chars().count()).any(|position| {
-                    super::string_property_at(value, position, "invisible")
+                    super::string_property_at(&value, position, "invisible")
                         .is_some_and(|property| !property.is_nil())
                 })
             })
@@ -151,7 +151,7 @@ pub(crate) fn invisible_class_at(buffer: &Buffer, spec: &InvisibilitySpec, pos: 
         let Some(value) = overlay.get_prop(&Value::Symbol("invisible".into())) else {
             continue;
         };
-        let class = invisible_value_class(spec, value);
+        let class = invisible_value_class(spec, &value);
         if class == 0 {
             continue;
         }

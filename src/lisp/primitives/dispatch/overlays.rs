@@ -294,7 +294,7 @@ define_dispatch!(
                             Ok(overlay_property_with_category(interp, &ov, &name)
                                 .unwrap_or(Value::Nil))
                         } else {
-                            Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil))
+                            Ok(ov.get_prop(&key).unwrap_or(Value::Nil))
                         }
                     }
                     None => Ok(Value::Nil),
@@ -311,12 +311,9 @@ define_dispatch!(
                 };
                 match interp.find_overlay(ov_id) {
                     Some(ov) => {
-                        let mut items = Vec::new();
-                        for (k, v) in &ov.plist {
-                            items.push(*k);
-                            items.push(*v);
-                        }
-                        Ok(Value::list(items))
+                        // buffer.c:Foverlay_properties returns copy-sequence:
+                        // the spine is fresh, while keys and values are shared.
+                        Ok(Value::list(ov.plist.to_vec()?))
                     }
                     None => Ok(Value::Nil),
                 }

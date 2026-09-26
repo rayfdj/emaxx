@@ -450,7 +450,7 @@ pub(crate) fn overlay_hook_functions(
     match overlay.get_prop(&Value::Symbol(property.into())) {
         Some(value) => value
             .to_vec()
-            .unwrap_or_else(|_| vec![*value])
+            .unwrap_or_else(|_| vec![value])
             .into_iter()
             .filter(|value| value.is_truthy())
             .collect(),

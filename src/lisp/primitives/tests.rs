@@ -10517,6 +10517,16 @@ fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
 }
 
 #[test]
+fn overlay_property_lists_preserve_gnu_order_eq_keys_and_sharing() {
+    let program = include_str!("../../../tests/fixtures/shared-overlay-property-list.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t t t t t t t t t t t t)",
+        "overlay plist order, distinct EQ keys, bytecode, copying and collection",
+    );
+}
+
+#[test]
 fn markers_preserve_identity_positions_and_weak_buffer_ownership() {
     let program = include_str!("../../../tests/fixtures/shared-marker-object-identity.el");
     assert_oracle_contract_matches_interpreter(

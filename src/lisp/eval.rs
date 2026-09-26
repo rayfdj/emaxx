@@ -3592,10 +3592,7 @@ impl LispReachability<'_, '_> {
                 // alloc.c:mark_overlay follows the plist whether the overlay
                 // was reached through a buffer or through another Lisp object.
                 if let Some(overlay) = interp.find_overlay(id) {
-                    for (key, value) in &overlay.plist {
-                        self.enqueue(key);
-                        self.enqueue(value);
-                    }
+                    self.enqueue(&overlay.plist);
                 }
             }
             Kind::CharTable(id) => {
@@ -5048,10 +5045,7 @@ impl Interpreter {
             }
             let mut copy = |value: &Value| c.copy(value);
             for overlay in clone.detached_overlays.get_mut().values_mut() {
-                for (key, value) in &mut overlay.plist {
-                    *key = copy(key);
-                    *value = copy(value);
-                }
+                overlay.plist = copy(&overlay.plist);
             }
         }
 

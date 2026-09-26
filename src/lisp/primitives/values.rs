@@ -2276,19 +2276,7 @@ pub(crate) fn overlays_equal(
         left.beg == right.beg
             && left.end == right.end
             && left.buffer_id == right.buffer_id
-            && left.plist.len() == right.plist.len()
-            && left.plist.iter().zip(&right.plist).all(
-                |((left_key, left_value), (right_key, right_value))| {
-                    values_equal_recursive_with_env(interp, left_key, right_key, seen, env)
-                        && values_equal_recursive_with_env(
-                            interp,
-                            left_value,
-                            right_value,
-                            seen,
-                            env,
-                        )
-                },
-            )
+            && values_equal_recursive_with_env(interp, &left.plist, &right.plist, seen, env)
     })();
     seen.remove(&pair);
     equal

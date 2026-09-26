@@ -985,7 +985,8 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
           (vector buf m1 m2 f1 f2 (selected-frame) ov
                   (let ((killed (get-buffer-create "zz-killed")))
                     (kill-buffer killed)
-                    killed)))"#;
+                    killed)
+                  nil))"#;
     let form = crate::lisp::reader::Reader::new(program)
         .read()
         .expect("setup parses")
@@ -995,6 +996,16 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         panic!("root vector")
     };
     let source = source_vector.slots().collect::<Vec<_>>();
+    let Kind::Overlay(source_overlay) = source[6].kind() else {
+        panic!("overlay")
+    };
+    let source_plist = interp
+        .find_overlay(source_overlay)
+        .expect("overlay exists")
+        .plist;
+    // A second owner of the actual list must relocate to the same conses.
+    // Serializing pairs and rebuilding a new spine would lose this sharing.
+    source_vector.set(8, source_plist);
     let Kind::Buffer(source_buffer) = source[0].kind() else {
         panic!("buffer")
     };
@@ -1176,8 +1187,9 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert!(overlay.is_dead());
     assert_eq!(
         overlay.plist,
-        vec![(Value::symbol("zz-prop"), Value::symbol("yes"))]
+        Value::list([Value::symbol("zz-prop"), Value::symbol("yes")])
     );
+    assert_eq!(overlay.plist.word(), slots[8].word());
     assert_eq!(target.overlay_holder_id(ov), None);
 
     // The local hook list came with the buffer.

@@ -16,8 +16,9 @@ pub struct Overlay {
     pub rear_advance: bool,
     /// Buffer ID this overlay belongs to, or None if deleted/detached.
     pub buffer_id: Option<u64>,
-    /// Property list: (key, value) pairs.
-    pub plist: Vec<(Value, Value)>,
+    /// buffer.c's OVERLAY_PLIST: the actual Lisp list, traced and relocated
+    /// as one object graph instead of reconstructed from a Rust pair vector.
+    pub plist: Value,
 }
 
 impl Overlay {
@@ -37,27 +38,50 @@ impl Overlay {
             front_advance,
             rear_advance,
             buffer_id: Some(buffer_id),
-            plist: Vec::new(),
+            plist: Value::Nil,
         }
     }
 
-    pub fn get_prop(&self, key: &Value) -> Option<&Value> {
-        self.plist
-            .iter()
-            .find(|(candidate, _)| crate::lisp::primitives::values_eql(candidate, key))
-            .map(|(_, value)| value)
+    pub fn get_prop(&self, key: &Value) -> Option<Value> {
+        self.find_prop(|property| property.word() == key.word())
+    }
+
+    /// Existing display callers name their properties with Rust strings.
+    /// Compare those names in the list without interning a symbol on each read.
+    pub(crate) fn get_symbol_prop(&self, key: &str) -> Option<Value> {
+        self.find_prop(|property| matches!(property.kind(), Kind::Symbol(name) if name == key))
+    }
+
+    fn find_prop(&self, matches: impl Fn(Value) -> bool) -> Option<Value> {
+        let mut tail = self.plist;
+        while let Kind::Cons(property) = tail.kind() {
+            let Kind::Cons(value) = property.cdr.get().kind() else {
+                return None;
+            };
+            if matches(property.car.get()) {
+                return Some(value.car.get());
+            }
+            tail = value.cdr.get();
+        }
+        None
     }
 
     pub fn put_prop(&mut self, key: Value, value: Value) {
-        if let Some(entry) = self
-            .plist
-            .iter_mut()
-            .find(|(candidate, _)| crate::lisp::primitives::values_eql(candidate, &key))
-        {
-            entry.1 = value;
-        } else {
-            self.plist.push((key, value));
+        // buffer.c:Foverlay_put compares keys with EQ, replaces the existing
+        // value in place, or prepends the two new conses. In particular, equal
+        // but distinct floats are different property keys.
+        let mut tail = self.plist;
+        while let Kind::Cons(property) = tail.kind() {
+            let Kind::Cons(value_cell) = property.cdr.get().kind() else {
+                break;
+            };
+            if property.car.get().word() == key.word() {
+                value_cell.car.set(value);
+                return;
+            }
+            tail = value_cell.cdr.get();
         }
+        self.plist = Value::cons(key, Value::cons(value, self.plist));
     }
 
     pub fn is_dead(&self) -> bool {

@@ -1933,7 +1933,7 @@ fn visual_line_at(
                 .any(|name| {
                     overlay
                         .get_prop(&Value::Symbol((*name).into()))
-                        .is_some_and(Value::is_string)
+                        .is_some_and(|value| value.is_string())
                 })
     });
     if !spec.active && !has_overlay_display {
@@ -1986,29 +1986,29 @@ fn visual_line_at(
         }
         if overlay.beg < overlay.end
             && let Some(value) = overlay.get_prop(&Value::Symbol("display".into()))
-            && crate::lisp::primitives::string_text(value).is_ok()
+            && crate::lisp::primitives::string_text(&value).is_ok()
         {
             let priority = overlay
                 .get_prop(&Value::Symbol("priority".into()))
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(0);
-            overlay_displays.push((overlay.beg, overlay.end, priority, overlay.id, *value));
+            overlay_displays.push((overlay.beg, overlay.end, priority, overlay.id, value));
         }
         for (name, after) in [("before-string", false), ("after-string", true)] {
             let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
                 continue;
             };
-            if window_margin_display(value).is_some() {
+            if window_margin_display(&value).is_some() {
                 continue;
             }
-            if crate::lisp::primitives::string_text(value).is_err() {
+            if crate::lisp::primitives::string_text(&value).is_err() {
                 continue;
             }
             overlay_strings.push((
                 if after { overlay.end } else { overlay.beg },
                 after,
                 overlay.id,
-                *value,
+                value,
             ));
         }
     }
@@ -3376,7 +3376,7 @@ fn redraw_with_echo_policy(
                     let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
                         continue;
                     };
-                    let Some((side, payload)) = window_margin_display(value) else {
+                    let Some((side, payload)) = window_margin_display(&value) else {
                         continue;
                     };
                     let (margin_left, margin_width) = match side.as_str() {
@@ -3574,7 +3574,7 @@ fn redraw_with_echo_policy(
                     ["before-string", "after-string"]
                         .into_iter()
                         .filter_map(|name| overlay.get_prop(&Value::Symbol(name.into())))
-                        .flat_map(crate::lisp::primitives::string_face_spans)
+                        .flat_map(|value| crate::lisp::primitives::string_face_spans(&value))
                         .map(|(_, _, face)| face)
                 })
                 .collect()
@@ -4409,7 +4409,7 @@ fn compose_echo_row(
                     let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
                         continue;
                     };
-                    let Ok(text) = crate::lisp::primitives::string_text(value) else {
+                    let Ok(text) = crate::lisp::primitives::string_text(&value) else {
                         continue;
                     };
                     strings.push(OverlayString {
@@ -4418,8 +4418,8 @@ fn compose_echo_row(
                         id: overlay.id,
                         text,
                         base_faces: Vec::new(),
-                        spans: crate::lisp::primitives::string_face_spans(value),
-                        cursor: tty_string_cursor_position(value),
+                        spans: crate::lisp::primitives::string_face_spans(&value),
+                        cursor: tty_string_cursor_position(&value),
                     });
                 }
             }

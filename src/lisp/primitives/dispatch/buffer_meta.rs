@@ -511,6 +511,14 @@ define_dispatch!(
                         .map(|mut overlay| {
                             overlay.id = interp.alloc_overlay_id();
                             overlay.buffer_id = Some(new_id);
+                            // buffer.c:copy_overlays copies each overlay plist's
+                            // spine, retaining the identity of its values.
+                            overlay.plist = Value::list(
+                                overlay
+                                    .plist
+                                    .to_vec()
+                                    .expect("an overlay has a proper plist"),
+                            );
                             overlay
                         })
                         .collect::<Vec<_>>()

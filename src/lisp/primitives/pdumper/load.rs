@@ -1467,15 +1467,7 @@ impl Loader<'_> {
         let end = self.reader.word(offset + 24)? as usize;
         let holder = self.reader.word(offset + 32)?;
         let buffer_id = self.optional_buffer_id_at(offset + 40)?;
-        let nprops = self.reader.word(offset + 48)? as usize;
-        let mut at = offset + 56;
-        let mut plist = Vec::with_capacity(nprops);
-        for _ in 0..nprops {
-            let key = self.value_at(at)?;
-            let value = self.value_at(at + 8)?;
-            plist.push((key, value));
-            at += 16;
-        }
+        let plist = self.value_at(offset + 48)?;
         Ok((
             holder,
             crate::overlay::Overlay {

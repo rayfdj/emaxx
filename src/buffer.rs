@@ -1199,10 +1199,7 @@ impl Buffer {
         }
         self.undo_list_view = UndoListViewCache::default();
         for overlay in &mut self.overlays {
-            for (key, value) in &mut overlay.plist {
-                *key = copy(key);
-                *value = copy(value);
-            }
+            overlay.plist = copy(&overlay.plist);
         }
     }
 

@@ -1807,7 +1807,6 @@ impl DumpContext {
         let Some(overlay) = interp.find_overlay(id) else {
             return Err(self.unsupported(object, "overlay without an object"));
         };
-        let overlay = overlay.clone();
         let holder = interp.overlay_holder_id(id);
         let buffer = overlay.buffer_id.and_then(|id| interp.buffer_value(id));
         let mut flags = 0;
@@ -1825,15 +1824,9 @@ impl DumpContext {
             overlay.end as u64,
             holder.unwrap_or(NO_POSITION),
             0,
-            overlay.plist.len() as u64,
+            0,
         ];
-        let mut fields = vec![(5, buffer.unwrap_or(Value::Nil))];
-        for (key, value) in &overlay.plist {
-            fields.push((words.len(), *key));
-            words.push(0);
-            fields.push((words.len(), *value));
-            words.push(0);
-        }
+        let fields = [(5, buffer.unwrap_or(Value::Nil)), (6, overlay.plist)];
         for (index, value) in fields {
             self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
         }
