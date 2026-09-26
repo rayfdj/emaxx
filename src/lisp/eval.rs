@@ -4298,6 +4298,10 @@ impl Interpreter {
                         std::mem::discriminant(&value.kind()),
                         key.word()
                     );
+                    #[cfg(target_os = "linux")]
+                    if region == "current-stack" {
+                        crate::lisp::alloc::diagnose_conservative_frame(address);
+                    }
                     false
                 });
             },
