@@ -2664,16 +2664,10 @@ impl Interpreter {
     /// op itself; the VM balances the stack with this once the signal has
     /// been dispatched.
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
-        while self.backtrace_frames.len() > len {
-            // The common frame -- an immediate function object (a byte-code
-            // record) with no detail -- owns nothing to drop.
-            if let Some(frame) = self.backtrace_frames.pop()
-                && frame.function.is_immediate()
-                && frame.detail.is_none()
-            {
-                std::mem::forget(frame);
-            }
-        }
+        // Lisp words need no destructor, but copied frames can own argument
+        // vectors even when their function is immediate and detail is empty.
+        // Dropping every removed frame releases those Rust allocations.
+        self.backtrace_frames.truncate(len);
     }
 
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {

@@ -59,3 +59,17 @@ The temporary test-only tracing remains pending diagnosis; the terminal
 change neither resolves nor excuses those failures. Full platform validation,
 compact conses, remaining object kinds and the locked performance goal remain
 open.
+
+Subsequent Linux validation of the terminal checkpoint itself passed:
+[run 36213487790](https://github.com/rayfdj/emaxx/actions/runs/36213487790)
+tested commit `79737000f373d592db5903febf60c00904789ddb`. Build, formatting
+and strict Clippy passed; all 23 selected terminal controls passed without
+ignores. The complete unchanged `test/src/buffer-tests.el` comparison matched
+all 406 outcomes, with no failures or skips in either editor. Raw artifacts
+and their hashes are recorded in `target/runtime-goal/terminal-ci-completed-55.json`.
+
+The same ordinary comparison reported a slower Emaxx test body: 4,070 ms
+versus GNU's 618 ms, a 6.585x ratio; setup was 6,020 ms versus 267 ms. These
+are one run's diagnostic timings, not the repeated locked core suite. They
+remain unfavorable evidence, and passing compatibility does not establish
+the performance objective.

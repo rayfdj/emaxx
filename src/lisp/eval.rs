@@ -1879,14 +1879,6 @@ impl FrameFunction {
             }
         }
     }
-
-    /// True when popping the frame releases nothing.
-    fn is_immediate(&self) -> bool {
-        match self {
-            Self::Owned(value) => value.is_immediate(),
-            Self::Form(_) => true,
-        }
-    }
 }
 
 impl Clone for FrameFunction {

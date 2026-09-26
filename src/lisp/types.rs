@@ -2399,25 +2399,6 @@ impl Kind {
 }
 
 impl Value {
-    /// A value that owns no heap object: a Lisp immediate (nil, t, a
-    /// fixnum) or an id-addressed object.  Copying or discarding one
-    /// touches nothing else.
-    #[inline(always)]
-    pub(crate) fn is_immediate(&self) -> bool {
-        matches!(
-            self.kind(),
-            Kind::Nil
-                | Kind::T
-                | Kind::Integer(_)
-                | Kind::Marker(_)
-                | Kind::Overlay(_)
-                | Kind::CharTable(_)
-                | Kind::Frame(_)
-                | Kind::Terminal(_)
-                | Kind::Unbound
-        )
-    }
-
     /// Drop a value the VM is done with.  Every kind is a cell address or
     /// an immediate now (nothing to drop); the method stays where the VM
     /// says it is done with a value.
