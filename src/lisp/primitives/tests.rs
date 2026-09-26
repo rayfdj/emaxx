@@ -10480,6 +10480,16 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
 }
 
 #[test]
+fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
+    let program = include_str!("../../../tests/fixtures/let-initializer-order.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((error \"initializer-error\") (first second)) (nil 41) ((setting-constant nil) (initialized)) (nil 41) 41 ((error \"initializer-error\") (initialized)) (42 nil) (1 nil) ((circular-list t 0) (circular-list t 1)))",
+        "let and let* initializer order, source mutation, and cycles",
+    );
+}
+
+#[test]
 fn terminal_parameters_preserve_identity_through_bytecode_and_gc() {
     let program = include_str!("../../../tests/fixtures/shared-terminal-object-identity.el");
     assert_oracle_contract_matches_interpreter(

@@ -209,155 +209,97 @@ impl Interpreter {
         }
     }
 
-    /// The next element of a varlist walked in place (FOR_EACH_TAIL):
-    /// the element and the rest, None at the end; a dotted tail signals
-    /// listp with the whole varlist, as list_length and CHECK_LIST_END do.
-    fn next_let_binding(
-        tail: &Value,
-        varlist: &Value,
-    ) -> Result<Option<(Value, Value)>, LispError> {
-        match tail.kind() {
-            Kind::Nil => Ok(None),
-            Kind::Cons(cell) => Ok(Some((cell.car.get(), cell.cdr.get()))),
-            _ => Err(wrong_type_argument("listp", *varlist)),
+    pub(super) fn sf_let(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+        // eval.c:Flet uses a Lisp-word array for values, then rereads the
+        // binding list. Every inline word is initialized, including slots
+        // outside the active slice that a conservative stack scan can see.
+        let mut inline_values = [Value::Nil; 8];
+        let Some((varlist, _)) = list_next(args) else {
+            return Err(LispError::WrongNumberOfArgs("let".into(), 0));
+        };
+        let length = self.eval_list_length(varlist, env)?;
+        if length > inline_values.len() {
+            let mut values = crate::lisp::alloc::RootedVec::from(vec![Value::Nil; length]);
+            self.let_with_values(*args, &mut values, env)
+        } else {
+            self.let_with_values(*args, &mut inline_values[..length], env)
         }
     }
 
-    pub(super) fn sf_let(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        /// fns.c's list_length over a proper list; 0 past its end or for
-        /// anything else (the binding walk reports the shape itself).
-        fn list_length_or_zero(list: &Value) -> usize {
-            let mut count = 0;
-            let mut tail = *list;
-            while let Some((_, next)) = list_next(&tail) {
-                count += 1;
-                tail = next;
-            }
-            count
-        }
-
-        // eval.c Flet: list_length (varlist) -- a vector or any other
-        // non-list signals wrong-type-argument listp (a vector read as a
-        // sequence bound its elements to nil before).  The varlist and
-        // each element are read in place; a vector of copies of every
-        // binding per evaluation was a share of every interpreted `let'.
-        let Some((varlist, body)) = list_next(args) else {
-            return Err(LispError::WrongNumberOfArgs("let".into(), 0));
-        };
-        if is_vector_literal(&varlist) || !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
-            return Err(wrong_type_argument("listp", varlist));
-        }
-        // Flet: the values first (`temps'), then each variable bound --
-        // lexically by consing onto `lexenv', dynamically by specbind --
-        // and the new environment installed once, after the varlist.
-        let mut lexenv = crate::lisp::types::current_environment_value(env);
-        let mut lexical_bindings = false;
-        // Flet's `temps': SAFE_ALLOCA_LISP, an array the collector scans.
-        // A lexical value is consed onto LEXENV at once (a local the
-        // stack scan sees); a special's waits here until the varlist is
-        // read, across the evaluation of the initializers after it, so
-        // the array is on the stack for up to eight bindings and rooted
-        // past that (a heap vector the scan cannot see lost a fresh
-        // value to the collection a later initializer ran).
-        let varlist_len = list_length_or_zero(&varlist);
-        // Keep the value word outside Option's payload: None for an optional
-        // tuple need not initialize its value field, so a conservative scan
-        // can retain an unrelated old object through an unused stack slot.
-        let mut inline_specials: [(Option<SymbolName>, Value); 8] = [(None, Value::Nil); 8];
-        let mut inline_count = 0usize;
-        let mut rooted_specials =
-            (varlist_len > 8).then(|| crate::lisp::alloc::RootedVec::with_capacity(varlist_len));
-        let mut push_special = |name: SymbolName, value: Value| match rooted_specials.as_mut() {
-            Some(rooted) => rooted.push((name, value)),
-            None => {
-                inline_specials[inline_count] = (Some(name), value);
-                inline_count += 1;
-            }
-        };
-
-        let mut tail = varlist;
-        while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
-            tail = next;
-            match binding.kind() {
-                Kind::Symbol(name) => {
-                    Self::check_let_binding_name(&name)?;
-                    if self.binding_is_dynamic_symbol(&name, env) {
-                        push_special(name, Value::Nil);
-                    } else {
-                        lexenv = Self::cons_binding(name, Value::Nil, lexenv);
-                        lexical_bindings = true;
-                    }
-                }
-                Kind::Record(_)
-                    if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+    fn let_with_values(
+        &mut self,
+        args: Value,
+        values: &mut [Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let count = self.specpdl_index();
+        let mut lexical_scope_depth = None;
+        let result = (|| {
+            // Flet computes every initializer before validating or binding
+            // variable names. Initializers may mutate the original varlist;
+            // its initial length bounds this walk, as it bounds GNU's temps.
+            let mut tail = args.car()?;
+            let mut initialized = 0;
+            for slot in values.iter_mut() {
+                let Kind::Cons(cell) = tail.kind() else {
+                    break;
+                };
+                self.maybe_quit(env)?;
+                let binding = cell.car.get();
+                tail = cell.cdr.get();
+                let symbol = binding.is_symbol()
+                    || (matches!(binding.kind(), Kind::Record(_))
+                        && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                         && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
-                            .is_some() =>
-                {
-                    let name =
-                        crate::lisp::primitives::checked_symbol_identity(self, &binding, env)?;
-                    Self::check_let_binding_name(&name)?;
-                    if self.binding_is_dynamic_symbol(&name, env) {
-                        push_special(name, Value::Nil);
-                    } else {
-                        lexenv = Self::cons_binding(name, Value::Nil, lexenv);
-                        lexical_bindings = true;
-                    }
-                }
-                Kind::Cons(_) => {
-                    let (name_value, init) = Self::let_binding_parts(&binding)?;
-                    let name =
-                        crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
-                    Self::check_let_binding_name(&name)?;
-                    let val = match init {
+                            .is_some());
+                *slot = if symbol {
+                    Value::Nil
+                } else {
+                    match Self::let_binding_parts(&binding)?.1 {
                         Some(form) => self.eval(&form, env)?,
                         None => Value::Nil,
-                    };
-                    if self.binding_is_dynamic_symbol(&name, env) {
-                        push_special(name, val);
-                    } else {
-                        lexenv = Self::cons_binding(name, Self::stored_value(val), lexenv);
-                        lexical_bindings = true;
                     }
-                }
-                _ => return Err(wrong_type_argument("listp", binding)),
+                };
+                initialized += 1;
             }
-        }
 
-        // Flet: specbind each special, the count taken first; a failed
-        // bind unwinds the ones made (its error was returned over them
-        // before).
-        let count = self.specpdl_index();
-        let mut bind = |this: &mut Self, name: SymbolName, value: Value| -> Result<(), LispError> {
-            if let Err(error) = this.specbind_symbol(&name, value, env) {
-                let _ = this.unbind_to(count, env);
-                return Err(error);
-            }
-            Ok(())
-        };
-        match rooted_specials.take() {
-            Some(rooted) => {
-                for (name, value) in rooted {
-                    bind(self, name, value)?;
+            // GNU takes lexenv after the initializers and reads each variable
+            // name again. A name or special declaration changed by an
+            // initializer must affect binding, while initializer lookup stays
+            // in the enclosing environment throughout the first walk.
+            let mut lexenv = crate::lisp::types::current_environment_value(env);
+            let mut lexical_bindings = false;
+            tail = args.car()?;
+            for value in &values[..initialized] {
+                let Kind::Cons(cell) = tail.kind() else {
+                    break;
+                };
+                let binding = cell.car.get();
+                tail = cell.cdr.get();
+                let symbol = binding.is_symbol()
+                    || (matches!(binding.kind(), Kind::Record(_))
+                        && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+                        && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
+                            .is_some());
+                let name_value = if symbol { binding } else { binding.car()? };
+                let name =
+                    crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
+                Self::check_let_binding_name(&name)?;
+                if self.binding_is_dynamic_symbol(&name, env) {
+                    self.specbind_symbol(&name, *value, env)?;
+                } else {
+                    lexenv = Self::cons_binding(name, Self::stored_value(*value), lexenv);
+                    lexical_bindings = true;
                 }
             }
-            None => {
-                for slot in &mut inline_specials[..inline_count] {
-                    let (name, value) = std::mem::replace(slot, (None, Value::Nil));
-                    bind(self, name.expect("a pushed special binding"), value)?;
-                }
+            if lexical_bindings {
+                lexical_scope_depth = Some(env.len());
+                env.push(EnvFrame::from_alist(lexenv));
             }
-        }
-        // `specbind (Qinternal_interpreter_environment, lexenv)' once the
-        // varlist is bound: the values were computed under the enclosing
-        // environment, so a bare defvar in an initializer stays in the
-        // enclosing scope.
-        let lexical_scope_depth = env.len();
-        if lexical_bindings {
-            env.push(EnvFrame::from_alist(lexenv));
-        }
-        let result = self.progn_list(&body, env);
-        if lexical_bindings {
-            env.truncate(lexical_scope_depth);
+            self.progn_list(&args.cdr()?, env)
+        })();
+        if let Some(depth) = lexical_scope_depth {
+            env.truncate(depth);
         }
         let unbind = self.unbind_to(count, env);
         match result {
@@ -369,7 +311,7 @@ impl Interpreter {
     pub(super) fn sf_letstar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
         // eval.c FletX: FOR_EACH_TAIL (varlist) -- a non-list signals
         // wrong-type-argument listp.
-        let Some((varlist, body)) = list_next(args) else {
+        let Some((varlist, _)) = list_next(args) else {
             return Err(LispError::WrongNumberOfArgs("let*".into(), 0));
         };
         if is_vector_literal(&varlist) || !matches!(varlist.kind(), Kind::Nil | Kind::Cons(_)) {
@@ -386,39 +328,31 @@ impl Interpreter {
             // The varlist and each element read in place (FletX's
             // FOR_EACH_TAIL).
             let mut tail = varlist;
-            while let Some((binding, next)) = Self::next_let_binding(&tail, &varlist)? {
-                tail = next;
-                let (name, value) = match binding.kind() {
-                    Kind::Symbol(name) => {
-                        Self::check_let_binding_name(&name)?;
-                        (name, Value::Nil)
-                    }
-                    Kind::Record(_)
-                        if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-                            && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
-                                .is_some() =>
-                    {
-                        let name =
-                            crate::lisp::primitives::checked_symbol_identity(self, &binding, env)?;
-                        Self::check_let_binding_name(&name)?;
-                        (name, Value::Nil)
-                    }
-                    Kind::Cons(_) => {
-                        let (name_value, init) = Self::let_binding_parts(&binding)?;
-                        let name = crate::lisp::primitives::checked_symbol_identity(
-                            self,
-                            &name_value,
-                            env,
-                        )?;
-                        Self::check_let_binding_name(&name)?;
-                        let value = match init {
-                            Some(form) => self.eval(&form, env)?,
-                            None => Value::Nil,
-                        };
-                        (name, value)
-                    }
-                    _ => return Err(wrong_type_argument("listp", binding)),
+            let mut tortoise = tail;
+            let mut maximum = 2usize;
+            let mut remaining = 0isize;
+            let mut quit_count = 2u16;
+            while let Kind::Cons(cell) = tail.kind() {
+                let binding = cell.car.get();
+                let symbol = binding.is_symbol()
+                    || (matches!(binding.kind(), Kind::Record(_))
+                        && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+                        && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
+                            .is_some());
+                let (name_value, init) = if symbol {
+                    (binding, None)
+                } else {
+                    Self::let_binding_parts(&binding)?
                 };
+                // FletX reads the name before evaluating its initializer,
+                // but validates that name only after evaluation succeeds.
+                let value = match init {
+                    Some(form) => self.eval(&form, env)?,
+                    None => Value::Nil,
+                };
+                let name =
+                    crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
+                Self::check_let_binding_name(&name)?;
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, value, env)?;
                 } else {
@@ -449,12 +383,40 @@ impl Interpreter {
                         env.push(EnvFrame::from_alist(newenv));
                     }
                 }
+                // FOR_EACH_TAIL reads the cdr after the body, then applies
+                // Brent's cycle and quit checks. An initializer may shorten
+                // this list; counting it before evaluation would differ.
+                tail = cell.cdr.get();
+                quit_count = quit_count.wrapping_sub(1);
+                let compare = if quit_count != 0 {
+                    true
+                } else {
+                    self.maybe_quit(env)?;
+                    remaining -= 1;
+                    remaining > 0
+                };
+                if compare {
+                    if tail.word() == tortoise.word() {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("circular-list"),
+                            tail,
+                        ])));
+                    }
+                } else {
+                    maximum <<= 1;
+                    quit_count = maximum as u16;
+                    remaining = (maximum >> u16::BITS) as isize;
+                    tortoise = tail;
+                }
+            }
+            if !tail.is_nil() {
+                return Err(wrong_type_argument("listp", args.car()?));
             }
             Ok(())
         })();
 
         let result = match setup {
-            Ok(()) => self.progn_list(&body, env),
+            Ok(()) => args.cdr().and_then(|body| self.progn_list(&body, env)),
             Err(error) => Err(error),
         };
         if let Some(depth) = lexical_restore_depth {
