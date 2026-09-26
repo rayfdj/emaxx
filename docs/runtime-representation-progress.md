@@ -3,10 +3,14 @@ This record tracks evidence and outstanding work; no completion is claimed.
 
 Current checkpoint, 2026-09-26: the terminal migration has passed its selected
 Linux and macOS controls; see [the terminal checkpoint](runtime-representation-terminal-checkpoint.md).
-The latest pushed evaluator change is `4226e9e`, which follows GNU's `let` and
-`let*` initializer and list-traversal rules. Its ordinary Linux root run passes
-17/19 controls and fails both reclamation contracts. The bytecode reclamation
-case had passed at `b5e45f5`; that regression is retained and unresolved.
+The latest pushed evaluator change is `7ce28c1`, which preserves `prog1`'s
+saved result across variable rebinding. Both Linux `prog1` controls and the
+complete unchanged GNU eval file pass; local affected controls pass 25/25.
+The preceding `let`/`let*` correction's ordinary Linux root run passes 17/19
+and fails both reclamation contracts. The bytecode reclamation case had passed
+at `b5e45f5`; that regression is retained and unresolved. `da21c14` changes only
+diagnostic artifact retention so the exact failing Linux executable can be
+inspected; it makes no runtime change.
 Current-source full gates and GNU performance parity remain unproven.
 
 Starting revision: `45eb1531caabb35b816fc83e2e8a5b88090dae4e`, freshly fetched
@@ -1298,13 +1302,18 @@ it is not applied in the current working tree. Full goal remains active.
   in upstream runtime initialization, before the new fixture assertions. It
   completed naturally before an attempted cancellation; no process was signaled.
   This predecessor does not certify final source61 or Linux reclamation.
-- The next uncommitted correction removes `prog1`'s vector-variable reread.
+- `7ce28c1` removes `prog1`'s vector-variable reread.
   GNU `Fprog1` returns its saved first value even when BODY mutates that object
   and rebinds the variable. The GNU-backed fixture checks vectors, bool-vectors,
   char-tables, replacement of BODY during FIRST, and propagation of BODY errors.
-  Source62 formatting and local all-target/all-feature strict Clippy pass with
-  zero warnings. A fresh local test build is running; runtime validation is
-  pending.
+  Source62 formatting, fresh compilation, and local all-target/all-feature
+  strict Clippy pass with zero warnings. The local affected inventory passes
+  25/25 with zero ignored tests and verified source/executable identities.
+  Linux CI passes formatting, strict Clippy, both `prog1` controls, and 26/26
+  outcomes in the complete unchanged GNU eval file. This single diagnostic
+  run's body takes 2537 ms versus GNU's 1395 ms; no performance gain is claimed.
+  Receipts: `target/runtime-goal/evaluator-controls-62.json` and
+  `target/runtime-goal/prog1-ci-completed-62.json`.
 
 These are correctness and ownership checkpoints. They do not establish a
 performance improvement. The complete unchanged GNU buffer file at the terminal
@@ -1312,3 +1321,29 @@ checkpoint matched 406/406 outcomes, but its single-run test body was 6.585 time
 slower than GNU. The locked 16-case performance suite and its 3% tolerance remain
 unchanged; full representation, allocation, validation and measurement goals
 remain open.
+
+
+2026-09-26 exact Linux GC diagnosis (source63):
+
+The retained CI executable from run36218470711 has verified SHA256
+`a8e341a9666340bbd4edb7bbcc6fc3a468f6eb4684b9e15c040506a6430880e4`.
+The complete artifact also matches GitHub's published ZIP digest. Its unchanged
+19 root controls pass17/fail2/ignore0. Bytecode reports `((1 t 1) (1 t 0))`;
+lexical callers report `((1 t 0) (1 t 1))`. Earlier failures remain preserved.
+
+Both unwanted roots originate at `let_with_values` frame offset0x48. Exact
+x86-64 disassembly identifies that slot as the extra `lexical_bindings` boolean:
+after `Value::cons` returns in RAX, instruction0x8aa585 sets only AL to1, then
+0x8aa587 spills all of RAX to `[rsp+0x48]`. The collector recognizes the remaining
+pointer bits as an interior pointer to an allocated cons. The slot persists
+through the body evaluation at0x8aa76e. The optional-depth hypothesis was rejected
+without applying it. Raw receipt and disassembly:
+`target/runtime-goal/let-conservative-spill-diagnosis-63.json` and
+`target/runtime-goal/let-exact-disassembly-63.log`.
+
+The source64 correction follows GNU `eval.c:Flet` line1105: compare the constructed
+lexical environment directly with the current one. It removes the redundant
+boolean and uses Lisp-word equality instead of reconstructing environment kinds.
+Validation is pending; tests, collector decisions and scan ranges are unchanged.
+This addresses the identified spill without establishing general soundness of
+conservative scanning over Rust storage. That broader issue remains open.

@@ -260,7 +260,6 @@ impl Interpreter {
             // initializer must affect binding, while initializer lookup stays
             // in the enclosing environment throughout the first walk.
             let mut lexenv = crate::lisp::types::current_environment_value(env);
-            let mut lexical_bindings = false;
             tail = args.car()?;
             for value in &values[..initialized] {
                 let Kind::Cons(cell) = tail.kind() else {
@@ -281,10 +280,13 @@ impl Interpreter {
                     self.specbind_symbol(&name, *value, env)?;
                 } else {
                     lexenv = Self::cons_binding(name, Self::stored_value(*value), lexenv);
-                    lexical_bindings = true;
                 }
             }
-            if lexical_bindings {
+            // Flet compares the constructed environment with the current
+            // one. A separate boolean duplicates that state and can leave
+            // pointer bits in the rest of a machine-word stack spill.
+            if !Self::same_environment(&lexenv, &crate::lisp::types::current_environment_value(env))
+            {
                 lexical_scope_depth = Some(env.len());
                 env.push(EnvFrame::from_alist(lexenv));
             }
@@ -426,12 +428,8 @@ impl Interpreter {
         Value::cons(Value::cons(Value::Symbol(symbol), value), lexenv)
     }
 
-    /// `EQ' of two environment heads: the same cons, or both nil.
+    /// GNU's `EQ' of two internal interpreter environments.
     pub(crate) fn same_environment(a: &Value, b: &Value) -> bool {
-        match (a.kind(), b.kind()) {
-            (Kind::Cons(a), Kind::Cons(b)) => crate::lisp::types::SharedCons::ptr_eq(&a, &b),
-            (Kind::Nil, Kind::Nil) => true,
-            _ => false,
-        }
+        a.word() == b.word()
     }
 }
