@@ -255,6 +255,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "frame.c:init_frame_once_for_pdumper resets selected_frame",
     ),
     ("old_selected_frame_id", "frame state, as selected_frame_id"),
+    (
+        "next_terminal_id",
+        "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
+    ),
     ("next_buffer_id", "carried in the remembered scalars"),
     ("next_overlay_id", "carried in the remembered scalars"),
     (

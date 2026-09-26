@@ -982,6 +982,7 @@ impl Interpreter {
             .iter_mut()
             .find(|terminal| terminal.id == id)
             .expect("decoded terminal has state")
+            .borrow_mut()
             .terminal_coding = coding;
     }
 

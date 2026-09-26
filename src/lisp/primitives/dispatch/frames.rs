@@ -452,11 +452,16 @@ define_dispatch!(
                 let terminal = interp
                     .frame_state(id)
                     .expect("decoded frame has state")
-                    .terminal_id;
+                    .terminal
+                    .expect("live frame terminal")
+                    .id;
                 let mut ids: Vec<_> = interp
                     .frame_states
                     .iter()
-                    .filter(|frame| interp.frame_is_live(frame.id) && frame.terminal_id == terminal)
+                    .filter(|frame| {
+                        interp.frame_is_live(frame.id)
+                            && frame.terminal.expect("live frame terminal").id == terminal
+                    })
                     .map(|frame| frame.id)
                     .collect();
                 if name == "previous-frame" {
@@ -694,9 +699,9 @@ fn make_terminal_frame(
             (key.as_symbol().ok() == Some(name)).then_some(value)
         })
     };
-    let terminal_id = if let Some(value) = parameter("terminal") {
+    let terminal = if let Some(value) = parameter("terminal") {
         interp
-            .decode_terminal_id(&value)
+            .decode_terminal(&value)
             .ok_or_else(|| wrong_type_argument("terminal-live-p", value))?
     } else {
         // frame.c:get_future_frame_param: supplied alist, selected frame
@@ -706,7 +711,8 @@ fn make_terminal_frame(
                 .or_else(|| interp.frame_parameter_override(name))
                 .map(|value| string_like(&value).map(|s| s.text))
                 .unwrap_or_else(|| {
-                    let terminal = interp.terminal_state(interp.selected_terminal_id())?;
+                    let object = interp.decode_terminal(&Value::Nil)?;
+                    let terminal = object.borrow();
                     if name == "tty" {
                         terminal.kind.as_ref().map(|_| terminal.name.clone())
                     } else {
@@ -719,16 +725,15 @@ fn make_terminal_frame(
             future("tty-type").ok_or_else(|| LispError::Signal("Unknown terminal type".into()))?;
         interp.open_tty_terminal(&tty, &kind)?
     };
-    let id = interp.new_terminal_frame(terminal_id);
-    let terminal = interp
-        .terminal_state(terminal_id)
-        .expect("decoded terminal has state");
+    let id = interp.new_terminal_frame(terminal);
+    let terminal = terminal.borrow();
     let tty = Value::string(&terminal.name);
     let kind = terminal
         .kind
         .as_deref()
         .map(Value::string)
         .unwrap_or(Value::Nil);
+    drop(terminal);
     // Fmodify_frame_parameters processes the alist in reverse so its first
     // occurrence wins. Terminal and minibuffer identity come from creation.
     for entry in entries.into_iter().rev() {
@@ -832,16 +837,21 @@ pub(super) fn delete_frame(
         return Ok(());
     }
     check(interp)?;
-    let terminal_id = interp
+    let terminal = interp
         .frame_state(id)
         .expect("decoded frame has state")
-        .terminal_id;
+        .terminal
+        .expect("live frame terminal");
     if id == interp.selected_frame_id {
         let replacement = interp
             .frame_states
             .iter()
             .find(|frame| {
-                frame.id != id && interp.frame_is_live(frame.id) && frame.terminal_id == terminal_id
+                frame.id != id
+                    && interp.frame_is_live(frame.id)
+                    && frame
+                        .terminal
+                        .is_some_and(|object| object.ptr_eq(&terminal))
             })
             .or_else(|| {
                 interp
@@ -856,15 +866,17 @@ pub(super) fn delete_frame(
     }
     interp.retire_frame(id);
     if !noelisp
-        && !interp
-            .frame_states
-            .iter()
-            .any(|frame| frame.live && frame.terminal_id == terminal_id)
+        && !interp.frame_states.iter().any(|frame| {
+            frame.live
+                && frame
+                    .terminal
+                    .is_some_and(|object| object.ptr_eq(&terminal))
+        })
     {
         super::call(
             interp,
             "delete-terminal",
-            &[Value::Terminal(terminal_id), Value::T],
+            &[Value::Terminal(terminal), Value::T],
             env,
         )?;
     }

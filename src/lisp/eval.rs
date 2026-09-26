@@ -2913,7 +2913,7 @@ pub(crate) struct FontsetState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
-    pub(crate) terminal_id: u64,
+    pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
     pub(crate) face_hash_table: Option<Value>,
     pub(crate) root_window_id: u64,
     pub(crate) selected_window_id: u64,
@@ -3040,6 +3040,7 @@ struct ImageGraphCopier {
     records: std::collections::HashMap<usize, Value>,
     finalizers: std::collections::HashMap<usize, Value>,
     buffers: std::collections::HashMap<usize, Value>,
+    terminals: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -3056,6 +3057,7 @@ impl ImageGraphCopier {
             records: Default::default(),
             finalizers: Default::default(),
             buffers: Default::default(),
+            terminals: Default::default(),
             record_owner,
         }
     }
@@ -3063,6 +3065,27 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::Terminal(terminal) => {
+                if let Some(copied) = self.terminals.get(&terminal.identity()) {
+                    return *copied;
+                }
+                let copied =
+                    crate::lisp::types::TerminalRef::new(terminal.id, terminal.borrow().clone());
+                let value = Value::Terminal(copied);
+                self.terminals.insert(terminal.identity(), value);
+                for (source, target) in [
+                    (&terminal.param_alist, &copied.param_alist),
+                    (&terminal.charset_list, &copied.charset_list),
+                    (&terminal.selection_alist, &copied.selection_alist),
+                    (&terminal.glyph_code_table, &copied.glyph_code_table),
+                ] {
+                    target.set(self.copy(&source.get()));
+                }
+                for entry in copied.borrow_mut().keyboard.values_mut() {
+                    *entry = self.copy(entry);
+                }
+                value
+            }
             Kind::Buffer(buffer) => {
                 if let Some(copied) = self.buffers.get(&buffer.identity()) {
                     return *copied;
@@ -3330,11 +3353,9 @@ pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
 pub(crate) const GNU_BUFFER_SIZE: usize = 992;
 // alloc.c:sweep_vectors counts these fixed-layout objects in the vector
 // totals as well as in their more specific public rows.  These are the
-// configured GNU 64-bit VECSIZE values from frame.h, termhooks.h, and
-// buffer.h respectively.
+// configured GNU 64-bit VECSIZE values for the remaining host-state objects.
+// Allocator-owned buffers and terminals use their actual vector footprints.
 pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
-pub(crate) const GNU_TERMINAL_VECTOR_SLOTS: usize = 66;
-pub(crate) const GNU_BUFFER_VECTOR_SLOTS: usize = 123;
 pub(crate) const GNU_OVERLAY_VECTOR_SLOTS: usize = 3;
 pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
@@ -3362,7 +3383,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     overlays: MarkedIds,
     char_tables: MarkedIds,
     frames: MarkedIds,
-    terminals: MarkedIds,
 }
 
 impl LispReachability<'_, '_> {
@@ -3397,7 +3417,6 @@ impl LispReachability<'_, '_> {
             overlays: MarkedIds::default(),
             char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
-            terminals: MarkedIds::default(),
         }
     }
 }
@@ -3436,7 +3455,7 @@ impl LispReachability<'_, '_> {
             Kind::Overlay(id) => self.overlays.contains(&id),
             Kind::CharTable(id) => self.char_tables.contains(&id),
             Kind::Frame(id) => self.frames.contains(&id),
-            Kind::Terminal(id) => self.terminals.contains(&id),
+            Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
@@ -3504,7 +3523,7 @@ impl LispReachability<'_, '_> {
             Kind::Overlay(id) => self.overlays.insert(id),
             Kind::CharTable(id) => self.char_tables.insert(id),
             Kind::Frame(id) => self.frames.insert(id),
-            Kind::Terminal(id) => self.terminals.insert(id),
+            Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
@@ -3568,6 +3587,9 @@ impl LispReachability<'_, '_> {
                     .borrow()
                     .visit_lisp_values(&mut |child| self.enqueue(child));
             }
+            Kind::Terminal(terminal) => {
+                terminal.visit_lisp_values(&mut |child| self.enqueue(child));
+            }
             Kind::Overlay(id) => {
                 // alloc.c:mark_overlay follows the plist whether the overlay
                 // was reached through a buffer or through another Lisp object.
@@ -3593,6 +3615,9 @@ impl LispReachability<'_, '_> {
             Kind::Frame(id) => {
                 if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == id) {
                     self.enqueue(&frame.name);
+                    if let Some(terminal) = frame.terminal {
+                        self.enqueue(&Value::Terminal(terminal));
+                    }
                     for (_, value) in &frame.parameter_overrides {
                         self.enqueue(value);
                     }
@@ -3676,7 +3701,6 @@ impl LispReachability<'_, '_> {
             | Kind::String(_)
             | Kind::BuiltinFunc(_)
             | Kind::Marker(_)
-            | Kind::Terminal(_)
             | Kind::Unbound => {}
         }
     }
@@ -4110,7 +4134,7 @@ impl Interpreter {
             .unwrap_or(0)
             + 1;
         self.frame_states.push(FrameState {
-            terminal_id: 0,
+            terminal: None,
             face_hash_table: None,
             root_window_id: 0,
             selected_window_id: 0,
@@ -4139,29 +4163,14 @@ impl Interpreter {
 
     /// A terminal the image nilled: a dead terminal object of its own,
     /// beside the initial terminal init_tty made for the new process.
-    pub(crate) fn install_dead_terminal(&mut self) -> u64 {
-        let id = self
-            .terminals
-            .iter()
-            .map(|terminal| terminal.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.terminals.push(terminal::TerminalState {
-            id,
-            live: false,
-            name: String::new(),
-            kind: None,
-            colors: 0,
-            terminal_coding: None,
-            keyboard_coding: None,
-            keyboard: HashMap::default(),
-            pending_input: Vec::new(),
-            parameters: Vec::new(),
-            top_frame: 0,
-            device: None,
-        });
-        id
+    pub(crate) fn install_dead_terminal(&mut self) -> crate::lisp::types::TerminalRef {
+        let id = self.alloc_terminal_id();
+        let mut state = terminal::TerminalState::initial();
+        state.live = false;
+        state.name.clear();
+        state.keyboard_coding = None;
+        state.top_frame = 0;
+        crate::lisp::types::TerminalRef::new(id, state)
     }
 
     /// Install a buffer's local bindings as its `local_var_alist_'.
@@ -4535,13 +4544,7 @@ impl Interpreter {
             mark(call);
         }
         for terminal in &self.terminals {
-            for value in terminal.keyboard.values() {
-                mark(value);
-            }
-            for (key, value) in &terminal.parameters {
-                mark(key);
-                mark(value);
-            }
+            mark(&Value::Terminal(*terminal));
         }
         for table in &self.char_tables {
             mark(&Value::CharTable(table.id));
@@ -4788,13 +4791,8 @@ impl Interpreter {
         let symbols = crate::lisp::alloc::live_symbols();
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
-        let live_buffers = 1 + self.inactive_buffers.len();
+        let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
         let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        let live_terminals = self
-            .terminals
-            .iter()
-            .filter(|terminal| terminal.live)
-            .count();
         let live_overlays = std::iter::once(&self.buffer)
             .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
             .map(|buffer| buffer.borrow().overlays.len())
@@ -4806,15 +4804,11 @@ impl Interpreter {
             .map(|table| GNU_CHAR_TABLE_VECTOR_SLOTS.saturating_add(table.extra_slots.len()))
             .sum::<usize>();
         vector_count = vector_count
-            .saturating_add(live_buffers)
             .saturating_add(live_frames)
-            .saturating_add(live_terminals)
             .saturating_add(live_overlays)
             .saturating_add(self.char_tables.len());
         vector_slots = vector_slots
-            .saturating_add(live_buffers.saturating_mul(GNU_BUFFER_VECTOR_SLOTS))
             .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
-            .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS))
             .saturating_add(live_overlays.saturating_mul(GNU_OVERLAY_VECTOR_SLOTS))
             .saturating_add(char_table_slots);
         // The records are vectors of the sweep's count (alloc.c counts a
@@ -4832,7 +4826,7 @@ impl Interpreter {
             vector_slots,
             floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
-            buffers: live_buffers,
+            buffers: allocated_buffers,
             hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
         census.intervals += self.buffer.borrow().text_property_span_count();
@@ -4884,7 +4878,7 @@ impl Interpreter {
         assert!(
             self.terminals
                 .iter()
-                .all(|terminal| terminal.device.is_none()),
+                .all(|terminal| terminal.borrow().device.is_none()),
             "cannot clone an interpreter with live terminal devices"
         );
         let mut clone = self.clone();
@@ -4971,18 +4965,19 @@ impl Interpreter {
                 clone.current_global_map = Some(c.copy(map));
             }
             clone.frame_and_buffer_state = c.copy(&clone.frame_and_buffer_state.clone());
-            for terminal in &mut clone.terminals {
-                for value in terminal.keyboard.values_mut() {
-                    *value = c.copy(value);
+            for frame in &mut clone.frame_states {
+                if let Some(terminal) = frame.terminal {
+                    let Kind::Terminal(copied) = c.copy(&Value::Terminal(terminal)).kind() else {
+                        unreachable!("terminal copy");
+                    };
+                    frame.terminal = Some(copied);
                 }
             }
-            for (key, value) in clone
-                .terminals
-                .iter_mut()
-                .flat_map(|terminal| &mut terminal.parameters)
-            {
-                *key = c.copy(key);
-                *value = c.copy(value);
+            for terminal in &mut clone.terminals {
+                let Kind::Terminal(copied) = c.copy(&Value::Terminal(*terminal)).kind() else {
+                    unreachable!("terminal copy keeps its object kind")
+                };
+                *terminal = copied;
             }
             for table in &mut clone.char_tables {
                 table.default = c.copy(&table.default.clone());
@@ -5537,7 +5532,8 @@ pub struct InterpreterState {
     pub(crate) old_selected_frame_id: u64,
     /// dispnew.c's internal frame/buffer menu state vector.
     frame_and_buffer_state: Value,
-    pub(crate) terminals: Vec<terminal::TerminalState>,
+    pub(crate) terminals: Vec<crate::lisp::types::TerminalRef>,
+    next_terminal_id: u64,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::lisp::types::BufferRef)>,
     /// Known buffers: (id, name) pairs.
@@ -5966,6 +5962,8 @@ impl Interpreter {
         // thread's cached views of buffer state are of some other one.
         crate::lisp::primitives::forget_buffer_views();
         primitives::install_user_signal_handlers();
+        let initial_terminal =
+            crate::lisp::types::TerminalRef::new(0, terminal::TerminalState::initial());
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;
         let record_owner = next_record_owner();
@@ -6308,7 +6306,7 @@ impl Interpreter {
             old_selected_window_id: 0,
             window_select_count: 1,
             frame_states: vec![FrameState {
-                terminal_id: 0,
+                terminal: Some(initial_terminal),
                 face_hash_table: None,
                 root_window_id: 0,
                 selected_window_id: 0,
@@ -6335,7 +6333,8 @@ impl Interpreter {
             selected_frame_id: 1,
             old_selected_frame_id: 1,
             frame_and_buffer_state: Value::Nil,
-            terminals: vec![terminal::TerminalState::initial()],
+            terminals: vec![initial_terminal],
+            next_terminal_id: 1,
             inactive_buffers: vec![(
                 1,
                 crate::lisp::types::BufferRef::new(1, crate::buffer::Buffer::new("*Messages*")),

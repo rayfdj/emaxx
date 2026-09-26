@@ -1009,7 +1009,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .buffer_syntax_table_id(source_id)
         .expect("the buffer set a syntax table");
     let source_finalizers = interp.finalizer_objects();
-    let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
+    let terminal = Value::Terminal(*interp.terminals.first().expect("initial terminal"));
     let roots = vec![(RootSlot::LoadPath, graph), (RootSlot::QuitFlag, terminal)];
     let bytes = dump(&mut interp, roots);
 
@@ -1144,16 +1144,25 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Terminal(dead_terminal) = root(RootSlot::QuitFlag).kind() else {
         panic!("terminal")
     };
+    assert!(!dead_terminal.borrow().live);
     assert!(
-        target
-            .terminal_state(dead_terminal)
-            .is_some_and(|terminal| !terminal.live)
+        !target
+            .terminals
+            .iter()
+            .any(|terminal| terminal.ptr_eq(&dead_terminal))
     );
     assert_ne!(
         Value::Terminal(dead_terminal),
-        Value::Terminal(target.terminals.first().expect("initial terminal").id)
+        Value::Terminal(*target.terminals.first().expect("initial terminal"))
     );
-    assert!(target.terminals.first().expect("initial terminal").live);
+    assert!(
+        target
+            .terminals
+            .first()
+            .expect("initial terminal")
+            .borrow()
+            .live
+    );
 
     // The deleted overlay retains its properties without a holding buffer.
     let Kind::Overlay(ov) = slots[6].kind() else {

@@ -689,9 +689,9 @@ impl Interpreter {
     pub(crate) fn frame_is_live(&self, id: u64) -> bool {
         self.frame_state(id).is_some_and(|frame| {
             frame.live
-                && self
-                    .terminal_state(frame.terminal_id)
-                    .is_some_and(|terminal| terminal.live)
+                && frame
+                    .terminal
+                    .is_some_and(|terminal| terminal.borrow().live)
         })
     }
 
@@ -738,6 +738,7 @@ impl Interpreter {
             .iter_mut()
             .find(|terminal| terminal.id == id)
             .expect("decoded terminal has state")
+            .borrow_mut()
             .colors = color_cells.max(0);
     }
 
@@ -755,6 +756,7 @@ impl Interpreter {
             .iter_mut()
             .find(|terminal| terminal.id == id)
             .expect("decoded terminal has state");
+        let mut terminal = terminal.borrow_mut();
         terminal.kind = terminal_type;
         #[cfg(unix)]
         if terminal.device.is_none() && terminal.kind.is_some() {
@@ -769,9 +771,12 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn tty_terminal_type(&self) -> Option<&str> {
-        self.terminal_state(self.selected_terminal_id())
-            .and_then(|terminal| terminal.kind.as_deref())
+    pub(crate) fn tty_terminal_type(&self) -> Option<std::cell::Ref<'_, str>> {
+        std::cell::Ref::filter_map(
+            self.terminal_state(self.selected_terminal_id())?,
+            |terminal| terminal.kind.as_deref(),
+        )
+        .ok()
     }
 
     /// Adopt the terminal's real geometry: a tty frame's height counts
@@ -3154,11 +3159,15 @@ impl Interpreter {
         let terminal = self
             .frame_state(id)
             .expect("decoded frame has state")
-            .terminal_id;
+            .terminal
+            .expect("live frame terminal")
+            .id;
         let ids: Vec<_> = self
             .frame_states
             .iter()
-            .filter(|frame| frame.live && frame.terminal_id == terminal)
+            .filter(|frame| {
+                frame.live && frame.terminal.expect("live frame terminal").id == terminal
+            })
             .map(|frame| frame.id)
             .collect();
         for id in ids {

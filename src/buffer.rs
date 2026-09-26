@@ -2682,8 +2682,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Marker(left), Kind::Marker(right))
         | (Kind::Overlay(left), Kind::Overlay(right))
         | (Kind::CharTable(left), Kind::CharTable(right))
-        | (Kind::Frame(left), Kind::Frame(right))
-        | (Kind::Terminal(left), Kind::Terminal(right)) => left == right,
+        | (Kind::Frame(left), Kind::Frame(right)) => left == right,
+        (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         (Kind::Unbound, Kind::Unbound) => true,

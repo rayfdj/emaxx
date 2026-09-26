@@ -70,6 +70,7 @@ pub enum VectorTag {
     Bignum = 2,
     Finalizer = 5,
     Buffer = 13,
+    Terminal = 16,
     Subr = 18,
     Closure = 31,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
@@ -86,6 +87,7 @@ impl VectorTag {
             2 => Self::Bignum,
             5 => Self::Finalizer,
             13 => Self::Buffer,
+            16 => Self::Terminal,
             18 => Self::Subr,
             31 => Self::Closure,
             34 => Self::Record,
@@ -266,6 +268,7 @@ static LIVE_VECTOR_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
+static LIVE_BUFFERS: AtomicUsize = AtomicUsize::new(0);
 /// The records' share of `total_vectors' and `total_vector_slots'
 /// (alloc.c counts a record as a vector of its slots).
 static LIVE_RECORDS: AtomicUsize = AtomicUsize::new(0);
@@ -694,6 +697,11 @@ impl Vectorlike for LispBignum {
     const TAG: VectorTag = VectorTag::Bignum;
 }
 
+impl Vectorlike for crate::lisp::types::TerminalValue {
+    const TAG: VectorTag = VectorTag::Terminal;
+    const LISP_SLOTS: usize = 4;
+}
+
 impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
@@ -820,6 +828,15 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTORS, 1);
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
+            VectorTag::Buffer | VectorTag::Terminal => {
+                if (*header).tag() == VectorTag::Buffer {
+                    raise(&LIVE_BUFFERS, 1);
+                }
+                raise(&LIVE_VECTORS, 1);
+                // alloc.c:sweep_vectors counts the actual allocation, including
+                // the header and rounding, even for a deleted but rooted object.
+                raise(&LIVE_VECTOR_SLOTS, (*header).nbytes() / WORD_SIZE);
+            }
             VectorTag::Record => {
                 let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
                 let slots = record.gnu_vector_slots();
@@ -835,7 +852,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_STRING_OBJECT_SPANS, state.props.len());
             }
             VectorTag::Subr => unreachable!("static subrs do not enter vector allocation"),
-            VectorTag::Normal | VectorTag::Free | VectorTag::Buffer | VectorTag::ReaderForm => {}
+            VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
         }
     }
 }
@@ -861,6 +878,9 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
+            VectorTag::Terminal => {
+                std::ptr::drop_in_place(body.cast::<crate::lisp::types::TerminalValue>())
+            }
             VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
             // destructor. Its children are reclaimed by tracing, as in C.
@@ -900,6 +920,7 @@ struct SweepStats {
     closures: usize,
     closure_slots: usize,
     bignums: usize,
+    buffers: usize,
     records: usize,
     record_slots: usize,
     string_objects: usize,
@@ -927,6 +948,11 @@ impl SweepStats {
                     self.vectors += 1;
                     self.vector_slots += 4;
                 }
+                VectorTag::Buffer | VectorTag::Terminal => {
+                    self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
+                    self.vectors += 1;
+                    self.vector_slots += (*header).nbytes() / WORD_SIZE;
+                }
                 VectorTag::Record => {
                     let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
                     let slots = record.gnu_vector_slots();
@@ -947,7 +973,7 @@ impl SweepStats {
                     }
                 }
                 VectorTag::Subr => unreachable!("static subrs are not swept"),
-                VectorTag::Free | VectorTag::Buffer | VectorTag::ReaderForm => {}
+                VectorTag::Free | VectorTag::ReaderForm => {}
             }
         }
     }
@@ -1028,6 +1054,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_CLOSURES.store(stats.closures, Ordering::Relaxed);
     LIVE_CLOSURE_SLOTS.store(stats.closure_slots, Ordering::Relaxed);
     LIVE_BIGNUMS.store(stats.bignums, Ordering::Relaxed);
+    LIVE_BUFFERS.store(stats.buffers, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
     LIVE_STRING_OBJECTS.store(stats.string_objects, Ordering::Relaxed);
@@ -1046,6 +1073,11 @@ pub(crate) fn live_vector_census() -> (usize, usize) {
             + LIVE_CLOSURE_SLOTS.load(Ordering::Relaxed)
             + bignums * 3,
     )
+}
+
+/// Allocated buffer objects, including killed buffers retained by Lisp roots.
+pub(crate) fn live_buffer_census() -> usize {
+    LIVE_BUFFERS.load(Ordering::Relaxed)
 }
 
 /// The records' census: count and slots, as alloc.c counts a record
@@ -1145,6 +1177,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
                 Value::BigInteger(super::super::types::SharedBigInt::from_raw(header))
             }
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
+            VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),

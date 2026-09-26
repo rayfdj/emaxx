@@ -1,12 +1,11 @@
 //! frame.c/terminal.c ownership and term.c's external TTY device boundary.
 use super::{Interpreter, Value};
-use crate::lisp::types::Kind;
 use crate::lisp::types::LispError;
+use crate::lisp::types::{Kind, TerminalRef};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalState {
-    pub id: u64,
     pub live: bool,
     pub name: String,
     pub kind: Option<String>,
@@ -15,7 +14,6 @@ pub(crate) struct TerminalState {
     pub keyboard_coding: Option<String>,
     pub keyboard: std::collections::HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     pub pending_input: Vec<u8>,
-    pub parameters: Vec<(Value, Value)>,
     pub top_frame: u64,
     pub device: Option<Arc<TtyDevice>>,
 }
@@ -23,7 +21,6 @@ pub(crate) struct TerminalState {
 impl TerminalState {
     pub fn initial() -> Self {
         Self {
-            id: 0,
             live: true,
             name: "initial_terminal".into(),
             kind: None,
@@ -32,7 +29,6 @@ impl TerminalState {
             keyboard_coding: Some("no-conversion".into()),
             keyboard: Default::default(),
             pending_input: Vec::new(),
-            parameters: Vec::new(),
             top_frame: 1,
             device: None,
         }
@@ -354,62 +350,96 @@ impl Drop for TtyDevice {
     }
 }
 
-impl Interpreter {
-    pub(crate) fn terminal_state(&self, id: u64) -> Option<&TerminalState> {
-        self.terminals.iter().find(|terminal| terminal.id == id)
+impl TerminalRef {
+    pub(crate) fn parameter(&self, parameter: Value) -> Value {
+        let mut rest = self.param_alist.get();
+        while let Kind::Cons(list) = rest.kind() {
+            let pair = list.car.get();
+            if pair.car().expect("terminal parameter pair").word() == parameter.word() {
+                return pair.cdr().expect("terminal parameter pair");
+            }
+            rest = list.cdr.get();
+        }
+        Value::Nil
     }
+
+    pub(crate) fn set_parameter(&self, parameter: Value, value: Value) -> Value {
+        let mut rest = self.param_alist.get();
+        while let Kind::Cons(list) = rest.kind() {
+            let pair = list.car.get();
+            if pair.car().expect("terminal parameter pair").word() == parameter.word() {
+                let previous = pair.cdr().expect("terminal parameter pair");
+                pair.set_cdr(value).expect("terminal parameter pair");
+                return previous;
+            }
+            rest = list.cdr.get();
+        }
+        self.param_alist.set(Value::cons(
+            Value::cons(parameter, value),
+            self.param_alist.get(),
+        ));
+        Value::Nil
+    }
+
+    pub(crate) fn parameters(&self) -> Value {
+        let mut copied = Vec::new();
+        let mut rest = self.param_alist.get();
+        while let Kind::Cons(list) = rest.kind() {
+            let pair = list.car.get();
+            copied.push(Value::cons(
+                pair.car().expect("terminal parameter pair"),
+                pair.cdr().expect("terminal parameter pair"),
+            ));
+            rest = list.cdr.get();
+        }
+        Value::list(copied)
+    }
+}
+
+impl Interpreter {
+    pub(crate) fn alloc_terminal_id(&mut self) -> u64 {
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+        id
+    }
+
+    pub(crate) fn terminal_state(&self, id: u64) -> Option<std::cell::Ref<'_, TerminalState>> {
+        self.terminals
+            .iter()
+            .find(|terminal| terminal.id == id)
+            .map(TerminalRef::borrow)
+    }
+
+    pub(crate) fn terminal_state_mut(
+        &self,
+        id: u64,
+    ) -> Option<std::cell::RefMut<'_, TerminalState>> {
+        self.terminals
+            .iter()
+            .find(|terminal| terminal.id == id)
+            .map(TerminalRef::borrow_mut)
+    }
+
     pub(crate) fn selected_terminal_id(&self) -> u64 {
         self.selected_frame_state()
-            .map_or(0, |frame| frame.terminal_id)
+            .and_then(|frame| frame.terminal)
+            .map_or(0, |terminal| terminal.id)
     }
-    pub(crate) fn decode_terminal_id(&self, value: &Value) -> Option<u64> {
-        let id = match value.kind() {
-            Kind::Nil => self.selected_terminal_id(),
-            Kind::Terminal(id) => id,
-            Kind::Frame(id) => self.frame_state(id).filter(|frame| frame.live)?.terminal_id,
+
+    pub(crate) fn decode_terminal(&self, value: &Value) -> Option<TerminalRef> {
+        let terminal = match value.kind() {
+            Kind::Nil => self.selected_frame_state()?.terminal?,
+            Kind::Terminal(terminal) => terminal,
+            Kind::Frame(id) => self.frame_state(id)?.terminal?,
             _ => return None,
         };
-        self.terminal_state(id)
-            .filter(|terminal| terminal.live)
-            .map(|terminal| terminal.id)
+        terminal.borrow().live.then_some(terminal)
     }
+
     pub fn terminal_live(&self) -> bool {
-        self.decode_terminal_id(&Value::Nil).is_some()
+        self.decode_terminal(&Value::Nil).is_some()
     }
-    pub(crate) fn set_terminal_parameter_on(
-        &mut self,
-        id: u64,
-        parameter: Value,
-        value: Value,
-    ) -> Value {
-        let parameter = Self::stored_value(parameter);
-        let value = Self::stored_value(value);
-        let terminal = self
-            .terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == id)
-            .expect("decoded terminal has state");
-        if let Some((_, previous)) = terminal
-            .parameters
-            .iter_mut()
-            .rfind(|(key, _)| key == &parameter)
-        {
-            std::mem::replace(previous, value)
-        } else {
-            terminal.parameters.push((parameter, value));
-            Value::Nil
-        }
-    }
-    pub(crate) fn terminal_parameters_on(&self, id: u64) -> Value {
-        Value::list(
-            self.terminal_state(id)
-                .expect("decoded terminal has state")
-                .parameters
-                .iter()
-                .rev()
-                .map(|(key, value)| Value::cons(*key, *value)),
-        )
-    }
+
     /// window.c stores the owning frame on every window, including internal
     /// and deleted windows. It must survive a frame switch and frame deletion.
     pub(crate) fn window_frame_id(&self, id: u64) -> Option<u64> {
@@ -427,13 +457,16 @@ impl Interpreter {
 }
 
 impl Interpreter {
-    pub(crate) fn open_tty_terminal(&mut self, name: &str, kind: &str) -> Result<u64, LispError> {
-        if let Some(terminal) = self
-            .terminals
-            .iter()
-            .find(|terminal| terminal.live && terminal.kind.is_some() && terminal.name == name)
-        {
-            return Ok(terminal.id);
+    pub(crate) fn open_tty_terminal(
+        &mut self,
+        name: &str,
+        kind: &str,
+    ) -> Result<TerminalRef, LispError> {
+        if let Some(terminal) = self.terminals.iter().find(|terminal| {
+            let state = terminal.borrow();
+            state.live && state.kind.is_some() && state.name == name
+        }) {
+            return Ok(*terminal);
         }
         #[cfg(unix)]
         let device = Arc::new(TtyDevice::open(
@@ -449,13 +482,7 @@ impl Interpreter {
         ));
         #[cfg(unix)]
         {
-            let id = self
-                .terminals
-                .iter()
-                .map(|terminal| terminal.id)
-                .max()
-                .unwrap_or(0)
-                + 1;
+            let id = self.alloc_terminal_id();
             let mut keyboard = std::collections::HashMap::<
                 String,
                 Value,
@@ -493,15 +520,13 @@ impl Interpreter {
             p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
             keyboard.insert("input-decode-map".into(), decode);
             keyboard.insert("local-function-key-map".into(), local);
-            self.terminals.insert(
-                0,
+            let terminal = TerminalRef::new(
+                id,
                 TerminalState {
-                    id,
                     live: true,
                     name: name.into(),
                     kind: Some(kind.into()),
                     colors: device.colors,
-                    parameters: Vec::new(),
                     terminal_coding: None,
                     keyboard_coding: Some("no-conversion".into()),
                     keyboard,
@@ -510,21 +535,21 @@ impl Interpreter {
                     device: Some(device),
                 },
             );
-            Ok(id)
+            self.terminals.insert(0, terminal);
+            Ok(terminal)
         }
     }
 
-    pub(crate) fn new_terminal_frame(&mut self, terminal_id: u64) -> u64 {
+    pub(crate) fn new_terminal_frame(&mut self, object: TerminalRef) -> u64 {
         use crate::lisp::primitives as p;
-        let terminal = self
-            .terminal_state(terminal_id)
-            .expect("decoded terminal has state");
+        let terminal = object.borrow();
         let (width, height) = terminal
             .device
             .as_ref()
             .map_or((self.frame_width(), self.frame_height()), |device| {
                 (device.width, device.height)
             });
+        drop(terminal);
         let id = self
             .frame_states
             .iter()
@@ -581,7 +606,7 @@ impl Interpreter {
             0,
             super::FrameState {
                 id,
-                terminal_id,
+                terminal: Some(object),
                 face_hash_table: None,
                 root_window_id: root.id,
                 selected_window_id: root.id,
@@ -609,12 +634,8 @@ impl Interpreter {
             },
         );
         self.copy_frame_faces(self.selected_frame_id, id);
-        self.terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == terminal_id)
-            .expect("decoded terminal has state")
-            .top_frame = id;
-        if terminal_id == 0 {
+        object.borrow_mut().top_frame = id;
+        if object.id == 0 {
             PRIMARY_TOP_FRAME.set(id);
         }
         id
@@ -625,21 +646,17 @@ impl Interpreter {
             self.old_selected_frame_id = self.selected_frame_id;
             self.selected_frame_id = id;
         }
-        let terminal_id = self
+        let terminal = self
             .frame_state(id)
             .expect("decoded frame has state")
-            .terminal_id;
-        self.terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == terminal_id)
-            .expect("decoded terminal has state")
-            .top_frame = id;
-        if terminal_id == 0 {
+            .terminal
+            .expect("live frame terminal");
+        let mut state = terminal.borrow_mut();
+        state.top_frame = id;
+        if terminal.id == 0 {
             PRIMARY_TOP_FRAME.set(id);
         }
-        let device = self
-            .terminal_state(terminal_id)
-            .expect("decoded terminal has state")
+        let device = state
             .device
             .as_ref()
             .map(Arc::downgrade)
@@ -670,37 +687,35 @@ impl Interpreter {
         let frame = self.frame_state_mut(id).expect("decoded frame has state");
         frame.live = false;
         frame.root_window_id = 0;
-        let terminal_id = frame.terminal_id;
+        let terminal = frame.terminal.take().expect("live frame terminal");
         if let Some(replacement) = self
             .frame_states
             .iter()
-            .find(|frame| frame.live && frame.terminal_id == terminal_id)
+            .find(|frame| {
+                frame.live
+                    && frame
+                        .terminal
+                        .is_some_and(|object| object.ptr_eq(&terminal))
+            })
             .map(|frame| frame.id)
         {
-            let terminal = self
-                .terminals
-                .iter_mut()
-                .find(|terminal| terminal.id == terminal_id)
-                .expect("decoded terminal has state");
-            if terminal.top_frame == id {
-                terminal.top_frame = replacement;
-                if terminal_id == 0 {
+            let mut state = terminal.borrow_mut();
+            if state.top_frame == id {
+                state.top_frame = replacement;
+                if terminal.id == 0 {
                     PRIMARY_TOP_FRAME.set(replacement);
                 }
             }
         }
     }
 
-    pub(crate) fn retire_terminal(&mut self, id: u64) {
-        let terminal = self
-            .terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == id)
-            .expect("decoded terminal has state");
-        terminal.live = false;
-        terminal.parameters.clear();
-        terminal.keyboard.clear();
-        terminal.device = None;
+    pub(crate) fn retire_terminal(&mut self, terminal: TerminalRef) {
+        let mut state = terminal.borrow_mut();
+        state.live = false;
+        state.name.clear();
+        state.keyboard.clear();
+        state.pending_input = Vec::new();
+        state.device = None;
     }
 }
 
@@ -764,16 +779,13 @@ impl Interpreter {
     pub(crate) fn set_keyboard_binding_on(&mut self, id: u64, name: &str, value: Value) {
         if id == 0 {
             self.globals.insert_by_name(name, Self::stored_value(value));
-        } else if let Some(terminal) = self
-            .terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == id && terminal.live)
-        {
+        } else if let Some(mut terminal) = self.terminal_state_mut(id).filter(|state| state.live) {
             terminal
                 .keyboard
                 .insert(name.into(), Self::stored_value(value));
         }
     }
+
     pub(crate) fn terminal_keyboard_value(&self, name: &str) -> Option<Value> {
         if self.selected_terminal_id() == 0 {
             return None;
@@ -785,12 +797,10 @@ impl Interpreter {
     }
     pub(crate) fn set_terminal_keyboard_value(&mut self, name: &str, value: &Value) -> bool {
         let id = self.selected_terminal_id();
-        if let Some(slot) = self
-            .terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == id)
-            .and_then(|terminal| terminal.keyboard.get_mut(name))
-        {
+        let Some(mut terminal) = self.terminal_state_mut(id) else {
+            return false;
+        };
+        if let Some(slot) = terminal.keyboard.get_mut(name) {
             *slot = *value;
             true
         } else {
@@ -814,7 +824,11 @@ impl Interpreter {
         let mut events = Vec::new();
         let mut input = Vec::new();
         let mut disconnected = Vec::new();
-        for terminal in self.terminals.iter_mut().filter(|terminal| terminal.live) {
+        for object in &self.terminals {
+            let mut terminal = object.borrow_mut();
+            if !terminal.live {
+                continue;
+            }
             let Some(device) = &terminal.device else {
                 continue;
             };
@@ -822,13 +836,13 @@ impl Interpreter {
             match (&device.file).read(&mut bytes) {
                 Ok(n) if n > 0 => terminal.pending_input.extend_from_slice(&bytes[..n]),
                 Ok(_) => {
-                    disconnected.push(terminal.id);
+                    disconnected.push(*object);
                     continue;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
-                    disconnected.push(terminal.id);
+                    disconnected.push(*object);
                     continue;
                 }
             }

@@ -366,7 +366,7 @@ fn values_equal_recursive_with_env(
             char_tables_equal(interp, left_id, right_id, seen, env)
         }
         (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
-        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Record(left_id), Kind::Record(right_id))
             if interp
                 .find_record(left_id)
@@ -519,8 +519,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
-        | (Kind::Frame(left_id), Kind::Frame(right_id))
-        | (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
+        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eql on non-numbers is eq; identity must be reflexive here too.
@@ -590,8 +590,8 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Marker(left_id), Kind::Marker(right_id))
         | (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
-        | (Kind::Frame(left_id), Kind::Frame(right_id))
-        | (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id == right_id,
+        | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
+        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
@@ -1850,7 +1850,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Kind::Terminal(id) => {
             hash_mix(state, 19);
-            hash_mix(state, id);
+            hash_mix(state, id.identity() as u64);
         }
         Kind::Record(id) => {
             hash_mix(state, 12);
@@ -2058,7 +2058,7 @@ pub(crate) fn hash_value_equal_at(
         }
         Kind::Terminal(id) => {
             hash_mix(state, 49);
-            hash_mix(state, id);
+            hash_mix(state, id.identity() as u64);
         }
         Kind::Record(id) => {
             hash_record_equal(

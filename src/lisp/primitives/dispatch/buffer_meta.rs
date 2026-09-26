@@ -1831,12 +1831,10 @@ define_dispatch!(
             "terminal-coding-system" | "keyboard-coding-system" => {
                 need_arg_range(name, args, 0, 1)?;
                 let target = args.first().unwrap_or(&Value::Nil);
-                let id = interp
-                    .decode_terminal_id(target)
-                    .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
                 let terminal = interp
-                    .terminal_state(id)
-                    .expect("decoded terminal has state");
+                    .decode_terminal(target)
+                    .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
+                let terminal = terminal.borrow();
                 let coding = if name == "terminal-coding-system" {
                     &terminal.terminal_coding
                 } else {
@@ -1851,19 +1849,15 @@ define_dispatch!(
             "set-terminal-coding-system-internal" | "set-keyboard-coding-system-internal" => {
                 need_arg_range(name, args, 1, 2)?;
                 let target = args.get(1).unwrap_or(&Value::Nil);
-                let id = interp
-                    .decode_terminal_id(target)
+                let terminal = interp
+                    .decode_terminal(target)
                     .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
                 let coding = checked_coding_name(interp, &args[0])?;
-                let terminal = interp
-                    .terminals
-                    .iter_mut()
-                    .find(|terminal| terminal.id == id)
-                    .expect("decoded terminal has state");
                 if name == "set-terminal-coding-system-internal" {
-                    terminal.terminal_coding = coding;
+                    terminal.borrow_mut().terminal_coding = coding;
                 } else {
-                    terminal.keyboard_coding = coding.or_else(|| Some("no-conversion".into()));
+                    terminal.borrow_mut().keyboard_coding =
+                        coding.or_else(|| Some("no-conversion".into()));
                 }
                 Ok(Value::Nil)
             }

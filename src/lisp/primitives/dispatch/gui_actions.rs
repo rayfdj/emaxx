@@ -277,7 +277,7 @@ define_dispatch!(
                 match args[0].kind() {
                     Kind::Nil | Kind::String(_) | Kind::StringObject(_) => {}
                     Kind::Frame(id) if interp.frame_is_live(id) => {}
-                    Kind::Terminal(id) if id == 0 && interp.terminal_live() => {}
+                    Kind::Terminal(terminal) if terminal.borrow().live => {}
                     terminal => {
                         return Err(wrong_type_argument("frame-live-p", terminal.value()));
                     }

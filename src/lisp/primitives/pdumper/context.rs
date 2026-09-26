@@ -43,7 +43,7 @@ pub(crate) enum ObjectKey {
     Overlay(u64),
     CharTable(u64),
     Frame(u64),
-    Terminal(u64),
+    Terminal(usize),
     Record(u64),
     Finalizer(usize),
     ReaderForm(usize),
@@ -79,7 +79,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Overlay(id) => ObjectKey::Overlay(id),
         Kind::CharTable(id) => ObjectKey::CharTable(id),
         Kind::Frame(id) => ObjectKey::Frame(id),
-        Kind::Terminal(id) => ObjectKey::Terminal(id),
+        Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
@@ -1059,7 +1059,9 @@ impl DumpContext {
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
             Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
-            Kind::Terminal(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Terminal),
+            Kind::Terminal(terminal) => {
+                (self.dump_nilled_pseudovec(terminal.id)?, DumpType::Terminal)
+            }
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();

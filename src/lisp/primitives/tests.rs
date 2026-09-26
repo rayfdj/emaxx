@@ -10480,6 +10480,16 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
 }
 
 #[test]
+fn terminal_parameters_preserve_identity_through_bytecode_and_gc() {
+    let program = include_str!("../../../tests/fixtures/shared-terminal-object-identity.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t t t t t t t t t t t t)",
+        "shared terminal parameters through bytecode and collection",
+    );
+}
+
+#[test]
 fn find_composition_reports_the_automatic_composition_for_a_displayed_buffer() {
     // composite.c find_automatic_composition: the decomposed
     // "__A<U+030A>stro<U+0308>m" of erc-tests' `erc--split-line'.  The
@@ -18598,23 +18608,34 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
 
 #[test]
 fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
-    // alloc.c:sweep_vectors counts PVEC_FRAME, PVEC_TERMINAL, and
-    // PVEC_BUFFER in total_vectors and total_vector_slots.  Their Rust owners
-    // are interpreter state rather than RecordState entries; creating one
-    // additional buffer gives a direct delta test for the 123-word buffer
-    // footprint while the always-live frame and terminal are included in the
-    // baseline census.
+    // alloc.c:sweep_vectors (line 3522) uses vector_nbytes / word_size,
+    // including the header and allocator rounding. Buffer objects now own
+    // their Rust payload in that allocation, so substituting the old GNU
+    // VECSIZE estimate would hide its real footprint. Keep exact object and
+    // slot deltas, including a killed object that still has a Lisp reference.
     let mut interp = Interpreter::new();
     let before = interp.live_object_census();
-    interp.create_buffer("census-buffer");
+    let (id, _) = interp.create_buffer("census-buffer");
+    let buffer = interp
+        .buffer_identity_value(id)
+        .expect("created buffer object");
     let after = interp.live_object_census();
 
     assert_eq!(after.buffers - before.buffers, 1);
     assert_eq!(after.vectors - before.vectors, 1);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        crate::lisp::eval::GNU_BUFFER_VECTOR_SLOTS
+        (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
+            + std::mem::size_of::<crate::lisp::types::BufferValue>())
+        .next_multiple_of(16)
+            / std::mem::size_of::<Value>()
     );
+    interp.kill_buffer_id(id);
+    let killed = interp.live_object_census();
+    assert_eq!(killed.buffers, after.buffers);
+    assert_eq!(killed.vectors, after.vectors);
+    assert_eq!(killed.vector_slots, after.vector_slots);
+    assert!(matches!(buffer.kind(), Kind::Buffer(_)));
 }
 
 #[test]

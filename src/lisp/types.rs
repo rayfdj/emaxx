@@ -1390,6 +1390,56 @@ pub struct BufferValue {
     pub(crate) state: RefCell<crate::buffer::Buffer>,
 }
 
+/// terminal.c's object owns its Lisp slots and the terminal device state.
+/// The four leading Lisp fields follow termhooks.h's struct terminal.
+#[repr(C)]
+#[derive(Debug)]
+pub struct TerminalValue {
+    pub(crate) param_alist: Cell<Value>,
+    pub(crate) charset_list: Cell<Value>,
+    pub(crate) selection_alist: Cell<Value>,
+    pub(crate) glyph_code_table: Cell<Value>,
+    pub id: u64,
+    pub(crate) state: RefCell<crate::lisp::eval::terminal::TerminalState>,
+}
+
+impl TerminalRef {
+    pub(crate) fn new(id: u64, state: crate::lisp::eval::terminal::TerminalState) -> Self {
+        Self::allocate(TerminalValue {
+            param_alist: Cell::new(Value::Nil),
+            charset_list: Cell::new(Value::Nil),
+            selection_alist: Cell::new(Value::Nil),
+            glyph_code_table: Cell::new(Value::Nil),
+            id,
+            state: RefCell::new(state),
+        })
+    }
+
+    pub(crate) fn borrow(&self) -> std::cell::Ref<'_, crate::lisp::eval::terminal::TerminalState> {
+        self.state.borrow()
+    }
+
+    pub(crate) fn borrow_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, crate::lisp::eval::terminal::TerminalState> {
+        self.state.borrow_mut()
+    }
+
+    pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        for slot in [
+            &self.param_alist,
+            &self.charset_list,
+            &self.selection_alist,
+            &self.glyph_code_table,
+        ] {
+            visit(&slot.get());
+        }
+        for value in self.borrow().keyboard.values() {
+            visit(value);
+        }
+    }
+}
+
 impl std::fmt::Debug for BufferValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BufferValue")
@@ -1421,6 +1471,7 @@ pub use crate::lisp::alloc::VectorRef;
 /// The pseudovector kinds' handles (alloc.c's `allocate_pseudovector').
 pub type LambdaRef = crate::lisp::alloc::ClosureRef;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
+pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
@@ -1974,7 +2025,6 @@ const SUB_MARKER: usize = 3;
 const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
-const SUB_TERMINAL: usize = 7;
 const SUB_SHIFT: u32 = 3;
 const PAYLOAD_SHIFT: u32 = 8;
 
@@ -2030,7 +2080,7 @@ pub enum Kind {
     /// An opaque frame object, identified by unique id.
     Frame(u64),
     /// An opaque terminal object, identified by unique id.
-    Terminal(u64),
+    Terminal(TerminalRef),
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
     Record(RecordRef),
@@ -2133,8 +2183,8 @@ impl Value {
         Value::from_bits(special(SUB_FRAME, id as usize))
     }
     #[inline]
-    pub fn Terminal(id: u64) -> Value {
-        Value::from_bits(special(SUB_TERMINAL, id as usize))
+    pub fn Terminal(terminal: TerminalRef) -> Value {
+        Value::from_bits(terminal.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Record(record: RecordRef) -> Value {
@@ -2239,6 +2289,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Buffer => {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Terminal => {
+                            Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
@@ -2268,7 +2321,6 @@ impl Value {
                     SUB_OVERLAY => Kind::Overlay(payload),
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),
-                    SUB_TERMINAL => Kind::Terminal(payload),
                     // SAFETY: every word this implementation makes has
                     // one of the sub-tags above.
                     _ => unsafe { impossible_tag("a value with an unknown tag") },
@@ -2977,7 +3029,7 @@ impl Value {
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::CharTable(id) => format!("char-table<{}>", id),
             Kind::Frame(id) => format!("frame<{}>", id),
-            Kind::Terminal(id) => format!("terminal<{}>", id),
+            Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::Record(record) => format!("record<{}>", record.id),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
@@ -3083,7 +3135,7 @@ fn values_equal_recursive(
         (Kind::Overlay(a), Kind::Overlay(b)) => a == b,
         (Kind::CharTable(a), Kind::CharTable(b)) => a == b,
         (Kind::Frame(a), Kind::Frame(b)) => a == b,
-        (Kind::Terminal(a), Kind::Terminal(b)) => a == b,
+        (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
@@ -3188,7 +3240,7 @@ fn format_value(
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Kind::CharTable(id) => write!(f, "#<char-table id:{}>", id),
         Kind::Frame(id) => write!(f, "#<frame id:{}>", id),
-        Kind::Terminal(id) => write!(f, "#<terminal id:{}>", id),
+        Kind::Terminal(terminal) => write!(f, "#<terminal id:{}>", terminal.id),
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),

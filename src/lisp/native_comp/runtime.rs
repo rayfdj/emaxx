@@ -3666,7 +3666,6 @@ enum NativeIdentity {
     Overlay(u64),
     CharTable(u64),
     Frame(u64),
-    Terminal(u64),
 }
 
 impl NativeIdentity {
@@ -3676,7 +3675,6 @@ impl NativeIdentity {
             Self::Overlay(value) => (11, *value as usize),
             Self::CharTable(value) => (12, *value as usize),
             Self::Frame(value) => (13, *value as usize),
-            Self::Terminal(value) => (14, *value as usize),
         };
         // Hashbrown consumes both low bucket bits and high control bits.  A
         // simple rotation leaves aligned GNU-style pointers clustered, so
@@ -4068,6 +4066,7 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::Record
                                 | crate::lisp::alloc::VectorTag::ReaderForm
                                 | crate::lisp::alloc::VectorTag::Buffer
+                                | crate::lisp::alloc::VectorTag::Terminal
                                 | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
                             ) => Some(TAG_VECTORLIKE),
@@ -4147,6 +4146,7 @@ impl NativeMark<'_> {
             | Kind::ReaderForm(_)
             | Kind::BuiltinFunc(_)
             | Kind::Buffer(_)
+            | Kind::Terminal(_)
             | Kind::Finalizer(_) => {
                 return Vec::new();
             }
@@ -4838,6 +4838,7 @@ impl NativeHeap {
             | Kind::ReaderForm(_)
             | Kind::Finalizer(_)
             | Kind::Buffer(_)
+            | Kind::Terminal(_)
             | Kind::BuiltinFunc(_) => Ok(value.word()),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
@@ -5109,6 +5110,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Record
                         | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
+                        | crate::lisp::alloc::VectorTag::Terminal
                         | crate::lisp::alloc::VectorTag::Finalizer
                 )
             {
@@ -5261,7 +5263,6 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
         Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
         Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
-        Kind::Terminal(id) => (NativeIdentity::Terminal(id), TAG_VECTORLIKE),
         Kind::Nil
         | Kind::T
         | Kind::Unbound
@@ -5278,6 +5279,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::Finalizer(_)
         | Kind::BuiltinFunc(_)
         | Kind::Buffer(_)
+        | Kind::Terminal(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
         }
@@ -10344,6 +10346,212 @@ mod tests {
         );
         assert!(first.handles.is_empty());
         assert!(second.handles.is_empty());
+    }
+
+    #[test]
+    fn native_terminals_share_words_and_the_authoritative_parameter_slot() {
+        extern "C" fn replace_parameters(
+            terminal: NativeWord,
+            parameters: NativeWord,
+        ) -> NativeWord {
+            // termhooks.h: param_alist is the first Lisp word after the header.
+            unsafe {
+                ((terminal & !TAG_MASK) as *mut NativeWord)
+                    .add(1)
+                    .write(parameters);
+            }
+            terminal
+        }
+
+        let mut interpreter = Interpreter::new();
+        let other = Interpreter::new();
+        let mut environment = Env::new();
+        let terminal = crate::lisp::primitives::call(
+            &mut interpreter,
+            "frame-terminal",
+            &[],
+            &mut environment,
+        )
+        .expect("ordinary frame terminal");
+        let Kind::Terminal(object) = terminal.kind() else {
+            panic!("terminal object");
+        };
+        let other_terminal = Value::Terminal(other.terminals[0]);
+        assert_eq!(object.id, other.terminals[0].id);
+        assert_ne!(
+            terminal, other_terminal,
+            "ids cannot substitute for object identity"
+        );
+
+        let mut runtime = NativeRuntime::default();
+        let mut second = NativeHeapOwner::new();
+        assert_eq!(
+            runtime.heap.encode(&terminal).expect("first native owner"),
+            terminal.word()
+        );
+        assert_eq!(
+            second.encode(&terminal).expect("second native owner"),
+            terminal.word()
+        );
+        assert_eq!(
+            second
+                .decode(terminal.word())
+                .expect("ordinary terminal word"),
+            terminal
+        );
+        let key = Value::symbol("shared-terminal-parameter");
+        let payload = Value::vector([Value::Integer(73), terminal]);
+        let parameters = Value::list([Value::cons(key, payload)]);
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                replace_parameters as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[terminal, parameters],
+            )
+            .expect("native terminal parameter slot write");
+        assert_eq!(result.word(), terminal.word());
+        assert_eq!(object.param_alist.get().word(), parameters.word());
+        let observed = crate::lisp::primitives::call(
+            &mut interpreter,
+            "terminal-parameter",
+            &[terminal, key],
+            &mut environment,
+        )
+        .expect("ordinary reader observes native slot write");
+        assert_eq!(observed.word(), payload.word());
+        assert!(runtime.heap.handles.is_empty());
+        assert!(second.handles.is_empty());
+        let mut marker = NativeMark {
+            marked_handles: Vec::new(),
+            pending: vec![terminal.word()],
+            heap: &mut second,
+        };
+        assert_eq!(marker.trace_words(), vec![terminal]);
+    }
+
+    #[test]
+    fn deleted_terminal_parameters_survive_until_the_object_is_unreachable() {
+        #[inline(never)]
+        fn make_terminal(interpreter: &mut Interpreter) -> [usize; 3] {
+            let object = crate::lisp::types::TerminalRef::new(
+                interpreter.alloc_terminal_id(),
+                crate::lisp::eval::terminal::TerminalState::initial(),
+            );
+            interpreter.terminals.insert(0, object);
+            let payload = Value::cons(Value::Integer(97), Value::Nil);
+            let control = Value::cons(Value::Integer(113), Value::Nil);
+            object.set_parameter(Value::symbol("retained-terminal-value"), payload);
+            [
+                Value::Terminal(object).word(),
+                payload.word(),
+                control.word(),
+            ]
+            .map(|word| word ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn delete_and_root(
+            interpreter: &mut Interpreter,
+            heap: &mut NativeHeapOwner,
+            hidden: usize,
+        ) {
+            let terminal = heap.decode(hidden ^ HIDE).expect("live terminal");
+            interpreter.set_global_binding("retained-dead-terminal", terminal);
+            crate::lisp::primitives::call(
+                interpreter,
+                "delete-terminal",
+                &[terminal, Value::T],
+                &mut Env::new(),
+            )
+            .expect("delete terminal through its ordinary primitive");
+            let Kind::Terminal(object) = terminal.kind() else {
+                panic!("terminal object");
+            };
+            assert!(!object.borrow().live);
+            assert!(
+                !interpreter
+                    .terminals
+                    .iter()
+                    .any(|live| live.ptr_eq(&object))
+            );
+        }
+
+        #[inline(never)]
+        fn check_objects(hidden: [usize; 3], retained: bool) {
+            let address = (hidden[0] ^ HIDE) & !TAG_MASK;
+            assert_eq!(
+                matches!(
+                    unsafe { crate::lisp::alloc::mem_find(address) },
+                    Some(crate::lisp::alloc::Found::Vectorlike(header))
+                        if header as usize == address
+                            && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                                == crate::lisp::alloc::VectorTag::Terminal
+                ),
+                retained,
+                "terminal object lifetime"
+            );
+            for (word, expected) in hidden[1..].iter().zip([retained, false]) {
+                assert_eq!(
+                    crate::lisp::alloc::allocated_serial((word ^ HIDE) & !TAG_MASK).is_some(),
+                    expected,
+                    "parameter survives with its terminal; unrooted control is reclaimed"
+                );
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let stack_marker = 0;
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        let baseline_vectors = interpreter.live_object_census().vectors;
+        let hidden = make_terminal(&mut interpreter);
+        for phase in 0..3 {
+            if phase == 1 {
+                delete_and_root(&mut interpreter, &mut heap, hidden[0]);
+            } else if phase == 2 {
+                interpreter.set_global_binding("retained-dead-terminal", Value::Nil);
+            }
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check_objects(hidden, phase != 2);
+            assert_eq!(
+                interpreter.live_object_census().vectors,
+                baseline_vectors + usize::from(phase != 2),
+                "a deleted but rooted terminal remains in the allocator census"
+            );
+        }
+        assert!(heap.handles.is_empty());
+    }
+
+    #[test]
+    fn terminal_allocations_report_their_actual_vector_footprint() {
+        let mut interpreter = Interpreter::new();
+        let before = crate::lisp::types::census_live_vectors();
+        let terminal = interpreter.install_dead_terminal();
+        let after = crate::lisp::types::census_live_vectors();
+        let bytes = (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
+            + std::mem::size_of::<crate::lisp::types::TerminalValue>())
+        .next_multiple_of(16);
+        assert_eq!(after.count, before.count + 1);
+        assert_eq!(
+            after.slots,
+            before.slots + bytes / std::mem::size_of::<Value>()
+        );
+        assert!(!terminal.borrow().live);
     }
 
     #[test]

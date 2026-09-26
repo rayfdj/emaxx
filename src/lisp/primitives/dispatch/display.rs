@@ -573,11 +573,13 @@ fn decode_live_frame(
     }
 }
 
-fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<(), LispError> {
+fn require_live_terminal(
+    interp: &Interpreter,
+    value: Option<&Value>,
+) -> Result<crate::lisp::types::TerminalRef, LispError> {
     let value = value.unwrap_or(&Value::Nil);
     interp
-        .decode_terminal_id(value)
-        .map(|_| ())
+        .decode_terminal(value)
         .ok_or_else(|| wrong_type_argument("terminal-live-p", *value))
 }
 
@@ -3082,13 +3084,9 @@ define_dispatch!(
             }
             "tty-type" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                let id = interp
-                    .decode_terminal_id(args.first().unwrap_or(&Value::Nil))
-                    .expect("terminal was validated");
-                Ok(interp
-                    .terminal_state(id)
-                    .expect("decoded terminal has state")
+                let terminal = require_live_terminal(interp, args.first())?;
+                Ok(terminal
+                    .borrow()
                     .kind
                     .as_deref()
                     .map(Value::string)
@@ -3096,13 +3094,8 @@ define_dispatch!(
             }
             "tty-top-frame" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                let id = interp
-                    .decode_terminal_id(args.first().unwrap_or(&Value::Nil))
-                    .expect("terminal was validated");
-                let terminal = interp
-                    .terminal_state(id)
-                    .expect("decoded terminal has state");
+                let terminal = require_live_terminal(interp, args.first())?;
+                let terminal = terminal.borrow();
                 Ok(if terminal.kind.is_some() {
                     Value::Frame(terminal.top_frame)
                 } else {
@@ -4737,9 +4730,13 @@ define_dispatch!(
                     .filter(|frame| match frame_filter.kind() {
                         Kind::T => true,
                         Kind::Frame(id) => frame.id == id,
-                        Kind::Integer(0) => frame.terminal_id == interp.selected_terminal_id(),
+                        Kind::Integer(0) => {
+                            frame.terminal.expect("live frame terminal").id
+                                == interp.selected_terminal_id()
+                        }
                         Kind::Symbol(name) if name == "visible" => {
-                            frame.terminal_id == interp.selected_terminal_id()
+                            frame.terminal.expect("live frame terminal").id
+                                == interp.selected_terminal_id()
                         }
                         _ => frame.id == own_frame,
                     })

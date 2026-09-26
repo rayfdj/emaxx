@@ -1205,7 +1205,14 @@ pub(crate) fn render_prin1_body(
                 .unwrap_or_else(|| format!("F{id}"));
             Ok(format!("#<frame {name} 0x{id:x}>"))
         }
-        Kind::Terminal(id) => Ok(format!("#<terminal {id} on initial_terminal>")),
+        Kind::Terminal(terminal) => {
+            let state = terminal.borrow();
+            Ok(if state.live {
+                format!("#<terminal {} on {}>", terminal.id, state.name)
+            } else {
+                format!("#<terminal {}>", terminal.id)
+            })
+        }
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {
                 if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {

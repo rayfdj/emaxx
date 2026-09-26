@@ -1268,7 +1268,7 @@ impl Interpreter {
 
     pub fn remove_global_binding(&mut self, name: &str) {
         for terminal in &mut self.terminals {
-            terminal.keyboard.remove(name);
+            terminal.borrow_mut().keyboard.remove(name);
         }
         if self.globals.remove_by_name(name).is_some() {
             self.note_obarray_removal();
@@ -1278,7 +1278,7 @@ impl Interpreter {
     /// `remove_global_binding' for a symbol in hand.
     pub(crate) fn remove_global_binding_symbol(&mut self, symbol: &SymbolName) {
         for terminal in &mut self.terminals {
-            terminal.keyboard.remove(symbol.as_str());
+            terminal.borrow_mut().keyboard.remove(symbol.as_str());
         }
         self.globals.remove(symbol);
         self.note_obarray_removal();

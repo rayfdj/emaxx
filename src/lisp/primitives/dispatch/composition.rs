@@ -386,7 +386,7 @@ fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
     if let Some(mode) = string_like(&mode) {
         return interp
             .tty_terminal_type()
-            .is_some_and(|terminal_type| terminal_type == mode.text);
+            .is_some_and(|terminal_type| *terminal_type == mode.text);
     }
     false
 }
@@ -729,7 +729,7 @@ fn find_automatic_composition(
 
 fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     if value.is_nil()
-        || matches!(value.kind(), Kind::Terminal(0))
+        || matches!(value.kind(), Kind::Terminal(terminal) if terminal.borrow().live)
         || matches!(value.kind(), Kind::Frame(id) if interp.frame_is_live(id))
     {
         Ok(Value::symbol(&interp.effective_terminal_coding_system()))
