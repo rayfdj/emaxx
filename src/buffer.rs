@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::lisp::types::Kind;
 use crate::lisp::types::Value;
+use crate::lisp::types::{BufferRef, Kind, MarkerRef};
 use ropey::Rope;
 use std::cell::RefCell;
 use std::time::SystemTime;
@@ -31,6 +31,27 @@ pub struct FileModTime {
     pub modified: SystemTime,
 }
 
+enum BufferMark {
+    Position(Option<usize>),
+    Object { marker: MarkerRef, owner: BufferRef },
+}
+
+impl BufferMark {
+    fn position(&self) -> Option<usize> {
+        match self {
+            Self::Position(position) => *position,
+            Self::Object { marker, .. } => marker.position(),
+        }
+    }
+}
+
+impl Clone for BufferMark {
+    fn clone(&self) -> Self {
+        // Buffer::clone is a text snapshot; it must not share a mutable mark.
+        Self::Position(self.position())
+    }
+}
+
 /// A single editing buffer.
 ///
 /// Positions are 1-based to match Emacs semantics: position 1 is
@@ -56,8 +77,9 @@ pub struct Buffer {
     /// Current cursor position (1-based char offset).
     pt: usize,
 
-    /// Mark position (1-based), or None if no mark set.
-    mark: Option<usize>,
+    /// A standalone buffer has no Lisp allocation. Installation replaces its
+    /// position with the actual mark object, without retaining a position copy.
+    mark: BufferMark,
 
     /// True when the region between point and mark is active.
     mark_active: bool,
@@ -331,7 +353,7 @@ pub(crate) struct BufferImage {
 
 #[derive(Clone, Debug)]
 pub struct UndoMarker {
-    pub id: u64,
+    pub id: MarkerRef,
     pub original_pos: usize,
     pub collapsed_pos: usize,
 }
@@ -381,7 +403,7 @@ impl Buffer {
             text,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
-            mark: None,
+            mark: BufferMark::Position(None),
             mark_active: false,
             modiff: 1,
             chars_modiff: 1,
@@ -419,7 +441,7 @@ impl Buffer {
             text,
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
-            mark: None,
+            mark: BufferMark::Position(None),
             mark_active: false,
             modiff: 1,
             chars_modiff: 1,
@@ -546,6 +568,7 @@ impl Buffer {
 
     pub fn set_multibyte(&mut self, enabled: bool) {
         self.multibyte = enabled;
+        self.refresh_marker_byte_positions();
     }
 
     /// Replace the internal character view while preserving the underlying
@@ -568,7 +591,13 @@ impl Buffer {
         self.pt = remap(self.pt);
         self.begv = remap(self.begv);
         self.zv = remap(self.zv);
-        self.mark = self.mark.map(remap);
+        if let BufferMark::Position(mark) = &mut self.mark {
+            *mark = mark.map(remap);
+        } else if let BufferMark::Object { owner, .. } = self.mark {
+            for marker in owner.markers() {
+                marker.set_positions(remap(marker.last_position()), marker.bytepos());
+            }
+        }
         // Overlay endpoints already use the rope's character coordinates.
         // The unibyte overlay API translates those coordinates at its public
         // boundary, so remapping them here would apply the byte-to-character
@@ -872,8 +901,60 @@ impl Buffer {
 
     // ── Mark ──
 
+    pub(crate) fn mark_object(&self) -> Option<MarkerRef> {
+        match self.mark {
+            BufferMark::Position(_) => None,
+            BufferMark::Object { marker, .. } => Some(marker),
+        }
+    }
+
+    pub(crate) fn install_mark_object(&mut self, owner: BufferRef, restored: Option<MarkerRef>) {
+        let position = self.mark();
+        if let Some(old) = self.mark_object() {
+            old.detach();
+        }
+        let marker = restored.unwrap_or_else(MarkerRef::new);
+        self.mark = BufferMark::Object { marker, owner };
+        if restored.is_none()
+            && let Some(position) = position
+        {
+            marker.attach(owner, position, self.marker_byte_position(position));
+        }
+    }
+
+    pub(crate) fn marker_byte_position(&self, position: usize) -> usize {
+        if !self.multibyte || self.text.len_bytes() == self.text.len_chars() {
+            return position;
+        }
+        let mut extended = self.extended_chars.iter().peekable();
+        1 + self
+            .text
+            .slice(..position - 1)
+            .chars()
+            .enumerate()
+            .map(|(index, ch)| {
+                let code = if extended.peek().is_some_and(|(pos, _)| *pos == index + 1) {
+                    extended.next().expect("matching extended character").1
+                } else {
+                    crate::lisp::primitives::string_character_code(true, ch) as u32
+                };
+                crate::lisp::primitives::emacs_multibyte_char_len(code)
+                    .expect("valid buffer character")
+            })
+            .sum::<usize>()
+    }
+
+    fn refresh_marker_byte_positions(&self) {
+        if let BufferMark::Object { owner, .. } = self.mark {
+            for marker in owner.markers() {
+                let position = marker.last_position();
+                marker.set_positions(position, self.marker_byte_position(position));
+            }
+        }
+    }
+
     pub fn mark(&self) -> Option<usize> {
-        self.mark
+        self.mark.position()
     }
 
     pub fn mark_active(&self) -> bool {
@@ -881,7 +962,7 @@ impl Buffer {
     }
 
     pub fn set_mark(&mut self, pos: usize) {
-        self.mark = Some(pos.clamp(self.begv, self.zv));
+        self.set_mark_position(pos);
         self.mark_active = true;
     }
 
@@ -889,15 +970,24 @@ impl Buffer {
     /// active.  GNU's `set-marker' and the first half of `push-mark' do this;
     /// `set-mark' is the separate operation that activates it.
     pub fn set_mark_position(&mut self, pos: usize) {
-        self.mark = Some(pos.clamp(self.begv, self.zv));
+        let pos = pos.clamp(1, self.size_total() + 1);
+        match self.mark {
+            BufferMark::Position(_) => self.mark = BufferMark::Position(Some(pos)),
+            BufferMark::Object { marker, owner } => {
+                marker.attach(owner, pos, self.marker_byte_position(pos))
+            }
+        }
     }
 
     pub fn set_mark_active(&mut self, active: bool) {
-        self.mark_active = active && self.mark.is_some();
+        self.mark_active = active && self.mark().is_some();
     }
 
     pub fn clear_mark(&mut self) {
-        self.mark = None;
+        match self.mark {
+            BufferMark::Position(_) => self.mark = BufferMark::Position(None),
+            BufferMark::Object { marker, .. } => marker.detach(),
+        }
         self.mark_active = false;
     }
 
@@ -906,7 +996,7 @@ impl Buffer {
     }
 
     pub fn region(&self) -> Option<(usize, usize)> {
-        self.mark.map(|m| {
+        self.mark().map(|m| {
             let a = self.pt.min(m);
             let b = self.pt.max(m);
             (a, b)
@@ -956,14 +1046,7 @@ impl Buffer {
         if pos == 0 || pos > char_len + 1 {
             return None;
         }
-        Some(
-            1 + self
-                .text
-                .slice(..(pos - 1))
-                .chars()
-                .map(char::len_utf8)
-                .sum::<usize>(),
-        )
+        Some(1 + self.text.char_to_byte(pos - 1))
     }
 
     pub fn byte_to_position(&self, byte: usize) -> Option<usize> {
@@ -1065,6 +1148,9 @@ impl Buffer {
             .extend(chars.iter().map(|(offset, code)| (start + *offset, *code)));
         self.extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
+        if !chars.is_empty() {
+            self.refresh_marker_byte_positions();
+        }
     }
 
     pub fn has_text_property_named(&self, property: &str) -> bool {
@@ -1092,7 +1178,13 @@ impl Buffer {
                     }
                 }
                 UndoEntry::Opaque(value) => *value = copy(value),
-                UndoEntry::Delete { props, .. } => {
+                UndoEntry::Delete { props, markers, .. } => {
+                    for marker in markers {
+                        let Kind::Marker(copied) = copy(&Value::Marker(marker.id)).kind() else {
+                            unreachable!("copy preserves marker type")
+                        };
+                        marker.id = copied;
+                    }
                     for span in props {
                         for (_, value) in &mut span.props {
                             *value = copy(value);
@@ -1119,6 +1211,9 @@ impl Buffer {
     /// positions and file metadata are native data, while properties, undo
     /// payloads and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        if let Some(marker) = self.mark_object() {
+            visit(&Value::Marker(marker));
+        }
         for span in &self.text_properties {
             for (_, value) in &span.props {
                 visit(value);
@@ -1133,7 +1228,10 @@ impl Buffer {
                     }
                 }
                 UndoEntry::Opaque(value) => visit(value),
-                UndoEntry::Delete { props, .. } => {
+                UndoEntry::Delete { props, markers, .. } => {
+                    for marker in markers {
+                        visit(&Value::Marker(marker.id));
+                    }
                     for span in props {
                         for (_, value) in &span.props {
                             visit(value);
@@ -1369,14 +1467,24 @@ impl Buffer {
         // Adjust zv (the buffer grew)
         self.zv += nchars;
 
-        // The mark is a marker with nil insertion type: text inserted at
-        // its position goes after it, so only a mark strictly beyond the
-        // insertion point advances (yank-pop deletes the (mark, point)
-        // stretch a yank at mark left behind).
-        if let Some(ref mut m) = self.mark
-            && *m > self.pt - nchars
-        {
-            *m += nchars;
+        match &mut self.mark {
+            BufferMark::Position(mark) => {
+                if let Some(mark) = mark
+                    && *mark > insert_at
+                {
+                    *mark += nchars;
+                }
+            }
+            BufferMark::Object { owner, .. } => {
+                let nbytes =
+                    crate::lisp::primitives::lisp_string_storage_byte_len(s, self.multibyte, &[]);
+                for marker in owner.markers() {
+                    let position = marker.last_position();
+                    if position > insert_at || (position == insert_at && marker.insertion_type()) {
+                        marker.set_positions(position + nchars, marker.bytepos() + nbytes);
+                    }
+                }
+            }
         }
 
         // Adjust overlays
@@ -1428,6 +1536,7 @@ impl Buffer {
         self.extended_chars
             .retain(|(position, _)| *position < from || *position >= to);
         self.invalidate_char_cache();
+        self.refresh_marker_byte_positions();
         self.modiff += 1;
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, to, true);
@@ -1472,6 +1581,8 @@ impl Buffer {
             });
         }
 
+        let from_byte = self.marker_byte_position(from);
+        let to_byte = self.marker_byte_position(to);
         self.text.remove(from0..to0);
         self.invalidate_char_cache();
 
@@ -1482,12 +1593,28 @@ impl Buffer {
             self.pt = from;
         }
 
-        // Adjust mark
-        if let Some(ref mut m) = self.mark {
-            if *m > to {
-                *m -= nchars;
-            } else if *m > from {
-                *m = from;
+        match &mut self.mark {
+            BufferMark::Position(mark) => {
+                if let Some(mark) = mark {
+                    *mark = if *mark > to {
+                        *mark - nchars
+                    } else {
+                        (*mark).min(from)
+                    };
+                }
+            }
+            BufferMark::Object { owner, .. } => {
+                for marker in owner.markers() {
+                    let position = marker.last_position();
+                    if position > to {
+                        marker.set_positions(
+                            position - nchars,
+                            marker.bytepos() - (to_byte - from_byte),
+                        );
+                    } else if position > from {
+                        marker.set_positions(from, from_byte);
+                    }
+                }
             }
         }
 
@@ -1566,9 +1693,7 @@ impl Buffer {
         self.begv = lower.max(1).min(self.text.len_chars() + 1);
         self.zv = upper.max(self.begv).min(self.text.len_chars() + 1);
         self.pt = self.pt.clamp(self.begv, self.zv);
-        if let Some(mark) = &mut self.mark {
-            *mark = (*mark).clamp(self.begv, self.zv);
-        }
+        // GNU narrowing moves point, but does not move markers outside it.
     }
 
     // ── Modification state ──
@@ -1855,8 +1980,10 @@ impl Buffer {
         self.text_properties = Vec::new();
         self.extended_chars = Vec::new();
         self.overlays = Vec::new();
-        self.mark = None;
+        // Fkill_buffer detaches only markers whose buffer is dying. Its
+        // mark can have been moved into another buffer and must survive there.
         self.mark_active = false;
+        self.mark = BufferMark::Position(None);
         self.pt = 1;
         self.begv = 1;
         self.zv = 1;
@@ -1884,7 +2011,7 @@ impl Buffer {
             name: self.name.clone(),
             text: self.text.to_string(),
             pt: self.pt,
-            mark: self.mark,
+            mark: self.mark(),
             mark_active: self.mark_active,
             modiff: self.modiff,
             chars_modiff: self.chars_modiff,
@@ -1917,7 +2044,7 @@ impl Buffer {
             text: Rope::from_str(&parts.text),
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: parts.pt,
-            mark: parts.mark,
+            mark: BufferMark::Position(parts.mark),
             mark_active: parts.mark_active,
             modiff: parts.modiff,
             chars_modiff: parts.chars_modiff,
@@ -1961,7 +2088,6 @@ impl Buffer {
         std::mem::swap(&mut self.text, &mut other.text);
         std::mem::swap(&mut self.char_cache, &mut other.char_cache);
         std::mem::swap(&mut self.pt, &mut other.pt);
-        std::mem::swap(&mut self.mark, &mut other.mark);
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.modiff, &mut other.modiff);
         std::mem::swap(&mut self.chars_modiff, &mut other.chars_modiff);
@@ -1977,6 +2103,44 @@ impl Buffer {
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);
         std::mem::swap(&mut self.extended_chars, &mut other.extended_chars);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
+        match (&mut self.mark, &mut other.mark) {
+            (
+                BufferMark::Object { marker, owner },
+                BufferMark::Object {
+                    marker: other_marker,
+                    owner: other_owner,
+                },
+            ) => {
+                std::mem::swap(marker, other_marker);
+                owner.swap_marker_chains(*other_owner);
+            }
+            (BufferMark::Position(mark), BufferMark::Position(other_mark)) => {
+                std::mem::swap(mark, other_mark)
+            }
+            _ => {
+                // A standalone Rust snapshot cannot own Lisp markers. Detach
+                // the installed buffer's chain and keep each side's owner.
+                let mark = self.mark();
+                let other_mark = other.mark();
+                if let BufferMark::Object { owner, .. } = self.mark {
+                    owner.detach_markers();
+                }
+                if let BufferMark::Object { owner, .. } = other.mark {
+                    owner.detach_markers();
+                }
+                if let Some(pos) = other_mark {
+                    self.set_mark_position(pos);
+                } else {
+                    self.clear_mark();
+                }
+                if let Some(pos) = mark {
+                    other.set_mark_position(pos);
+                } else {
+                    other.clear_mark();
+                }
+            }
+        }
+
         // Each buffer's serials stay its own and count on: the text behind
         // them changed without an edit, so every view keyed on either
         // buffer's serial is stale.
@@ -2679,8 +2843,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         }
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left), Kind::Marker(right))
-        | (Kind::Overlay(left), Kind::Overlay(right))
+        (Kind::Marker(left), Kind::Marker(right)) => left == right,
+        (Kind::Overlay(left), Kind::Overlay(right))
         | (Kind::CharTable(left), Kind::CharTable(right))
         | (Kind::Frame(left), Kind::Frame(right)) => left == right,
         (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),

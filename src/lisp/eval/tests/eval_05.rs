@@ -3751,29 +3751,23 @@ fn killing_a_buffer_retires_its_persistent_mark_mapping() {
         unreachable!("mark-marker always returns a marker")
     };
 
-    assert_eq!(
-        interp.buffer_mark_marker_ids.get(&buffer_id),
-        Some(&marker_id)
-    );
-    assert_eq!(
-        interp.find_marker(marker_id).unwrap().mark_buffer_id,
-        Some(buffer_id)
-    );
+    let buffer = interp.buffer;
+    assert_eq!(buffer.mark_object(), Some(marker_id));
     assert!(
-        interp
-            .markers_by_buffer
-            .get(&buffer_id)
-            .is_some_and(|marker_ids| marker_ids.contains(&marker_id))
+        marker_id
+            .buffer()
+            .is_some_and(|owner| owner.ptr_eq(&buffer))
     );
+    assert!(buffer.markers().any(|marker| marker == marker_id));
 
     interp.kill_buffer_id(buffer_id);
 
-    assert!(!interp.buffer_mark_marker_ids.contains_key(&buffer_id));
-    assert!(!interp.markers_by_buffer.contains_key(&buffer_id));
-    let marker = interp.find_marker(marker_id).unwrap();
-    assert_eq!(marker.mark_buffer_id, None);
-    assert_eq!(marker.buffer_id, None);
-    assert_eq!(marker.position, None);
+    assert!(interp.buffer_mark_marker_id(buffer_id).is_none());
+    assert!(buffer.mark_object().is_none());
+    assert_eq!(buffer.markers().count(), 0);
+    assert!(marker_id.buffer().is_none());
+    assert_eq!(marker_id.position(), None);
+    assert_eq!(marker_id.last_position(), 1);
 }
 
 #[test]

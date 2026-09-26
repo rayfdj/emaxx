@@ -1401,3 +1401,22 @@ performance parity still require work. The64KiB post-GC stack clearing predates
 this goal in7e3b762 and has not been removed or justified by current-source evidence.
 Reviewing it is not a validation result. No further runtime change is included
 in this evidence update.
+
+
+2026-09-26 shared marker milestone (source67g):
+
+Markers now use one 48-byte GNU-layout allocation across Lisp, bytecode and
+native code. Ordinary fields no longer consult an interpreter ID table or
+native identity cache. Buffer mark slots, weak edit chains, GC cleanup, undo,
+process/unwind roots and dump restoration now use actual marker objects.
+GNU-confirmed repairs cover detached equality/hash behavior, error ordering,
+return values, full buffer bounds, foreign-buffer marks at buffer killing and
+detached markers in set-match-data. The exploratory bootstrap failure remains
+in the evidence. See `docs/runtime-representation-marker-checkpoint.md`.
+
+Corrected source67g passes formatting, strict Clippy and fresh compilation with
+zero warnings. All33 selected marker controls pass with zero failures/ignores;
+all19 unchanged root controls also pass. Broader buffer/dump controls and Linux
+CI are still pending. Conses
+remain80bytes and three object kinds still use native bridges. No performance
+improvement, full validation or completion of the goal is claimed.

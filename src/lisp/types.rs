@@ -1385,6 +1385,8 @@ impl LambdaValue {
 
 pub struct BufferValue {
     pub id: u64,
+    /// Weak chain, as in buffer_text.markers. It does not keep markers alive.
+    pub(crate) markers: Cell<Option<MarkerRef>>,
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
@@ -1450,8 +1452,17 @@ impl std::fmt::Debug for BufferValue {
 
 impl BufferRef {
     pub fn new(id: u64, buffer: crate::buffer::Buffer) -> Self {
+        let object = Self::for_restore(id, buffer);
+        object.borrow_mut().install_mark_object(object, None);
+        object
+    }
+
+    /// Allocate the buffer identity before relocating its existing mark.
+    /// Restoring an image must not create a second, temporary mark object.
+    pub(crate) fn for_restore(id: u64, buffer: crate::buffer::Buffer) -> Self {
         Self::allocate(BufferValue {
             id,
+            markers: Cell::new(None),
             state: RefCell::new(buffer),
         })
     }
@@ -1463,6 +1474,15 @@ impl BufferRef {
     pub fn borrow_mut(&self) -> std::cell::RefMut<'_, crate::buffer::Buffer> {
         self.state.borrow_mut()
     }
+
+    /// Replace a host-side text snapshot, establishing its Lisp mark owner.
+    /// Ordinary Lisp edits operate on the existing buffer and marker fields.
+    pub(crate) fn replace_state(&self, buffer: crate::buffer::Buffer) {
+        self.detach_markers();
+        let mut state = self.borrow_mut();
+        *state = buffer;
+        state.install_mark_object(*self, None);
+    }
 }
 
 /// `Lisp_Object' for an ordinary vector: alloc.c's `struct Lisp_Vector'
@@ -1471,6 +1491,8 @@ pub use crate::lisp::alloc::VectorRef;
 /// The pseudovector kinds' handles (alloc.c's `allocate_pseudovector').
 pub type LambdaRef = crate::lisp::alloc::ClosureRef;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
+mod marker;
+pub use marker::{MarkerRef, MarkerValue};
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
@@ -2021,7 +2043,6 @@ const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
 /// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_MARKER: usize = 3;
 const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
@@ -2071,8 +2092,8 @@ pub enum Kind {
     Lambda(LambdaRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(BufferRef),
-    /// A marker object, identified by unique id.
-    Marker(u64),
+    /// The canonical GNU-layout marker allocation.
+    Marker(MarkerRef),
     /// An overlay object, identified by unique id.
     Overlay(u64),
     /// A char-table object, identified by unique id.
@@ -2167,8 +2188,8 @@ impl Value {
         Value::from_bits(buffer.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Marker(id: u64) -> Value {
-        Value::from_bits(special(SUB_MARKER, id as usize))
+    pub fn Marker(marker: MarkerRef) -> Value {
+        Value::from_bits(marker.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Overlay(id: u64) -> Value {
@@ -2289,6 +2310,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Buffer => {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Marker => {
+                            Kind::Marker(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2317,7 +2341,6 @@ impl Value {
             _ => {
                 let payload = (word >> PAYLOAD_SHIFT) as u64;
                 match (word >> SUB_SHIFT) & 31 {
-                    SUB_MARKER => Kind::Marker(payload),
                     SUB_OVERLAY => Kind::Overlay(payload),
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),

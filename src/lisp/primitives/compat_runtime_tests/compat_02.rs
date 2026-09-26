@@ -150,7 +150,9 @@ fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
 fn decode_coding_region_inserts_into_destination_buffer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*source*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*source*", "abc"));
     let (buffer_id, _) = interp.create_buffer("*dest*");
     let buffer = interp
         .buffer_value(buffer_id)
@@ -666,7 +668,9 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     let bytes = [0xFF, b'a'];
     std::fs::write(&path, bytes).expect("write raw bytes");
 
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*raw*", "");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*raw*", ""));
     interp.buffer.borrow_mut().file = Some(path.clone());
     interp.buffer.borrow_mut().file_truename = Some(path.clone());
     interp.buffer.borrow_mut().set_multibyte(false);
@@ -697,7 +701,9 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-save-unmodified-");
     std::fs::write(&path, "fresh").expect("write source file");
 
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*save*", "fresh");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*save*", "fresh"));
     interp.buffer.borrow_mut().file = Some(path.clone());
     interp.buffer.borrow_mut().file_truename = Some(path.clone());
     interp.buffer.borrow_mut().set_unmodified();
@@ -803,7 +809,9 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
     let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-buffer-stale-");
     std::fs::write(&path, "fresh").expect("write initial file contents");
 
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*stale*", "fresh");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*stale*", "fresh"));
     interp.buffer.borrow_mut().file = Some(path.clone());
     interp.buffer.borrow_mut().file_truename = Some(path.clone());
     interp
@@ -846,7 +854,9 @@ fn revert_buffer_honors_buffer_local_revert_function() {
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-function-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
-        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*revert*", "stale");
+        interp
+            .buffer
+            .replace_state(crate::buffer::Buffer::from_text("*revert*", "stale"));
         interp.buffer.borrow_mut().file = Some(path.clone());
         interp.buffer.borrow_mut().file_truename = Some(path.clone());
 
@@ -881,7 +891,9 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
         let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-dynamic-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
-        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*revert*", "stale");
+        interp
+            .buffer
+            .replace_state(crate::buffer::Buffer::from_text("*revert*", "stale"));
         interp.buffer.borrow_mut().file = Some(path.clone());
         interp.buffer.borrow_mut().file_truename = Some(path.clone());
 
@@ -909,7 +921,9 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
 fn get_byte_reads_unibyte_buffer_positions() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}"));
     interp.buffer.borrow_mut().set_multibyte(false);
 
     assert_eq!(
@@ -949,7 +963,9 @@ fn get_byte_reads_unibyte_buffer_positions() {
 fn extracted_strings_preserve_the_buffer_multibyte_mode() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*text*", "ASCII");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*text*", "ASCII"));
 
     let multibyte =
         call(&mut interp, "buffer-string", &[], &mut env).expect("extract multibyte buffer string");
@@ -976,7 +992,12 @@ fn extracted_strings_preserve_the_buffer_multibyte_mode() {
 fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*bytes*", "\u{00d0}\u{0097}");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text(
+            "*bytes*",
+            "\u{00d0}\u{0097}",
+        ));
     interp.buffer.borrow_mut().set_multibyte(false);
 
     call(&mut interp, "set-buffer-multibyte", &[Value::T], &mut env)

@@ -1285,7 +1285,7 @@ impl Interpreter {
             .and_then(|process| process.buffer_id)
     }
 
-    pub fn process_mark_id(&self, record_id: u64) -> Option<u64> {
+    pub fn process_mark_id(&self, record_id: u64) -> Option<crate::lisp::types::MarkerRef> {
         self.find_process_state(record_id)
             .map(|process| process.mark_marker_id)
     }

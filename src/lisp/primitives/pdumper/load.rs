@@ -492,21 +492,32 @@ impl Loader<'_> {
                     if flags & BUFFER_FLAG_DEAD != 0 {
                         // A killed buffer: the object, and nothing to
                         // install.
-                        self.objects
-                            .insert(offset, Value::buffer(id, String::new()));
+                        self.objects.insert(
+                            offset,
+                            Value::Buffer(crate::lisp::types::BufferRef::for_restore(
+                                id,
+                                crate::buffer::Buffer::new(""),
+                            )),
+                        );
                         continue;
                     }
                     let name = self.value_at(offset + 8 * BUFFER_NAME)?;
                     let name = string_like(&name)
                         .map(|string| string.text)
                         .ok_or_else(|| LoadError::Error("buffer name is not a string".into()))?;
-                    self.objects.insert(offset, Value::buffer(id, name));
+                    self.objects.insert(
+                        offset,
+                        Value::Buffer(crate::lisp::types::BufferRef::for_restore(
+                            id,
+                            crate::buffer::Buffer::new(&name),
+                        )),
+                    );
                     buffers.push((offset, id));
                 }
                 DumpType::Marker => {
-                    let id = self.reader.word(offset)?;
-                    self.objects.insert(offset, Value::Marker(id));
-                    markers.push((offset, id));
+                    let marker = crate::lisp::types::MarkerRef::new();
+                    self.objects.insert(offset, Value::Marker(marker));
+                    markers.push((offset, marker));
                 }
                 DumpType::Overlay => {
                     let id = self.reader.word(offset)?;
@@ -683,12 +694,19 @@ impl Loader<'_> {
         // deleted overlays on their lists, and the finalizers in list
         // order (the `finalizers.next' root leads the chain; a finalizer
         // off the chain follows in image order).
+        let mut marker_chains = Vec::with_capacity(buffers.len());
         for (offset, id) in buffers {
-            self.load_buffer(offset, id)?;
+            marker_chains.push(self.load_buffer(offset, id)?);
         }
-        for (offset, id) in markers {
-            let state = self.load_marker(offset, id)?;
-            self.interp.install_marker(state);
+        for (offset, marker) in markers {
+            self.load_marker(offset, marker)?;
+        }
+        for (buffer, chain) in marker_chains {
+            if !buffer.restore_marker_order(&chain) {
+                return Err(LoadError::Error(
+                    "buffer marker chain does not match marker fields".into(),
+                ));
+            }
         }
         for (offset, id) in overlays {
             let (holder, overlay) = self.load_overlay(offset, id)?;
@@ -1144,7 +1162,17 @@ impl Loader<'_> {
     /// saved snapshot from the cold section, the property spans, the
     /// local bindings, the syntax and case tables and the undo entries;
     /// the buffer is installed with its id.
-    fn load_buffer(&mut self, offset: u32, id: u64) -> Result<(), LoadError> {
+    fn load_buffer(
+        &mut self,
+        offset: u32,
+        id: u64,
+    ) -> Result<
+        (
+            crate::lisp::types::BufferRef,
+            Vec<crate::lisp::types::MarkerRef>,
+        ),
+        LoadError,
+    > {
         let word = |loader: &Self, index: u32| loader.reader.word(offset + 8 * index);
         let flags = word(self, BUFFER_FLAGS)?;
         let multibyte = flags & BUFFER_FLAG_MULTIBYTE != 0;
@@ -1204,15 +1232,15 @@ impl Loader<'_> {
                 })
                 .collect()
         };
-        // The mark marker installs its own relation; the field is checked.
-        match (self.value_at(offset + 8 * BUFFER_MARK_MARKER)?).kind() {
-            Kind::Marker(_) | Kind::Nil => {}
+        let mark_marker = match (self.value_at(offset + 8 * BUFFER_MARK_MARKER)?).kind() {
+            Kind::Marker(marker) => Some(marker),
+            Kind::Nil => None,
             other => {
                 return Err(LoadError::Error(format!(
                     "buffer {id}'s mark is not a marker: {other:?}"
                 )));
             }
-        }
+        };
         let syntax_table = self.optional_char_table_at(offset + 8 * BUFFER_SYNTAX_TABLE)?;
         let case_table = self.optional_char_table_at(offset + 8 * BUFFER_CASE_TABLE)?;
         let mut at = offset + 8 * BUFFER_VARIABLE_PART;
@@ -1241,12 +1269,14 @@ impl Loader<'_> {
         }
         let nmarkers = self.reader.word(at)? as usize;
         at += 8;
+        let mut marker_chain = Vec::with_capacity(nmarkers);
         for _ in 0..nmarkers {
-            if !matches!((self.value_at(at)?).kind(), Kind::Marker(_)) {
+            let Kind::Marker(marker) = self.value_at(at)?.kind() else {
                 return Err(LoadError::Error(format!(
                     "buffer {id}'s marker chain holds a non-marker"
                 )));
-            }
+            };
+            marker_chain.push(marker);
             at += 8;
         }
         let nundo = self.reader.word(at)? as usize;
@@ -1290,7 +1320,9 @@ impl Loader<'_> {
                 "buffer relocation has the wrong object kind".into(),
             ));
         };
+        object.detach_markers();
         *object.borrow_mut() = buffer;
+        object.borrow_mut().install_mark_object(object, mark_marker);
         self.interp.install_buffer(object);
         if let Some(base) = base {
             self.interp.register_indirect_buffer(id, base);
@@ -1305,7 +1337,7 @@ impl Loader<'_> {
         if let Some(table) = case_table {
             self.interp.install_buffer_case_table(id, table);
         }
-        Ok(())
+        Ok((object, marker_chain))
     }
 
     /// One undo entry at AT: the entry and the offset after it.
@@ -1354,8 +1386,11 @@ impl Loader<'_> {
                 next += 8;
                 let mut markers = Vec::with_capacity(nmarkers);
                 for _ in 0..nmarkers {
+                    let Kind::Marker(marker) = self.value_at(next)?.kind() else {
+                        return Err(LoadError::Error("undo entry has a non-marker".into()));
+                    };
                     markers.push(crate::buffer::UndoMarker {
-                        id: self.reader.word(next)?,
+                        id: marker,
                         original_pos: self.reader.word(next + 8)? as usize,
                         collapsed_pos: self.reader.word(next + 16)? as usize,
                     });
@@ -1395,26 +1430,28 @@ impl Loader<'_> {
         })
     }
 
-    /// A marker record: buffer, positions, insertion type, mark buffer.
+    /// Relocate a marker into the object allocated before graph restoration.
     fn load_marker(
         &mut self,
         offset: u32,
-        id: u64,
-    ) -> Result<crate::lisp::eval::MarkerState, LoadError> {
-        let buffer_id = self.optional_buffer_id_at(offset + 8)?;
-        let position = |word: u64| (word != NO_POSITION).then_some(word as usize);
-        let position_word = self.reader.word(offset + 16)?;
-        let last_position_word = self.reader.word(offset + 24)?;
-        let insertion_type = self.reader.word(offset + 32)? != 0;
-        let mark_buffer_id = self.optional_buffer_id_at(offset + 40)?;
-        Ok(crate::lisp::eval::MarkerState {
-            id,
-            buffer_id,
-            position: position(position_word),
-            last_position: position(last_position_word),
-            insertion_type,
-            mark_buffer_id,
-        })
+        marker: crate::lisp::types::MarkerRef,
+    ) -> Result<(), LoadError> {
+        let charpos = self.reader.word(offset + 8)? as usize;
+        let bytepos = self.reader.word(offset + 16)? as usize;
+        marker.set_insertion_type(self.reader.word(offset + 24)? != 0);
+        match self.value_at(offset)?.kind() {
+            Kind::Buffer(buffer) => {
+                if charpos == 0 || charpos > buffer.borrow().size_total() + 1 {
+                    return Err(LoadError::Error(
+                        "marker position is outside its buffer".into(),
+                    ));
+                }
+                marker.attach(buffer, charpos, bytepos);
+            }
+            Kind::Nil => marker.set_positions(charpos, bytepos),
+            _ => return Err(LoadError::Error("marker buffer is not a buffer".into())),
+        }
+        Ok(())
     }
 
     /// An overlay record: flags, bounds, the holding buffer's id, the

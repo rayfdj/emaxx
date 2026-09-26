@@ -3155,7 +3155,7 @@ impl Interpreter {
         buffer_id: u64,
         start: usize,
         end: usize,
-    ) -> Result<(u64, u64), LispError> {
+    ) -> Result<(crate::lisp::types::MarkerRef, crate::lisp::types::MarkerRef), LispError> {
         let Kind::Marker(beg_marker_id) = self.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };

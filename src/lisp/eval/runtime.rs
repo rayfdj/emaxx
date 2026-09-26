@@ -1246,11 +1246,6 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
-        if let Some(marker_id) = self.buffer_mark_marker_ids.remove(&id)
-            && let Some(marker) = self.find_marker_mut(marker_id)
-        {
-            marker.mark_buffer_id = None;
-        }
         self.buffer_locals.remove(&id);
         self.buffer_local_hooks.remove(&id);
         self.labeled_restrictions
@@ -1410,156 +1405,53 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Allocate a new marker.
+    /// alloc.c:Fmake_marker allocates the object itself, with no id registry.
     pub fn make_marker(&mut self) -> Value {
-        let id = self.next_marker_id;
-        self.next_marker_id += 1;
-        // The table is indexed by id: after an image load the remembered
-        // next id can exceed the markers the image carried (markers dead
-        // at dump time were not written), so the gap holds markers that
-        // point nowhere, as `install_marker' fills it.
-        while (self.markers.len() as u64) + 1 < id {
-            let filler = self.markers.len() as u64 + 1;
-            self.markers.push(MarkerState {
-                id: filler,
-                buffer_id: None,
-                position: None,
-                last_position: None,
-                insertion_type: false,
-                mark_buffer_id: None,
-            });
-        }
-        self.markers.push(MarkerState {
-            id,
-            buffer_id: None,
-            position: None,
-            last_position: None,
-            insertion_type: false,
-            mark_buffer_id: None,
-        });
-        Value::Marker(id)
+        Value::Marker(crate::lisp::types::MarkerRef::new())
     }
 
     pub fn buffer_mark_marker_value(&mut self) -> Value {
-        let buffer_id = self.current_buffer_id();
-        let mark = self.buffer.borrow().mark();
-        let marker_id = match self.buffer_mark_marker_ids.get(&buffer_id).copied() {
-            Some(marker_id) => marker_id,
-            None => {
-                let Kind::Marker(marker_id) = self.make_marker().kind() else {
-                    unreachable!("make_marker always returns a marker")
-                };
-                self.buffer_mark_marker_ids.insert(buffer_id, marker_id);
-                marker_id
-            }
-        };
-        if let Some(marker) = self.find_marker_mut(marker_id) {
-            marker.mark_buffer_id = Some(buffer_id);
-        }
-        self.set_marker(marker_id, mark, mark.map(|_| buffer_id))
-            .expect("the persistent buffer mark is a live marker");
-        Value::Marker(marker_id)
+        Value::Marker(
+            self.buffer
+                .mark_object()
+                .expect("a live buffer owns its mark"),
+        )
     }
 
-    pub(super) fn marker_index(id: u64) -> Option<usize> {
-        usize::try_from(id.checked_sub(1)?).ok()
+    pub fn marker_position(&self, marker: crate::lisp::types::MarkerRef) -> Option<usize> {
+        marker.position()
     }
 
-    pub fn find_marker(&self, id: u64) -> Option<&MarkerState> {
-        let index = Self::marker_index(id)?;
-        self.markers.get(index).filter(|marker| marker.id == id)
+    pub fn marker_buffer_id(&self, marker: crate::lisp::types::MarkerRef) -> Option<u64> {
+        marker.buffer().map(|buffer| buffer.id)
     }
 
-    pub fn find_marker_mut(&mut self, id: u64) -> Option<&mut MarkerState> {
-        let index = Self::marker_index(id)?;
-        self.markers.get_mut(index).filter(|marker| marker.id == id)
+    pub fn marker_insertion_type(&self, marker: crate::lisp::types::MarkerRef) -> Option<bool> {
+        Some(marker.insertion_type())
     }
 
-    fn update_marker_buffer_index(
+    pub fn set_marker_insertion_type(
         &mut self,
-        marker_id: u64,
-        previous_buffer_id: Option<u64>,
-        buffer_id: Option<u64>,
+        marker: crate::lisp::types::MarkerRef,
+        insertion_type: bool,
     ) {
-        if previous_buffer_id == buffer_id {
-            return;
-        }
-        if let Some(previous_buffer_id) = previous_buffer_id {
-            let remove_empty_entry = self
-                .markers_by_buffer
-                .get_mut(&previous_buffer_id)
-                .is_some_and(|marker_ids| {
-                    marker_ids.remove(&marker_id);
-                    marker_ids.is_empty()
-                });
-            if remove_empty_entry {
-                self.markers_by_buffer.remove(&previous_buffer_id);
-            }
-        }
-        if let Some(buffer_id) = buffer_id {
-            self.markers_by_buffer
-                .entry(buffer_id)
-                .or_default()
-                .insert(marker_id);
-        }
-    }
-
-    pub fn marker_position(&self, id: u64) -> Option<usize> {
-        self.find_marker(id).and_then(|marker| marker.position)
-    }
-
-    pub fn marker_buffer_id(&self, id: u64) -> Option<u64> {
-        self.find_marker(id).and_then(|marker| marker.buffer_id)
-    }
-
-    pub fn marker_last_position(&self, id: u64) -> Option<usize> {
-        self.find_marker(id).and_then(|marker| marker.last_position)
-    }
-
-    pub fn marker_insertion_type(&self, id: u64) -> Option<bool> {
-        self.find_marker(id).map(|marker| marker.insertion_type)
-    }
-
-    pub fn set_marker_insertion_type(&mut self, id: u64, insertion_type: bool) {
-        if let Some(marker) = self.find_marker_mut(id) {
-            marker.insertion_type = insertion_type;
-        }
+        marker.set_insertion_type(insertion_type);
     }
 
     pub fn set_marker(
         &mut self,
-        id: u64,
+        marker: crate::lisp::types::MarkerRef,
         position: Option<usize>,
         buffer_id: Option<u64>,
     ) -> Result<(), LispError> {
-        let mark_buffer_id = self
-            .find_marker(id)
-            .and_then(|marker| marker.mark_buffer_id);
-        let previous_buffer_id;
+        if let Some(position) = position
+            && let Some(buffer) = buffer_id.and_then(|id| self.buffer_object(id))
         {
-            let marker = self
-                .find_marker_mut(id)
-                .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{}>", id)))?;
-            previous_buffer_id = marker.buffer_id;
-            marker.buffer_id = buffer_id;
-            marker.position = position;
-            if let Some(pos) = position {
-                marker.last_position = Some(pos);
-            }
-        }
-        self.update_marker_buffer_index(id, previous_buffer_id, buffer_id);
-        if let Some(mark_buffer_id) = mark_buffer_id
-            && let Some(mut buffer) = self.get_buffer_by_id_mut(mark_buffer_id)
-        {
-            if buffer_id == Some(mark_buffer_id) {
-                if let Some(position) = position {
-                    buffer.set_mark_position(position);
-                } else {
-                    buffer.clear_mark();
-                }
-            } else {
-                buffer.clear_mark();
-            }
+            let state = buffer.borrow();
+            let position = position.clamp(1, state.size_total() + 1);
+            marker.attach(buffer, position, state.marker_byte_position(position));
+        } else {
+            marker.detach();
         }
         Ok(())
     }
@@ -1569,36 +1461,28 @@ impl Interpreter {
         value: &Value,
         insertion_type: bool,
     ) -> Result<Value, LispError> {
-        let marker_value = self.make_marker();
-        let Kind::Marker(marker_id) = marker_value.kind() else {
-            unreachable!("make_marker always returns a marker")
-        };
+        if !matches!(value.kind(), Kind::Nil | Kind::Marker(_) | Kind::Integer(_)) {
+            return Err(LispError::WrongTypeArgument(
+                "integer-or-marker-p".into(),
+                *value,
+            ));
+        }
+        let marker = crate::lisp::types::MarkerRef::new();
         match value.kind() {
-            Kind::Nil => {
-                self.set_marker(marker_id, None, None)?;
-            }
-            Kind::Marker(source_id) => {
-                let source = self.find_marker(source_id).cloned().ok_or_else(|| {
-                    LispError::TypeError("marker".into(), format!("marker<{}>", source_id))
-                })?;
-                self.set_marker(marker_id, source.position, source.buffer_id)?;
+            Kind::Marker(source) => {
+                if let Some(buffer) = source.buffer() {
+                    marker.attach(buffer, source.last_position(), source.bytepos());
+                }
             }
             Kind::Integer(position) => {
-                self.set_marker(
-                    marker_id,
-                    Some(position as usize),
-                    Some(self.current_buffer_id()),
-                )?;
+                let buffer = self.buffer.borrow();
+                let position = position.clamp(1, (buffer.size_total() + 1) as i64) as usize;
+                marker.attach(self.buffer, position, buffer.marker_byte_position(position));
             }
-            _ => {
-                return Err(LispError::WrongTypeArgument(
-                    "integer-or-marker-p".into(),
-                    *value,
-                ));
-            }
+            _ => {}
         }
-        self.set_marker_insertion_type(marker_id, insertion_type);
-        Ok(marker_value)
+        marker.set_insertion_type(insertion_type);
+        Ok(Value::Marker(marker))
     }
 
     pub fn make_char_table(&mut self, subtype: Option<String>, default: Value) -> Value {

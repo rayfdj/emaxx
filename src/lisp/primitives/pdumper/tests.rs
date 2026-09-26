@@ -1087,26 +1087,30 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");
-    let mark = target.find_marker(mark_marker).expect("mark marker");
-    assert_eq!(mark.buffer_id, Some(source_id));
-    assert_eq!(mark.position, Some(1));
-    assert_eq!(mark.mark_buffer_id, Some(source_id));
+    let mark = mark_marker;
+    assert_eq!(mark.buffer().map(|b| b.id), Some(source_id));
+    assert_eq!(mark.position(), Some(1));
+    assert_eq!(
+        target
+            .buffer_object(source_id)
+            .expect("restored buffer")
+            .mark_object(),
+        Some(mark)
+    );
 
     // The markers: one into the buffer with its insertion type, one
     // detached.
     let Kind::Marker(m1) = slots[1].kind() else {
         panic!("marker")
     };
-    let m1 = target.find_marker(m1).expect("marker 1");
-    assert_eq!(m1.buffer_id, Some(source_id));
-    assert_eq!(m1.position, Some(2));
-    assert!(m1.insertion_type);
+    assert_eq!(m1.buffer().map(|b| b.id), Some(source_id));
+    assert_eq!(m1.position(), Some(2));
+    assert!(m1.insertion_type());
     let Kind::Marker(m2) = slots[2].kind() else {
         panic!("marker")
     };
-    let m2 = target.find_marker(m2).expect("marker 2");
-    assert_eq!(m2.buffer_id, None);
-    assert_eq!(m2.position, None);
+    assert_eq!(m2.buffer().map(|b| b.id), None);
+    assert_eq!(m2.position(), None);
     assert_eq!(
         target.buffer_marker_ids(source_id).len(),
         interp.buffer_marker_ids(source_id).len()

@@ -1161,22 +1161,6 @@ impl ErtTestDefinition {
 }
 
 #[derive(Clone, Debug)]
-pub struct MarkerState {
-    pub id: u64,
-    pub buffer_id: Option<u64>,
-    pub position: Option<usize>,
-    pub last_position: Option<usize>,
-    pub insertion_type: bool,
-    /// Buffer whose persistent `mark-marker' identity this marker represents.
-    ///
-    /// This is independent of `buffer_id': clearing a buffer's mark detaches
-    /// the marker without changing its identity.  Keeping the relationship on
-    /// the marker also makes `set-marker' constant-time instead of reverse
-    /// scanning every live buffer-mark entry.
-    pub mark_buffer_id: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
 pub struct CharTableState {
     pub id: u64,
     pub subtype: Option<String>,
@@ -2025,8 +2009,8 @@ pub(crate) struct CombinedAfterChangeState {
 pub(crate) struct LabeledRestriction {
     buffer_id: u64,
     label: Option<Value>,
-    beg_marker_id: u64,
-    end_marker_id: u64,
+    beg_marker_id: crate::lisp::types::MarkerRef,
+    end_marker_id: crate::lisp::types::MarkerRef,
 }
 
 /// Rust representation of the state saved by GNU C's
@@ -2034,7 +2018,7 @@ pub(crate) struct LabeledRestriction {
 pub(crate) struct SavedExcursion {
     buffer_id: u64,
     point: usize,
-    marker_id: u64,
+    marker_id: crate::lisp::types::MarkerRef,
 }
 
 /// Rust representation of the state saved by GNU C's
@@ -2051,8 +2035,8 @@ enum SavedRestrictionBounds {
     Narrow {
         beginning: usize,
         end: usize,
-        beginning_marker_id: u64,
-        end_marker_id: u64,
+        beginning_marker_id: crate::lisp::types::MarkerRef,
+        end_marker_id: crate::lisp::types::MarkerRef,
     },
 }
 
@@ -2658,7 +2642,7 @@ struct ProcessState {
     record_id: u64,
     kind: ProcessKind,
     buffer_id: Option<u64>,
-    mark_marker_id: u64,
+    mark_marker_id: crate::lisp::types::MarkerRef,
     status: ProcessStatus,
     filter: Option<Value>,
     sentinel: Option<Value>,
@@ -3032,6 +3016,7 @@ struct ImageGraphCopier {
     records: std::collections::HashMap<usize, Value>,
     finalizers: std::collections::HashMap<usize, Value>,
     buffers: std::collections::HashMap<usize, Value>,
+    markers: std::collections::HashMap<usize, Value>,
     terminals: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
@@ -3049,6 +3034,7 @@ impl ImageGraphCopier {
             records: Default::default(),
             finalizers: Default::default(),
             buffers: Default::default(),
+            markers: Default::default(),
             terminals: Default::default(),
             record_owner,
         }
@@ -3078,13 +3064,39 @@ impl ImageGraphCopier {
                 }
                 value
             }
+            Kind::Marker(marker) => {
+                if let Some(copied) = self.markers.get(&marker.identity()) {
+                    return *copied;
+                }
+                let copied = crate::lisp::types::MarkerRef::new();
+                let value = Value::Marker(copied);
+                self.markers.insert(marker.identity(), value);
+                copied.set_insertion_type(marker.insertion_type());
+                if let Some(buffer) = marker.buffer() {
+                    let Kind::Buffer(buffer) = self.copy(&Value::Buffer(buffer)).kind() else {
+                        unreachable!()
+                    };
+                    copied.attach(buffer, marker.last_position(), marker.bytepos());
+                } else {
+                    copied.set_positions(marker.last_position(), marker.bytepos());
+                }
+                value
+            }
             Kind::Buffer(buffer) => {
                 if let Some(copied) = self.buffers.get(&buffer.identity()) {
                     return *copied;
                 }
-                let object = crate::lisp::types::BufferRef::new(buffer.id, buffer.borrow().clone());
+                let object =
+                    crate::lisp::types::BufferRef::for_restore(buffer.id, buffer.borrow().clone());
                 let copied = Value::Buffer(object);
                 self.buffers.insert(buffer.identity(), copied);
+                if let Some(mark) = buffer.mark_object() {
+                    let Kind::Marker(mark) = self.copy(&Value::Marker(mark)).kind() else {
+                        unreachable!()
+                    };
+                    object.borrow_mut().install_mark_object(object, Some(mark));
+                }
+
                 object
                     .borrow_mut()
                     .rewrite_lisp_values(&mut |child| self.copy(child));
@@ -3309,12 +3321,12 @@ impl ImageGraphCopier {
 ///   their storage truthfully is.  `vectors'/`vector_slots' use GNU's
 ///   configured C layout for ordinary vectors and fixed-layout
 ///   pseudovectors represented by records.
-/// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
+/// - `floats' counts allocator-owned one-word float cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers and finalizers are id-indexed host state whose reachability
-///   filtering remains under audit.  Overlays owned by live buffers and
-///   rooted char-tables are included with their measured C footprint. Frames,
+/// - Markers and finalizers are allocator-owned pseudovectors. Overlays owned
+///   by live buffers and rooted char-tables are still host state and use the
+///   measured C footprint rather than their actual Rust storage. Frames,
 ///   terminals, buffers, and fixed-layout records with a direct GNU
 ///   pseudovector counterpart are included as well.
 #[derive(Default)]
@@ -3371,7 +3383,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    markers: MarkedIds,
     overlays: MarkedIds,
     char_tables: MarkedIds,
     frames: MarkedIds,
@@ -3405,7 +3416,6 @@ impl LispReachability<'_, '_> {
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
-            markers: MarkedIds::default(),
             overlays: MarkedIds::default(),
             char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
@@ -3418,10 +3428,6 @@ pub(crate) struct WeakHashReachability {
     /// which the sweep tests.
     pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    /// Marker objects the mark phase reached, from the Lisp graph and from
-    /// the slots C keeps them in (buffer marks, process marks, the
-    /// excursions and restrictions on the specpdl, the undo lists).
-    pub(crate) live_markers: MarkedIds,
     pub(crate) live_overlays: MarkedIds,
 }
 
@@ -3443,7 +3449,7 @@ impl LispReachability<'_, '_> {
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Marker(id) => self.markers.contains(&id),
+            Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(id) => self.overlays.contains(&id),
             Kind::CharTable(id) => self.char_tables.contains(&id),
             Kind::Frame(id) => self.frames.contains(&id),
@@ -3511,7 +3517,7 @@ impl LispReachability<'_, '_> {
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
-            Kind::Marker(id) => self.markers.insert(id),
+            Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(id) => self.overlays.insert(id),
             Kind::CharTable(id) => self.char_tables.insert(id),
             Kind::Frame(id) => self.frames.insert(id),
@@ -3933,17 +3939,17 @@ impl Interpreter {
         self.buffer_object(id).map(Value::Buffer)
     }
 
-    /// `own_text.markers': the markers pointing into buffer ID, by id.
-    pub(crate) fn buffer_marker_ids(&self, id: u64) -> Vec<u64> {
-        self.markers_by_buffer
-            .get(&id)
-            .map(|ids| ids.iter().copied().collect())
-            .unwrap_or_default()
+    /// `own_text.markers': the weak chain of markers pointing into this buffer.
+    pub(crate) fn buffer_marker_ids(&self, id: u64) -> Vec<crate::lisp::types::MarkerRef> {
+        self.buffer_object(id)
+            .into_iter()
+            .flat_map(|buffer| buffer.markers())
+            .collect()
     }
 
-    /// BVAR (b, mark): the buffer's persistent mark marker, once made.
-    pub(crate) fn buffer_mark_marker_id(&self, id: u64) -> Option<u64> {
-        self.buffer_mark_marker_ids.get(&id).copied()
+    pub(crate) fn buffer_mark_marker_id(&self, id: u64) -> Option<crate::lisp::types::MarkerRef> {
+        self.buffer_object(id)
+            .and_then(|buffer| buffer.mark_object())
     }
 
     /// `local_var_alist_': the buffer's local bindings in first-binding
@@ -4037,51 +4043,6 @@ impl Interpreter {
             None => self.buffer_list.push((id, name)),
         }
         self.next_buffer_id = self.next_buffer_id.max(id + 1);
-    }
-
-    /// Install a marker with the id the image gave it.  The marker table
-    /// is indexed by id; the ids between the table's end and this one
-    /// become detached markers nothing refers to.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_marker(&mut self, state: MarkerState) {
-        let Some(index) = Self::marker_index(state.id) else {
-            return;
-        };
-        while self.markers.len() <= index {
-            let id = self.markers.len() as u64 + 1;
-            self.markers.push(MarkerState {
-                id,
-                buffer_id: None,
-                position: None,
-                last_position: None,
-                insertion_type: false,
-                mark_buffer_id: None,
-            });
-        }
-        let previous_buffer_id = self.markers[index].buffer_id;
-        if let Some(previous) = previous_buffer_id {
-            let remove = self
-                .markers_by_buffer
-                .get_mut(&previous)
-                .is_some_and(|ids| {
-                    ids.remove(&state.id);
-                    ids.is_empty()
-                });
-            if remove {
-                self.markers_by_buffer.remove(&previous);
-            }
-        }
-        if let Some(buffer_id) = state.buffer_id {
-            self.markers_by_buffer
-                .entry(buffer_id)
-                .or_default()
-                .insert(state.id);
-        }
-        if let Some(mark_buffer_id) = state.mark_buffer_id {
-            self.buffer_mark_marker_ids.insert(mark_buffer_id, state.id);
-        }
-        self.next_marker_id = self.next_marker_id.max(state.id + 1);
-        self.markers[index] = state;
     }
 
     /// Restore an overlay from an image, independently owning detached ones.
@@ -4322,7 +4283,6 @@ impl Interpreter {
         WeakHashReachability {
             epoch: marked.epoch,
             tables,
-            live_markers: std::mem::take(&mut marked.markers),
             live_overlays: std::mem::take(&mut marked.overlays),
         }
     }
@@ -4631,11 +4591,6 @@ impl Interpreter {
         {
             mark(&self.record_value(thread.record_id));
         }
-        // buffer.c's BVAR (b, mark): each buffer's mark marker is a slot of
-        // the buffer object, reached whenever the buffer is.
-        for id in self.buffer_mark_marker_ids.values() {
-            mark(&Value::Marker(*id));
-        }
         mark(&Value::Buffer(self.buffer));
         for (_, buffer) in &self.inactive_buffers {
             mark(&Value::Buffer(*buffer));
@@ -4806,6 +4761,19 @@ impl Interpreter {
                     unreachable!("a buffer copy has buffer storage")
                 };
                 *buffer = copied;
+            }
+            for restriction in &mut clone.labeled_restrictions {
+                let Kind::Marker(beginning) =
+                    c.copy(&Value::Marker(restriction.beg_marker_id)).kind()
+                else {
+                    unreachable!()
+                };
+                let Kind::Marker(end) = c.copy(&Value::Marker(restriction.end_marker_id)).kind()
+                else {
+                    unreachable!()
+                };
+                restriction.beg_marker_id = beginning;
+                restriction.end_marker_id = end;
             }
             for value in clone.globals.values_mut() {
                 *value = c.copy(value);
@@ -5058,6 +5026,12 @@ impl Interpreter {
                 }
             }
             for process in &mut clone.process_states {
+                let Kind::Marker(marker) = c.copy(&Value::Marker(process.mark_marker_id)).kind()
+                else {
+                    unreachable!()
+                };
+                process.mark_marker_id = marker;
+
                 if let Some(filter) = &process.filter {
                     process.filter = Some(c.copy(filter));
                 }
@@ -5455,16 +5429,6 @@ pub struct InterpreterState {
     /// This allocation table is swept by Lisp reachability, not a GC root.
     detached_overlays: RefCell<HashMap<u64, crate::overlay::Overlay>>,
     /// Next marker ID for identity tracking.
-    next_marker_id: u64,
-    /// All markers currently known to the interpreter.
-    markers: Vec<MarkerState>,
-    /// Live marker IDs by buffer.  Marker objects remain allocated after they
-    /// detach, but edits and buffer teardown must touch only the small live
-    /// set belonging to that buffer.  The ordered set preserves marker-ID
-    /// iteration order for undo and match-data restoration.
-    markers_by_buffer: HashMap<u64, BTreeSet<u64>>,
-    /// Stable GNU `mark-marker' identities, one for each live buffer.
-    buffer_mark_marker_ids: HashMap<u64, u64>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
     /// Write generations per kind of table, bumped by the character-table
@@ -6255,10 +6219,6 @@ impl Interpreter {
             next_buffer_id: 2,
             next_overlay_id: 1,
             detached_overlays: RefCell::new(HashMap::new()),
-            next_marker_id: 1,
-            markers: Vec::new(),
-            markers_by_buffer: HashMap::new(),
-            buffer_mark_marker_ids: HashMap::new(),
             char_tables: vec![
                 CharTableState::with_entries(
                     standard_syntax_table_id,

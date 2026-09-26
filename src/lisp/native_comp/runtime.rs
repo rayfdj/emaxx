@@ -3662,7 +3662,6 @@ const NATIVE_TYPE_FLOAT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NativeIdentity {
-    Marker(u64),
     Overlay(u64),
     CharTable(u64),
     Frame(u64),
@@ -3671,7 +3670,6 @@ enum NativeIdentity {
 impl NativeIdentity {
     fn hash_word(&self) -> usize {
         let (kind, payload) = match self {
-            Self::Marker(value) => (10, *value as usize),
             Self::Overlay(value) => (11, *value as usize),
             Self::CharTable(value) => (12, *value as usize),
             Self::Frame(value) => (13, *value as usize),
@@ -4067,6 +4065,7 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::ReaderForm
                                 | crate::lisp::alloc::VectorTag::Buffer
                                 | crate::lisp::alloc::VectorTag::Terminal
+                                | crate::lisp::alloc::VectorTag::Marker
                                 | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
                             ) => Some(TAG_VECTORLIKE),
@@ -4146,6 +4145,7 @@ impl NativeMark<'_> {
             | Kind::ReaderForm(_)
             | Kind::BuiltinFunc(_)
             | Kind::Buffer(_)
+            | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::Finalizer(_) => {
                 return Vec::new();
@@ -4838,6 +4838,7 @@ impl NativeHeap {
             | Kind::ReaderForm(_)
             | Kind::Finalizer(_)
             | Kind::Buffer(_)
+            | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::BuiltinFunc(_) => Ok(value.word()),
             _ => {
@@ -5111,6 +5112,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
+                        | crate::lisp::alloc::VectorTag::Marker
                         | crate::lisp::alloc::VectorTag::Finalizer
                 )
             {
@@ -5259,7 +5261,6 @@ impl NativeHeap {
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
     Ok(match value.kind() {
-        Kind::Marker(id) => (NativeIdentity::Marker(id), TAG_VECTORLIKE),
         Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
         Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
         Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
@@ -5279,6 +5280,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::Finalizer(_)
         | Kind::BuiltinFunc(_)
         | Kind::Buffer(_)
+        | Kind::Marker(_)
         | Kind::Terminal(_)
         | Kind::Cons(_) => {
             return Err("native heap received an object with a direct encoding".to_string());
@@ -10298,6 +10300,150 @@ mod tests {
     }
 
     #[test]
+    fn native_markers_share_fields_with_buffer_marks_and_bytecode() {
+        extern "C" fn move_mark(vector: NativeWord) -> NativeWord {
+            // GNU's vector slot holds the actual PVEC_MARKER word. The C
+            // layout probe records charpos at byte 32 and bytepos at byte 40.
+            unsafe {
+                let marker = ((vector & !TAG_MASK) as *const NativeWord).add(1).read();
+                let fields = (marker & !TAG_MASK) as *mut NativeWord;
+                fields.add(4).write(3);
+                fields.add(5).write(4);
+                let flags = fields.cast::<u8>().add(16);
+                flags.write(flags.read() | 2);
+                marker
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.insert_current_buffer("aébc");
+        let value = interpreter.buffer_mark_marker_value();
+        let Kind::Marker(marker) = value.kind() else {
+            panic!("mark marker");
+        };
+        interpreter
+            .set_marker(marker, Some(1), Some(interpreter.current_buffer_id()))
+            .expect("attach the buffer mark");
+        let vector = Value::vector([value, value]);
+        let mut runtime = NativeRuntime::default();
+        let mut second = NativeHeapOwner::new();
+        assert_eq!(
+            runtime
+                .heap
+                .encode(&value)
+                .expect("encode canonical marker"),
+            value.word()
+        );
+        assert_eq!(
+            second
+                .encode(&value)
+                .expect("encode marker in another heap"),
+            value.word()
+        );
+        assert_eq!(
+            second
+                .decode(value.word())
+                .expect("decode the marker word")
+                .word(),
+            value.word()
+        );
+        assert_eq!(value.word() & TAG_MASK, TAG_VECTORLIKE);
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                move_mark as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[vector],
+            )
+            .expect("mutate marker fields through native code");
+        assert_eq!(result.word(), value.word());
+        assert_eq!(marker.position(), Some(3));
+        assert_eq!(marker.byte_position(), Some(4));
+        assert_eq!(interpreter.buffer.borrow().mark(), Some(3));
+        assert!(marker.insertion_type());
+
+        // A Bconstant/Breturn program returns the very word native code wrote.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{c0}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let function = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-byte-code",
+            &[
+                Value::Integer(0),
+                code,
+                Value::vector([value]),
+                Value::Integer(1),
+            ],
+            &mut environment,
+        )
+        .expect("construct marker-returning bytecode");
+        let returned = interpreter
+            .call_function_value(function, None, &[], &mut environment)
+            .expect("execute marker-returning bytecode");
+        assert_eq!(returned.word(), value.word());
+        interpreter.buffer.borrow_mut().goto_char(3);
+        interpreter.insert_current_buffer("λ");
+        assert_eq!(marker.position(), Some(4));
+        assert_eq!(marker.byte_position(), Some(6));
+        assert_eq!(interpreter.buffer.borrow().mark(), Some(4));
+        assert!(runtime.heap.handles.is_empty());
+        assert!(second.handles.is_empty());
+    }
+
+    #[test]
+    fn canonical_markers_are_reclaimed_after_their_last_root_is_removed() {
+        #[inline(never)]
+        fn allocate(interpreter: &mut Interpreter) -> [usize; 2] {
+            let retained = interpreter
+                .copy_marker_value(&Value::Integer(1), false)
+                .expect("allocate the retained marker");
+            let unrooted = interpreter
+                .copy_marker_value(&Value::Integer(1), true)
+                .expect("allocate the unrooted marker");
+            interpreter.set_global_binding("marker-reclamation-owner", Value::vector([retained]));
+            [retained.word() ^ HIDE, unrooted.word() ^ HIDE]
+        }
+
+        #[inline(never)]
+        fn check(hidden: usize, live: bool) {
+            let address = (hidden ^ HIDE) & !TAG_MASK;
+            assert_eq!(
+                matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+                Some(crate::lisp::alloc::Found::Vectorlike(header))
+                    if header as usize == address
+                        && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
+                            == crate::lisp::alloc::VectorTag::Marker),
+                live
+            );
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let stack_marker = 0;
+        let hidden = allocate(&mut interpreter);
+        for live in [true, false] {
+            if !live {
+                interpreter.set_global_binding("marker-reclamation-owner", Value::Nil);
+            }
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            check(hidden[0], live);
+            check(hidden[1], false);
+        }
+    }
+
+    #[test]
     fn native_remaining_object_kinds_use_their_ordinary_words_across_heaps() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -11217,11 +11363,14 @@ mod tests {
 
     #[test]
     fn native_handle_cache_keys_use_gnu_object_identity_words() {
-        let marker_identity = NativeIdentity::Marker(19);
+        let char_table_identity = NativeIdentity::CharTable(19);
         let overlay_identity = NativeIdentity::Overlay(19);
-        assert_ne!(marker_identity.hash_word(), overlay_identity.hash_word());
+        assert_ne!(
+            char_table_identity.hash_word(),
+            overlay_identity.hash_word()
+        );
         let occupied_buckets = (0..4_096_u64)
-            .map(|id| NativeIdentity::Marker(id).hash_word() & 4_095)
+            .map(|id| NativeIdentity::CharTable(id).hash_word() & 4_095)
             .collect::<HashSet<_>>();
         assert!(occupied_buckets.len() > 2_000);
 
@@ -11240,21 +11389,23 @@ mod tests {
         // Keep the original cross-kind key and handle-reuse contract for
         // two kinds that still use the migration bridge. These identities
         // are local codec controls; no interpreter dereferences them.
-        let marker = Value::Marker(19);
+        let char_table = Value::CharTable(19);
         let overlay = Value::Overlay(19);
-        let marker_word = heap.encode(&marker).expect("encode marker identity");
+        let char_table_word = heap
+            .encode(&char_table)
+            .expect("encode char_table identity");
         let overlay_word = heap.encode(&overlay).expect("encode overlay identity");
-        assert_ne!(marker_word, overlay_word);
+        assert_ne!(char_table_word, overlay_word);
         assert_eq!(
-            heap.encode(&marker).expect("reuse marker handle"),
-            marker_word
+            heap.encode(&char_table).expect("reuse char_table handle"),
+            char_table_word
         );
         assert_eq!(
             heap.encode(&overlay).expect("reuse overlay handle"),
             overlay_word
         );
         assert_eq!(heap.handle_by_value.len(), 2);
-        assert!(heap.handle_by_value.contains_key(&marker_identity));
+        assert!(heap.handle_by_value.contains_key(&char_table_identity));
         assert!(heap.handle_by_value.contains_key(&overlay_identity));
     }
 

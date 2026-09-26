@@ -26,10 +26,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
     ),
     (
-        "buffer_mark_marker_ids",
-        "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
-    ),
-    (
         "stack_roots",
         "eval.c:init_eval_once_for_pdumper recreates the specpdl and bytecode stacks; scoped Rust execution roots belong to live call frames, not the image; Fdump_emacs_portable refuses other live Lisp threads",
     ),
@@ -265,9 +261,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "detached_overlays",
         "an allocation table, not a Lisp root; reachable deleted overlays are written by dump_overlay and restored here by install_overlay, as GNU pdumper.c:dump_overlay carries their Lisp fields",
     ),
-    ("next_marker_id", "carried in the remembered scalars"),
-    ("markers", "installed per marker record"),
-    ("markers_by_buffer", "the index install_marker keeps"),
     ("category_context_generation", "a cache generation"),
     ("case_context_generation", "a cache generation"),
     ("regexp_syntax_class_cache", "a cache"),
@@ -822,10 +815,6 @@ impl Interpreter {
                     Value::Integer(self.next_overlay_id as i64),
                 ),
                 pair(
-                    Value::symbol("next-marker-id"),
-                    Value::Integer(self.next_marker_id as i64),
-                ),
-                pair(
                     Value::symbol("next-char-table-id"),
                     Value::Integer(self.next_char_table_id as i64),
                 ),
@@ -947,7 +936,7 @@ mod install {
         }
     }
 
-    fn expect_marker(value: &Value, what: &str) -> Result<u64, String> {
+    fn expect_marker(value: &Value, what: &str) -> Result<crate::lisp::types::MarkerRef, String> {
         match value.kind() {
             Kind::Marker(id) => Ok(id),
             other => Err(format!("{what}: not a marker: {other:?}")),
@@ -1356,9 +1345,6 @@ mod install {
                             }
                             "next-overlay-id" => {
                                 self.next_overlay_id = self.next_overlay_id.max(id(&name)?);
-                            }
-                            "next-marker-id" => {
-                                self.next_marker_id = self.next_marker_id.max(id(&name)?)
                             }
                             "next-char-table-id" => {
                                 self.next_char_table_id = self.next_char_table_id.max(id(&name)?);

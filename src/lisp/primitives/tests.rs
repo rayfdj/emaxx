@@ -1650,7 +1650,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::BuiltinFunc("car".into()),
         lambda,
         Value::buffer(1, "*scratch*"),
-        Value::Marker(1),
+        Value::Marker(crate::lisp::types::MarkerRef::new()),
         Value::Overlay(1),
         Value::CharTable(1),
         interp.create_record("representative", Vec::new()),
@@ -9435,7 +9435,9 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
 #[test]
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "a\nb\n"));
     {
         let mut buffer = interp.buffer.borrow_mut();
         let position = buffer.point_max();
@@ -9468,7 +9470,9 @@ fn indent_rigidly_shifts_each_line_in_region() {
 #[test]
 fn inhibit_read_only_allows_buffer_read_only_edits() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
     interp.set_variable("inhibit-read-only", Value::T, &mut env);
@@ -9493,7 +9497,9 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
 #[test]
 fn insert_signals_buffer_read_only_unless_inhibited() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", ""));
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("buffer-read-only", Value::T, &mut env);
 
@@ -9530,7 +9536,9 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
 #[test]
 fn failed_search_with_move_noerror_moves_to_bound() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc def");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc def"));
     let mut env = crate::lisp::types::Env::new();
     interp.buffer.borrow_mut().goto_char(1);
 
@@ -9571,7 +9579,12 @@ fn failed_search_with_move_noerror_moves_to_bound() {
 #[test]
 fn delete_line_removes_the_current_line() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text(
+            "*test*",
+            "one\ntwo\nthree\n",
+        ));
     let mut env = crate::lisp::types::Env::new();
     interp.buffer.borrow_mut().goto_char(6);
 
@@ -9597,7 +9610,9 @@ fn make_button_signals_on_an_incomplete_range() {
     // primitives, which reject a nil position.  An earlier Emaxx facade
     // returned nil here instead.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "button");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "button"));
     let mut env = crate::lisp::types::Env::new();
 
     let error = call_via_lisp(
@@ -9618,7 +9633,9 @@ fn make_button_signals_on_an_incomplete_range() {
 #[test]
 fn looking_at_p_preserves_existing_match_data() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
     call(
         &mut interp,
@@ -10496,6 +10513,16 @@ fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
         program,
         "(((error \"initializer-error\") (first second)) (nil 41) ((setting-constant nil) (initialized)) (nil 41) 41 ((error \"initializer-error\") (initialized)) (42 nil) (1 nil) ((circular-list t 0) (circular-list t 1)))",
         "let and let* initializer order, source mutation, and cycles",
+    );
+}
+
+#[test]
+fn markers_preserve_identity_positions_and_weak_buffer_ownership() {
+    let program = include_str!("../../../tests/fixtures/shared-marker-object-identity.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil 0) t (3 4 3 t) (4 4 5) (4 4) t (t t) (t detached) (nil 4) t (t 2 2) ((0 0) (nil nil)))",
+        "shared marker fields through bytecode, editing, swapping and collection",
     );
 }
 
@@ -15540,7 +15567,9 @@ fn set_minibuffer_window_validates_and_updates_the_shared_window_state() {
 #[test]
 fn looking_back_matches_text_before_point_with_limit() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "alpha beta");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "alpha beta"));
     interp.buffer.borrow_mut().goto_char(11);
     let mut env = crate::lisp::types::Env::new();
 
@@ -15572,7 +15601,9 @@ fn looking_back_matches_text_before_point_with_limit() {
 #[test]
 fn set_text_properties_replaces_existing_properties() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -15826,7 +15857,9 @@ fn next_single_property_change_returns_nil_for_uniform_string_property() {
 #[test]
 fn property_change_helpers_accept_markers() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -15872,7 +15905,9 @@ fn property_change_helpers_accept_markers() {
 #[test]
 fn get_text_property_inherits_from_category_symbol() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     interp.put_symbol_property(
         "sample-button-category",
         "type",
@@ -15908,7 +15943,9 @@ fn get_text_property_inherits_from_category_symbol() {
 #[test]
 fn overlay_get_inherits_from_category_symbol() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abc");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     interp.put_symbol_property(
         "sample-button-category",
         "type",
@@ -15950,7 +15987,9 @@ fn overlay_get_inherits_from_category_symbol() {
 #[test]
 fn copy_overlay_clones_region_and_properties_with_new_identity() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abcdef");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abcdef"));
     let mut env = crate::lisp::types::Env::new();
 
     let overlay = call(
@@ -16306,7 +16345,9 @@ fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
 #[test]
 fn text_property_search_helpers_find_matches_and_gaps() {
     let mut interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "abcd");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "abcd"));
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -16448,7 +16489,9 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
 #[test]
 fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "foo");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "foo"));
     let mut env = crate::lisp::types::Env::new();
 
     call(
@@ -16526,7 +16569,9 @@ fn bidi_override_positions_match_upstream_cases() {
 
     for (index, (text, expected_exact)) in cases.into_iter().enumerate() {
         let interp = Interpreter::new();
-        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", text);
+        interp
+            .buffer
+            .replace_state(crate::buffer::Buffer::from_text("*test*", text));
         let found = find_bidi_override(
             &interp,
             interp.buffer.borrow().point_min(),
@@ -16548,7 +16593,9 @@ fn bidi_override_positions_match_upstream_cases() {
     // previously produced a false positive.
     let balanced = "אבגד \u{2067}שונה\u{2069} מרגילa1א:!";
     let interp = Interpreter::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", balanced);
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", balanced));
     assert_eq!(
         find_bidi_override(
             &interp,

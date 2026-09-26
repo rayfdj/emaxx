@@ -360,7 +360,7 @@ fn values_equal_recursive_with_env(
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
-        (Kind::Marker(a), Kind::Marker(b)) => markers_equal(interp, a, b),
+        (Kind::Marker(a), Kind::Marker(b)) => markers_equal(a, b),
         (Kind::Overlay(a), Kind::Overlay(b)) => overlays_equal(interp, a, b, seen, env),
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
             char_tables_equal(interp, left_id, right_id, seen, env)
@@ -516,8 +516,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left_id), Kind::Marker(right_id))
-        | (Kind::Overlay(left_id), Kind::Overlay(right_id))
+        (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
+        (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
@@ -587,8 +587,8 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left_id), Kind::Marker(right_id))
-        | (Kind::Overlay(left_id), Kind::Overlay(right_id))
+        (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
+        (Kind::Overlay(left_id), Kind::Overlay(right_id))
         | (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
@@ -1834,7 +1834,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Kind::Marker(id) => {
             hash_mix(state, 9);
-            hash_mix(state, id);
+            hash_mix(state, id.identity() as u64);
         }
         Kind::Overlay(id) => {
             hash_mix(state, 10);
@@ -2036,7 +2036,7 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, buffer_value.identity() as u64);
         }
         Kind::Marker(id) => {
-            hash_marker_equal(interp, state, id);
+            hash_marker_equal(state, id);
         }
         Kind::Overlay(id) => {
             hash_mix(state, 43);
@@ -2084,14 +2084,11 @@ pub(crate) fn hash_value_equal_at(
     }
 }
 
-pub(crate) fn hash_marker_equal(interp: &Interpreter, state: &mut u64, id: u64) {
+pub(crate) fn hash_marker_equal(state: &mut u64, marker: crate::lisp::types::MarkerRef) {
     hash_mix(state, 42);
-    match (interp.marker_buffer_id(id), interp.marker_position(id)) {
-        (Some(buffer_id), Some(position)) => {
-            hash_mix(state, buffer_id);
-            hash_mix(state, position as u64);
-        }
-        _ => hash_mix(state, id),
+    if let Some(buffer) = marker.buffer() {
+        hash_mix(state, buffer.identity() as u64);
+        hash_mix(state, marker.bytepos() as u64);
     }
 }
 
@@ -2237,14 +2234,15 @@ pub(crate) fn hash_record_equal(
     }
 }
 
-pub(crate) fn markers_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
-    let Some(left) = interp.find_marker(left_id) else {
-        return left_id == right_id;
-    };
-    let Some(right) = interp.find_marker(right_id) else {
-        return false;
-    };
-    left.buffer_id == right.buffer_id && left.position == right.position
+pub(crate) fn markers_equal(
+    left: crate::lisp::types::MarkerRef,
+    right: crate::lisp::types::MarkerRef,
+) -> bool {
+    match (left.buffer(), right.buffer()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.ptr_eq(&b) && left.byte_position() == right.byte_position(),
+        _ => false,
+    }
 }
 
 pub(crate) fn overlays_equal(

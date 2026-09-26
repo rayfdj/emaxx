@@ -2847,18 +2847,7 @@ define_dispatch!(
             "marker-buffer" => {
                 need_args(name, args, 1)?;
                 let marker_id = marker_id_from_value(&args[0])?;
-                match interp.marker_buffer_id(marker_id) {
-                    Some(buffer_id) => {
-                        let buffer_name = interp
-                            .buffer_list
-                            .iter()
-                            .find(|(id, _)| *id == buffer_id)
-                            .map(|(_, name)| name.clone())
-                            .unwrap_or_else(|| "*unknown*".to_string());
-                        Ok(interp.buffer_value(buffer_id).expect("live buffer object"))
-                    }
-                    None => Ok(Value::Nil),
-                }
+                Ok(marker_id.buffer().map(Value::Buffer).unwrap_or(Value::Nil))
             }
             "marker-position" => {
                 need_args(name, args, 1)?;
@@ -2871,10 +2860,7 @@ define_dispatch!(
             "marker-last-position" => {
                 need_args(name, args, 1)?;
                 let marker_id = marker_id_from_value(&args[0])?;
-                Ok(interp
-                    .marker_last_position(marker_id)
-                    .map(|pos| Value::Integer(pos as i64))
-                    .unwrap_or(Value::Nil))
+                Ok(Value::Integer(marker_id.last_position() as i64))
             }
             "marker-insertion-type" => {
                 need_args(name, args, 1)?;
@@ -2892,14 +2878,11 @@ define_dispatch!(
                 let marker_id = marker_id_from_value(&args[0])?;
                 let insertion_type = args[1].is_truthy();
                 interp.set_marker_insertion_type(marker_id, insertion_type);
-                Ok(if insertion_type { Value::T } else { Value::Nil })
+                Ok(args[1])
             }
             "set-marker" => {
                 need_args(name, args, 2)?;
-                let marker_id = marker_id_from_value(&args[0])?;
-                let (position, buffer_id) = marker_target(interp, &args[1], args.get(2))?;
-                interp.set_marker(marker_id, position, buffer_id)?;
-                Ok(args[0])
+                set_marker_value(interp, &args[0], &args[1], args.get(2))
             }
             "region-beginning" => match interp.buffer.borrow().region() {
                 Some((beg, _)) => Ok(Value::Integer(beg as i64)),

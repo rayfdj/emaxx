@@ -68,6 +68,7 @@ pub enum VectorTag {
     Normal = 0,
     Free = 1,
     Bignum = 2,
+    Marker = 3,
     Finalizer = 5,
     Buffer = 13,
     Terminal = 16,
@@ -85,6 +86,7 @@ impl VectorTag {
         match word {
             1 => Self::Free,
             2 => Self::Bignum,
+            3 => Self::Marker,
             5 => Self::Finalizer,
             13 => Self::Buffer,
             16 => Self::Terminal,
@@ -702,6 +704,10 @@ impl Vectorlike for crate::lisp::types::TerminalValue {
     const LISP_SLOTS: usize = 4;
 }
 
+impl Vectorlike for crate::lisp::types::MarkerValue {
+    const TAG: VectorTag = VectorTag::Marker;
+}
+
 impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
@@ -828,7 +834,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTORS, 1);
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
-            VectorTag::Buffer | VectorTag::Terminal => {
+            VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 }
@@ -878,6 +884,11 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
+            VectorTag::Marker => {
+                let marker = body.cast::<crate::lisp::types::MarkerValue>();
+                debug_assert!((*marker).is_detached());
+                std::ptr::drop_in_place(marker);
+            }
             VectorTag::Terminal => {
                 std::ptr::drop_in_place(body.cast::<crate::lisp::types::TerminalValue>())
             }
@@ -948,7 +959,7 @@ impl SweepStats {
                     self.vectors += 1;
                     self.vector_slots += 4;
                 }
-                VectorTag::Buffer | VectorTag::Terminal => {
+                VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.vectors += 1;
                     self.vector_slots += (*header).nbytes() / WORD_SIZE;
@@ -981,6 +992,29 @@ impl SweepStats {
 
 /// alloc.c's `sweep_vectors'.
 pub(crate) fn sweep_vectors(epoch: u32) {
+    // alloc.c:sweep_buffers runs before vector storage can be reclaimed.
+    // The chains are weak and can include markers whose buffer is also dead.
+    for kind in [BlockKind::VectorBlock, BlockKind::LargeVector] {
+        for block in blocks_of(kind) {
+            let mut header = block as *mut VectorHeader;
+            loop {
+                // SAFETY: registered blocks are tiled by initialized headers;
+                // this pass neither frees storage nor changes those headers.
+                unsafe {
+                    if (*header).tag() == VectorTag::Buffer {
+                        crate::lisp::types::BufferRef::from_raw(header).sweep_markers(epoch);
+                    }
+                    if matches!(kind, BlockKind::LargeVector) {
+                        break;
+                    }
+                    header = advance(header, (*header).nbytes());
+                    if !vector_in_block(header, block) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     for list in &FREE_LISTS {
         list.store(std::ptr::null_mut(), Ordering::Relaxed);
     }
@@ -1177,6 +1211,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
                 Value::BigInteger(super::super::types::SharedBigInt::from_raw(header))
             }
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
+            VectorTag::Marker => Value::Marker(VectorlikeRef::from_raw(header)),
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),

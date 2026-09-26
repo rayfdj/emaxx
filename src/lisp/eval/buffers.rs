@@ -273,22 +273,16 @@ impl Interpreter {
         from: usize,
         to: usize,
     ) -> Vec<crate::buffer::UndoMarker> {
-        self.markers_by_buffer
-            .get(&buffer_id)
+        self.buffer_object(buffer_id)
             .into_iter()
-            .flatten()
-            .filter_map(|marker_id| {
-                let marker = self.find_marker(*marker_id)?;
-                let pos = marker.position?;
-                if pos >= from && pos <= to {
-                    Some(crate::buffer::UndoMarker {
-                        id: marker.id,
-                        original_pos: pos,
-                        collapsed_pos: from,
-                    })
-                } else {
-                    None
-                }
+            .flat_map(|buffer| buffer.markers())
+            .filter_map(|marker| {
+                let pos = marker.position()?;
+                (pos >= from && pos <= to).then_some(crate::buffer::UndoMarker {
+                    id: marker,
+                    original_pos: pos,
+                    collapsed_pos: from,
+                })
             })
             .collect()
     }

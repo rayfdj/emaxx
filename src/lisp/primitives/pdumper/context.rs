@@ -39,7 +39,7 @@ pub(crate) enum ObjectKey {
     /// A buffer's identity is its id (`eq' compares ids): every
     /// `Value::Buffer' naming one buffer is one object.
     Buffer(u64),
-    Marker(u64),
+    Marker(usize),
     Overlay(u64),
     CharTable(u64),
     Frame(u64),
@@ -75,7 +75,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         // and dump_object refuses what it cannot write.
         Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
-        Kind::Marker(id) => ObjectKey::Marker(id),
+        Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(id) => ObjectKey::Overlay(id),
         Kind::CharTable(id) => ObjectKey::CharTable(id),
         Kind::Frame(id) => ObjectKey::Frame(id),
@@ -1054,7 +1054,7 @@ impl DumpContext {
                 self.dump_buffer(interp, buffer.id, object)?,
                 DumpType::Buffer,
             ),
-            Kind::Marker(id) => (self.dump_marker(interp, id, object)?, DumpType::Marker),
+            Kind::Marker(marker) => (self.dump_marker(marker)?, DumpType::Marker),
             Kind::Overlay(id) => (self.dump_overlay(interp, id, object)?, DumpType::Overlay),
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
@@ -1774,42 +1774,22 @@ impl DumpContext {
         Ok(offset)
     }
 
-    /// dump_marker: the buffer (WEIGHT_NORMAL), the positions, the
-    /// insertion type, and the buffer whose mark this marker is.
-    fn dump_marker(
-        &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
-    ) -> Result<u32, DumpError> {
-        let Some(marker) = interp.find_marker(id) else {
-            return Err(self.unsupported(object, "marker without an object"));
-        };
-        let marker = marker.clone();
-        let buffer = marker.buffer_id.and_then(|id| interp.buffer_value(id));
-        let mark_buffer = marker.mark_buffer_id.and_then(|id| interp.buffer_value(id));
+    /// pdumper.c:dump_marker writes the object fields and relocates its buffer.
+    /// The buffer's mark slot, rather than a reverse registry, owns that edge.
+    fn dump_marker(&mut self, marker: crate::lisp::types::MarkerRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = [
-            id,
             0,
-            marker.position.map_or(NO_POSITION, |p| p as u64),
-            marker.last_position.map_or(NO_POSITION, |p| p as u64),
-            u64::from(marker.insertion_type),
-            0,
+            marker.last_position() as u64,
+            marker.bytepos() as u64,
+            u64::from(marker.insertion_type()),
         ];
         self.field_lv(
             start,
             &mut words,
-            1,
-            &buffer.unwrap_or(Value::Nil),
+            0,
+            &marker.buffer().map(Value::Buffer).unwrap_or(Value::Nil),
             WEIGHT_NORMAL,
-        );
-        self.field_lv(
-            start,
-            &mut words,
-            5,
-            &mark_buffer.unwrap_or(Value::Nil),
-            WEIGHT_STRONG,
         );
         self.object_finish(&words)
     }
@@ -2331,11 +2311,8 @@ fn push_undo_entry(
             }
             words.push(markers.len() as u64);
             for marker in markers {
-                words.extend([
-                    marker.id,
-                    marker.original_pos as u64,
-                    marker.collapsed_pos as u64,
-                ]);
+                fields.push((words.len(), Value::Marker(marker.id), WEIGHT_STRONG));
+                words.extend([0, marker.original_pos as u64, marker.collapsed_pos as u64]);
             }
         }
         UndoEntry::Combined { display, entries } => {

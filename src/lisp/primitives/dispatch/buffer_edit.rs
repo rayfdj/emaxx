@@ -815,19 +815,12 @@ define_dispatch!(
                 } else {
                     unibyte_buffer_text(&saved).0
                 };
-                let buffer_id = interp.current_buffer_id();
-                let markers = interp.live_marker_positions_for_buffer(buffer_id);
                 interp.buffer.borrow_mut().set_multibyte_representation(
                     enabled,
                     converted,
                     converted_saved,
                     &positions,
                 );
-                for (marker_id, position) in markers {
-                    let position = position
-                        .and_then(|position| positions.get(position.saturating_sub(1)).copied());
-                    interp.set_marker(marker_id, position, Some(buffer_id))?;
-                }
                 if interp.buffer.borrow().undo_enabled() {
                     interp
                         .buffer

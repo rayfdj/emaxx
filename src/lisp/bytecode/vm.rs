@@ -210,7 +210,7 @@ pub(crate) enum UnwindEntry {
     /// Bsave_excursion: restore buffer and (marker-tracked) point.
     Excursion {
         buffer_id: u64,
-        marker_id: u64,
+        marker_id: crate::lisp::types::MarkerRef,
         saved_pt: usize,
     },
     /// Bsave_current_buffer: restore the current buffer only.
@@ -225,8 +225,8 @@ pub(crate) enum UnwindEntry {
     /// Bsave_restriction on a narrowed buffer: marker-tracked bounds.
     Restriction {
         buffer_id: u64,
-        beg_id: u64,
-        end_id: u64,
+        beg_id: crate::lisp::types::MarkerRef,
+        end_id: crate::lisp::types::MarkerRef,
         saved_begv: usize,
         saved_zv: usize,
         labeled: Vec<LabeledRestriction>,

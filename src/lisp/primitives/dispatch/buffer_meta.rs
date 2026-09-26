@@ -517,8 +517,9 @@ define_dispatch!(
                 } else {
                     Vec::new()
                 };
-                if let Some(mut buffer) = interp.get_buffer_by_id_mut(new_id) {
-                    *buffer = crate::buffer::Buffer::from_text(&new_name, &text);
+                if let Some(object) = interp.buffer_object(new_id) {
+                    object.replace_state(crate::buffer::Buffer::from_text(&new_name, &text));
+                    let mut buffer = object.borrow_mut();
                     // GNU indirect buffers share their base buffer's text,
                     // but never visit its file themselves.  In particular,
                     // make-indirect-buffer clears both buffer-file-name and

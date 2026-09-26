@@ -1187,18 +1187,8 @@ impl Interpreter {
     }
 
     pub fn detach_markers_for_buffer(&mut self, buffer_id: u64) {
-        if let Some(marker_ids) = self.markers_by_buffer.remove(&buffer_id) {
-            for marker_id in marker_ids {
-                let Some(index) = Self::marker_index(marker_id) else {
-                    continue;
-                };
-                let Some(marker) = self.markers.get_mut(index) else {
-                    continue;
-                };
-                marker.last_position = marker.position.or(marker.last_position);
-                marker.position = None;
-                marker.buffer_id = None;
-            }
+        if let Some(buffer) = self.buffer_object(buffer_id) {
+            buffer.detach_markers();
         }
     }
 
@@ -1253,24 +1243,15 @@ impl Interpreter {
                 position
             }
         });
-        let state = &mut **self;
-        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
-            return;
-        };
-        for marker_id in marker_ids {
-            let Some(index) = Self::marker_index(*marker_id) else {
-                continue;
-            };
-            let Some(marker) = state.markers.get_mut(index) else {
-                continue;
-            };
-            let Some(position) = marker.position else {
-                continue;
-            };
-            if position > pos || (position == pos && (before_markers || marker.insertion_type)) {
-                let new_pos = position + nchars;
-                marker.position = Some(new_pos);
-                marker.last_position = Some(new_pos);
+        // Buffer::insert adjusts every ordinary marker. Only insertion before
+        // all markers additionally moves the nil-insertion markers at POS.
+        if before_markers && let Some(buffer) = self.buffer_object(buffer_id) {
+            let state = buffer.borrow();
+            let bytepos = state.marker_byte_position(pos + nchars);
+            for marker in buffer.markers() {
+                if marker.position() == Some(pos) {
+                    marker.set_positions(pos + nchars, bytepos);
+                }
             }
         }
     }
@@ -1289,82 +1270,25 @@ impl Interpreter {
                 position
             }
         });
-        let state = &mut **self;
-        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
-            return;
-        };
-        for marker_id in marker_ids {
-            let Some(index) = Self::marker_index(*marker_id) else {
-                continue;
-            };
-            let Some(marker) = state.markers.get_mut(index) else {
-                continue;
-            };
-            let Some(position) = marker.position else {
-                continue;
-            };
-            let new_pos = if position > to {
-                position - nchars
-            } else if position > from {
-                from
-            } else {
-                position
-            };
-            marker.position = Some(new_pos);
-            marker.last_position = Some(new_pos);
-        }
+        // Buffer::delete_region adjusted the weak marker chain with the text.
     }
 
-    /// alloc.c's sweep of the marker blocks: a marker the mark phase did not
-    /// reach is unchained from its buffer (sweep_misc / unchain_marker), so
-    /// later insertions and deletions no longer adjust it.  The marker's
-    /// slot stays, detached (`buffer_id' and `position' nil), and its id is
-    /// never reused: a reference the roots missed would read a marker that
-    /// points nowhere, as one set to nil does, never another marker.
-    pub(crate) fn sweep_unreached_markers(&mut self, live: &crate::lisp::eval::MarkedIds) {
-        let state = &mut **self;
-        let mut emptied = Vec::new();
-        for (buffer_id, ids) in &mut state.markers_by_buffer {
-            let doomed = ids
-                .iter()
-                .copied()
-                .filter(|id| !live.contains(id))
-                .collect::<Vec<_>>();
-            for id in doomed {
-                ids.remove(&id);
-                if let Some(index) = Self::marker_index(id)
-                    && let Some(marker) = state.markers.get_mut(index)
-                    && marker.id == id
-                {
-                    marker.buffer_id = None;
-                    marker.position = None;
-                }
-            }
-            if ids.is_empty() {
-                emptied.push(*buffer_id);
-            }
-        }
-        for buffer_id in emptied {
-            state.markers_by_buffer.remove(&buffer_id);
-        }
-    }
-
-    /// Markers attached to some buffer: the ones every edit of that buffer
-    /// walks.
     #[cfg(test)]
     pub(crate) fn attached_marker_count(&self) -> usize {
-        self.markers_by_buffer.values().map(|ids| ids.len()).sum()
+        std::iter::once(&self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
+            .map(|buffer| buffer.markers().count())
+            .sum()
     }
 
-    pub fn live_marker_positions_for_buffer(&self, buffer_id: u64) -> Vec<(u64, Option<usize>)> {
-        self.markers_by_buffer
-            .get(&buffer_id)
+    pub fn live_marker_positions_for_buffer(
+        &self,
+        buffer_id: u64,
+    ) -> Vec<(crate::lisp::types::MarkerRef, Option<usize>)> {
+        self.buffer_object(buffer_id)
             .into_iter()
-            .flatten()
-            .filter_map(|marker_id| {
-                let marker = self.find_marker(*marker_id)?;
-                Some((marker.id, marker.position))
-            })
+            .flat_map(|buffer| buffer.markers())
+            .map(|marker| (marker, marker.position()))
             .collect()
     }
 

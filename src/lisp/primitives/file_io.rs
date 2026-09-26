@@ -879,14 +879,13 @@ pub(crate) fn write_printer_output(
         }
         Some(Kind::Marker(id)) => {
             let (buffer_id, position) = {
-                let marker = interp.find_marker(id).ok_or_else(|| {
-                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
-                })?;
+                let marker = id;
                 let buffer_id = marker
-                    .buffer_id
+                    .buffer()
+                    .map(|buffer| buffer.id)
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 let position = marker
-                    .position
+                    .position()
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 (buffer_id, position)
             };
@@ -1074,14 +1073,13 @@ pub(crate) fn printer_stream_at_line_start(
             Ok(buffer_position_at_line_start(&buffer, buffer.point()))
         }
         Some(Kind::Marker(id)) => {
-            let marker = interp
-                .find_marker(id)
-                .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{id}>")))?;
+            let marker = id;
             let buffer_id = marker
-                .buffer_id
+                .buffer()
+                .map(|buffer| buffer.id)
                 .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
             let position = marker
-                .position
+                .position()
                 .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)

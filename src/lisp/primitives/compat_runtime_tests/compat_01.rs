@@ -173,7 +173,9 @@ fn directory_files_and_attributes_reports_entries_and_arity() {
 fn forward_line_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*lines*", "a\nb");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*lines*", "a\nb"));
 
     assert_eq!(
         call(&mut interp, "forward-line", &[Value::Nil], &mut env).expect("forward-line with nil"),
@@ -186,7 +188,9 @@ fn forward_line_treats_nil_as_default_step() {
 fn forward_char_treats_nil_as_default_step() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*chars*", "ab");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*chars*", "ab"));
 
     assert_eq!(
         call(&mut interp, "forward-char", &[Value::Nil], &mut env).expect("forward-char with nil"),
@@ -249,7 +253,12 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
 fn line_number_at_pos_counts_from_the_accessible_region_unless_absolute() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*lines*", "a\nb\nc\nd\ne\nf");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text(
+            "*lines*",
+            "a\nb\nc\nd\ne\nf",
+        ));
     interp.buffer.borrow_mut().narrow_to_region(3, 10);
 
     assert_eq!(
@@ -1373,7 +1382,9 @@ fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
 fn selected_window_is_a_record_and_tracks_window_start() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
+    interp
+        .buffer
+        .replace_state(crate::buffer::Buffer::from_text("*test*", "\n\n\n"));
     let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
     assert!(matches!(window.kind(), Kind::Record(_)));
 

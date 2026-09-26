@@ -267,38 +267,62 @@ fn translation_sequence_match(value: &Value, source: &[u32]) -> Option<(usize, V
     None
 }
 
-pub(crate) fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
+pub(crate) fn marker_id_from_value(
+    value: &Value,
+) -> Result<crate::lisp::types::MarkerRef, LispError> {
     match value.kind() {
         Kind::Marker(id) => Ok(id),
         _ => Err(LispError::WrongTypeArgument("markerp".into(), *value)),
     }
 }
 
-pub(crate) fn marker_target(
+/// marker.c:set_marker_internal decodes BUFFER before checking MARKER, then
+/// detaches for a nil position, an unattached source marker, or a dead buffer.
+pub(crate) fn set_marker_value(
     interp: &Interpreter,
     value: &Value,
+    position: &Value,
     buffer: Option<&Value>,
-) -> Result<(Option<usize>, Option<u64>), LispError> {
-    match value.kind() {
-        Kind::Nil => Ok((None, None)),
-        Kind::Marker(marker_id) => Ok((
-            interp.marker_position(marker_id),
-            interp.marker_buffer_id(marker_id),
-        )),
+) -> Result<Value, LispError> {
+    let buffer = match buffer.map(|value| value.kind()) {
+        None | Some(Kind::Nil) => interp.buffer,
+        Some(Kind::Buffer(buffer)) => buffer,
         _ => {
-            let position = position_from_value(interp, value)?;
-            let buffer_id = if let Some(buffer) = buffer {
-                if buffer.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(buffer)?
-                }
-            } else {
-                interp.current_buffer_id()
-            };
-            Ok((Some(position), Some(buffer_id)))
+            return Err(LispError::WrongTypeArgument(
+                "bufferp".into(),
+                *buffer.expect("the non-nil buffer argument was matched"),
+            ));
         }
+    };
+    let marker = marker_id_from_value(value)?;
+    if !interp
+        .buffer_object(buffer.id)
+        .is_some_and(|live| live.ptr_eq(&buffer))
+        || position.is_nil()
+        || matches!(position.kind(), Kind::Marker(source) if source.buffer().is_none())
+    {
+        marker.detach();
+        return Ok(*value);
     }
+    let state = buffer.borrow();
+    let charpos = match position.kind() {
+        Kind::Integer(position) => position.clamp(1, (state.size_total() + 1) as i64) as usize,
+        Kind::Marker(source) => source.last_position().clamp(1, state.size_total() + 1),
+        _ => {
+            return Err(LispError::WrongTypeArgument(
+                "integer-or-marker-p".into(),
+                *position,
+            ));
+        }
+    };
+    let bytepos = match position.kind() {
+        Kind::Marker(source) if source.buffer().is_some_and(|source| source.ptr_eq(&buffer)) => {
+            source.bytepos()
+        }
+        _ => state.marker_byte_position(charpos),
+    };
+    marker.attach(buffer, charpos, bytepos);
+    Ok(*value)
 }
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {

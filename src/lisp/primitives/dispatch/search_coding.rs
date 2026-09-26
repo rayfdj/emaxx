@@ -419,6 +419,12 @@ define_dispatch!(
                 let items = args[0].to_vec()?;
                 let mut restored = Vec::new();
                 let mut restored_buffer_id = None;
+                // search.c:Fset_match_data coerces detached markers to zero;
+                // ordinary buffer-position coercion correctly rejects them.
+                let match_position = |value: &Value| match value.kind() {
+                    Kind::Marker(marker) => Ok(marker.position().unwrap_or(0)),
+                    _ => position_from_value(interp, value),
+                };
                 let mut index = 0usize;
                 while index + 1 < items.len() {
                     if let Kind::Buffer(buffer) = items[index].kind() {
@@ -435,12 +441,12 @@ define_dispatch!(
                     let start = if items[index].is_nil() {
                         None
                     } else {
-                        Some(position_from_value(interp, &items[index])?)
+                        Some(match_position(&items[index])?)
                     };
                     let end = if items[index + 1].is_nil() {
                         None
                     } else {
-                        Some(position_from_value(interp, &items[index + 1])?)
+                        Some(match_position(&items[index + 1])?)
                     };
                     restored.push(match (start, end) {
                         (Some(start), Some(end)) => Some((start, end)),

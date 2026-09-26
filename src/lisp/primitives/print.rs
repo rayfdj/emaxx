@@ -1175,26 +1175,19 @@ pub(crate) fn render_prin1_body(
                     Some(live) => live.name.clone(),
                     None => "#<killed buffer>".into(),
                 }),
-                Kind::Marker(id) => {
-                    if let Some(marker) = interp.find_marker(id) {
-                        return Ok(match marker.buffer_id {
-                            Some(buffer_id) => {
-                                let buffer_name = interp
-                                    .get_buffer_by_id(buffer_id)
-                                    .map(|buffer| buffer.name.clone())
-                                    .unwrap_or_else(|| format!("buffer<{buffer_id}>"));
-                                match marker.position {
-                                    Some(position) => {
-                                        format!("#<marker at {position} in {buffer_name}>")
-                                    }
-                                    None => format!("#<marker in {buffer_name}>"),
-                                }
-                            }
-                            None => "#<marker in no buffer>".into(),
-                        });
+                Kind::Marker(marker) => Ok(match marker.buffer() {
+                    Some(buffer) => {
+                        let buffer_name = &buffer.borrow().name;
+                        let position = marker.last_position();
+                        let advances = if marker.insertion_type() {
+                            " (moves after insertion)"
+                        } else {
+                            ""
+                        };
+                        format!("#<marker{advances} at {position} in {buffer_name}>")
                     }
-                    Ok(value.to_string())
-                }
+                    None => "#<marker in no buffer>".into(),
+                }),
                 _ => Ok(value.to_string()),
             }
         }
@@ -1514,14 +1507,13 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
         }
         Kind::Marker(id) => {
             let (buffer_id, start) = {
-                let marker = interp.find_marker(id).ok_or_else(|| {
-                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
-                })?;
+                let marker = id;
                 let buffer_id = marker
-                    .buffer_id
+                    .buffer()
+                    .map(|buffer| buffer.id)
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 let start = marker
-                    .position
+                    .position()
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 (buffer_id, start)
             };
@@ -2187,8 +2179,8 @@ fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
         (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
         (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left), Kind::Marker(right))
-        | (Kind::Overlay(left), Kind::Overlay(right))
+        (Kind::Marker(left), Kind::Marker(right)) => left == right,
+        (Kind::Overlay(left), Kind::Overlay(right))
         | (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
@@ -2378,14 +2370,13 @@ fn read_from_lisp_source_raw(
         }
         Kind::Marker(id) => {
             let (buffer_id, start) = {
-                let marker = interp.find_marker(id).ok_or_else(|| {
-                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
-                })?;
+                let marker = id;
                 let buffer_id = marker
-                    .buffer_id
+                    .buffer()
+                    .map(|buffer| buffer.id)
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 let start = marker
-                    .position
+                    .position()
                     .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 (buffer_id, start)
             };
