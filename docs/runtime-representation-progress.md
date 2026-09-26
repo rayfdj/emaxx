@@ -1448,3 +1448,22 @@ Source68 fresh workspace build/strict Clippy pass with zero warnings; the exact
 census correction passes locally. Broader local controls are running with the
 required socket access. Production runtime is unchanged from marker67; the
 census assertion and updated evidence are the only follow-up changes.
+
+
+2026-09-27 marker checkpoint validation completed (source68):
+
+The fresh workspace rerun passes census1/1, markers33/33, roots19/19 and
+buffer/dump324/324, zero failures/ignores. The overlapping groups cover360 distinct
+tests. Both socket controls pass with permission. Source and saved binary hashes
+match after execution; formatting, strict all-target/all-feature Clippy and fresh
+compilation have zero warnings. Linux run36258556054 at2dfdfd3 also passes its
+exact census test and406/406 unchanged GNU buffer outcomes with zero skips.
+Raw archive/source/editor/image identities, inventories and process success were
+verified. Combined receipt: target/runtime-goal/marker-milestone-68.json.
+
+The additional buffer timing remains unfavorable:4139ms/GNU573ms for the body,
+6073ms/GNU259ms for setup. It is another diagnostic sample, not a performance
+improvement or regression measurement. Source67's earlier failures and failed
+source verification remain preserved. The next architecture work removes the
+remaining overlay/char-table/frame bridges and the80-byte cons representation;
+the full goal remains active.

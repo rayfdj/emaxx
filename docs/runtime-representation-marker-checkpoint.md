@@ -98,8 +98,9 @@ Its 33 marker controls pass with zero failures or ignores (196.93 seconds).
 The test binary SHA256 is
 `b3b27837c22bff11aed93c8116ebfd63909f6300924fd455b4e373282e5e82d7`.
 All 19 unchanged root controls also pass with zero failures or ignores, including
-both required survival/reclamation contracts. Broader buffer/dump controls are
-still running; Linux validation has not completed. This is a selected WIP checkpoint, not a full-gate result.
+both required survival/reclamation contracts. The broader run subsequently failed as recorded below. Its selected passes
+are observations only; source68 supplies the completed verification. This is
+a selected WIP checkpoint, not a full-gate result.
 Receipts are `buffer-ownership-check-67g.json`, `buffer-ownership-build-67b.json`
 and `marker-controls-67b.json` in `target/runtime-goal`. The local GNU executable
 is a diagnostic oracle, not certification against the pinned Darwin configuration.
@@ -152,13 +153,32 @@ success, zero skips and outcome summaries were verified:
 These unfavorable single samples are diagnostic, not interleaved locked-suite
 measurements. They establish neither a speedup nor a regression relative to the
 previous checkpoint. The census assertion follow-up changes no runtime code;
-its fresh local verification is still pending.
+its completed local and Linux verification is recorded below.
 
 
 Source68's fresh workspace build and strict all-target/all-feature Clippy pass
-with zero warnings. The corrected exact census control passes (one test, zero
-failures/ignores). The saved test binary SHA256 is
-`9b15552497e40715816ef6e93ede9392b0824fdfed9621eb298f974e878f0eb1`.
-The complete selected local rerun is in progress with localhost access; its
-result remains pending. Production source is unchanged from the Linux-verified
-marker67 commit. The new test assertion is being sent through the existing CI.
+with zero warnings. Formatting and whitespace checks also pass. The completed
+local rerun passes the exact census control (1), marker controls (33), unchanged
+root controls (19), and buffer/dump controls (324), with zero failures or ignores.
+These groups overlap: they cover 360 distinct tests, not 377 distinct tests.
+Both localhost controls pass with the required socket access. Final source and
+saved executable hashes match their pre-run identities. The saved binary SHA256
+is `9b15552497e40715816ef6e93ede9392b0824fdfed9621eb298f974e878f0eb1`.
+Receipts: `buffer-ownership-check-68.json`, `buffer-ownership-build-68.json`
+and `marker-controls-68.json` under `target/runtime-goal`.
+
+The census follow-up is committed as
+`2dfdfd308fcda45b2c5643dc9e414500f7837c7a`; production source remains unchanged
+from marker67. Existing Linux run36258556054 passes formatting, strict Clippy,
+the exact census control (1/1), and all 406 outcomes in the unchanged GNU buffer
+file, with zero ignores or skips. Raw archive digest, source identity, editor
+and image hashes, inventories, outcome counts and process status are verified.
+Receipt: `target/runtime-goal/census-ci-completed-68.json`.
+
+The additional Linux sample remains unfavorable: buffer body4139ms/GNU573ms
+(7.223x), setup6073ms/GNU259ms, total10273ms/GNU851ms. All samples are retained;
+these timings are diagnostic and are not controlled before/after performance
+measurements. The selected marker checkpoint is now verified on macOS and Linux.
+Full gates, pinned Darwin certification, release validation, compact conses,
+the remaining native representations, general ownership soundness and the
+locked performance objective remain open.
