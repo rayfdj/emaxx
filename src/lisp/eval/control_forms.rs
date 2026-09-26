@@ -148,21 +148,13 @@ impl Interpreter {
     }
 
     pub(super) fn sf_prog1(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        let Some((first, rest)) = list_next(args) else {
+        let Some((first, _)) = list_next(args) else {
             return Ok(Value::Nil);
         };
+        // Fprog1 saves the first value and reads the body after evaluating
+        // FIRST. Rebinding a variable in BODY cannot replace that value.
         let result = self.eval(&first, env)?;
-        let tracked_symbol = first.as_symbol().ok().map(str::to_string);
-        for form in list_forms(&rest) {
-            self.eval(&form, env)?;
-        }
-        if let Some(symbol) = tracked_symbol
-            && crate::lisp::primitives::is_vector_like_value(self, &result)
-            && let Ok(current) = self.lookup(&symbol, env)
-            && crate::lisp::primitives::is_vector_like_value(self, &current)
-        {
-            return Ok(current);
-        }
+        self.progn_list(&args.cdr()?, env)?;
         Ok(result)
     }
 

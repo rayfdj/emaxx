@@ -10480,6 +10480,16 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
 }
 
 #[test]
+fn prog1_preserves_the_saved_object_when_its_variable_is_rebound() {
+    let program = include_str!("../../../tests/fixtures/prog1-result-identity.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t 7 2) (t t nil) (t changed replacement) (23 replacement) (error \"prog1-body-error\"))",
+        "prog1 saved-object identity and live body",
+    );
+}
+
+#[test]
 fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
     let program = include_str!("../../../tests/fixtures/let-initializer-order.el");
     assert_oracle_contract_matches_interpreter(
