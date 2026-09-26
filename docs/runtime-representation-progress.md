@@ -3,14 +3,16 @@ This record tracks evidence and outstanding work; no completion is claimed.
 
 Current checkpoint, 2026-09-26: the terminal migration has passed its selected
 Linux and macOS controls; see [the terminal checkpoint](runtime-representation-terminal-checkpoint.md).
-The latest pushed evaluator change is `2cf7984`, which replaces a redundant
+The evaluator correction is `2cf7984`, which replaces a redundant
 `let` binding flag with GNU's direct environment comparison. Exact Linux machine
 code identified the flag's spill as the source of both unwanted weak-key roots.
 All19 unchanged Linux root controls now pass, including both reclamation
 contracts, and the complete unchanged GNU eval file matches26/26 passing outcomes.
 The prior failures and bytecode regression remain in the historical evidence.
-The next local revision removes temporary diagnostic tracing; its strict Clippy
-check passes with zero warnings, and runtime validation is pending.
+`7c5fc2e` removes all temporary diagnostic tracing and passes the same Linux
+19/19 root controls and26/26 GNU eval outcomes. Its fresh macOS binary passes
+all25 affected evaluator/root controls. Formatting and strict all-target/
+all-feature Clippy pass with zero Rust warnings on both validation paths.
 Current-source full gates and GNU performance parity remain unproven.
 
 Starting revision: `45eb1531caabb35b816fc83e2e8a5b88090dae4e`, freshly fetched
@@ -22,7 +24,7 @@ The pre-existing September 21 audit and all its raw artifacts are preserved.
 | 1. Reproducible starting point | Source, binary, image, toolchain and oracle identities; fresh reproductions; original and corrected baselines | Starting identities recorded; all six original evaluator findings reproduced; corrected release and own image built; original/corrected/GNU diagnostic timing comparison preserved |
 | 2. GNU architectural reference | Per-change C owner, semantic comparison, explained necessary Rust deviations | Evaluator repairs trace to `eval.c:eval_sub`, `apply_lambda`, `Fautoload_do_load`, and `fns.c:list_length` |
 | 3. Authoritative representation | One-word values; two-word conses; shared interpreter/VM/native payload; no ordinary-path mirror lookup or synchronization; other object kinds reviewed | Open; values are one word and buffers/terminals share object words; conses remain 80 bytes with duplicate payload and synchronization; marker/overlay/char-table/frame still use native bridges |
-| 4. Allocation/GC/rooting | Correct accounting, live/dead-root controls, dumped-object treatment, enforced runtime ownership | Open; source64 passes all19 unchanged Linux root controls, including both reclamation contracts; diagnostic cleanup validation, allocation accounting and Rust soundness still require completion |
+| 4. Allocation/GC/rooting | Correct accounting, live/dead-root controls, dumped-object treatment, enforced runtime ownership | Open; source65 passes all19 unchanged Linux root controls and25 macOS evaluator/root controls without temporary diagnostics; allocation accounting and Rust soundness still require completion |
 | 5. VM/call efficiency | Fresh comparable profiles, reduced instructions/allocations, preserved call semantics | Open; correctness repair precedes optimization |
 | 6. Adversarial de-cheating | Closed applicable September 21 findings, meaningful differential cases, audited runtime and measurement paths, reporting negative controls | Open; reproducing call semantics and platform dispatch first |
 | 7. Equivalent performance measurement | Locked representative suite and noise criterion, independent normal editors/images, checked results, all samples and mode/GC/memory data | Expanded 16-case suite and 3% ceiling locked before optimization; two GNU self-comparisons retained, complete noise calibration and frozen-oracle certification still open |
@@ -1371,3 +1373,31 @@ scan range and test assertion. Its exact-source strict Clippy check passes with
 zero warnings. Fresh local runtime compilation and validation without tracing
 are pending. The source64 diagnosis and all failed runs remain available; this
 cleanup cannot be counted as passing until its own controls finish.
+
+
+Source65 cleanup validation is complete at
+`7c5fc2ec7937f319ec8afd376b5c7c723c9e47ac`:
+
+- Fresh all-feature macOS compilation passes with zero compiler warnings.
+  The saved test binary SHA256 is
+  `bdbf3169a5988dc47b25715ce8b6ac1322daeee3d3a2529c7a941fef3ee02aca`.
+  All25 affected evaluator/root controls pass with zero ignores and unchanged
+  source/executable identities after execution. Both reclamation contracts pass.
+- Linux run36221944778 passes formatting, strict Clippy, all19 unchanged root
+  controls (zero ignores), and26/26 passing GNU eval outcomes (zero skips).
+  The executed Rust inventory is identical to the previously failing inventory.
+  Raw GNU inventories, process status, clean source identity and artifact hashes
+  were verified. No temporary GC tracing remains in the runtime.
+- This run remains slower than GNU: body2597ms versus1406ms (1.847x), setup905ms
+  versus113ms. These single diagnostic samples are not a locked-suite result.
+- Combined receipt: `target/runtime-goal/gc-reclamation-milestone-65.json`.
+  Raw local and Linux receipts: `evaluator-controls-65.json` and
+  `gc-cleanup-ci-completed-65.json` in the same directory.
+
+The two specified reclamation failures are resolved for this selected checkpoint.
+The full goal remains incomplete:80-byte conses, four bridge kinds, accounting,
+public-API/rooting soundness, full gates, pinned Darwin certification and locked
+performance parity still require work. The64KiB post-GC stack clearing predates
+this goal in7e3b762 and has not been removed or justified by current-source evidence.
+Reviewing it is not a validation result. No further runtime change is included
+in this evidence update.
