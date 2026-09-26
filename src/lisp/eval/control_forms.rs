@@ -260,16 +260,17 @@ impl Interpreter {
         // past that (a heap vector the scan cannot see lost a fresh
         // value to the collection a later initializer ran).
         let varlist_len = list_length_or_zero(&varlist);
-        // The inline array is initialized before use (see eval_call's
-        // argvals): a stale word in a live frame is a root to the scan.
-        let mut inline_specials: [Option<(SymbolName, Value)>; 8] = [const { None }; 8];
+        // Keep the value word outside Option's payload: None for an optional
+        // tuple need not initialize its value field, so a conservative scan
+        // can retain an unrelated old object through an unused stack slot.
+        let mut inline_specials: [(Option<SymbolName>, Value); 8] = [(None, Value::Nil); 8];
         let mut inline_count = 0usize;
         let mut rooted_specials =
             (varlist_len > 8).then(|| crate::lisp::alloc::RootedVec::with_capacity(varlist_len));
         let mut push_special = |name: SymbolName, value: Value| match rooted_specials.as_mut() {
             Some(rooted) => rooted.push((name, value)),
             None => {
-                inline_specials[inline_count] = Some((name, value));
+                inline_specials[inline_count] = (Some(name), value);
                 inline_count += 1;
             }
         };
@@ -341,8 +342,8 @@ impl Interpreter {
             }
             None => {
                 for slot in &mut inline_specials[..inline_count] {
-                    let (name, value) = slot.take().expect("a pushed special binding");
-                    bind(self, name, value)?;
+                    let (name, value) = std::mem::replace(slot, (None, Value::Nil));
+                    bind(self, name.expect("a pushed special binding"), value)?;
                 }
             }
         }
