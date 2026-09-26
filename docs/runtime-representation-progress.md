@@ -3,14 +3,14 @@ This record tracks evidence and outstanding work; no completion is claimed.
 
 Current checkpoint, 2026-09-26: the terminal migration has passed its selected
 Linux and macOS controls; see [the terminal checkpoint](runtime-representation-terminal-checkpoint.md).
-The latest pushed evaluator change is `7ce28c1`, which preserves `prog1`'s
-saved result across variable rebinding. Both Linux `prog1` controls and the
-complete unchanged GNU eval file pass; local affected controls pass 25/25.
-The preceding `let`/`let*` correction's ordinary Linux root run passes 17/19
-and fails both reclamation contracts. The bytecode reclamation case had passed
-at `b5e45f5`; that regression is retained and unresolved. `da21c14` changes only
-diagnostic artifact retention so the exact failing Linux executable can be
-inspected; it makes no runtime change.
+The latest pushed evaluator change is `2cf7984`, which replaces a redundant
+`let` binding flag with GNU's direct environment comparison. Exact Linux machine
+code identified the flag's spill as the source of both unwanted weak-key roots.
+All19 unchanged Linux root controls now pass, including both reclamation
+contracts, and the complete unchanged GNU eval file matches26/26 passing outcomes.
+The prior failures and bytecode regression remain in the historical evidence.
+The next local revision removes temporary diagnostic tracing; its strict Clippy
+check passes with zero warnings, and runtime validation is pending.
 Current-source full gates and GNU performance parity remain unproven.
 
 Starting revision: `45eb1531caabb35b816fc83e2e8a5b88090dae4e`, freshly fetched
@@ -22,7 +22,7 @@ The pre-existing September 21 audit and all its raw artifacts are preserved.
 | 1. Reproducible starting point | Source, binary, image, toolchain and oracle identities; fresh reproductions; original and corrected baselines | Starting identities recorded; all six original evaluator findings reproduced; corrected release and own image built; original/corrected/GNU diagnostic timing comparison preserved |
 | 2. GNU architectural reference | Per-change C owner, semantic comparison, explained necessary Rust deviations | Evaluator repairs trace to `eval.c:eval_sub`, `apply_lambda`, `Fautoload_do_load`, and `fns.c:list_length` |
 | 3. Authoritative representation | One-word values; two-word conses; shared interpreter/VM/native payload; no ordinary-path mirror lookup or synchronization; other object kinds reviewed | Open; values are one word and buffers/terminals share object words; conses remain 80 bytes with duplicate payload and synchronization; marker/overlay/char-table/frame still use native bridges |
-| 4. Allocation/GC/rooting | Correct accounting, live/dead-root controls, dumped-object treatment, enforced runtime ownership | Open; latest ordinary Linux run passes 17/19 root controls and fails both reclamation contracts; allocation accounting and Rust soundness still require completion |
+| 4. Allocation/GC/rooting | Correct accounting, live/dead-root controls, dumped-object treatment, enforced runtime ownership | Open; source64 passes all19 unchanged Linux root controls, including both reclamation contracts; diagnostic cleanup validation, allocation accounting and Rust soundness still require completion |
 | 5. VM/call efficiency | Fresh comparable profiles, reduced instructions/allocations, preserved call semantics | Open; correctness repair precedes optimization |
 | 6. Adversarial de-cheating | Closed applicable September 21 findings, meaningful differential cases, audited runtime and measurement paths, reporting negative controls | Open; reproducing call semantics and platform dispatch first |
 | 7. Equivalent performance measurement | Locked representative suite and noise criterion, independent normal editors/images, checked results, all samples and mode/GC/memory data | Expanded 16-case suite and 3% ceiling locked before optimization; two GNU self-comparisons retained, complete noise calibration and frozen-oracle certification still open |
@@ -1347,3 +1347,27 @@ boolean and uses Lisp-word equality instead of reconstructing environment kinds.
 Validation is pending; tests, collector decisions and scan ranges are unchanged.
 This addresses the identified spill without establishing general soundness of
 conservative scanning over Rust storage. That broader issue remains open.
+
+
+Source64 is committed and pushed as `2cf79844ef8f29175e644952c72819a4cf222efb`.
+Exact formatted source passes all-target/all-feature strict Clippy on macOS
+with zero warnings. Linux run36220232006 passes formatting, strict Clippy,
+all19 unchanged root controls with zero ignores, and all26 GNU eval outcomes.
+Both formerly failing survival/reclamation contracts pass. The Rust executed
+inventory matches the prior failing inventory exactly; GNU discovered, selected
+and executed inventories, process success, clean source identity, images and
+artifact hashes were checked in raw evidence. Receipt:
+`target/runtime-goal/let-environment-ci-completed-64.json`.
+
+This run's test body takes2595ms versus GNU's1400ms (1.853x); setup is865ms versus
+109ms. These single-run diagnostics remain unfavorable and do not establish a
+performance change. The ordinary affected Rust workflow logs its fresh build
+and binary path but does not retain that test executable's SHA; the GNU comparison
+has executable/image hashes, and the prior diagnostic preserves its exact binary.
+
+Source65 removes only the temporary GC stage/origin/frame tracing introduced in
+sources51/54/56b, retaining whole-heap verification and every collector decision,
+scan range and test assertion. Its exact-source strict Clippy check passes with
+zero warnings. Fresh local runtime compilation and validation without tracing
+are pending. The source64 diagnosis and all failed runs remain available; this
+cleanup cannot be counted as passing until its own controls finish.

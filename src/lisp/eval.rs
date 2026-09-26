@@ -4195,59 +4195,6 @@ impl Interpreter {
         self.buffer_case_tables.push((id, table));
     }
 
-    /// Temporary test-build diagnostics for Linux's reclamation failures.
-    /// Inspect below the collection's recorded stack top, so these temporary
-    /// key copies cannot become roots of the collection being diagnosed.
-    #[cfg(test)]
-    #[inline(never)]
-    fn trace_weak_root_stage(&self, stage: &str, marked: &LispReachability) {
-        if crate::lisp::alloc::stack_top() == 0 || std::env::var_os("EMAXX_GC_VERIFY").is_none() {
-            return;
-        }
-        for record in self.records.iter().flatten() {
-            if record.kind != RecordKind::HashTable || record.slots.get(5).is_none_or(Value::is_nil)
-            {
-                continue;
-            }
-            let Some((_, entries)) =
-                crate::lisp::json::hash_table_entries(self, &Value::Record(*record))
-            else {
-                continue;
-            };
-            for (key, _) in entries {
-                eprintln!(
-                    "GC root stage={stage} table={} key={:x} marked={} value={key}",
-                    record.id,
-                    key.word(),
-                    marked.contains(&key)
-                );
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn unmarked_weak_keys_for_diagnosis(&self, marked: &LispReachability) -> Vec<Value> {
-        if crate::lisp::alloc::stack_top() == 0 || std::env::var_os("EMAXX_GC_VERIFY").is_none() {
-            return Vec::new();
-        }
-        self.records
-            .iter()
-            .flatten()
-            .filter(|record| {
-                record.kind == RecordKind::HashTable
-                    && record
-                        .slots
-                        .get(5)
-                        .is_some_and(|weakness| !weakness.is_nil())
-            })
-            .filter_map(|record| {
-                crate::lisp::json::hash_table_entries(self, &Value::Record(*record))
-            })
-            .flat_map(|(_, entries)| entries.into_iter().map(|(key, _)| key))
-            .filter(|key| !marked.contains(key))
-            .collect()
-    }
-
     pub(crate) fn weak_hash_reachability_with_native(
         &self,
         env: &Env,
@@ -4259,18 +4206,10 @@ impl Interpreter {
             ..LispReachability::default()
         };
         marked.mark_env(self, env);
-        #[cfg(test)]
-        self.trace_weak_root_stage("environment", &marked);
         for value in native_roots {
             marked.mark(self, value);
         }
-        #[cfg(test)]
-        self.trace_weak_root_stage("native", &marked);
         self.stack_roots.mark(self, &mut marked);
-        #[cfg(test)]
-        self.trace_weak_root_stage("registered-execution", &marked);
-        #[cfg(test)]
-        let mut diagnostic_keys = self.unmarked_weak_keys_for_diagnosis(&marked);
         // alloc.c:mark_stack: every word of the running stack (and the
         // registers) that names a cons cell marks it; the parked threads'
         // stacks with it.
@@ -4278,28 +4217,8 @@ impl Interpreter {
             continuations::current_stack_base().map(|base| base as usize),
             |value| {
                 marked.mark(self, &value);
-                #[cfg(test)]
-                diagnostic_keys.retain(|key| {
-                    if !marked.contains(key) {
-                        return true;
-                    }
-                    let (region, address) = crate::lisp::alloc::diagnostic_root_origin();
-                    eprintln!(
-                        "GC conservative reach region={region} address={address:x} root={:x} kind={:?} key={:x} value={key}",
-                        value.word(),
-                        std::mem::discriminant(&value.kind()),
-                        key.word()
-                    );
-                    #[cfg(target_os = "linux")]
-                    if region == "current-stack" {
-                        crate::lisp::alloc::diagnose_conservative_frame(address);
-                    }
-                    false
-                });
             },
         );
-        #[cfg(test)]
-        self.trace_weak_root_stage("physical-stacks", &marked);
         // The other interpreter states alive in the process (a test's
         // template, a second interpreter of a test): their roots too, or a
         // sweep here would free what they still hold.
@@ -4325,8 +4244,6 @@ impl Interpreter {
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
-        #[cfg(test)]
-        self.trace_weak_root_stage("other-interpreters", &marked);
         // The thread's bytecode stack and its activations' specpdl entries
         // (alloc.c marks them with the thread).
         for value in self.bc_stack.values() {
@@ -4343,12 +4260,8 @@ impl Interpreter {
                 roots::mark_source(self, &mut marked, &**context);
             }
         }
-        #[cfg(test)]
-        self.trace_weak_root_stage("bytecode-and-threads", &marked);
 
         self.mark_static_roots_into(&mut marked);
-        #[cfg(test)]
-        self.trace_weak_root_stage("static", &marked);
         // alloc.c marks doomed functions before its weak-table fixed point.
         prepare_finalizers_in_live_states(self, &mut marked);
 

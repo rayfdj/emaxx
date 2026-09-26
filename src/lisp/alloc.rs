@@ -710,8 +710,6 @@ pub(crate) fn live_string_bytes() -> usize {
 }
 
 thread_local! {
-    #[cfg(test)]
-    static ROOT_SCAN_ORIGIN: Cell<(&'static str, usize)> = const { Cell::new(("unclassified", 0)) };
     /// The stacks of parked Lisp threads (coroutines suspended on this OS
     /// thread): base to saved stack pointer.
     static PARKED_STACKS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -1254,11 +1252,7 @@ pub(crate) fn os_stack_base() -> Option<usize> {
 #[inline(never)]
 pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(Value)) {
     let base = current_base.or_else(os_stack_base);
-    #[cfg(test)]
-    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("current-stack", 0)));
     mark_stack(base, &mut mark);
-    #[cfg(test)]
-    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("parked-stack", 0)));
     let parked = PARKED_STACKS.with_borrow(Clone::clone);
     for (base, sp) in parked {
         if base > sp {
@@ -1268,8 +1262,6 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
         }
     }
     let drivers = DRIVER_REGIONS.with_borrow(Clone::clone);
-    #[cfg(test)]
-    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("driving-stack", 0)));
     for (sp, base) in drivers {
         if base > sp {
             // SAFETY: the driving stack's frames wait below the resume
@@ -1284,97 +1276,12 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
         .flatten()
         .copied()
         .collect::<Vec<_>>();
-    #[cfg(test)]
-    ROOT_SCAN_ORIGIN.with(|origin| origin.set(("registered-heap-buffer", 0)));
     for (address, bytes) in heap {
         if bytes != 0 {
             // SAFETY: a registered buffer is a live allocation of that size
             // (its owner refreshes the entry when the buffer moves).
             unsafe { scan_words(address, address + bytes, &mut mark) };
         }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn diagnostic_root_origin() -> (&'static str, usize) {
-    ROOT_SCAN_ORIGIN.with(Cell::get)
-}
-
-/// Temporary diagnostic: identify the active frame containing a conservative
-/// root without changing the collector's stack range or marking decisions.
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn diagnose_conservative_frame(address: usize) {
-    use std::ffi::c_void;
-
-    struct Trace {
-        frames: [(usize, usize); 128],
-        len: usize,
-    }
-
-    unsafe extern "C" {
-        fn _Unwind_Backtrace(
-            callback: unsafe extern "C" fn(*mut c_void, *mut c_void) -> libc::c_int,
-            argument: *mut c_void,
-        ) -> libc::c_int;
-        fn _Unwind_GetCFA(context: *mut c_void) -> usize;
-        fn _Unwind_GetIP(context: *mut c_void) -> usize;
-    }
-
-    unsafe extern "C" fn frame(context: *mut c_void, argument: *mut c_void) -> libc::c_int {
-        // SAFETY: _Unwind_Backtrace synchronously supplies its live context
-        // and the unique Trace pointer passed below. No unwinding or Lisp
-        // allocation occurs in this callback.
-        let trace = unsafe { &mut *argument.cast::<Trace>() };
-        if trace.len == trace.frames.len() {
-            return 5; // _URC_END_OF_STACK
-        }
-        trace.frames[trace.len] = unsafe { (_Unwind_GetCFA(context), _Unwind_GetIP(context)) };
-        trace.len += 1;
-        0 // _URC_NO_REASON: keep walking
-    }
-
-    let mut trace = Trace {
-        frames: [(0, 0); 128],
-        len: 0,
-    };
-    // SAFETY: the callback's context has this function's lifetime; the GCC
-    // unwind ABI walks frames without executing their cleanup handlers.
-    unsafe { _Unwind_Backtrace(frame, std::ptr::from_mut(&mut trace).cast()) };
-    for pair in trace.frames[..trace.len].windows(2) {
-        let [(low, ip), (high, _)] = *pair else {
-            unreachable!("a window has two frames");
-        };
-        if !(low..high).contains(&address) {
-            continue;
-        }
-        let pc = ip.saturating_sub(1);
-        // SAFETY: dladdr fills this C struct and only inspects the address.
-        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-        if unsafe { libc::dladdr(pc as *const c_void, &mut info) } == 0 {
-            eprintln!("GC conservative owner low={low:x} high={high:x} pc={pc:x}");
-            break;
-        }
-        let relative_pc = pc - info.dli_fbase as usize;
-        eprintln!(
-            "GC conservative owner low={low:x} high={high:x} pc={pc:x} module_offset={relative_pc:x}"
-        );
-        if let Ok(executable) = std::env::current_exe() {
-            match std::process::Command::new("addr2line")
-                .args(["-a", "-f", "-C", "-i", "-e"])
-                .arg(executable)
-                .arg(format!("{relative_pc:x}"))
-                .output()
-            {
-                Ok(output) => eprintln!(
-                    "GC conservative owner symbols status={}\n{}{}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-                Err(error) => eprintln!("GC conservative owner symbolization: {error}"),
-            }
-        }
-        break;
     }
 }
 
@@ -2093,10 +2000,6 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
     while address + std::mem::size_of::<usize>() <= high {
         // SAFETY: the caller's contract.
         let word = unsafe { std::ptr::read_volatile(address as *const usize) };
-        #[cfg(test)]
-        if verify_heap_enabled() {
-            ROOT_SCAN_ORIGIN.with(|origin| origin.set((origin.get().0, address)));
-        }
         address += std::mem::size_of::<usize>();
         // alloc.c:mark_maybe_pointer under USE_LSB_TAG: a `Lisp_Object'
         // word carries its type in the low three bits, so the tag is
