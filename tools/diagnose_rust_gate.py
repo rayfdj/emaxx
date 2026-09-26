@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -52,6 +53,15 @@ def main() -> int:
         summary["test_binary"] = {
             "path": str(binary), "sha256": gate.sha256_file(binary),
         }
+        # Preserve the exact executable behind stack addresses so compiler
+        # spills and native frames can be inspected after the CI VM exits.
+        # Execute the original path below: relocating it can change tests'
+        # invocation-directory and fixture lookup behavior.
+        saved_binary = output / "libtest"
+        shutil.copy2(binary, saved_binary)
+        if gate.sha256_file(saved_binary) != summary["test_binary"]["sha256"]:
+            raise gate.GateError("diagnostic executable copy differs from the tested binary")
+        summary["test_binary"]["artifact"] = saved_binary.name
 
         def inventory(label: str, selection: list[str], *, allow_empty: bool = False) -> list[str]:
             completed = subprocess.run(
