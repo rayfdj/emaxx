@@ -5544,11 +5544,11 @@ fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
         ("move-beginning-of-line", "beginning-of-visual-line"),
         ("move-end-of-line", "end-of-visual-line"),
     ] {
-        let parts = vec!["<remap>".into(), format!("<{command}>")];
+        let parts = vec![Value::symbol("remap"), Value::symbol(command)];
         let _ = primitives::keymap_define_binding_with_placement(
             interp,
             &map,
-            &parts.join(" "),
+            &format!("<remap> <{command}>"),
             Some(parts),
             Value::Symbol(replacement.into()),
             true,
@@ -6723,7 +6723,7 @@ impl Interpreter {
                     &mut interp,
                     &special_event_map,
                     &part,
-                    Some(vec![part.clone()]),
+                    Some(vec![Value::symbol(event)]),
                     Value::Symbol(command.into()),
                     true,
                 );

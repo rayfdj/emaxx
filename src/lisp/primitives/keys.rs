@@ -176,20 +176,8 @@ fn event_modifier_elements(modifiers: i64) -> Vec<Value> {
     .collect()
 }
 
-pub(crate) fn parse_event_symbol_modifiers(
-    interp: &mut Interpreter,
-    value: &Value,
-) -> Result<Value, LispError> {
-    let symbol = value.as_symbol()?;
-    if interp
-        .get_symbol_property(symbol, "event-symbol-element-mask")
-        .is_some_and(|value| value.cons_values().is_some())
-    {
-        return Ok(interp
-            .get_symbol_property(symbol, "event-symbol-elements")
-            .unwrap_or(Value::Nil));
-    }
-
+fn event_symbol_name_modifiers(symbol: &str) -> (i64, &str) {
+    let symbol = crate::lisp::types::visible_symbol_name(symbol);
     let mut modifiers = 0;
     let mut offset = 0;
     while offset + 1 < symbol.len() {
@@ -225,6 +213,25 @@ pub(crate) fn parse_event_symbol_modifiers(
     if mouse_click {
         modifiers |= EVENT_CLICK_BIT;
     }
+
+    (modifiers, base)
+}
+
+pub(crate) fn parse_event_symbol_modifiers(
+    interp: &mut Interpreter,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let symbol = value.as_symbol()?;
+    if interp
+        .get_symbol_property(symbol, "event-symbol-element-mask")
+        .is_some_and(|value| value.cons_values().is_some())
+    {
+        return Ok(interp
+            .get_symbol_property(symbol, "event-symbol-elements")
+            .unwrap_or(Value::Nil));
+    }
+
+    let (modifiers, base) = event_symbol_name_modifiers(symbol);
 
     let base = crate::lisp::types::interned_symbol_value(base.to_string());
     let element_mask = Value::list([base, Value::Integer(modifiers)]);
@@ -343,20 +350,6 @@ pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispErr
     Ok(key_sequence_binding_parts(value)?.join(" "))
 }
 
-/// Parse the descriptive key spelling accepted by the `keymap-*' Lisp API.
-///
-/// This is intentionally separate from `key_sequence_binding_parts': GNU's
-/// older primitives (`define-key', `lookup-key', `key-binding', ...) treat a
-/// string as the raw sequence of characters it contains, while `keymap-set'
-/// and friends explicitly pass their strings through `key-parse'.  Guessing
-/// from spaces is observably wrong for raw bindings such as `"\C-c, "'.
-pub(crate) fn textual_key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
-    if let Some(string) = string_like(value) {
-        return key_sequence_binding_parts(&parse_kbd_sequence(&string.text)?);
-    }
-    key_sequence_binding_parts(value)
-}
-
 pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
@@ -438,13 +431,8 @@ pub(crate) fn normalize_xemacs_macro_definition(
 
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
-fn lucid_event_type_list_p(event: &Value) -> bool {
+pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
     if !matches!(event.kind(), Kind::Cons(_)) {
-        return false;
-    }
-    // GNU's CONSP is false for a real vector; Emaxx's vector-literal
-    // facade uses cons storage, so exclude it explicitly.
-    if crate::lisp::primitives::interactive::is_vector_value(event) {
         return false;
     }
     if matches!(
@@ -472,48 +460,63 @@ fn lucid_event_type_list_p(event: &Value) -> bool {
 /// root event changes full-keymap ordering and prevents the ESC prefix map
 /// from being discoverable.  Symbolic events such as `M-<up>' remain single
 /// events, just as they do in GNU.
-pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
-    // A string stored inside a vector is GNU's legacy spelling for one
-    // already-described key sequence: ["C-x C-f"] names the same events as
-    // (kbd "C-x C-f"), it is not a single opaque string event.  Plain string
-    // KEY arguments remain raw character sequences in the legacy keymap API.
-    if let Ok(events) = vector_items(value)
-        && let [event] = events.as_slice()
-        && let Some(string) = string_like(event)
-    {
-        return keymap_parts_from_display_parts(key_sequence_binding_parts(&parse_kbd_sequence(
-            &string.text,
-        )?)?);
-    }
-    // keymap.c's access_keymap traverses a parameterized event by its
-    // EVENT_HEAD: (C-down-mouse-3 POSN) inside a key vector looks up as
-    // the bare C-down-mouse-3 symbol.  Lucid-style event descriptions such
-    // as (control ?c) are not events; lookup converts those through
-    // event-convert-list instead of taking their car.
-    if let Ok(events) = vector_items(value)
-        && events.iter().any(|event| {
-            event.cons_values().is_some()
-                && !lucid_event_type_list_p(event)
-                && !crate::lisp::primitives::interactive::is_vector_value(event)
-        })
-    {
-        let heads = events.into_iter().map(|event| {
-            if lucid_event_type_list_p(&event)
-                || crate::lisp::primitives::interactive::is_vector_value(&event)
+pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<Value>, LispError> {
+    key_sequence_event_parts(value, false)
+}
+
+pub(crate) fn key_sequence_definition_parts(value: &Value) -> Result<Vec<Value>, LispError> {
+    key_sequence_event_parts(value, true)
+}
+
+fn key_sequence_event_parts(value: &Value, defining: bool) -> Result<Vec<Value>, LispError> {
+    // Keep actual event words: key descriptions are deliberately lossy (for
+    // example both 1 and CHAR_CTL | 'a' print as C-a).
+    let events = match vector_items(value) {
+        Ok(events) => {
+            if let [event] = events.as_slice()
+                && let Some(string) = string_like(event)
             {
-                return event;
+                return textual_key_sequence_keymap_parts(&Value::String(string.text.into()));
             }
-            // keymap.c:lookup_key_1 converts proper Lucid event lists first;
-            // access_keymap_1 then applies EVENT_HEAD to every remaining
-            // cons event.  That includes both parameterized events and the
-            // dotted (FROM . TO) character ranges emitted by map-keymap.
-            event.car().unwrap_or(event)
-        });
-        let vector =
-            Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(heads));
-        return keymap_parts_from_display_parts(key_sequence_binding_parts(&vector)?);
+            events
+        }
+        Err(_) => key_description_events(value)?,
+    };
+    keymap_parts_from_events(events, defining)
+}
+
+pub(crate) fn keymap_parts_from_events(
+    events: impl IntoIterator<Item = Value>,
+    defining: bool,
+) -> Result<Vec<Value>, LispError> {
+    let mut parts = Vec::new();
+    for event in events {
+        let parameterized = event.cons_values().is_some() && !lucid_event_type_list_p(&event);
+        let event = if parameterized { event.car()? } else { event };
+        match event.kind() {
+            Kind::Integer(code) => {
+                // keymap.c:access_keymap_1/store_in_keymap retain the event
+                // and modifier bits, discarding higher fixnum bits.
+                let code = code & (KEY_DESCRIPTION_META_BIT | (KEY_DESCRIPTION_META_BIT - 1));
+                // Fdefine_key tests Meta before store_in_keymap takes a
+                // parameterized event's head. Lookup takes the head first.
+                if code & KEY_DESCRIPTION_META_BIT != 0 && (!defining || !parameterized) {
+                    parts.push(Value::Integer(KEY_DESCRIPTION_META_PREFIX));
+                    parts.push(Value::Integer(code & !KEY_DESCRIPTION_META_BIT));
+                } else {
+                    parts.push(Value::Integer(code));
+                }
+            }
+            Kind::Symbol(name) => {
+                // keyboard.c:reorder_modifiers interns the canonical event
+                // name, including a previously uninterned plain symbol.
+                let (modifiers, base) = event_symbol_name_modifiers(&name);
+                parts.push(Value::symbol(&modified_event_symbol_name(modifiers, base)));
+            }
+            _ => parts.push(event),
+        }
     }
-    keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
+    Ok(parts)
 }
 
 pub(crate) fn key_sequence_prefix_event_count(
@@ -533,29 +536,15 @@ pub(crate) fn key_sequence_prefix_event_count(
     Ok(consumed_events)
 }
 
-pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
-    keymap_parts_from_display_parts(textual_key_sequence_binding_parts(value)?)
-}
-
-fn keymap_parts_from_display_parts(display_parts: Vec<String>) -> Result<Vec<String>, LispError> {
-    let mut parts = Vec::with_capacity(display_parts.len());
-    for part in display_parts {
-        let events = parse_kbd_token(&part);
-        if let [Kind::Integer(code)] = events
-            .as_slice()
-            .iter()
-            .map(|v| v.kind())
-            .collect::<Vec<_>>()
-            .as_slice()
-            && code & KEY_DESCRIPTION_META_BIT != 0
-        {
-            parts.push("ESC".into());
-            parts.push(describe_key_code(code & !KEY_DESCRIPTION_META_BIT));
-        } else {
-            parts.push(part);
-        }
+pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<Value>, LispError> {
+    if let Some(string) = string_like(value) {
+        let events = vector_items(&parse_kbd_sequence(&string.text)?)?
+            .into_iter()
+            .map(reader_key_event_value);
+        let sequence = Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events));
+        return key_sequence_keymap_parts(&sequence);
     }
-    Ok(parts)
+    key_sequence_keymap_parts(value)
 }
 
 pub(crate) fn append_key_description_parts(

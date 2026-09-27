@@ -1,0 +1,47 @@
+[
+  {
+    "command": [
+      "cargo",
+      "check",
+      "--locked",
+      "--all-targets",
+      "--all-features"
+    ],
+    "exit_code": 0,
+    "seconds": 3.8443910000000003
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101,
+    "seconds": 7.80338725
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 1.4501507090000008
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.06958841600000021
+  }
+]

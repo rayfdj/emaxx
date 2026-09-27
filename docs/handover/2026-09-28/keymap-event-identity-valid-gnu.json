@@ -1,0 +1,6 @@
+{
+  "program": "(mapcar\n (lambda (constructor)\n   (let ((map (funcall constructor))\n         (first (make-symbol \"event\")) (second (make-symbol \"event\")))\n     (define-key map [1] 'control-byte)\n     (define-key map [67108961] 'control-flag)\n     (define-key map (vector first) 'first)\n     (define-key map (vector second) 'second)\n     (list (lookup-key map [1]) (lookup-key map [67108961])\n           (equal (where-is-internal 'control-byte map t) [1])\n           (equal (where-is-internal 'control-flag map t) [67108961])\n           (lookup-key map (vector first)) (lookup-key map (vector second))\n           (where-is-internal 'first map 'non-ascii)\n           (eq (aref (where-is-internal 'second map 'non-ascii) 0) (intern \"event\"))\n           (progn (define-key map [67108961] nil t)\n                  (list (lookup-key map [1]) (lookup-key map [67108961]))))))\n '(make-keymap make-sparse-keymap))\n",
+  "exit_code": 0,
+  "stdout": "((control-byte control-flag t t second second nil t (control-byte nil)) (control-byte control-flag t t second second nil t (control-byte nil)))",
+  "stderr": ""
+}

@@ -452,33 +452,17 @@ fn project_embedded_keymaps(
 #[derive(Clone)]
 pub(crate) struct RuntimeKeymapBinding {
     pub(crate) key: String,
-    pub(crate) parts: Option<Vec<String>>,
+    pub(crate) parts: Option<Vec<Value>>,
     pub(crate) value: Value,
     pub(crate) after_prompt: bool,
 }
 
-pub(crate) fn keymap_entry_key_value(parts: &[String], key: &str) -> Value {
-    if let [part] = parts {
-        let (_, _, saw_prefix) = parse_kbd_prefixes(part);
-        if !part.starts_with('<')
-            && !part.ends_with('>')
-            && !saw_prefix
-            && named_kbd_key_code(part).is_none()
-            && part.chars().count() > 1
-        {
-            return Value::Symbol(part.clone().into());
-        }
-
-        let mut events = parse_kbd_token(part)
-            .into_iter()
-            .map(reader_key_event_value)
-            .collect::<Vec<_>>();
-        if events.len() == 1 {
-            return events.remove(0);
-        }
+pub(crate) fn keymap_entry_key_value(parts: &[Value], key: &str) -> Value {
+    if let [event] = parts {
+        *event
+    } else {
+        Value::String(key.into())
     }
-
-    Value::String(key.into())
 }
 
 pub(crate) fn set_hash_table_entries(

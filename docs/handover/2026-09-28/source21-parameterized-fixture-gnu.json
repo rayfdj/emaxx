@@ -1,0 +1,13 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((source \"(mapcar\\n #'(lambda (constructor)\\n   (mapcar\\n    #'(lambda (event)\\n      (let ((map (funcall constructor)))\\n        (define-key map (vector event) 'binding)\\n        (let ((copy (copy-keymap map)))\\n          (list (lookup-key map (vector event))\\n                (lookup-key map (vector (car event)))\\n                (where-is-internal 'binding map 'non-ascii)\\n                (mapcar 'car (if (char-table-p (cadr map)) (cddr map) (cdr map)))\\n                (lookup-key copy (vector event))\\n                (mapcar 'car (if (char-table-p (cadr copy)) (cddr copy) (cdr copy)))))))\\n    '((4194304 . 97) (-1 . 97) (134217825 . 97))))\\n '(make-keymap make-sparse-keymap))\\n\") (read (read-from-string source))) (prin1 (list (equal (string-trim (substring source (cdr read))) \"\") (eval (car read)))))"
+  ],
+  "exit_code": 0,
+  "stdout": "(t (((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))) ((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825)))))",
+  "stderr": "",
+  "reason": "Explicit function forms retain both constructors, all events and all expectations in the bare-interpreter regression; source20 failed on unloaded lambda macro before reaching keymap behavior."
+}

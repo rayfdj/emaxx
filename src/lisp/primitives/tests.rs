@@ -10572,6 +10572,55 @@ fn char_table_keymap_ranges_validate_character_bounds() {
 }
 
 #[test]
+fn char_table_parameterized_key_events_keep_physical_slots_without_a_dump() {
+    let program = include_str!("../../../tests/fixtures/keymap-parameterized-char-table.el");
+    let expected = "(((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))) ((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read parameterized key events")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("evaluate parameterized key events");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print parameterized key events");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymaps_convert_lucid_lists_before_ranges_and_lookup() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-lucid-char-table.el"),
+        "(plain plain control control ((char-table-lucid-mode . control)))",
+        "Lucid event conversion before character-range validation and active map lookup",
+    );
+}
+
+#[test]
+fn char_table_keymaps_preserve_meta_escape_and_event_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-event-boundaries-char-table.el"),
+        "((binding [134217755]) (binding [134217737]) (binding [201326689]) (binding [134217755]) (binding [201326689]) (binding [4194303]) (binding [97]) (binding [C-M-f9]) (binding [f9 134217755]))",
+        "Meta-ESC, modifier combinations, maximum characters, fixnum masking and symbolic prefix maps",
+    );
+}
+
+#[test]
+fn char_table_keymap_events_preserve_numeric_identity_and_normalize_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-event-char-table.el"),
+        "((control-byte control-flag t t second second nil t (control-byte nil)) (control-byte control-flag t t second second nil t (control-byte nil)))",
+        "distinct Control event words, canonical symbol events, and independent removal",
+    );
+}
+
+#[test]
 fn char_table_casing_preserves_gnu_modifier_and_integer_semantics() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/case-modifier-char-table.el"),
@@ -16842,7 +16891,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
     assert_eq!(
         key_sequence_keymap_parts(&Value::String("\x03,\x17".into()))
             .expect("raw control-byte key sequence should retain every event"),
-        vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
+        vec![Value::Integer(3), Value::Integer(44), Value::Integer(23)]
     );
     assert_eq!(
         key_sequence_binding_parts(&Value::String("C-c g".into()))
@@ -16850,7 +16899,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C", "-", "c", "SPC", "g"]
     );
     assert_eq!(
-        textual_key_sequence_binding_parts(&Value::String("C-c g".into()))
+        key_sequence_binding_parts(&parse_kbd_sequence("C-c g").expect("parse key spelling"))
             .expect("textual control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
     );
@@ -16866,12 +16915,12 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
     assert_eq!(
         textual_key_sequence_keymap_parts(&Value::String("M-v".into()))
             .expect("Meta character key should normalize for keymap storage"),
-        vec!["ESC".to_string(), "v".to_string()]
+        vec![Value::Integer(27), Value::Integer(118)]
     );
     assert_eq!(
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
-        vec!["M-up".to_string()]
+        vec![Value::symbol("M-up")]
     );
 }
 
@@ -16884,7 +16933,7 @@ fn keymap_lookup_uses_the_event_head_of_a_character_range() {
     assert_eq!(
         key_sequence_keymap_parts(&range_event)
             .expect("a map-keymap character range should remain a valid lookup event"),
-        vec!["w".to_string()]
+        vec![Value::Integer(119)]
     );
 }
 
@@ -23444,6 +23493,53 @@ fn interactive_undo_restores_the_unmodified_state() {
     assert!(
         !modified,
         "undoing back to the saved state clears the modified flag"
+    );
+}
+
+#[test]
+fn command_error_echo_accepts_mutable_error_message_strings() {
+    let program = r#"(let ((text (copy-sequence "before")))
+        (list (error-message-string '(beginning-of-buffer))
+              (error-message-string '(user-error "visible warning"))
+              (copy-sequence (error-message-string (list 'error text)))
+              (progn (aset text 0 ?B)
+                     (error-message-string (list 'error text)))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        r#"("Beginning of buffer" "visible warning" "before" "Before")"#,
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for (condition, expected) in [
+        ("(beginning-of-buffer)", "Beginning of buffer"),
+        ("(user-error \"visible warning\")", "visible warning"),
+    ] {
+        let data = Reader::new(condition)
+            .read()
+            .expect("read echo condition")
+            .expect("echo condition form");
+        let error = LispError::SignalValue(data);
+        assert_eq!(
+            command_error_echo_text(&mut interp, &mut env, &error),
+            expected
+        );
+    }
+    let text = make_shared_string_value_with_multibyte("before".into(), Vec::new(), true);
+    let error = LispError::SignalValue(Value::list([Value::symbol("error"), text]));
+    assert_eq!(
+        command_error_echo_text(&mut interp, &mut env, &error),
+        "before"
+    );
+    call(
+        &mut interp,
+        "aset",
+        &[text, Value::Integer(0), Value::Integer(i64::from(b'B'))],
+        &mut env,
+    )
+    .expect("mutate error text");
+    assert_eq!(
+        command_error_echo_text(&mut interp, &mut env, &error),
+        "Before"
     );
 }
 

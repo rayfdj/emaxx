@@ -94,8 +94,7 @@ pub(crate) fn run_pending_user_signal_events(
         let keymap = interp
             .lookup_var("special-event-map", env)
             .unwrap_or(Value::Nil);
-        let binding =
-            keymap_lookup_binding_exact_parts(interp, &keymap, std::slice::from_ref(&name))?;
+        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[Value::symbol(&name)])?;
         interp.set_variable("last-input-event", event, env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;
@@ -1466,10 +1465,7 @@ pub(crate) fn command_error_echo_text(
                 std::slice::from_ref(&data),
             )
             .ok()
-            .and_then(|value| match value.kind() {
-                Kind::String(text) => Some(text.to_string()),
-                _ => None,
-            })
+            .and_then(|value| string_like(&value).map(|text| text.text))
             .unwrap_or_else(|| format!("{data}"))
         }
         LispErrorKind::Signal(text) => text.clone(),
@@ -1922,7 +1918,7 @@ pub(crate) fn read_key_sequence_event(
         if is_mouse_down_event(&event) {
             let event_name =
                 input_event_symbol(&event).expect("mouse-down events have a symbolic head");
-            let key_parts = vec![event_name];
+            let key_parts = vec![Value::symbol(&event_name)];
             let mut binding = Value::Nil;
             for map in active_command_keymaps(interp, env)? {
                 binding = keymap_lookup_sequence_value_with_default(
@@ -1935,7 +1931,7 @@ pub(crate) fn read_key_sequence_event(
             // bindings.el installs this in GNU's dumped global map.  Keep
             // the file-less bootstrap fallback aligned without treating all
             // mouse-down events as bound.
-            if binding.is_nil() && key_parts == ["down-mouse-1"] {
+            if binding.is_nil() && key_parts == [Value::symbol("down-mouse-1")] {
                 binding = Value::Symbol("mouse-drag-region".into());
             }
             if binding.is_nil() {

@@ -225,6 +225,7 @@ define_dispatch!(
                 need_arg_range(name, args, 3, 4)?;
                 if let Ok(events) = vector_items(&args[1])
                     && let [event] = events.as_slice()
+                    && !lucid_event_type_list_p(event)
                     && let Some((start, end)) = event.cons_values()
                     && let Kind::Integer(start) = start.kind()
                     && (0..=0x3f_ffff).contains(&start)
@@ -262,10 +263,10 @@ define_dispatch!(
                         }
                     }
                 }
-                let key = key_sequence_binding_text(&normalized_key)?;
-                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
+                let key_parts = key_sequence_definition_parts(&normalized_key)?;
+                let key = key_sequence_binding_text(&key_parts_to_sequence_value(&key_parts))?;
                 if def.is_nil() && args.get(3).is_some_and(Value::is_truthy) {
-                    keymap_remove_binding(interp, &args[0], &key)?;
+                    keymap_remove_binding(interp, &args[0], &key_parts)?;
                 } else {
                     keymap_define_binding_with_placement(
                         interp,
@@ -312,7 +313,8 @@ define_dispatch!(
             }
             "minor-mode-key-binding" => {
                 need_arg_range(name, args, 1, 2)?;
-                let key_parts = key_sequence_keymap_parts(&args[0])?;
+                let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
+                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 let accept_default = args.get(1).is_some_and(Value::is_truthy);
                 let mut prefix_bindings = Vec::new();
                 for (mode, map) in active_minor_mode_bindings(interp, env)? {
@@ -343,7 +345,8 @@ define_dispatch!(
             "help--describe-vector" => help_describe_vector(interp, args, env),
             "key-binding" => {
                 need_arg_range(name, args, 1, 4)?;
-                let key_parts = key_sequence_keymap_parts(&args[0])?;
+                let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
+                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 key_binding_with_parts(
                     interp,
                     &key_parts,

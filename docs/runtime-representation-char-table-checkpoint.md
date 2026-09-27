@@ -30,6 +30,15 @@ substitution, image copying and dumping preserve the actual slots and sharing.
 and the equal-key sharing hash table in extra slot 1. Existing record/bool-vector
 representation limitations are separate unfinished runtime work.
 
+Keymap integration exposed a lossy event representation: display strings cannot
+distinguish control character 1 from `CHAR_CTL | 'a'`. The current migration
+stores Lisp event words in binding parts and compares those words directly.
+Meta sequences, symbol-name normalization, removal, public views and enumeration
+use those events. Event values retained across callbacks are rooted. The existing
+keymap record/public-list adapter, display-name field and cached binding
+projection remain; this is not completion of the canonical-keymap architecture
+or a measured performance result.
+
 Derived regexp caches now compare current graph fields, including mutable
 leaves, so native stores cannot evade a Rust mutation counter. This scans and
 allocates host-side snapshots on table-dependent cache probes. Its performance
@@ -143,6 +152,65 @@ Local evidence is under `target/runtime-goal/resume-2026-09-28/`:
   unmodified isolated-HOME terminal smoke test (56.58 seconds). The first smoke
   invocation misspelled the script filename and exited 2; that setup failure
   is retained separately.
+- Source 16 broadens the selection to 75 char-table, keymap, where-is and native
+  GC tests. Its immutable binary was built before subsequent source edits;
+  those edits and its raw result remain explicitly separate from final-source
+  evidence. Source 17 removes a needless borrow rejected by strict Clippy and
+  passes all static checks. Its release CLI reproduces incorrect ESC/ESC
+  enumeration before the source-18 repair.
+- Source 18's release selection reports 74 passed, two failed, zero ignored
+  (123.48 seconds). One failure shows symbol normalization using Emaxx's private
+  uninterned-name suffix instead of GNU's visible name. The other is an invalid
+  new fixture with one unmatched trailing parenthesis: the strict test reader
+  rejected it, while the earlier GNU/Emaxx `--eval` probes read only the first
+  expression. Source 19 uses the visible name and removes the unread trailing
+  character, preserving all cases and expected values. GNU confirms an empty
+  unread suffix and the same result for the corrected fixture. Source 19 also
+  propagates key-description errors instead of adding a display fallback.
+  All 76 selected release tests pass (112.78 seconds), zero ignored, with
+  immutable binary `0443f52db56c918f213c08b8383d92f7e64213c27aa5050d775eba26a0ff40ce`.
+  Source and executable remain unchanged across execution. Compiler, strict
+  Clippy, formatting and diff checks pass. Retain the source-18 failures.
+- Source 19's unmodified 223-scenario terminal differential is still running
+  with an isolated HOME. It has exposed an echo-area error-rendering mismatch;
+  it is not a passing full terminal certificate. A separate storage probe
+  found parameterized integer events incorrectly expanding Meta while stored.
+  GNU tests Meta before taking an event's head during definition, and after
+  taking its head during lookup. Source 20 separates those paths, preserves
+  physical alist event words, and converts Lucid lists before range validation
+  and active-keymap lookup. These cases pass in source 23 and the source-25
+  selected release run; the full gate remains pending.
+- The new source-20 bare fixture stopped on the unloaded `lambda` macro.
+  Source 21 uses explicit function forms and reaches another unloaded helper,
+  `cadr`. Its other new fixture's undeclared minor-mode variable is lexical in
+  GNU's direct `--eval`, so the intended minor mode was inactive there; the
+  preliminary read/eval probe used dynamic binding. Both source-21 focused tests
+  fail; its release selection reports 76 passed, two failed, zero ignored
+  (109.56 seconds), unchanged source/executable. These failures are retained.
+  Fixture setup corrections must preserve all cases,
+  active-mode coverage and expected results, using the same program in GNU and
+  Emaxx; the comparison helper is unchanged. Source 22 declares the mode variable
+  special and uses primitive car/cdr operations in the bare fixture. The new
+  echo regression initially failed compilation due to a mistyped string
+  constructor helper; source 23 corrects that test helper. No source-22 test
+  executable was produced. Source 23 passes both keymap regressions and fails
+  the new echo regression with `(beginning-of-buffer)` instead of GNU's
+  `Beginning of buffer`. The command-loop formatter accepted only immutable
+  strings although `error-message-string` returns mutable strings. Source 24
+  uses the common string reader and passes the direct regression. Its strict
+  Clippy run rejects two new test `unwrap` calls; source 25 gives those reads
+  descriptive `expect` messages without suppressing the lint.
+- Source 25 passes compiler, strict Clippy, formatting and diff checks. All 81
+  selected release tests pass (115.13 seconds), zero ignored, including the
+  char-table, keymap, where-is, native GC and error-formatting checks. Immutable
+  binary SHA-256 is
+  `f7e169ddc8c8c9fb7ce7bf7c8a912280012b4e398a08db2c5127e869b3178d29`;
+  source and executable are unchanged across execution. Ordinary release/image
+  and full-gate validation remain pending. A separate target directory protects
+  the source-19 executable still used by the running terminal comparison.
+  Its first cleanup attempt was rejected because the new cache directory lacked
+  Cargo's CACHEDIR.TAG; the tag was copied from the original Cargo cache before
+  cleaning and rebuilding the emaxx package in that separate directory.
 - A generated source-14 diagnostic applied 512 operations across four tables,
   checking point/default/range reads and complete map results after every step.
   The same Lisp input through both normal batch CLIs produced byte-identical
@@ -163,7 +231,7 @@ Builds use Rust 1.97.1. Selected builds use the existing opt-level-1 test profil
 the full serial gate uses the existing gate profile with assertions and overflow
 checks. None of these runs establishes release performance.
 
-Portable raw receipts and compressed logs through source 14 are indexed by
+Portable raw receipts and compressed logs, including subsequent failures, are indexed by
 [the evidence manifest](handover/2026-09-28/manifest.json). Local executable
 hashes remain provenance, not portable binaries or validation on another host.
 

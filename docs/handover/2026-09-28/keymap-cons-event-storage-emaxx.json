@@ -1,0 +1,13 @@
+{
+  "command": [
+    "target/runtime-resume/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar (lambda (event) (let ((map (make-keymap))) (define-key map (vector event) 'binding) (list (lookup-key map (vector event)) (lookup-key map (vector (car event))) (where-is-internal 'binding map 'non-ascii) (mapcar 'car (cddr map))))) '((4194304 . 97) (-1 . 97) (134217825 . 97))))"
+  ],
+  "binary_sha256": "89e7493d08fb5db23f78ba87716c5fe464dc357bdb38fb9191eead3e7b31535a",
+  "exit_code": 0,
+  "stdout": "((binding binding [4194304] (4194304)) (binding binding [268435455] nil) (binding binding [134217825] nil))",
+  "stderr": ""
+}

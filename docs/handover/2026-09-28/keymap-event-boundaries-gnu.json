@@ -1,0 +1,6 @@
+{
+  "program": "(mapcar (lambda (key) (let ((map (make-keymap))) (define-key map key 'binding) (list (lookup-key map key) (where-is-internal 'binding map 'non-ascii)))) '([27 27] [27 9] [27 67108961] [134217755] [201326689] [4194303] [1099511627873] [M-C-f9] [f9 27 27])))",
+  "exit_code": 0,
+  "stdout": "((binding [134217755]) (binding [134217737]) (binding [201326689]) (binding [134217755]) (binding [201326689]) (binding [4194303]) (binding [97]) (binding [C-M-f9]) (binding [f9 134217755]))",
+  "stderr": ""
+}

@@ -1,0 +1,10 @@
+{
+  "head": "1ac30ee886521d087cb5213c2c8ca79551b4c725",
+  "manifest": "source15-manifest.json",
+  "new_fixtures": [
+    "tests/fixtures/keymap-modifier-char-table.el",
+    "tests/fixtures/case-modifier-char-table.el",
+    "tests/fixtures/keymap-range-char-table.el"
+  ],
+  "captured_after_formatting": true
+}

@@ -1,0 +1,15 @@
+(mapcar
+ #'(lambda (constructor)
+   (mapcar
+    #'(lambda (event)
+      (let ((map (funcall constructor)))
+        (define-key map (vector event) 'binding)
+        (let ((copy (copy-keymap map)))
+          (list (lookup-key map (vector event))
+                (lookup-key map (vector (car event)))
+                (where-is-internal 'binding map 'non-ascii)
+                (mapcar 'car (if (char-table-p (car (cdr map))) (cdr (cdr map)) (cdr map)))
+                (lookup-key copy (vector event))
+                (mapcar 'car (if (char-table-p (car (cdr copy))) (cdr (cdr copy)) (cdr copy)))))))
+    '((4194304 . 97) (-1 . 97) (134217825 . 97))))
+ '(make-keymap make-sparse-keymap))

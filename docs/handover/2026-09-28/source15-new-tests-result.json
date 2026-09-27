@@ -1,0 +1,7 @@
+{
+  "exit_code": 101,
+  "seconds": 135.203882209,
+  "binary_sha256_before": "9a0f90b233e4068091c035c48daa98a37b9a596ed449ba5500f5e005eeaf460d",
+  "binary_sha256_after": "9a0f90b233e4068091c035c48daa98a37b9a596ed449ba5500f5e005eeaf460d",
+  "source_unchanged_after_execution": true
+}

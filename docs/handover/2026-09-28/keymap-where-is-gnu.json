@@ -1,0 +1,13 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list (mapcar (lambda (bit) (let* ((m (make-keymap)) (e (logior 97 (lsh 1 bit))) (k (vector e))) (define-key m k 'binding) (list k (where-is-internal 'binding m t) (lookup-key m [1]) (mapcar 'car (cddr m))))) '(22 23 24 25 26 27)) (let ((m (make-keymap))) (define-key m [1] 'control) (define-key m [67108961] 'flag) (list (lookup-key m [1]) (lookup-key m [67108961]) (where-is-internal 'control m t) (where-is-internal 'flag m t)))))"
+  ],
+  "exit_code": 0,
+  "stdout": "((([4194401] [4194401] nil (4194401)) ([8388705] [8388705] nil (8388705)) ([16777313] [16777313] nil (16777313)) ([33554529] [33554529] nil (33554529)) ([67108961] [67108961] nil (67108961)) ([134217825] [134217825] nil nil)) (control flag [1] [67108961]))",
+  "stderr": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+}

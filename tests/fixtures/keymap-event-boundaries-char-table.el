@@ -1,0 +1,1 @@
+(mapcar (lambda (key) (let ((map (make-keymap))) (define-key map key 'binding) (list (lookup-key map key) (where-is-internal 'binding map 'non-ascii)))) '([27 27] [27 9] [27 67108961] [134217755] [201326689] [4194303] [1099511627873] [M-C-f9] [f9 27 27]))

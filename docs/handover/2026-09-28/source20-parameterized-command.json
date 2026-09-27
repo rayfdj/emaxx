@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source20-libtest",
+    "--exact",
+    "lisp::primitives::tests::char_table_parameterized_key_events_keep_physical_slots_without_a_dump",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "89996a8ce07d53a598c7dad5ed536c8d24262a1af2a4175ed3da1c0cc7fd9b1a"
+}
