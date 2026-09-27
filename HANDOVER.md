@@ -1,9 +1,9 @@
 # Resume the compact runtime goal here
 
-**Development continuation:** the char-table draft is wired, keymap consumers
-enumerate its authoritative storage, and Lisp terminal readers preserve mouse events.
-Read the [latest input continuation](docs/runtime-representation-input-checkpoint.md)
-for implementation, preserved failures, exact selected evidence and pending validation.
+**Development continuation:** char tables and keymap enumeration use authoritative
+storage, terminal readers preserve mouse events, and buffer/marker ordering reads
+actual objects. Read the [latest ordering continuation](docs/runtime-representation-ordering-checkpoint.md)
+for the completed failed full gate, its fixture correction, runtime repair and evidence.
 Do not reapply the old patch on this branch. The full goal remains incomplete.
 
 **Active goal:** implement one compact, authoritative Lisp object representation
@@ -15,11 +15,12 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
-2. [Current input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
-3. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
-4. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
-5. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
-6. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
+2. [Current ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
+3. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
+4. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
+5. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
+6. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
+7. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
 
 The original main checkpoint packaged its unfinished work as
 [char-table-wip.patch](docs/handover/2026-09-27/char-table-wip.patch). That patch is
