@@ -1,22 +1,25 @@
 The full objective is retained in [runtime-representation-goal.md](runtime-representation-goal.md).
 This record tracks evidence and outstanding work; no completion is claimed.
 
-Current checkpoint, 2026-09-27: source70's overlay-plist implementation is
-committed at `f2e23fc22e8a7d77c0c30733097509937926a838`; the verified evidence
-head is `9409794ab544ac4c36a870b4ba981688e99631ad`. See
-[the property-storage checkpoint](runtime-representation-overlay-checkpoint.md)
-for 438 distinct local passes, two unexecuted release-only TTY tests, and both
-completed Linux workflows. The unfavorable 8.511x buffer-body timing remains
-visible and is not an authoritative performance comparison.
+Current checkpoint, 2026-09-27: canonical overlays and GNU's interval tree are
+committed at `91000d02da3729a38d7ceb6c1a929ade1d347eba`. See
+[the object checkpoint](runtime-representation-overlay-object-checkpoint.md).
+The exact production source passes 443 distinct local controls and both
+existing Linux workflows: 51 overlay/20 root controls, plus all 406 buffer and
+five allocation GNU outcomes. Strict Clippy, all-target checking, formatting
+and 202,656 generated C/Rust interval operations pass. Two existing local
+release-only TTY tests remain unexecuted. The unfavorable CI buffer body ratio
+8.392x remains visible and is not an authoritative performance comparison.
 
-Source71 implements the canonical overlay object and GNU interval tree. Strict
-Clippy, all-target checking and 202,656 generated C/Rust tree operations pass.
-The initial runtime run exposed a test-baseline error; adversarial sorting
-exposed a Rust-sort panic, now fixed using GNU's `qsort`. The corrected source
-passes 443 distinct local controls; the same two release-only TTY tests remain
-unexecuted. Linux CI is pending. See [the object checkpoint](runtime-representation-overlay-object-checkpoint.md).
-Char-table and frame native bridges, 80-byte conses and the full runtime,
-soundness, validation and performance goals remain open.
+The next char-table baseline reproduces wrong default/inheritance/range values,
+history-dependent equality, uninitialized extra-slot values and retention of
+an overwritten object. GNU reclaims that object after its allocating call
+frame returns; Rust's write log keeps it. The failing test and raw results are
+preserved in the ongoing source72 work; no char-table fix is claimed here.
+Char-table/frame native bridges, 80-byte conses and the full runtime,
+soundness, validation and performance goals remain open. Source70's earlier
+[property-storage checkpoint](runtime-representation-overlay-checkpoint.md)
+remains available independently.
 
 Starting revision: `45eb1531caabb35b816fc83e2e8a5b88090dae4e`, freshly fetched
 from `origin/main` on 2026-09-21. Implementation branch: `compact-runtime`.
@@ -26,7 +29,7 @@ The pre-existing September 21 audit and all its raw artifacts are preserved.
 | --- | --- | --- |
 | 1. Reproducible starting point | Source, binary, image, toolchain and oracle identities; fresh reproductions; original and corrected baselines | Starting identities recorded; all six original evaluator findings reproduced; corrected release and own image built; original/corrected/GNU diagnostic timing comparison preserved |
 | 2. GNU architectural reference | Per-change C owner, semantic comparison, explained necessary Rust deviations | Evaluator repairs trace to `eval.c:eval_sub`, `apply_lambda`, `Fautoload_do_load`, and `fns.c:list_length` |
-| 3. Authoritative representation | One-word values; two-word conses; shared interpreter/VM/native payload; no ordinary-path mirror lookup or synchronization; other object kinds reviewed | Open; values are one word; buffers/terminals/markers share object words; source71 canonical overlays pass selected local controls; Linux CI pending; conses remain 80 bytes with duplicate payload and synchronization; char-table/frame still use native bridges |
+| 3. Authoritative representation | One-word values; two-word conses; shared interpreter/VM/native payload; no ordinary-path mirror lookup or synchronization; other object kinds reviewed | Open; values are one word; buffers/terminals/markers share object words; source71 canonical overlays pass selected local and Linux controls; conses remain 80 bytes with duplicate payload and synchronization; char-table/frame still use native bridges |
 | 4. Allocation/GC/rooting | Correct accounting, live/dead-root controls, dumped-object treatment, enforced runtime ownership | Open; source65 passes all19 unchanged Linux root controls and25 macOS evaluator/root controls without temporary diagnostics; allocation accounting and Rust soundness still require completion |
 | 5. VM/call efficiency | Fresh comparable profiles, reduced instructions/allocations, preserved call semantics | Open; correctness repair precedes optimization |
 | 6. Adversarial de-cheating | Closed applicable September 21 findings, meaningful differential cases, audited runtime and measurement paths, reporting negative controls | Open; reproducing call semantics and platform dispatch first |

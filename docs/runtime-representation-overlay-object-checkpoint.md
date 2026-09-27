@@ -1,6 +1,6 @@
-# Canonical overlay checkpoint — local controls complete, Linux CI pending
+# Canonical overlay checkpoint — selected local and Linux controls verified
 
-Source71 replaces the remaining overlay ID with a canonical 32-byte GNU
+Commit `91000d02da3729a38d7ceb6c1a929ade1d347eba` (source71) replaces the overlay ID with a canonical 32-byte GNU
 `Lisp_Overlay`: one vector header, its actual Lisp plist, a weak buffer pointer,
 and an owned interval-node pointer. Interpreter, bytecode and native words use
 that same object address and `PVEC_OVERLAY=4` header. Char-tables and frames
@@ -27,7 +27,8 @@ no memory reduction or elapsed-time improvement is claimed.
 
 The migration also follows GNU's full-buffer endpoint clamping, marker-owner
 and error-check order, `move-overlay` default buffer, current `overlay-lists`
-shape, interval enumeration, and primary/secondary priority ordering. GNU's nesting/secondary comparison
+shape, interval enumeration, and primary/secondary priority ordering.
+GNU's nesting/secondary comparison
 is not a total order: the adversarial seed in `overlay-sort-diagnostic-71.json`
 made Rust's `sort_by` panic. Sorting now uses the same platform `qsort` as GNU,
 with a callback that cannot call Lisp or unwind. The crossing-interval Lisp
@@ -61,7 +62,8 @@ Validation at this point:
   insertion/removal, moves, both gap operations, all traversal orders, narrowing,
   ties and empty intervals. An independent linear model checks endpoints,
   membership and complete output inventories. Source/executable hashes and all
-  raw inputs and outputs are retained in `overlay-itree-final-71e/`, with compiler versions and GNU revision/diff.
+  raw inputs and outputs are retained in `overlay-itree-final-71e/`, with
+  compiler versions and GNU revision/diff.
 - Negative controls reject wrong endpoints, missing/duplicate members,
   incorrect counts, truncated/extra output, unsuccessful children and
   timeouts with partial output. All four evidence-control tests pass.
@@ -86,14 +88,43 @@ Validation at this point:
   There are 443 distinct passes across these overlapping selections and the
   same two unexecuted release-only tests. The build has zero compiler warnings;
   its opt-level-1 test profile is not the release or full gate profile.
-- Linux CI, current-source release/full gates and locked performance
-  measurements are pending. The source70 checkpoint remains independently
-  available.
+- Both existing Linux workflows pass and their raw artifact archives are
+  independently verified: [overlay/buffer](https://github.com/rayfdj/emaxx/actions/runs/36288069773)
+  runs all 51 overlay controls and matches all 406 selected GNU buffer outcomes;
+  [roots/allocation](https://github.com/rayfdj/emaxx/actions/runs/36288071452)
+  runs all 20 root controls and matches all five selected GNU allocation
+  outcomes. Both have zero ignores/skips, successful processes, complete matching
+  inventories, clean committed source and their own executable/image identities.
+  Each archive passes 31 consistency checks. Existing CI records a fresh Rust
+  test build/path but does not retain that test executable's SHA; that evidence
+  limitation remains explicit.
+- Current-source release/full gates and locked performance measurements remain
+  pending. The source70 checkpoint remains independently available.
+
+The CI timing is still unfavorable. The buffer file's recorded body time is
+2,820 ms in Rust versus 336 ms in GNU (reported ratio 8.392x); setup is
+3,999/152 ms and total is 6,862/500 ms. Allocation body time is 38/5 ms,
+setup 483/75 ms and total 551/100 ms; that body is too short for a useful speed
+claim. These are uncontrolled single samples on CI, not paired performance
+measurements or evidence of improvement over source70.
+
+The retained archives have SHA-256:
+
+- Overlay/buffer: `82dbbe50e055e950224d76abc45234dc4d6346c779d4cae984a467b666a84785`.
+- Roots/allocation: `8dfb79d67f9b445775ee4e94a95b2d6f9e3ade1f437ec4e16e92d5e527ce3632`.
+
+`overlay-object-milestone-71.json` links the source, audit, local receipts and
+verified CI reports under `target/runtime-goal/`. The generated tree comparison
+can be reproduced with `python3 tools/check_overlay_itree.py --gnu-src ../emacs
+--output target/overlay-itree-check` using a freshly named output directory and
+a configured GNU checkout; its rejection controls run with
+`python3 -m unittest discover -s tools -p test_overlay_itree.py`.
 
 Native controls require the raw header, plist, buffer and interval fields,
 mutation visibility and bytecode word identity. GC controls retain live plist
 cycles, verify weak buffer ownership and require reclamation after the last
-root is removed. They pass on the final source, including the complete grouped execution.
+root is removed. They pass on the final source, including the complete grouped
+execution.
 Category/alias-dependent evaporation on text deletion and nested overlay-hook
 state still need the broader GNU semantics audit. Existing display-priority
 approximations and indirect-buffer text ownership are not certified here.
