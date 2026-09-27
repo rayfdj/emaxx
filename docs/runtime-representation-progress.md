@@ -1484,3 +1484,14 @@ are pending. No upstream selectors, expectations, timeouts or performance inputs
 change. Overlay ID scans/native handles remain for the next representation step.
 The80-byte cons implementation still makes these real lists expensive; no
 performance improvement is claimed. Audit:target/runtime-goal/overlay-plist-audit-70.json.
+
+
+Overlay property-storage validation completed at f2e23fc:438 distinct local
+tests pass; two existing release-only TTY integration tests remain unexecuted
+and are not counted as passes. Exact source/binary verification and zero-warning
+checks pass. Linux passes47 overlay controls,19 roots,406 GNU buffer outcomes
+and5 GNU allocation outcomes, with zero skips/ignores and raw evidence verified.
+Unfavorable diagnostic body times remain2613ms/GNU307ms(buffer) and45ms/GNU8ms
+(allocation); no controlled performance change is established. Full details:
+`docs/runtime-representation-overlay-checkpoint.md`. The complete goal remains
+active, including the80-byte conses and three native bridge kinds.
