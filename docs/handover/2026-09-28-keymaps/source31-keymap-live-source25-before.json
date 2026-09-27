@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((input \"(list\\n (let* ((map (make-keymap)) (table (car (cdr map))) (seen nil))\\n   (aset table 65 'first)\\n   (aset table 90 'before)\\n   (map-keymap #'(lambda (key value)\\n                  (setq seen (cons (list key value) seen))\\n                  (when (equal key 65)\\n                    (aset table 90 (list 'after))\\n                    (garbage-collect))) map)\\n   (nreverse seen))\\n (let ((map (make-keymap)) (seen nil))\\n   (define-key map [(65 . 66)] 'first)\\n   (define-key map [(90 . 91)] 'second)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (nreverse seen))\\n (let* ((map (make-keymap)) (tail (cdr map)) (seen nil))\\n   (setcdr tail (cons (cons 65 'sparse) (cdr tail)))\\n   (define-key map [65] 'table)\\n   (define-key map [(65 . 66)] 'range)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (list (lookup-key map [65]) (nreverse seen)))\\n (let ((map (make-keymap)) (seen nil))\\n   (define-key map [65] nil)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (nreverse seen)))\\n\") (read (read-from-string input))) (prin1 (list (equal (string-trim (substring input (cdr read))) \"\") (eval (car read) t))))"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source31-baseline-home"
+  },
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.772670125,
+  "stdout": "(t (((65 first) (90 before)) (((65 . 66) first) ((90 . 91) second)) (range (((65 . 66) range))) ((65 nil))))",
+  "stderr": "",
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "60f7ee11dfa84956192c7982845f0b8446705c5f8f66839d3f2cbc6494d8dbc7",
+  "source": "source25 / 878588f3"
+}

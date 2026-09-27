@@ -1,0 +1,13 @@
+{
+  "command": [
+    "cargo",
+    "clean",
+    "--package",
+    "emaxx",
+    "--release",
+    "--target-dir",
+    "target/runtime-resume-source25"
+  ],
+  "exit_code": 101,
+  "reason": "Alternate target initially lacked CACHEDIR.TAG; cargo refused to clean. No build started. Copied the original Cargo cache tag into the newly created dependency clone before retrying."
+}

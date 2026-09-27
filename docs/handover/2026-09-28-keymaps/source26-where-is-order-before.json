@@ -1,0 +1,28 @@
+[
+  {
+    "editor": "gnu",
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((map (make-sparse-keymap)) (menu (make-sparse-keymap))) (use-global-map map) (define-key map [67108927] 'menu-hint-action) (define-key map [134217759] 'menu-hint-action) (define-key menu [item] '(menu-item \"Action\" menu-hint-action)) (define-key map [menu-bar sample] menu) (prin1 (list (where-is-internal 'menu-hint-action) (where-is-internal 'menu-hint-action nil t) where-is-preferred-modifier)))"
+    ],
+    "exit_code": 0,
+    "stdout": "(([67108927] [134217759] [menu-bar sample item]) [134217759] nil)",
+    "stderr": ""
+  },
+  {
+    "editor": "emaxx",
+    "command": [
+      "target/runtime-resume-source25/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((map (make-sparse-keymap)) (menu (make-sparse-keymap))) (use-global-map map) (define-key map [67108927] 'menu-hint-action) (define-key map [134217759] 'menu-hint-action) (define-key menu [item] '(menu-item \"Action\" menu-hint-action)) (define-key map [menu-bar sample] menu) (prin1 (list (where-is-internal 'menu-hint-action) (where-is-internal 'menu-hint-action nil t) where-is-preferred-modifier)))"
+    ],
+    "exit_code": 0,
+    "stdout": "(([134217759] [67108927] [menu-bar sample item]) [134217759] nil)",
+    "stderr": ""
+  }
+]

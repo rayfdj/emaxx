@@ -1,0 +1,12 @@
+{
+  "emaxx": {
+    "path": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation/release/emaxx",
+    "sha256": "e2288502e8d71576f2c8a8c1032cb2f06ee1316e262144a68b3614539df397ef",
+    "bytes": 13374528
+  },
+  "emaxx.pdmp": {
+    "path": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation/release/emaxx.pdmp",
+    "sha256": "c1af4785ee0d5a4ecf87a11acedf001174728a587d2b511b572b83e3cd0a13ee",
+    "bytes": 19052344
+  }
+}

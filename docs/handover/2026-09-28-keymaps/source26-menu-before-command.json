@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source26-menu-before-libtest",
+    "tty_menu_key_hints_follow_preferred_binding_and_live_removal",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx"
+}

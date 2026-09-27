@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 ;;; -*- lexical-binding: t; -*-\n(let ((build\n       (lambda (compressed)\n         (let* ((depth2 (concat \"#^^[2 4096 \" (prin1-to-string compressed)\n                                (apply #'concat (make-list 31 \" nil\")) \"]\"))\n                (depth1 (concat \"#^^[1 0 nil \" depth2\n                                (apply #'concat (make-list 14 \" nil\")) \"]\")))\n           (read (concat \"#^[default nil char-code-property-table nil \" depth1\n                         (apply #'concat (make-list 63 \" nil\"))\n                         \" nil nil nil nil nil]\"))))))\n  (let* ((simple (funcall build (string 1 3 0 7 8)))\n         (rle (funcall build (string 2 4 131 0 130 9)))\n         (copy (copy-sequence simple))\n         (before (equal simple copy)))\n    (list before\n          (mapcar (lambda (char) (aref simple char)) '(4096 4099 4100 4101 4102 4223))\n          (mapcar (lambda (char) (aref rle char)) '(4096 4097 4098 4099 4100 4101 4102 4223))\n          (equal simple copy)\n          (progn (aref copy 4100) (equal simple copy))\n          (progn (aset simple 4100 'changed) (list (aref simple 4100) (aref copy 4100))))))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.7872509956359863,
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "a5665e76e0f3b1ec83d73e19cbbe18a69a5a33c1b1dbe346500e7efdc6924acf",
+  "stdout_sha256": "77360ac4ee1fd1a7c285257b8578dcdd42fb9b902532bb5a348ef64b9528267e",
+  "stdout_bytes": 89,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

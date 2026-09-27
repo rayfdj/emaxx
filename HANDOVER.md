@@ -1,8 +1,8 @@
 # Resume the compact runtime goal here
 
-**Development continuation:** the char-table draft has been applied and wired on
-`runtime-char-tables`. Read the [28 September continuation](docs/runtime-representation-char-table-checkpoint.md)
-for implementation, failures, exact selected evidence and pending validation.
+**Development continuation:** the char-table draft is wired, and keymap consumers
+now enumerate its authoritative storage. Read the [latest keymap continuation](docs/runtime-representation-keymap-checkpoint.md)
+for implementation, preserved failures, exact selected evidence and pending validation.
 Do not reapply the old patch on this branch. The full goal remains incomplete.
 
 **Active goal:** implement one compact, authoritative Lisp object representation
@@ -14,9 +14,10 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
-2. [Current char-table continuation: implementation, failures and validation](docs/runtime-representation-char-table-checkpoint.md).
-3. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
-4. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
+2. [Current keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
+3. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
+4. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
+5. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
 
 The original main checkpoint packaged its unfinished work as
 [char-table-wip.patch](docs/handover/2026-09-27/char-table-wip.patch). That patch is

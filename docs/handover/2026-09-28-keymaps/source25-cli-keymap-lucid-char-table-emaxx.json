@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (progn\n (defvar char-table-lucid-mode nil)\n (let ((map (make-keymap)))\n  (define-key map [(97)] 'plain)\n  (define-key map [(control 97)] 'control)\n  (with-temp-buffer\n    (use-local-map map)\n    (let ((minor-mode-map-alist (list (cons 'char-table-lucid-mode map)))\n          (char-table-lucid-mode t))\n      (list (lookup-key map [97])\n            (lookup-key map [(97)])\n            (lookup-key map [(control 97)])\n            (key-binding [(control 97)])\n            (minor-mode-key-binding [(control 97)]))))))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.7392511367797852,
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "37a3a4487dae1ed6233ad6ae7a576ed5ab0848bf6b39916ef71edaefedcb1e7d",
+  "stdout_sha256": "d87476dd170e52752bcace2486d22f43e96876fd0c07d581c8aedd57f09d6c87",
+  "stdout_bytes": 65,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

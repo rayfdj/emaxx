@@ -3,6 +3,7 @@ use super::*;
 mod buffer_edit;
 mod buffer_meta;
 mod collections;
+pub(super) use collections::map_char_table_with;
 mod comp;
 pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;

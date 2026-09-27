@@ -1,0 +1,38 @@
+[
+  {
+    "editor": "gnu",
+    "command": [
+      "/Users/nbmhqa186/projects/emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(prin1 (progn (require 'xt-mouse) (list (lookup-key global-map [menu-bar mouse-1]) (lookup-key global-map [menu-bar down-mouse-1]) (key-binding [menu-bar mouse-1] t) (key-binding [menu-bar down-mouse-1] t))))"
+    ],
+    "environment_overrides": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-cli-home"
+    },
+    "exit_code": 0,
+    "stdout": "(menu-bar-open-mouse nil menu-bar-open-mouse nil)",
+    "stderr": "",
+    "elapsed_seconds_diagnostic_only": 0.19612374999999999,
+    "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+  },
+  {
+    "editor": "emaxx",
+    "command": [
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(prin1 (progn (require 'xt-mouse) (list (lookup-key global-map [menu-bar mouse-1]) (lookup-key global-map [menu-bar down-mouse-1]) (key-binding [menu-bar mouse-1] t) (key-binding [menu-bar down-mouse-1] t))))"
+    ],
+    "environment_overrides": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-cli-home"
+    },
+    "exit_code": 0,
+    "stdout": "(menu-bar-open-mouse nil menu-bar-open-mouse nil)",
+    "stderr": "",
+    "elapsed_seconds_diagnostic_only": 0.8979350830000001,
+    "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7"
+  }
+]

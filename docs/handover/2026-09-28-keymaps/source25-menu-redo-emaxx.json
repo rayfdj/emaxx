@@ -1,0 +1,13 @@
+{
+  "command": [
+    "target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list (where-is-internal 'undo-redo nil t) (mapcar #'key-description (where-is-internal 'undo-redo)) (key-description [134217759]) (key-description [67108927]) (lookup-key global-map [134217759]) (lookup-key global-map [67108927])))"
+  ],
+  "exit_code": 0,
+  "stdout": "([134217759] (\"C-?\" \"C-M-_\" \"<menu-bar> <edit> <undo-redo>\") \"C-M-_\" \"C-?\" undo-redo undo-redo)",
+  "stderr": "",
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7"
+}

@@ -1,0 +1,26 @@
+{
+  "command": [
+    "sh",
+    "tools/build-image.sh",
+    "target/runtime-resume-source25/release/emaxx"
+  ],
+  "environment_overrides": {
+    "EMAXX_IMAGE_FORCE": "1"
+  },
+  "exit_code": 0,
+  "seconds": 21.641437292099,
+  "artifacts": {
+    "emaxx": {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+      "sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+      "bytes": 13393456
+    },
+    "emaxx.pdmp": {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx.pdmp",
+      "sha256": "b1f315418cb286c176c315b488cb6c2ce67788e687662dae20c69b44e2dee660",
+      "bytes": 19205680
+    }
+  },
+  "original_source19_binary_unchanged": true,
+  "source_unchanged": true
+}

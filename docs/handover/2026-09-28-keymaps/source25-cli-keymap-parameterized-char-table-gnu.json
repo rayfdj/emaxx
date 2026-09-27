@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n #'(lambda (constructor)\n   (mapcar\n    #'(lambda (event)\n      (let ((map (funcall constructor)))\n        (define-key map (vector event) 'binding)\n        (let ((copy (copy-keymap map)))\n          (list (lookup-key map (vector event))\n                (lookup-key map (vector (car event)))\n                (where-is-internal 'binding map 'non-ascii)\n                (mapcar 'car (if (char-table-p (car (cdr map))) (cdr (cdr map)) (cdr map)))\n                (lookup-key copy (vector event))\n                (mapcar 'car (if (char-table-p (car (cdr copy))) (cdr (cdr copy)) (cdr copy)))))))\n    '((4194304 . 97) (-1 . 97) (134217825 . 97))))\n '(make-keymap make-sparse-keymap))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.18211984634399414,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "728b248107c3744a478bcec5d54c5c634d6dc93b15e8c9bf3d96e4760a78ad71",
+  "stdout_sha256": "b30182aa4d14d5b93fa8b742da3f1f208fee0eabc93ee01ced70702921acb053",
+  "stdout_bytes": 285,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

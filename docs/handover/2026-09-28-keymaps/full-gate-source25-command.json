@@ -1,0 +1,16 @@
+{
+  "command": [
+    "python3",
+    "tools/serial_grouped_gate.py",
+    "--scope",
+    "full",
+    "--artifact-root",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source25"
+  ],
+  "commit": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "working_tree_clean_at_start": true,
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "target/runtime-resume"
+  },
+  "source_manifest": "source25-manifest.json"
+}

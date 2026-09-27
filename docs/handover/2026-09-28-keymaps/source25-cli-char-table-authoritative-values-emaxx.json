@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 ;;; -*- lexical-binding: t; -*-\n(let* ((purpose (make-symbol \"char-table-object-purpose\"))\n       (parent (make-char-table purpose 'parent))\n       (child (make-char-table purpose 'initial))\n       results)\n  (set-char-table-parent child parent)\n  (push (aref child 65) results)\n  (set-char-table-range child nil 'default)\n  (push (aref child 65) results)\n  (aset child 65 nil)\n  (push (aref child 65) results)\n  (set-char-table-range child nil nil)\n  (push (aref child 65) results)\n  (set-char-table-range child t nil)\n  (push (aref child 66) results)\n  (set-char-table-range child nil 'replacement-default)\n  (push (aref child 66) results)\n  (set-char-table-range child '(10 . 20) 'range)\n  (push (char-table-range child '(11 . 14)) results)\n  (let ((first (make-char-table purpose nil))\n        (second (make-char-table purpose nil)))\n    (aset first 700 'old)\n    (aset first 700 'current)\n    (aset second 700 'current)\n    (push (equal first second) results))\n  (put purpose 'char-table-extra-slots 2)\n  (let ((with-extras (make-char-table purpose 'slot-initial)))\n    (push (list (char-table-extra-slot with-extras 0)\n                (char-table-extra-slot with-extras 1)\n                (eq purpose (char-table-subtype with-extras))) results))\n  (let ((weak (make-hash-table :test 'eq :weakness 'key)))\n    ;; The table stays live; replacing a slot must drop the old value even\n    ;; when lookup returns the new value correctly through another index.\n    (funcall (lambda ()\n               (let ((old (vector 'overwritten-value)))\n                 (puthash old 'present weak)\n                 (aset child 900 old)\n                 (aset child 900 'replacement)\n                 (setq old nil))))\n    (garbage-collect)\n    (push (list (aref child 900) (hash-table-count weak)) results))\n  (nreverse results))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 1.2763659954071045,
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "23be981aa9b40b9083d6fedf40095f27c0a7e17b09160d89209f453067a00430",
+  "stdout_sha256": "b13ff26e468e066071392098a1fcc49fe7b5a3b976b775816da194f706ef5197",
+  "stdout_bytes": 113,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

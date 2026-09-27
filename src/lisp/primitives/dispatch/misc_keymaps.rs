@@ -15,76 +15,18 @@ fn map_keymap_direct_value(
     function: &Value,
     keymap: &Value,
     env: &mut Env,
-) -> Result<(), LispError> {
-    let full_table = keymap_char_table_value(interp, keymap).and_then(|table| match table.kind() {
-        Kind::CharTable(id) => Some(id),
-        _ => None,
-    });
-    // GNU stores a full keymap's character bindings in ONE place (the
-    // char-table), and keymap.c map_keymap_internal walks that store once,
-    // with map_char_table reporting maximal ranges of equal values.  Emaxx
-    // keeps a char-table facade AND direct bindings for the same keys, so
-    // the walk must merge the two stores into one segment list -- reporting
-    // each binding once -- instead of walking both (describe-map printed
-    // every char range twice through keymap-canonicalize's map-keymap).
-    let mut segments: Vec<(i64, i64, Value)> = Vec::new();
-    if let Some(table_id) = full_table {
-        for entry in interp
-            .char_table_effective_ranges(table_id)
-            .unwrap_or_default()
-        {
-            segments.push((i64::from(entry.start), i64::from(entry.end), entry.value));
-        }
-    }
-    segments.sort_by_key(|(start, _, _)| *start);
-
-    let bindings = keymap_direct_bindings(interp, keymap)?;
-    let mut character_bindings = Vec::new();
-    let mut sparse_bindings = Vec::new();
-    for binding in bindings.iter() {
-        let event = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
-        if full_table.is_some()
-            && let Kind::Integer(code) = event.kind()
-        {
-            character_bindings.push((code, binding.value));
-        } else {
-            sparse_bindings.push((event, binding.value));
-        }
-    }
-    // A direct character binding duplicating its char-table facade entry is
-    // the same stored binding seen through the second store; only bindings
-    // the char-table does not carry are additional.
-    character_bindings.retain(|(code, value)| {
-        !segments.iter().any(|(start, end, stored)| {
-            start <= code && code <= end && values_equal(interp, stored, value)
-        })
-    });
-    for (code, value) in character_bindings {
-        segments.push((code, code, value));
-    }
-    segments.sort_by_key(|(start, _, _)| *start);
-    let mut index = 0;
-    while index < segments.len() {
-        let (start, mut end, value) = segments[index];
-        while let Some((next_start, next_end, next_value)) = segments.get(index + 1) {
-            if *next_start != end.saturating_add(1) || !values_equal(interp, &value, next_value) {
-                break;
-            }
-            end = *next_end;
-            index += 1;
-        }
-        let event = if start == end {
-            Value::Integer(start)
-        } else {
-            Value::cons(Value::Integer(start), Value::Integer(end))
-        };
-        interp.call_function_value(*function, None, &[event, value], env)?;
-        index += 1;
-    }
-    for (event, value) in sparse_bindings {
-        interp.call_function_value(*function, None, &[event, value], env)?;
-    }
-    Ok(())
+) -> Result<Value, LispError> {
+    interp.with_lisp_stack_roots(&vec![*function, *keymap], |interp| {
+        map_keymap_own_entries(
+            interp,
+            *keymap,
+            &mut |interp, key, value, env| {
+                interp.call_function_value(*function, None, &[key, value], env)?;
+                Ok(())
+            },
+            env,
+        )
+    })
 }
 
 fn map_keymap_value(
@@ -102,6 +44,7 @@ fn map_keymap_value(
     }
 
     map_keymap_direct_value(interp, function, keymap, env)?;
+    ensure_runtime_keymap_current(interp, keymap)?;
     for parent in keymap_parent_values(interp, keymap) {
         map_keymap_value(interp, function, &parent, env, visited)?;
     }
@@ -234,7 +177,14 @@ define_dispatch!(
                         Kind::Integer(end) if (0..=0x3f_ffff).contains(&end) => end,
                         _ => return Err(wrong_type_argument("characterp", end)),
                     };
-                    keymap_define_character_range(interp, &args[0], start, end, args[2])?;
+                    keymap_define_character_range(
+                        interp,
+                        &args[0],
+                        start,
+                        end,
+                        args[2],
+                        args.get(3).is_some_and(Value::is_truthy),
+                    )?;
                     return Ok(args[2]);
                 }
                 // keymap.c:Fdefine_key converts Lucid-style event lists in
@@ -265,7 +215,7 @@ define_dispatch!(
                 }
                 let key_parts = key_sequence_definition_parts(&normalized_key)?;
                 let key = key_sequence_binding_text(&key_parts_to_sequence_value(&key_parts))?;
-                if def.is_nil() && args.get(3).is_some_and(Value::is_truthy) {
+                if args.get(3).is_some_and(Value::is_truthy) {
                     keymap_remove_binding(interp, &args[0], &key_parts)?;
                 } else {
                     keymap_define_binding_with_placement(
@@ -438,11 +388,7 @@ define_dispatch!(
                 if !is_keymap_value(interp, &args[1]) {
                     return Err(LispError::WrongTypeArgument("keymapp".into(), args[1]));
                 }
-                map_keymap_direct_value(interp, &args[0], &args[1], env)?;
-                Ok(keymap_parent_values(interp, &args[1])
-                    .into_iter()
-                    .next()
-                    .unwrap_or(Value::Nil))
+                map_keymap_direct_value(interp, &args[0], &args[1], env)
             }
             "describe-vector" => describe_vector_value(interp, args, env),
             "use-local-map" => {

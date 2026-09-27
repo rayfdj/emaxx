@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source29-libtest",
+    "char_table_keymap_enumerators_read_live_slots_and_preserve_binding_identity",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "binary_sha256": "3d171410f1318830f32be7137d294f5136fc3e11e651ed0f85a06c976923cec6"
+}

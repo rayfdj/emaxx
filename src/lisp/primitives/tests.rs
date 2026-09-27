@@ -10572,6 +10572,116 @@ fn char_table_keymap_ranges_validate_character_bounds() {
 }
 
 #[test]
+fn char_table_keymap_enumerators_read_live_slots_and_preserve_binding_identity() {
+    let program = include_str!("../../../tests/fixtures/keymap-char-table-authority.el");
+    let expected = "(((raw-key-command ([65])) ([(65 . 66)])) (([] [67]) ([67 120])) (nil t parent nil) ((65 t nil) (66 nil t)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap authority fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap authority fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap authority result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_callbacks_see_live_slots_and_keep_distinct_ranges() {
+    let program = include_str!("../../../tests/fixtures/keymap-live-char-table.el");
+    let expected = "(((65 first) (90 (after))) (((65 . 66) first) ((90 . 91) second)) (range (((65 . 66) range) (65 sparse))) ((65 nil)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read live keymap fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate live keymap fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print live keymap result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_traversal_preserves_aliases_parents_and_meta_order() {
+    let program = include_str!("../../../tests/fixtures/keymap-traversal-char-table.el");
+    let expected = "((([] [98] [97] [98 122] [97 122]) ([98 122 113] [97 122 113])) (([] [80]) ([80 120])) (([] [27] [134217826] [134217825]) ([27] [27 97] [27 98]) ([102] [134217826 121] [134217825 120])) ([97 98] [120]) (([67108927] [134217759] [menu-bar sample item]) [134217759]))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read traversal fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate traversal fixture");
+    let printed =
+        call(&mut interp, "prin1-to-string", &[result], &mut env).expect("print traversal result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_public_tail_survives_api_writes_and_live_callbacks() {
+    let program = include_str!("../../../tests/fixtures/keymap-public-tail.el");
+    let expected = "((table (65 . sparse) ((65 table) (f10 symbol-command) (65 sparse))) (sparse (65 . sparse)) ((65 first) (66 after)) ([65 120]))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap storage fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap storage fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap storage result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_range_removal_preserves_sparse_storage_and_inheritance() {
+    let program = include_str!("../../../tests/fixtures/keymap-range-removal.el");
+    let expected = "((parent nil nil nil ((67 third))) (((65 . 66) replacement) (70 retained) (66 replacement) (65 replacement)) (nil ((70 retained))))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap storage fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap storage fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap storage result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
 fn char_table_parameterized_key_events_keep_physical_slots_without_a_dump() {
     let program = include_str!("../../../tests/fixtures/keymap-parameterized-char-table.el");
     let expected = "(((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))) ((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))))";

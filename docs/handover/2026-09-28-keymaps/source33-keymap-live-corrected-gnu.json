@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((input \"(list\\n (let* ((map (make-keymap)) (table (car (cdr map))) (seen nil))\\n   (aset table 65 'first)\\n   (aset table 90 'before)\\n   (map-keymap #'(lambda (key value)\\n                  (setq seen (cons (list key value) seen))\\n                  (if (equal key 65)\\n                      (progn (aset table 90 (list 'after))\\n                             (garbage-collect)))) map)\\n   (nreverse seen))\\n (let ((map (make-keymap)) (seen nil))\\n   (define-key map [(65 . 66)] 'first)\\n   (define-key map [(90 . 91)] 'second)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (nreverse seen))\\n (let* ((map (make-keymap)) (tail (cdr map)) (seen nil))\\n   (setcdr tail (cons (cons 65 'sparse) (cdr tail)))\\n   (define-key map [65] 'table)\\n   (define-key map [(65 . 66)] 'range)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (list (lookup-key map [65]) (nreverse seen)))\\n (let ((map (make-keymap)) (seen nil))\\n   (define-key map [65] nil)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (nreverse seen)))\\n\") (read (read-from-string input))) (prin1 (list (equal (string-trim (substring input (cdr read))) \"\") (eval (car read) t))))"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "exit_code": 0,
+  "stdout": "(t (((65 first) (90 (after))) (((65 . 66) first) ((90 . 91) second)) (range (((65 . 66) range) (65 sparse))) ((65 nil))))",
+  "stderr": "",
+  "fixture_sha256": "30608ebd7868d53345659a9c9fd4013e3057ac286a7c702c183076ca31c8c231"
+}

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (constructor)\n   (let ((map (funcall constructor))\n         (first (make-symbol \"event\")) (second (make-symbol \"event\")))\n     (define-key map [1] 'control-byte)\n     (define-key map [67108961] 'control-flag)\n     (define-key map (vector first) 'first)\n     (define-key map (vector second) 'second)\n     (list (lookup-key map [1]) (lookup-key map [67108961])\n           (equal (where-is-internal 'control-byte map t) [1])\n           (equal (where-is-internal 'control-flag map t) [67108961])\n           (lookup-key map (vector first)) (lookup-key map (vector second))\n           (where-is-internal 'first map 'non-ascii)\n           (eq (aref (where-is-internal 'second map 'non-ascii) 0) (intern \"event\"))\n           (progn (define-key map [67108961] nil t)\n                  (list (lookup-key map [1]) (lookup-key map [67108961]))))))\n '(make-keymap make-sparse-keymap))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.1773390769958496,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "a206ba3d7c12b879453caaefb7004ac0d4e3dc161c99727eb74e247ebe28e691",
+  "stdout_sha256": "ef86107838275c6d42aa5aa681840cedb1a8855b5a8648a1aaf57011f32ac967",
+  "stdout_bytes": 143,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

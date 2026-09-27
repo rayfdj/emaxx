@@ -1,0 +1,30 @@
+{
+  "time_utc": "2026-09-27T19:14:20.799417+00:00",
+  "requested_by": "assistant",
+  "reason": "Invalid comparison setup: relative Lisp directory supplied to ttydiff makes the Emaxx EMACSLOADPATH relative. Opened temporary files change default-directory, so libraries are no longer found. A fresh absolute-path probe loads Org successfully in both editors. Stop this partial diagnostic and rerun all unmodified scenarios on source25 with absolute executable and Lisp paths. Also retains genuine mutable-error-string failures repaired in source24. No full pass is claimed.",
+  "pid": 26195,
+  "matches_so_far": 89,
+  "divergences_so_far": [
+    "DIVERGE [org-open]: 5 terminal difference(s)",
+    "DIVERGE [org-fold]: 11 terminal difference(s)",
+    "DIVERGE [org-fold-motion]: 11 terminal difference(s)",
+    "DIVERGE [org-cycle-children]: 9 terminal difference(s)",
+    "DIVERGE [org-todo]: 6 terminal difference(s)",
+    "DIVERGE [hscroll-disabled]: 13 terminal difference(s)",
+    "DIVERGE [async-shell]: 6 terminal difference(s)",
+    "DIVERGE [mx-shell]: 7 terminal difference(s)",
+    "DIVERGE [quit-key]: 1 terminal difference(s)",
+    "DIVERGE [edge-error-echo]: 1 terminal difference(s)",
+    "DIVERGE [isearch-other-key-exit]: 5 terminal difference(s)",
+    "DIVERGE [filename-shadow]: 1 terminal difference(s)",
+    "DIVERGE [f10-cycle]: 1 terminal difference(s)",
+    "DIVERGE [tmm-open]: 15 terminal difference(s)",
+    "DIVERGE [tmm-pick-file]: 23 terminal difference(s)",
+    "DIVERGE [tmm-cancel]: 1 terminal difference(s)",
+    "DIVERGE [mouse-bar-click]: 1 terminal difference(s)",
+    "DIVERGE [mouse-cmenu]: 1 terminal difference(s)",
+    "DIVERGE [lnum-mode]: 22 terminal difference(s)"
+  ],
+  "last_started": "RUN [109/223] lnum-org-fold",
+  "earlier_progress_correction": "Earlier user-facing count based on a log tail was incorrect. Complete-log results include earlier divergences; this note and raw log supersede that count."
+}

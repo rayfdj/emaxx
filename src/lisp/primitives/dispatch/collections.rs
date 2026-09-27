@@ -215,35 +215,29 @@ fn optimize_char_table(
 
 // chartab.c:map_char_table reuses one range cons and reads each node as the
 // walk reaches it. A snapshot of effective ranges loses callback mutations.
+type CharTableCallback<'a> = dyn FnMut(&mut Interpreter, Value, Value, CharTableRef, bool, &mut Env) -> Result<(), LispError>
+    + 'a;
+
 fn map_char_table_emit(
     interp: &mut Interpreter,
-    function: Value,
+    function: &mut CharTableCallback<'_>,
     range: Value,
-    mut value: Value,
+    value: Value,
     top: CharTableRef,
     decode: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if decode && let Some(Kind::Vector(values)) = top.extra(4).map(|value| value.kind()) {
-        let index = value.as_integer()?;
-        if let Ok(index) = usize::try_from(index)
-            && let Some(decoded) = values.get(index)
-        {
-            value = decoded;
-        }
-    }
     let key = if range.car()?.eq_value(range.cdr()?) {
         range.car()?
     } else {
         range
     };
-    call_function_value(interp, &function, &[key, value], env)?;
-    Ok(())
+    function(interp, key, value, top, decode, env)
 }
 
 fn map_char_table_node(
     interp: &mut Interpreter,
-    function: Value,
+    function: &mut CharTableCallback<'_>,
     node: Value,
     mut value: Value,
     range: Value,
@@ -333,15 +327,15 @@ fn map_char_table_node(
     })
 }
 
-fn map_char_table(
+pub(in crate::lisp::primitives) fn map_char_table_with(
     interp: &mut Interpreter,
-    function: Value,
+    function: &mut CharTableCallback<'_>,
     mut table: CharTableRef,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let range = Value::cons(Value::Integer(0), Value::Integer(0x3fffff));
     let decode = table.is_uniprop() && table.extra(1) == Some(Value::Integer(0));
-    interp.with_lisp_stack_roots(&vec![range, Value::CharTable(table), function], |interp| {
+    interp.with_lisp_stack_roots(&vec![range, Value::CharTable(table)], |interp| {
         let value = table.explicit_get(0);
         let mut value = map_char_table_node(
             interp,
@@ -375,6 +369,36 @@ fn map_char_table(
             map_char_table_emit(interp, function, range, value, table, decode, env)?;
         }
         Ok(Value::Nil)
+    })
+}
+
+fn map_char_table(
+    interp: &mut Interpreter,
+    function: Value,
+    table: CharTableRef,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.with_lisp_stack_roots(&function, |interp| {
+        map_char_table_with(
+            interp,
+            &mut |interp, key, mut value, top, decode, env| {
+                // chartab.c decodes Unicode properties for a Lisp callback,
+                // but leaves the stored value intact for a C callback.
+                if decode && let Some(Kind::Vector(values)) = top.extra(4).map(|value| value.kind())
+                {
+                    let index = value.as_integer()?;
+                    if let Ok(index) = usize::try_from(index)
+                        && let Some(decoded) = values.get(index)
+                    {
+                        value = decoded;
+                    }
+                }
+                call_function_value(interp, &function, &[key, value], env)?;
+                Ok(())
+            },
+            table,
+            env,
+        )
     })
 }
 

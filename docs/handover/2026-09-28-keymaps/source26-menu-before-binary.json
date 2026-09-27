@@ -1,0 +1,17 @@
+{
+  "build_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--all-features",
+    "--lib",
+    "--no-run",
+    "--message-format=json-render-diagnostics"
+  ],
+  "target_dir": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation",
+  "build_seconds": 51.48284602165222,
+  "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source26-menu-before-libtest",
+  "sha256": "372562b1a24d5c1c19d4d35a0ec8225b6d497f19e45ed5f4113a810c1c088f20",
+  "source_manifest": "source26-menu-before-manifest.json",
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx"
+}

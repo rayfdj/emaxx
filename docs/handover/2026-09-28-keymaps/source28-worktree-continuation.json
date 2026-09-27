@@ -1,0 +1,18 @@
+{
+  "main_source_commit": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "main_source_snapshot": "source25",
+  "main_validation": "Full serial gate and complete absolute-path terminal comparison running; preserve main software until both finish. Earlier source19 relative-path terminal comparison was interrupted by the assistant and is not a certificate.",
+  "detached_worktree": {
+    "root": "/private/tmp/emaxx-runtime-next-jlufuyff",
+    "repository": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+    "upstream_symlink": "/private/tmp/emaxx-runtime-next-jlufuyff/emacs",
+    "upstream_target": "/Users/nbmhqa186/projects/emacs",
+    "base_commit": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+    "purpose": "Prepare menu preferred-key repair while source25 full validation stays unchanged; detached worktree, no new branch."
+  },
+  "isolated_work": "New tty menu preferred-binding regression; source26 setup did not reproduce due to insertion order, source27 reverses that order and fails Action C-? vs GNU Action C-M-_. Source28 replaces manual selection from all bindings with where-is-internal FIRSTONLY=t and is under validation.",
+  "separate_observed_unfixed_issue": "source26-where-is-order-before.json: GNU returns root [67108927] before Meta-prefix [134217759]; Emaxx returns the reverse for that insertion order. The source28 menu fix does not claim to repair complete where-is traversal order.",
+  "source28_regression": "Passes; static checks running. The production change and one test are only in the detached worktree; main stays unchanged for source25 validation.",
+  "new_authority_failure": "source25-keymap-char-slot-authority.json: directly setting (cadr full-map) makes lookup-key see raw-key-command, but where-is misses it; GNU enumerates [65], then [(65 . 66)]. The remaining duplicate per-record character binding index also makes map-keymap merge stale values. This is a real unfinished char-table integration requirement, not excused by the selected 81 passing tests.",
+  "next_implementation": "After preserving validated menu change, in detached worktree: add failing GNU fixture for direct table stores, full-map nil-shadow vs remove inheritance, enumeration and prefix-map discovery; stop writing duplicate full-map character binding entries, make enumeration read table ranges directly, and share authoritative entries across map-keymap, accessible-keymaps, where-is and help. Preserve sparse lookup cache only for actual sparse entries. Correct breadth-first traversal/Meta folding/cycles from keymap.c, with differential probes. Do not mix these edits into the running source25 gate/TTY."
+}

@@ -1,0 +1,15 @@
+{
+  "command": [
+    "sh",
+    "tools/build-image.sh",
+    "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation/release/emaxx"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "environment_overrides": {
+    "EMAXX_IMAGE_FORCE": "1"
+  },
+  "exit_code": 0,
+  "elapsed_seconds": 20.607996916,
+  "source_unchanged": true,
+  "reason": "Use the normal build-image default ../emacs symlink, which resolves to the same pristine GNU tree. The first invocation unnecessarily set EMAXX_DUMP_SOURCE_DIRECTORY, enabling the test-provenance branch that also requires EMACS_TEST_DIRECTORY; that failure is retained."
+}
