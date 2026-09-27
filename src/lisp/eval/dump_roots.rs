@@ -1186,7 +1186,6 @@ mod install {
                             name: expect_string(&fields[0], "face name")?,
                             id: opt_of(&fields[1], |v| expect_int(v, "face id"))?,
                             global: opt_of(&fields[2], |v| Ok(*v))?,
-                            frames: HashMap::new(),
                         });
                     }
                     self.lisp_face_states = faces;

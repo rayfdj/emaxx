@@ -1229,11 +1229,10 @@ pub(crate) fn render_prin1_body(
                 _ => Ok(value.to_string()),
             }
         }
-        Kind::Frame(id) => {
-            let name = interp
-                .frame_state(id)
-                .map(|frame| string_text(&frame.name).unwrap_or_else(|_| format!("F{id}")))
-                .unwrap_or_else(|| format!("F{id}"));
+        Kind::Frame(frame) => {
+            let id = frame.identity();
+            let name = string_text(&frame.name.get())
+                .unwrap_or_else(|_| format!("F{}", frame.borrow().id));
             Ok(format!("#<frame {name} 0x{id:x}>"))
         }
         Kind::Terminal(terminal) => {

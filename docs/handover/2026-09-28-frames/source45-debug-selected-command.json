@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source45-debug-libtest",
+    "native_frame_",
+    "escaped_frame_graph",
+    "image_clones_copy_frame",
+    "allocated_frame_census",
+    "frame_dimension_primitives_round_trip",
+    "frame_resize_keeps_split_window_tree_geometry_coherent",
+    "modify_frame_parameters_persists_values_and_first_duplicate_wins",
+    "image_round_trips_buffers_markers_finalizers_and_nilled_frames",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "86ab75e0ee98c1352ced3f07da06e238b181b0bcc9862cabc7288b52cdbb2626"
+}

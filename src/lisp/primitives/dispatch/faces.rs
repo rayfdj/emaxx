@@ -250,7 +250,7 @@ fn set_face_attribute_on(
     face: &str,
     attribute: &str,
     value: &Value,
-    frame: Option<u64>,
+    frame: Option<crate::lisp::types::FrameRef>,
 ) -> Result<Value, LispError> {
     let (index, mut normalized) = normalize_face_attribute_value(attribute, value)?;
     if frame.is_none()
@@ -548,8 +548,8 @@ define_dispatch!(
                     let frames: Vec<_> = interp
                         .frame_states
                         .iter()
-                        .filter(|frame| frame.live)
-                        .map(|frame| frame.id)
+                        .filter(|frame| frame.is_live())
+                        .copied()
                         .collect();
                     for frame in frames {
                         set_face_attribute_on(interp, &face, attribute, &args[2], Some(frame))?;

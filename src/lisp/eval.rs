@@ -2491,8 +2491,8 @@ struct ProcessState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WindowConfigurationSnapshot {
-    frame_id: u64,
-    selected_frame_id: u64,
+    frame_id: crate::lisp::types::FrameRef,
+    selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,
@@ -2639,7 +2639,6 @@ pub(crate) struct LispFaceState {
     pub(crate) name: String,
     pub(crate) id: Option<i64>,
     pub(crate) global: Option<Value>,
-    pub(crate) frames: HashMap<u64, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2672,27 +2671,42 @@ pub(crate) struct FontsetState {
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
     pub(crate) face_hash_table: Option<Value>,
-    pub(crate) root_window_id: u64,
-    pub(crate) selected_window_id: u64,
-    pub(crate) minibuffer_window_id: u64,
-    pub(crate) old_selected_window_id: Option<u64>,
+    /// Frame-local face vectors belong to this object, including when it
+    /// outlives its creating interpreter. The public hash table is a view.
+    pub(crate) local_faces: Vec<(String, Value)>,
+    pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) old_selected_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) tty_sized: bool,
     pub(crate) id: u64,
-    pub(crate) name: Value,
-    pub(crate) live: bool,
     pub(crate) width: i64,
     pub(crate) height: i64,
     pub(crate) text_height: i64,
     pub(crate) parameter_width: i64,
     pub(crate) parameter_height: i64,
     pub(crate) parameter_overrides: Vec<(String, Value)>,
-    pub(crate) focus_frame_id: Option<u64>,
+    pub(crate) focus_frame_id: Option<crate::lisp::types::FrameRef>,
     pub(crate) left: i64,
     pub(crate) top: i64,
     pub(crate) window_state_change: bool,
     pub(crate) after_make_frame: bool,
     pub(crate) pointer_invisible: bool,
     pub(crate) was_invisible: bool,
+}
+
+impl FrameState {
+    pub(crate) fn root_window_id(&self) -> u64 {
+        self.root_window.map_or(0, |window| window.id)
+    }
+
+    pub(crate) fn selected_window_id(&self) -> u64 {
+        self.selected_window.map_or(0, |window| window.id)
+    }
+
+    pub(crate) fn minibuffer_window_id(&self) -> u64 {
+        self.minibuffer_window.map_or(0, |window| window.id)
+    }
 }
 
 fn empty_lisp_face_vector() -> Value {
@@ -2800,6 +2814,7 @@ struct ImageGraphCopier {
     markers: std::collections::HashMap<usize, Value>,
     overlays: std::collections::HashMap<usize, Value>,
     terminals: std::collections::HashMap<usize, Value>,
+    frame_objects: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -2819,6 +2834,7 @@ impl ImageGraphCopier {
             markers: Default::default(),
             overlays: Default::default(),
             terminals: Default::default(),
+            frame_objects: Default::default(),
             record_owner,
         }
     }
@@ -2826,6 +2842,55 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::Frame(frame) => {
+                if let Some(copied) = self.frame_objects.get(&frame.identity()) {
+                    return *copied;
+                }
+                let copied =
+                    crate::lisp::types::FrameRef::new(frame.name.get(), frame.borrow().clone());
+                let value = Value::Frame(copied);
+                self.frame_objects.insert(frame.identity(), value);
+                copied.name.set(self.copy(&frame.name.get()));
+                let mut state = copied.borrow_mut();
+                let state = &mut *state;
+                for window in [
+                    &mut state.root_window,
+                    &mut state.selected_window,
+                    &mut state.minibuffer_window,
+                    &mut state.old_selected_window,
+                ] {
+                    if let Some(source) = *window {
+                        let Kind::Record(copied) = self.copy(&Value::Record(source)).kind() else {
+                            unreachable!()
+                        };
+                        *window = Some(copied);
+                    }
+                }
+                if let Some(terminal) = state.terminal {
+                    let Kind::Terminal(terminal) = self.copy(&Value::Terminal(terminal)).kind()
+                    else {
+                        unreachable!()
+                    };
+                    state.terminal = Some(terminal);
+                }
+                if let Some(target) = state.focus_frame_id {
+                    let Kind::Frame(target) = self.copy(&Value::Frame(target)).kind() else {
+                        unreachable!()
+                    };
+                    state.focus_frame_id = Some(target);
+                }
+                if let Some(table) = state.face_hash_table {
+                    state.face_hash_table = Some(self.copy(&table));
+                }
+                for (_, item) in state
+                    .parameter_overrides
+                    .iter_mut()
+                    .chain(&mut state.local_faces)
+                {
+                    *item = self.copy(item);
+                }
+                value
+            }
             Kind::Terminal(terminal) => {
                 if let Some(copied) = self.terminals.get(&terminal.identity()) {
                     return *copied;
@@ -2841,6 +2906,13 @@ impl ImageGraphCopier {
                     (&terminal.glyph_code_table, &copied.glyph_code_table),
                 ] {
                     target.set(self.copy(&source.get()));
+                }
+                let top = copied.borrow().top_frame;
+                if let Some(top) = top {
+                    let Kind::Frame(top) = self.copy(&Value::Frame(top)).kind() else {
+                        unreachable!()
+                    };
+                    copied.borrow_mut().top_frame = Some(top);
                 }
                 for entry in copied.borrow_mut().keyboard.values_mut() {
                     *entry = self.copy(entry);
@@ -3192,11 +3264,8 @@ pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
 pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
 pub(crate) const GNU_BUFFER_SIZE: usize = 992;
-// alloc.c:sweep_vectors counts these fixed-layout objects in the vector
-// totals as well as in their more specific public rows.  These are the
-// configured GNU 64-bit VECSIZE values for the remaining host-state objects.
-// Allocator-owned buffers and terminals use their actual vector footprints.
-pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
+// Allocator-owned frame, buffer and terminal objects contribute their actual
+// rounded cell sizes to vector totals; their typed public rows are additional.
 
 /// The mark bits of one collection, keyed by object address or id.  The
 /// sets hash by identity (alloc.c's mark bit is a flag on the object; a
@@ -3218,7 +3287,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    frames: MarkedIds,
 }
 
 impl LispReachability<'_, '_> {
@@ -3249,7 +3317,6 @@ impl LispReachability<'_, '_> {
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
-            frames: MarkedIds::default(),
         }
     }
 }
@@ -3283,7 +3350,7 @@ impl LispReachability<'_, '_> {
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
             Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::Frame(id) => self.frames.contains(&id),
+            Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
@@ -3352,7 +3419,7 @@ impl LispReachability<'_, '_> {
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
             Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::Frame(id) => self.frames.insert(id),
+            Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
@@ -3435,15 +3502,31 @@ impl LispReachability<'_, '_> {
                     self.enqueue(&value);
                 }
             }
-            Kind::Frame(id) => {
-                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == id) {
-                    self.enqueue(&frame.name);
-                    if let Some(terminal) = frame.terminal {
-                        self.enqueue(&Value::Terminal(terminal));
-                    }
-                    for (_, value) in &frame.parameter_overrides {
-                        self.enqueue(value);
-                    }
+            Kind::Frame(frame) => {
+                self.enqueue(&frame.name.get());
+                let state = frame.borrow();
+                for window in [
+                    state.root_window,
+                    state.selected_window,
+                    state.minibuffer_window,
+                    state.old_selected_window,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    self.enqueue(&Value::Record(window));
+                }
+                if let Some(target) = state.focus_frame_id {
+                    self.enqueue(&Value::Frame(target));
+                }
+                if let Some(terminal) = state.terminal {
+                    self.enqueue(&Value::Terminal(terminal));
+                }
+                if let Some(table) = state.face_hash_table {
+                    self.enqueue(&table);
+                }
+                for (_, value) in state.parameter_overrides.iter().chain(&state.local_faces) {
+                    self.enqueue(value);
                 }
             }
             Kind::Record(record) => {
@@ -3840,46 +3923,39 @@ impl Interpreter {
         self.finalizers.append(object);
     }
 
-    /// Install the dead frame a nilled frame pseudovector loads as: no
-    /// name, not live, nothing else.
-    #[cfg_attr(not(test), allow(dead_code))]
     /// A frame the image nilled (pdumper.c:dump_nilled_pseudovec): a dead
     /// frame object of its own, beside the live initial frame the new
     /// process made (frame.c:init_frame_once_for_pdumper).
-    pub(crate) fn install_dead_frame(&mut self) -> u64 {
-        let id = self
-            .frame_states
-            .iter()
-            .map(|frame| frame.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.frame_states.push(FrameState {
-            terminal: None,
-            face_hash_table: None,
-            root_window_id: 0,
-            selected_window_id: 0,
-            minibuffer_window_id: 0,
-            old_selected_window_id: None,
-            tty_sized: false,
-            id,
-            name: Value::Nil,
-            live: false,
-            width: 0,
-            height: 0,
-            text_height: 0,
-            parameter_width: 0,
-            parameter_height: 0,
-            parameter_overrides: Vec::new(),
-            focus_frame_id: None,
-            left: 0,
-            top: 0,
-            window_state_change: false,
-            after_make_frame: false,
-            pointer_invisible: false,
-            was_invisible: false,
-        });
-        id
+    pub(crate) fn install_dead_frame(&mut self) -> crate::lisp::types::FrameRef {
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
+        crate::lisp::types::FrameRef::new(
+            Value::Nil,
+            FrameState {
+                terminal: None,
+                face_hash_table: None,
+                local_faces: Vec::new(),
+                root_window: None,
+                selected_window: None,
+                minibuffer_window: None,
+                old_selected_window: None,
+                tty_sized: false,
+                id,
+                width: 0,
+                height: 0,
+                text_height: 0,
+                parameter_width: 0,
+                parameter_height: 0,
+                parameter_overrides: Vec::new(),
+                focus_frame_id: None,
+                left: 0,
+                top: 0,
+                window_state_change: false,
+                after_make_frame: false,
+                pointer_invisible: false,
+                was_invisible: false,
+            },
+        )
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -3890,7 +3966,7 @@ impl Interpreter {
         state.live = false;
         state.name.clear();
         state.keyboard_coding = None;
-        state.top_frame = 0;
+        state.top_frame = None;
         crate::lisp::types::TerminalRef::new(id, state)
     }
 
@@ -4074,11 +4150,6 @@ impl Interpreter {
                 mark(&Value::Record(record));
             }
         };
-        for frame in &self.frame_states {
-            if let Some(id) = frame.old_selected_window_id {
-                hold(id);
-            }
-        }
         hold(self.old_selected_window_id);
         if let Some(id) = self.minibuffer_selected_window_id {
             hold(id);
@@ -4222,10 +4293,10 @@ impl Interpreter {
             mark(value);
         }
         for frame in &self.frame_states {
-            if frame.live {
-                mark(&Value::Frame(frame.id));
-            }
+            mark(&Value::Frame(*frame));
         }
+        mark(&Value::Frame(self.selected_frame_id));
+        mark(&Value::Frame(self.old_selected_frame_id));
         for coding in &self.coding_systems {
             mark(&coding.plist);
             mark(&coding.charset_list);
@@ -4235,11 +4306,6 @@ impl Interpreter {
         }
         for (_, function) in &self.functions {
             mark(function);
-        }
-        for frame in &self.frame_states {
-            if let Some(value) = &frame.face_hash_table {
-                mark(value);
-            }
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -4304,7 +4370,7 @@ impl Interpreter {
             }
         }
         for face in &self.lisp_face_states {
-            for value in face.global.iter().chain(face.frames.values()) {
+            if let Some(value) = &face.global {
                 mark(value);
             }
         }
@@ -4381,16 +4447,6 @@ impl Interpreter {
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
-
-        for frame in self.frame_states.iter().filter(|frame| frame.live) {
-            for id in [
-                frame.root_window_id,
-                frame.selected_window_id,
-                frame.minibuffer_window_id,
-            ] {
-                mark(&self.record_value(id));
-            }
-        }
     }
 
     /// The allocated state is a root set for every collection in the process
@@ -4436,10 +4492,6 @@ impl Interpreter {
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
         let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
-        let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        vector_count = vector_count.saturating_add(live_frames);
-        vector_slots =
-            vector_slots.saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS));
         // The records are vectors of the sweep's count (alloc.c counts a
         // record among the vectors).
         let (record_count, record_slots) = crate::lisp::alloc::live_record_census();
@@ -4609,12 +4661,20 @@ impl Interpreter {
             }
             clone.frame_and_buffer_state = c.copy(&clone.frame_and_buffer_state.clone());
             for frame in &mut clone.frame_states {
-                if let Some(terminal) = frame.terminal {
-                    let Kind::Terminal(copied) = c.copy(&Value::Terminal(terminal)).kind() else {
-                        unreachable!("terminal copy");
-                    };
-                    frame.terminal = Some(copied);
-                }
+                let Kind::Frame(copied) = c.copy(&Value::Frame(*frame)).kind() else {
+                    unreachable!()
+                };
+                *frame = copied;
+            }
+            let clone_state = &mut *clone;
+            for frame in [
+                &mut clone_state.selected_frame_id,
+                &mut clone_state.old_selected_frame_id,
+            ] {
+                let Kind::Frame(copied) = c.copy(&Value::Frame(*frame)).kind() else {
+                    unreachable!()
+                };
+                *frame = copied;
             }
             for terminal in &mut clone.terminals {
                 let Kind::Terminal(copied) = c.copy(&Value::Terminal(*terminal)).kind() else {
@@ -4673,12 +4733,6 @@ impl Interpreter {
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
-            for frame in &mut clone.frame_states {
-                frame.name = c.copy(&frame.name.clone());
-                for (_, value) in &mut frame.parameter_overrides {
-                    *value = c.copy(value);
-                }
-            }
             for table in clone.equal_hash_tables.values_mut() {
                 for (key, value) in &mut table.entries {
                     *key = c.copy(key);
@@ -4697,11 +4751,6 @@ impl Interpreter {
             }
             for function in clone.functions_index.values_mut() {
                 *function = c.copy(function);
-            }
-            for frame in &mut clone.frame_states {
-                if let Some(table) = &frame.face_hash_table {
-                    frame.face_hash_table = Some(c.copy(table));
-                }
             }
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
@@ -4775,9 +4824,6 @@ impl Interpreter {
             for face in &mut clone.lisp_face_states {
                 if let Some(global) = &face.global {
                     face.global = Some(c.copy(global));
-                }
-                for value in face.frames.values_mut() {
-                    *value = c.copy(value);
                 }
             }
             for bitmap in &mut clone.fringe_bitmap_states {
@@ -5176,12 +5222,12 @@ pub struct InterpreterState {
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
-    /// Opaque frame identities and their frame-local state.  The headless
-    /// runtime begins with one TTY frame; keeping its state keyed by identity
-    /// prevents frame objects from collapsing into an ordinary Lisp symbol.
-    pub(crate) frame_states: Vec<FrameState>,
-    pub(crate) selected_frame_id: u64,
-    pub(crate) old_selected_frame_id: u64,
+    /// frame.c's live frame list. A frame owns its state and graph; deleting
+    /// it removes this root, while escaped Lisp references retain the object.
+    pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
+    pub(crate) next_frame_id: u64,
+    pub(crate) selected_frame_id: crate::lisp::types::FrameRef,
+    pub(crate) old_selected_frame_id: crate::lisp::types::FrameRef,
     /// dispnew.c's internal frame/buffer menu state vector.
     frame_and_buffer_state: Value,
     pub(crate) terminals: Vec<crate::lisp::types::TerminalRef>,
@@ -5626,6 +5672,34 @@ impl Interpreter {
                 face: Value::Nil,
             })
             .collect();
+        let initial_frame = crate::lisp::types::FrameRef::new(
+            frame_name,
+            FrameState {
+                terminal: Some(initial_terminal),
+                face_hash_table: None,
+                local_faces: vec![("default".into(), tty_default_lisp_face_vector())],
+                root_window: None,
+                selected_window: None,
+                minibuffer_window: None,
+                old_selected_window: None,
+                tty_sized: false,
+                id: 1,
+                width: 80,
+                height: 25,
+                text_height: 25,
+                parameter_width: 80,
+                parameter_height: 25,
+                parameter_overrides: Vec::new(),
+                focus_frame_id: None,
+                left: 0,
+                top: 0,
+                window_state_change: false,
+                after_make_frame: true,
+                pointer_invisible: false,
+                was_invisible: false,
+            },
+        );
+        initial_terminal.borrow_mut().top_frame = Some(initial_frame);
         let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::default(),
@@ -5926,33 +6000,10 @@ impl Interpreter {
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
-            frame_states: vec![FrameState {
-                terminal: Some(initial_terminal),
-                face_hash_table: None,
-                root_window_id: 0,
-                selected_window_id: 0,
-                minibuffer_window_id: 0,
-                old_selected_window_id: None,
-                tty_sized: false,
-                id: 1,
-                name: frame_name,
-                live: true,
-                width: 80,
-                height: 25,
-                text_height: 25,
-                parameter_width: 80,
-                parameter_height: 25,
-                parameter_overrides: Vec::new(),
-                focus_frame_id: None,
-                left: 0,
-                top: 0,
-                window_state_change: false,
-                after_make_frame: true,
-                pointer_invisible: false,
-                was_invisible: false,
-            }],
-            selected_frame_id: 1,
-            old_selected_frame_id: 1,
+            frame_states: vec![initial_frame],
+            next_frame_id: 2,
+            selected_frame_id: initial_frame,
+            old_selected_frame_id: initial_frame,
             frame_and_buffer_state: Value::Nil,
             terminals: vec![initial_terminal],
             next_terminal_id: 1,
@@ -6146,7 +6197,6 @@ impl Interpreter {
                 name: "default".into(),
                 id: Some(0),
                 global: Some(empty_lisp_face_vector()),
-                frames: HashMap::from([(1, tty_default_lisp_face_vector())]),
             }],
             next_lisp_face_id: 1,
             font_selection_order: [

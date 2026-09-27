@@ -1148,14 +1148,10 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Frame(frame) = slots[5].kind() else {
         panic!("frame")
     };
-    let state = target.frame_state(frame).expect("dead frame installed");
-    assert!(!state.live);
-    assert_eq!(state.name, Value::Nil);
-    assert!(
-        target
-            .frame_state(target.selected_frame_id)
-            .is_some_and(|frame| frame.live)
-    );
+    let state = frame.borrow();
+    assert!(state.terminal.is_none());
+    assert_eq!(frame.name.get(), Value::Nil);
+    assert!(target.selected_frame_id.is_live());
     assert_ne!(frame, target.selected_frame_id);
     let Kind::Terminal(dead_terminal) = root(RootSlot::QuitFlag).kind() else {
         panic!("terminal")
@@ -1568,4 +1564,45 @@ fn voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration() 
         )
         .expect("install the actual dumped function cells");
     check(&mut target, restored_subr);
+}
+
+#[test]
+fn image_nilled_frames_preserve_address_identity_and_shared_references() {
+    let mut source = Interpreter::new();
+    let other = Interpreter::new();
+    let first = source.selected_frame_value();
+    let second = other.selected_frame_value();
+    assert_ne!(first, second);
+    let bytes = dump(
+        &mut source,
+        vec![(RootSlot::LoadPath, Value::vector([first, second, first]))],
+    );
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("load nilled frames");
+    let graph = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("root")
+        .1;
+    let Kind::Vector(slots) = graph.kind() else {
+        panic!("frame vector")
+    };
+    let restored = slots.slots().collect::<Vec<_>>();
+    assert_eq!(restored.len(), 3);
+    assert_ne!(restored[0], restored[1]);
+    assert_eq!(restored[0], restored[2]);
+    for value in restored {
+        let Kind::Frame(frame) = value.kind() else {
+            panic!("dead restored frame")
+        };
+        assert!(!frame.is_live());
+        assert!(frame.name.get().is_nil());
+        assert_ne!(frame, target.selected_frame_id);
+    }
+    assert_eq!(
+        target.frame_states.len(),
+        1,
+        "nilled objects are not live frame roots"
+    );
 }

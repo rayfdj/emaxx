@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "lisp::native_comp::runtime::tests::native_reads_cons_fields_reached_through_canonical_vector_slots",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "elapsed_seconds": 0.06386783400000001,
+  "binary_sha256": "cd25af409bbd80eeb24d013cc79b5a05c4fcacd9381a795169b061a3b1536528",
+  "base_commit": "f69e1f0dade9ddceff294f465be663ae6618be9f",
+  "qualification": "Selected unchanged older gate binary; tests the preexisting canonical-vector/cons transition. Not a passing full gate."
+}

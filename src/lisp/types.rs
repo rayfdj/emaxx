@@ -1393,6 +1393,58 @@ pub struct BufferValue {
     pub(crate) state: RefCell<crate::buffer::Buffer>,
 }
 
+/// One allocated frame object. The native boundary reads its GNU
+/// pseudovector header and leading name slot; the terminal backend owns
+/// the rest of the state in this allocation rather than an ID proxy.
+#[repr(C)]
+pub struct FrameValue {
+    pub(crate) name: Cell<Value>,
+    pub(crate) state: RefCell<crate::lisp::eval::FrameState>,
+}
+
+impl FrameRef {
+    pub(crate) fn new(name: Value, state: crate::lisp::eval::FrameState) -> Self {
+        Self::allocate(FrameValue {
+            name: Cell::new(name),
+            state: RefCell::new(state),
+        })
+    }
+
+    pub(crate) fn borrow(&self) -> std::cell::Ref<'_, crate::lisp::eval::FrameState> {
+        self.state.borrow()
+    }
+
+    pub(crate) fn borrow_mut(&self) -> std::cell::RefMut<'_, crate::lisp::eval::FrameState> {
+        self.state.borrow_mut()
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        // frame.h:FRAME_LIVE_P. Terminal teardown clears its device first,
+        // then deletes every frame that still has this terminal pointer.
+        self.borrow().terminal.is_some()
+    }
+}
+
+impl std::fmt::Debug for FrameValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameValue")
+            .field("id", &self.state.try_borrow().ok().map(|s| s.id))
+            .finish()
+    }
+}
+impl std::hash::Hash for FrameRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
+impl PartialEq for FrameRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr_eq(other)
+    }
+}
+impl Eq for FrameRef {}
+
 /// terminal.c's object owns its Lisp slots and the terminal device state.
 /// The four leading Lisp fields follow termhooks.h's struct terminal.
 #[repr(C)]
@@ -1437,8 +1489,12 @@ impl TerminalRef {
         ] {
             visit(&slot.get());
         }
-        for value in self.borrow().keyboard.values() {
+        let state = self.borrow();
+        for value in state.keyboard.values() {
             visit(value);
+        }
+        if let Some(frame) = state.top_frame {
+            visit(&Value::Frame(frame));
         }
     }
 }
@@ -1495,6 +1551,7 @@ pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 mod marker;
 pub use crate::overlay::{OverlayRef, OverlayValue};
 pub use marker::{MarkerRef, MarkerValue};
+pub type FrameRef = crate::lisp::alloc::VectorlikeRef<FrameValue>;
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
@@ -2038,16 +2095,11 @@ pub struct Value(usize, std::marker::PhantomData<*mut ()>);
 
 const TAG_MASK: usize = 7;
 const TAG_SYMBOL: usize = 0;
-const TAG_SPECIAL: usize = 1;
 const TAG_INT0: usize = 2;
 const TAG_CONS: usize = 3;
 const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
-/// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_FRAME: usize = 6;
-const SUB_SHIFT: u32 = 3;
-const PAYLOAD_SHIFT: u32 = 8;
 
 /// A tag no value carries: a panic in a debug build, and in a release
 /// build the optimizer's licence to drop the arm (lisp.h reads a
@@ -2064,10 +2116,6 @@ unsafe fn impossible_tag(what: &'static str) -> ! {
     }
     // SAFETY: the caller's contract.
     unsafe { std::hint::unreachable_unchecked() }
-}
-
-const fn special(sub: usize, payload: usize) -> usize {
-    (payload << PAYLOAD_SHIFT) | (sub << SUB_SHIFT) | TAG_SPECIAL
 }
 
 /// What a `Value' names, as `XTYPE' and the pseudovector header tell
@@ -2099,9 +2147,9 @@ pub enum Kind {
     /// The canonical GNU char-table and internal radix nodes.
     CharTable(CharTableRef),
     SubCharTable(SubCharTableRef),
-    /// An opaque frame object, identified by unique id.
-    Frame(u64),
-    /// An opaque terminal object, identified by unique id.
+    /// An allocated frame with address identity and directly owned state.
+    Frame(FrameRef),
+    /// An allocated terminal with address identity and directly owned state.
     Terminal(TerminalRef),
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
@@ -2205,8 +2253,8 @@ impl Value {
         Value::from_bits(table.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Frame(id: u64) -> Value {
-        Value::from_bits(special(SUB_FRAME, id as usize))
+    pub fn Frame(frame: FrameRef) -> Value {
+        Value::from_bits(frame.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Terminal(terminal: TerminalRef) -> Value {
@@ -2321,6 +2369,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Overlay => {
                             Kind::Overlay(OverlayRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Frame => {
+                            Kind::Frame(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2352,15 +2403,8 @@ impl Value {
                     }
                 }
             }
-            _ => {
-                let payload = (word >> PAYLOAD_SHIFT) as u64;
-                match (word >> SUB_SHIFT) & 31 {
-                    SUB_FRAME => Kind::Frame(payload),
-                    // SAFETY: every word this implementation makes has
-                    // one of the sub-tags above.
-                    _ => unsafe { impossible_tag("a value with an unknown tag") },
-                }
-            }
+            // All supported values use their GNU tag and allocated address.
+            _ => unsafe { impossible_tag("a value with an unknown tag") },
         }
     }
 
@@ -3046,7 +3090,7 @@ impl Value {
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::CharTable(id) => format!("char-table<{}>", id),
             Kind::SubCharTable(id) => format!("sub-char-table<{:x}>", id.identity()),
-            Kind::Frame(id) => format!("frame<{}>", id),
+            Kind::Frame(id) => format!("frame<{}>", id.borrow().id),
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::Record(record) => format!("record<{}>", record.id),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
@@ -3284,7 +3328,7 @@ fn format_value(
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Kind::CharTable(id) => write!(f, "#<char-table {id}>"),
         Kind::SubCharTable(id) => write!(f, "#<sub-char-table {:x}>", id.identity()),
-        Kind::Frame(id) => write!(f, "#<frame id:{}>", id),
+        Kind::Frame(id) => write!(f, "#<frame id:{}>", id.borrow().id),
         Kind::Terminal(terminal) => write!(f, "#<terminal id:{}>", terminal.id),
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         // print.c prints a finalizer as `#<finalizer>' with no identity.

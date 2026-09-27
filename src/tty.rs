@@ -45,12 +45,14 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Show)?;
+        crate::lisp::eval::terminal::activate_frame_route();
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        crate::lisp::eval::terminal::clear_frame_route();
         let _ = execute!(io::stdout(), terminal::LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
     }
@@ -319,6 +321,7 @@ fn run_owned(
     batch::initialize_initial_frame_faces(&mut interpreter)?;
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
+    interpreter.note_selected_frame(interpreter.selected_frame_id);
     let queue = SharedEventQueue::default();
     let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
     crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(
@@ -452,13 +455,12 @@ impl SharedEventQueue {
                     if events.is_empty() {
                         continue;
                     }
-                    if crate::lisp::eval::terminal::secondary_output_active() {
+                    if crate::lisp::eval::terminal::secondary_output_active()
+                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+                    {
                         events.insert(
                             0,
-                            Value::list([
-                                Value::symbol("switch-frame"),
-                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
-                            ]),
+                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
                         );
                     }
                     let first = events.remove(0);
@@ -494,13 +496,12 @@ impl SharedEventQueue {
                     if events.is_empty() {
                         continue;
                     }
-                    if crate::lisp::eval::terminal::secondary_output_active() {
+                    if crate::lisp::eval::terminal::secondary_output_active()
+                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+                    {
                         events.insert(
                             0,
-                            Value::list([
-                                Value::symbol("switch-frame"),
-                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
-                            ]),
+                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
                         );
                     }
                     let first = events.remove(0);

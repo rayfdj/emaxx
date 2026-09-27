@@ -1822,7 +1822,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Kind::Frame(id) => {
             hash_mix(state, 18);
-            hash_mix(state, id);
+            hash_mix(state, id.identity() as u64);
         }
         Kind::Terminal(id) => {
             hash_mix(state, 19);
@@ -2045,7 +2045,7 @@ pub(crate) fn hash_value_equal_at(
         }
         Kind::Frame(id) => {
             hash_mix(state, 48);
-            hash_mix(state, id);
+            hash_mix(state, id.identity() as u64);
         }
         Kind::Terminal(id) => {
             hash_mix(state, 49);

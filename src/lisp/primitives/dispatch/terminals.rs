@@ -23,11 +23,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
                 Ok(Value::Terminal(
-                    interp
-                        .frame_state(frame)
-                        .expect("decoded frame has state")
-                        .terminal
-                        .expect("live frame terminal"),
+                    frame.borrow().terminal.expect("live frame terminal"),
                 ))
             }
             "terminal-live-p" => {
@@ -107,12 +103,13 @@ define_dispatch!(
                     .frame_states
                     .iter()
                     .filter(|frame| {
-                        frame.live
+                        frame.is_live()
                             && frame
+                                .borrow()
                                 .terminal
                                 .is_some_and(|object| object.ptr_eq(&terminal))
                     })
-                    .map(|frame| frame.id)
+                    .copied()
                     .collect();
                 let result = frames.into_iter().try_for_each(|frame| {
                     super::frames::delete_frame(interp, frame, true, true, env).map(|_| ())

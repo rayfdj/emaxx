@@ -43,7 +43,7 @@ pub(crate) enum ObjectKey {
     Overlay(usize),
     CharTable(usize),
     SubCharTable(usize),
-    Frame(u64),
+    Frame(usize),
     Terminal(usize),
     Record(u64),
     Finalizer(usize),
@@ -80,7 +80,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
         Kind::CharTable(table) => ObjectKey::CharTable(table.identity()),
         Kind::SubCharTable(table) => ObjectKey::SubCharTable(table.identity()),
-        Kind::Frame(id) => ObjectKey::Frame(id),
+        Kind::Frame(id) => ObjectKey::Frame(id.identity()),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
@@ -1059,10 +1059,8 @@ impl DumpContext {
             Kind::Overlay(overlay) => (self.dump_overlay(overlay)?, DumpType::Overlay),
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
-            Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
-            Kind::Terminal(terminal) => {
-                (self.dump_nilled_pseudovec(terminal.id)?, DumpType::Terminal)
-            }
+            Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
+            Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
@@ -1823,10 +1821,12 @@ impl DumpContext {
     }
 
     /// dump_nilled_pseudovec: every Lisp field nil, nothing else kept;
-    /// the record is the object's id alone.
-    fn dump_nilled_pseudovec(&mut self, id: u64) -> Result<u32, DumpError> {
+    /// the record has one reserved zero word for format compatibility.
+    fn dump_nilled_pseudovec(&mut self) -> Result<u32, DumpError> {
         self.object_start()?;
-        self.object_finish(&[id])
+        // Identity is the dump object's offset. No address or process-local
+        // label belongs in a frame/terminal whose state is nilled on load.
+        self.object_finish(&[0])
     }
 
     // ----- Queues -----

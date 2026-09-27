@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source54-debug-libtest",
+    "terminal_deletion_retires_frames_after_the_device_is_closed",
+    "native_frame_",
+    "escaped_frame_graph",
+    "image_clones_copy_frame",
+    "allocated_frame_census",
+    "image_nilled_frames_preserve_address_identity_and_shared_references",
+    "image_round_trips_buffers_markers_finalizers_and_nilled_frames",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "98a8fa7b89b9177854992d123b20224cf16f3966d063cb1ec7a800e5e5403f3a"
+}

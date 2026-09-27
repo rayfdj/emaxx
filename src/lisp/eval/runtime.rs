@@ -495,43 +495,35 @@ impl Interpreter {
 
     pub(crate) fn set_selected_window_id(&mut self, id: u64) {
         self.selected_window_id = id;
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .selected_window_id = id;
+        self.selected_frame_id.borrow_mut().selected_window = self.record_ref(id);
     }
 
     pub(crate) fn root_window_value(&self) -> Value {
-        self.record_value(
-            self.selected_frame_state()
-                .expect("decoded frame has state")
-                .root_window_id,
-        )
+        self.selected_frame_id
+            .borrow()
+            .root_window
+            .map(Value::Record)
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_root_window_id(&mut self, id: u64) {
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .root_window_id = id;
+        self.selected_frame_id.borrow_mut().root_window = self.record_ref(id);
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.selected_frame_state()
-            .expect("decoded frame has state")
-            .minibuffer_window_id
+        self.selected_frame_id.borrow().minibuffer_window_id()
     }
 
     pub(crate) fn minibuffer_window_value(&self) -> Value {
-        self.record_value(
-            self.selected_frame_state()
-                .expect("decoded frame has state")
-                .minibuffer_window_id,
-        )
+        self.selected_frame_id
+            .borrow()
+            .minibuffer_window
+            .map(Value::Record)
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .minibuffer_window_id = id;
+        self.selected_frame_id.borrow_mut().minibuffer_window = self.record_ref(id);
     }
 
     pub(crate) fn minibuffer_selected_window_id(&self) -> Option<u64> {
@@ -662,64 +654,36 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn frame_state(&self, id: u64) -> Option<&super::FrameState> {
-        self.frame_states.iter().find(|frame| frame.id == id)
-    }
-
-    pub(crate) fn frame_state_mut(&mut self, id: u64) -> Option<&mut super::FrameState> {
-        self.frame_states.iter_mut().find(|frame| frame.id == id)
-    }
-
-    pub(crate) fn selected_frame_state(&self) -> Option<&super::FrameState> {
-        self.frame_state(self.selected_frame_id)
-    }
-
-    pub(crate) fn selected_frame_state_mut(&mut self) -> Option<&mut super::FrameState> {
-        self.frame_state_mut(self.selected_frame_id)
-    }
-
     pub(crate) fn selected_frame_value(&self) -> Value {
         Value::Frame(self.selected_frame_id)
     }
-
     pub(crate) fn old_selected_frame_value(&self) -> Value {
         Value::Frame(self.old_selected_frame_id)
     }
-
-    pub(crate) fn frame_is_live(&self, id: u64) -> bool {
-        self.frame_state(id).is_some_and(|frame| {
-            frame.live
-                && frame
-                    .terminal
-                    .is_some_and(|terminal| terminal.borrow().live)
-        })
+    pub(crate) fn frame_is_live(&self, frame: crate::lisp::types::FrameRef) -> bool {
+        frame.is_live()
     }
-
     pub fn frame_width(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.width)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().width.max(1)
     }
 
     pub fn set_frame_width(&mut self, width: i64) {
         let width = width.max(1);
-        if let Some(frame) = self.selected_frame_state_mut() {
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.width = width;
         }
         self.resize_frame_window_records();
     }
 
     pub fn frame_height(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.height)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().height.max(1)
     }
 
     pub fn set_frame_height(&mut self, height: i64) {
         let text_height = height.max(1);
-        if let Some(frame) = self.selected_frame_state_mut() {
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.text_height = text_height;
             frame.height = text_height.saturating_add(1);
         }
@@ -797,10 +761,9 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(0, 1)
             .min(height - 2);
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .tty_sized = true;
-        if let Some(frame) = self.selected_frame_state_mut() {
+        self.selected_frame_id.borrow_mut().tty_sized = true;
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.width = width;
             frame.height = height;
             frame.text_height = height - menu_bar_lines;
@@ -811,10 +774,7 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_text_height(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.text_height)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().text_height.max(1)
     }
 
     fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
@@ -938,15 +898,16 @@ impl Interpreter {
         self.resize_frame_window_records_for(self.selected_frame_id);
     }
 
-    pub(crate) fn resize_frame_window_records_for(&mut self, id: u64) {
-        let frame = self.frame_state(id).expect("decoded frame has state");
+    pub(crate) fn resize_frame_window_records_for(&mut self, id: crate::lisp::types::FrameRef) {
+        let frame = id.borrow();
         let (width, total_height, text_height, root, minibuffer) = (
             frame.width,
             frame.height,
             frame.text_height,
-            frame.root_window_id,
-            frame.minibuffer_window_id,
+            frame.root_window_id(),
+            frame.minibuffer_window_id(),
         );
+        drop(frame);
         let top_margin = total_height.saturating_sub(text_height);
         let root_height = text_height.saturating_sub(1).max(1);
         if self.find_record(root).is_some() {
@@ -968,7 +929,8 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
-        self.selected_frame_state()?
+        self.selected_frame_id
+            .borrow()
             .parameter_overrides
             .iter()
             .find(|(parameter, _)| parameter == name)
@@ -976,9 +938,7 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_name_value(&self) -> Value {
-        self.selected_frame_state()
-            .map(|frame| frame.name)
-            .unwrap_or(Value::Nil)
+        self.selected_frame_id.name.get()
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
@@ -993,15 +953,18 @@ impl Interpreter {
         self.snapshot_frame_window_configuration(self.selected_frame_id)
     }
 
-    fn snapshot_frame_window_configuration(&self, frame_id: u64) -> WindowConfigurationSnapshot {
-        let frame = self.frame_state(frame_id).expect("decoded frame has state");
+    fn snapshot_frame_window_configuration(
+        &self,
+        frame_id: crate::lisp::types::FrameRef,
+    ) -> WindowConfigurationSnapshot {
+        let frame = frame_id.borrow();
         WindowConfigurationSnapshot {
             frame_id,
             selected_frame_id: self.selected_frame_id,
             current_buffer_id: self.current_buffer_id(),
-            selected_window_id: frame.selected_window_id,
+            selected_window_id: frame.selected_window_id(),
             selected_window_slots: self
-                .find_record(frame.selected_window_id)
+                .find_record(frame.selected_window_id())
                 .map(|record| record.slots.clone())
                 .unwrap_or_default(),
             window_records: self
@@ -1014,13 +977,16 @@ impl Interpreter {
                 })
                 .map(|record| (record.id, record.slots.clone()))
                 .collect(),
-            root_window_id: frame.root_window_id,
+            root_window_id: frame.root_window_id(),
             frame_width: frame.width,
             frame_height: frame.height,
         }
     }
 
-    pub(crate) fn window_configuration_value(&mut self, frame_id: u64) -> Value {
+    pub(crate) fn window_configuration_value(
+        &mut self,
+        frame_id: crate::lisp::types::FrameRef,
+    ) -> Value {
         let snapshot = self.snapshot_frame_window_configuration(frame_id);
         self.create_pseudovector(
             RecordKind::WindowConfiguration,
@@ -1206,9 +1172,7 @@ impl Interpreter {
                 }
             }
         }
-        self.frame_state_mut(snapshot.frame_id)
-            .expect("decoded frame has state")
-            .root_window_id = snapshot.root_window_id;
+        snapshot.frame_id.borrow_mut().root_window = self.record_ref(snapshot.root_window_id);
         self.note_selected_frame(snapshot.frame_id);
         self.set_selected_window_id(snapshot.selected_window_id);
         // GNU records frame dimensions for configuration equality, but
@@ -1217,10 +1181,7 @@ impl Interpreter {
         self.resize_frame_window_records();
         if self.frame_is_live(snapshot.selected_frame_id) {
             self.note_selected_frame(snapshot.selected_frame_id);
-            let selected_window = self
-                .selected_frame_state()
-                .expect("decoded frame has state")
-                .selected_window_id;
+            let selected_window = self.selected_frame_id.borrow().selected_window_id();
             self.set_selected_window_id(selected_window);
         }
         if self.has_buffer_id(snapshot.current_buffer_id) {
@@ -2883,23 +2844,24 @@ impl Interpreter {
 impl Interpreter {
     /// frame.c:change_frame_size propagates a text terminal's dimensions to
     /// every frame displayed on that device, preserving each window tree.
-    pub(crate) fn resize_terminal_frames(&mut self, id: u64, width: i64, height: i64) {
-        let terminal = self
-            .frame_state(id)
-            .expect("decoded frame has state")
-            .terminal
-            .expect("live frame terminal")
-            .id;
+    pub(crate) fn resize_terminal_frames(
+        &mut self,
+        id: crate::lisp::types::FrameRef,
+        width: i64,
+        height: i64,
+    ) {
+        let terminal = id.borrow().terminal.expect("live frame terminal").id;
         let ids: Vec<_> = self
             .frame_states
             .iter()
             .filter(|frame| {
-                frame.live && frame.terminal.expect("live frame terminal").id == terminal
+                frame.is_live()
+                    && frame.borrow().terminal.expect("live frame terminal").id == terminal
             })
-            .map(|frame| frame.id)
+            .copied()
             .collect();
         for id in ids {
-            let frame = self.frame_state_mut(id).expect("decoded frame has state");
+            let mut frame = id.borrow_mut();
             let margin: i64 = ["menu-bar-lines", "tab-bar-lines"]
                 .iter()
                 .map(|name| {
@@ -2917,6 +2879,7 @@ impl Interpreter {
             frame.text_height = frame.height - margin;
             frame.parameter_width = frame.width;
             frame.parameter_height = frame.height;
+            drop(frame);
             self.resize_frame_window_records_for(id);
         }
     }

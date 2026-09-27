@@ -74,6 +74,7 @@ pub enum VectorTag {
     Marker = 3,
     Overlay = 4,
     Finalizer = 5,
+    Frame = 10,
     Buffer = 13,
     Terminal = 16,
     Subr = 18,
@@ -95,6 +96,7 @@ impl VectorTag {
             3 => Self::Marker,
             4 => Self::Overlay,
             5 => Self::Finalizer,
+            10 => Self::Frame,
             13 => Self::Buffer,
             16 => Self::Terminal,
             18 => Self::Subr,
@@ -714,6 +716,11 @@ impl Vectorlike for LispBignum {
     const TAG: VectorTag = VectorTag::Bignum;
 }
 
+impl Vectorlike for crate::lisp::types::FrameValue {
+    const TAG: VectorTag = VectorTag::Frame;
+    const LISP_SLOTS: usize = 1;
+}
+
 impl Vectorlike for crate::lisp::types::TerminalValue {
     const TAG: VectorTag = VectorTag::Terminal;
     const LISP_SLOTS: usize = 4;
@@ -855,6 +862,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
             VectorTag::Buffer
+            | VectorTag::Frame
             | VectorTag::Terminal
             | VectorTag::Marker
             | VectorTag::Overlay
@@ -918,6 +926,9 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 let marker = body.cast::<crate::lisp::types::MarkerValue>();
                 debug_assert!((*marker).is_detached());
                 std::ptr::drop_in_place(marker);
+            }
+            VectorTag::Frame => {
+                std::ptr::drop_in_place(body.cast::<crate::lisp::types::FrameValue>())
             }
             VectorTag::Terminal => {
                 std::ptr::drop_in_place(body.cast::<crate::lisp::types::TerminalValue>())
@@ -991,6 +1002,7 @@ impl SweepStats {
                     self.vector_slots += 4;
                 }
                 VectorTag::Buffer
+                | VectorTag::Frame
                 | VectorTag::Terminal
                 | VectorTag::Marker
                 | VectorTag::Overlay
@@ -1255,6 +1267,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
             VectorTag::Marker => Value::Marker(VectorlikeRef::from_raw(header)),
             VectorTag::Overlay => Value::Overlay(VectorlikeRef::from_raw(header)),
+            VectorTag::Frame => Value::Frame(VectorlikeRef::from_raw(header)),
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),

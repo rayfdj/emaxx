@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source43-debug-libtest",
+    "native_frame_words_are_authoritative_objects_across_owners",
+    "native_handle_cache_keys_use_gnu_object_identity_words",
+    "live_native_handle_decode_follows_the_gnu_tagged_pointer_path",
+    "native_gc_sweeps_unreachable_reference_counted_handles",
+    "native_gc_keeps_static_builtins_with_remaining_bridge_handles",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "f5ea02c4eedf0a8e2884a0a44801c4f8ad62a667ff54c7b881c61634af7370d3"
+}
