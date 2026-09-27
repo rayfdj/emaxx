@@ -1,0 +1,68 @@
+{
+  "status": "failed",
+  "source": "buffer-ownership-check-72a.json",
+  "artifact": {
+    "path": "/Users/rayd/projects/emaxx/target/runtime-goal/char-table-controls-72/libtest",
+    "sha256": "d1ce79f7bc742e781a6beb6699617951bf2f1095d5c4e0b245b55c66b82c4fab",
+    "profile": {
+      "opt_level": "1",
+      "debuginfo": 0,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    }
+  },
+  "start": "2026-09-27T02:23:34.085345+00:00",
+  "scope": "Current-source char-table adversarial baseline with unchanged production source71; not a full gate or performance result",
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "EMAXX_IMAGE_TEMPLATE": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/rayd/projects/emaxx/target/runtime-validation-68/emaxx/target/grouped-gate/fixture-images",
+    "EMAXX_GC_VERIFY": null
+  },
+  "timeout_seconds": 3600,
+  "groups": [
+    {
+      "label": "char-table-baseline",
+      "command": [
+        "/Users/rayd/projects/emaxx/target/runtime-goal/char-table-controls-72/libtest",
+        "char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "expected_tests": [
+        "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values"
+      ],
+      "ignored_tests": [],
+      "log": "char-table-controls-72-char-table-baseline.log",
+      "status": "finished",
+      "pid": 3910,
+      "exit_code": 101,
+      "timed_out": false,
+      "elapsed_seconds": 62.849590459,
+      "sha256": "70e14a0c5c73d69663bc26e51b5da44629f2513335484624f6e1d9d22776f083",
+      "executed_tests": [
+        "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values"
+      ],
+      "passed": false,
+      "result": {
+        "status": "FAILED",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 2797,
+        "reported_seconds": 62.81
+      },
+      "error": "GateError(\"group did not pass: {'status': 'FAILED', 'passed': 0, 'failed': 1, 'ignored': 0, 'measured': 0, 'filtered_out': 2797, 'reported_seconds': 62.81}\")"
+    }
+  ],
+  "total_tests": 2798,
+  "stopped_after_failed_group": "char-table-baseline",
+  "source_verified": true,
+  "end": "2026-09-27T02:26:32.826641+00:00"
+}

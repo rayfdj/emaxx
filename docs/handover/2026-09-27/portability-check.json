@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "base": "9002451fa10c24fb75be650450614913c8c72575",
+  "patch_sha256": "f4fe38f7cb8fde7c6b78c3d673a60299c36e19c1e649c1be3eb2a07260ac6445",
+  "exact_draft_files": [
+    "src/lisp/alloc/vectors/char_tables.rs",
+    "src/lisp/primitives/tests.rs",
+    "tests/fixtures/char-table-authoritative-values.el"
+  ],
+  "evidence_hashes_verified": 13,
+  "checks": [
+    "clean-main git apply --check",
+    "clean-main patch application",
+    "recovered draft equals current workspace bytes",
+    "portable evidence digests"
+  ],
+  "limits": "Patch is an uncompiled, unwired draft; application integrity is not runtime validation.",
+  "checker_correction": "Initial local script used tarfile filter keyword unavailable on Python 3.9.6. Rerun validates all archive paths/types before extraction.",
+  "reverified_at": "2026-09-27T03:05:02.393397+00:00",
+  "raw_log_preserved_exactly": true
+}

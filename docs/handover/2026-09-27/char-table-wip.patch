@@ -1,0 +1,519 @@
+diff --git a/src/lisp/alloc/vectors/char_tables.rs b/src/lisp/alloc/vectors/char_tables.rs
+new file mode 100644
+--- /dev/null
++++ b/src/lisp/alloc/vectors/char_tables.rs
+@@ -0,0 +1,447 @@
++//! GNU char-table payloads and chartab.c's radix operations.
++//!
++//! The header and inline fields are the authoritative Lisp/native storage.
++//! Root tables contain 68 standard Lisp slots and their fixed extra slots.
++//! Subtables contain one packed depth/min_char word followed by Lisp slots;
++//! the collector skips that first, non-Lisp word (alloc.c:mark_char_table).
++
++use super::*;
++use crate::lisp::types::{Kind, SymbolName};
++
++pub(crate) const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
++pub(crate) const CHAR_TABLE_MAX_CHAR: u32 = 0x3f_ffff;
++const SIZES: [usize; 4] = [64, 16, 32, 128];
++const SHIFTS: [u32; 4] = [16, 12, 7, 0];
++const DEFAULT: usize = 0;
++const PARENT: usize = 1;
++const PURPOSE: usize = 2;
++const ASCII: usize = 3;
++const CONTENTS: usize = 4;
++
++#[repr(transparent)]
++#[derive(Clone, Copy, PartialEq, Eq, Hash)]
++pub struct CharTableRef(NonNull<VectorHeader>);
++
++#[repr(transparent)]
++#[derive(Clone, Copy, PartialEq, Eq, Hash)]
++pub struct SubCharTableRef(NonNull<VectorHeader>);
++
++/// Allocate the inline words used by chartab.c's make_vector/XSETPVECTYPE.
++/// Char-table headers retain the public slot count, with no synthetic rest
++/// field for allocator padding. vector_nbytes rounds these kinds separately.
++fn allocate_words(tag: VectorTag, slots: usize) -> NonNull<VectorHeader> {
++    let nbytes = vroundup(HEADER_SIZE + slots * WORD_SIZE);
++    crate::lisp::native_comp::note_lisp_allocation(nbytes);
++    let header = allocate_vectorlike(nbytes);
++    // SAFETY: freshly allocated, aligned storage; allocation does not collect.
++    // The caller initializes all fields before publishing the object.
++    unsafe {
++        (*header).size = PSEUDOVECTOR_FLAG | ((tag as usize) << PSEUDOVECTOR_AREA_BITS) | slots;
++        (*header).mark_bit().mark(crate::lisp::types::current_mark_epoch());
++        NonNull::new_unchecked(header)
++    }
++}
++
++impl CharTableRef {
++    pub(crate) fn new(purpose: Value, initial: Value, extras: usize) -> Self {
++        assert!(extras <= 10);
++        let slots = CHAR_TABLE_STANDARD_SLOTS + extras;
++        let header = allocate_words(VectorTag::CharTable, slots);
++        // SAFETY: all SLOTS cells fit in this new allocation.
++        unsafe {
++            let cells = payload(header.as_ptr()).cast::<Cell<Value>>();
++            for index in 0..slots {
++                cells.add(index).write(Cell::new(initial));
++            }
++            (*cells.add(PARENT)).set(Value::Nil);
++            (*cells.add(PURPOSE)).set(purpose);
++            census_on_allocate(header.as_ptr());
++        }
++        Self(header)
++    }
++
++    /// # Safety
++    /// HEADER is a live PVEC_CHAR_TABLE allocation with its declared slots.
++    pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
++        Self(unsafe { NonNull::new_unchecked(header) })
++    }
++
++    #[inline]
++    pub(crate) fn identity(self) -> usize { self.0.as_ptr() as usize }
++
++    #[inline]
++    pub(crate) fn ptr_eq(&self, other: &Self) -> bool { self.0 == other.0 }
++
++    #[inline]
++    pub(crate) fn value(self) -> Value {
++        // SAFETY: the word points to this canonical initialized pseudovector.
++        unsafe { Value::from_word(self.identity() | 5) }
++    }
++
++    #[inline]
++    fn header(&self) -> &VectorHeader {
++        // SAFETY: a reached table keeps its allocation live.
++        unsafe { self.0.as_ref() }
++    }
++
++    #[inline]
++    pub(crate) fn mark_bit(&self) -> VectorMark<'_> { self.header().mark_bit() }
++
++    #[inline]
++    pub(crate) fn slot_count(&self) -> usize { self.header().size & PSEUDOVECTOR_SIZE_MASK }
++
++    #[inline]
++    fn cells(&self) -> &[Cell<Value>] {
++        // SAFETY: every public slot is initialized, including fixed extras.
++        unsafe { std::slice::from_raw_parts(payload(self.0.as_ptr()).cast(), self.slot_count()) }
++    }
++
++    pub(crate) fn slots(&self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator + '_ {
++        self.cells().iter().map(Cell::get)
++    }
++
++    #[inline]
++    pub(crate) fn slot(&self, index: usize) -> Value { self.cells()[index].get() }
++
++    #[inline]
++    pub(crate) fn set_slot(&self, index: usize, value: Value) { self.cells()[index].set(value); }
++
++    #[inline]
++    pub(crate) fn default(&self) -> Value { self.slot(DEFAULT) }
++
++    #[inline]
++    pub(crate) fn set_default(&self, value: Value) { self.set_slot(DEFAULT, value); }
++
++    #[inline]
++    pub(crate) fn parent(&self) -> Option<Self> {
++        match self.slot(PARENT).kind() { Kind::CharTable(parent) => Some(parent), _ => None }
++    }
++
++    #[inline]
++    pub(crate) fn set_parent(&self, parent: Option<Self>) {
++        self.set_slot(PARENT, parent.map_or(Value::Nil, Self::value));
++    }
++
++    #[inline]
++    pub(crate) fn purpose(&self) -> Value { self.slot(PURPOSE) }
++
++    pub(crate) fn purpose_name(&self) -> Option<SymbolName> {
++        match self.purpose().kind() { Kind::Symbol(name) => Some(name), _ => None }
++    }
++
++    pub(crate) fn has_purpose(&self, name: &str) -> bool {
++        self.purpose_name().is_some_and(|purpose| purpose == name)
++    }
++
++    #[inline]
++    pub(crate) fn extra_count(&self) -> usize { self.slot_count() - CHAR_TABLE_STANDARD_SLOTS }
++
++    pub(crate) fn extra(&self, index: usize) -> Option<Value> {
++        self.cells().get(CHAR_TABLE_STANDARD_SLOTS.checked_add(index)?).map(Cell::get)
++    }
++
++    pub(crate) fn set_extra(&self, index: usize, value: Value) -> bool {
++        let Some(slot) = index.checked_add(CHAR_TABLE_STANDARD_SLOTS).and_then(|i| self.cells().get(i)) else { return false; };
++        slot.set(value);
++        true
++    }
++
++    fn is_uniprop(&self) -> bool {
++        self.extra_count() == 5 && self.has_purpose("char-code-property-table")
++    }
++
++    /// chartab.c:char_table_ascii. ASCII aliases the actual bottom subtable;
++    /// it is not a separately maintained array of decoded values or indices.
++    pub(crate) fn refresh_ascii(&self) {
++        let mut value = self.slot(CONTENTS);
++        if let Some(sub) = subtable(value) {
++            value = sub.slot(0);
++            if let Some(sub) = subtable(value) {
++                value = sub.child(0, self.is_uniprop());
++            }
++        }
++        self.set_slot(ASCII, value);
++    }
++
++    /// CHAR_TABLE_REF_ASCII and char_table_ref: nil falls through this
++    /// table's default first, then its parent. INIT is also stored in every
++    /// initial content slot, so replacing the default preserves INIT values.
++    pub(crate) fn get(&self, character: u32) -> Value {
++        assert!(character <= CHAR_TABLE_MAX_CHAR);
++        let mut table = *self;
++        loop {
++            let mut value = table.explicit_get(character);
++            if value.is_nil() { value = table.default(); }
++            if !value.is_nil() { return value; }
++            let Some(parent) = table.parent() else { return Value::Nil; };
++            table = parent;
++        }
++    }
++
++    pub(crate) fn explicit_get(&self, character: u32) -> Value {
++        assert!(character <= CHAR_TABLE_MAX_CHAR);
++        if character < 128 {
++            let ascii = self.slot(ASCII);
++            return subtable(ascii).map_or(ascii, |sub| sub.slot(character as usize));
++        }
++        let value = self.slot(CONTENTS + (character >> SHIFTS[0]) as usize);
++        subtable(value).map_or(value, |sub| sub.get(character, self.is_uniprop()))
++    }
++
++    pub(crate) fn set(&self, character: u32, value: Value) {
++        assert!(character <= CHAR_TABLE_MAX_CHAR);
++        if character < 128 && let Some(ascii) = subtable(self.slot(ASCII)) {
++            ascii.set_slot(character as usize, value);
++            return;
++        }
++        let index = (character >> SHIFTS[0]) as usize;
++        let current = self.slot(CONTENTS + index);
++        let sub = subtable(current).unwrap_or_else(|| {
++            let sub = SubCharTableRef::new(1, (index as u32) << SHIFTS[0], current);
++            self.set_slot(CONTENTS + index, sub.value());
++            sub
++        });
++        sub.set(character, value, self.is_uniprop());
++        if character < 128 { self.refresh_ascii(); }
++    }
++
++    /// The RANGE=t operation changes contents, not the default or extras.
++    pub(crate) fn set_all(&self, value: Value) {
++        for index in ASCII..CHAR_TABLE_STANDARD_SLOTS { self.set_slot(index, value); }
++    }
++
++    pub(crate) fn set_range(&self, from: u32, to: u32, value: Value) {
++        assert!(from <= CHAR_TABLE_MAX_CHAR && to <= CHAR_TABLE_MAX_CHAR);
++        if from == to { self.set(from, value); return; }
++        for index in (from >> SHIFTS[0])..=(to >> SHIFTS[0]) {
++            let begin = index << SHIFTS[0];
++            if begin > to { break; }
++            if from <= begin && begin + (1 << SHIFTS[0]) - 1 <= to {
++                self.set_slot(CONTENTS + index as usize, value);
++            } else {
++                let current = self.slot(CONTENTS + index as usize);
++                let sub = subtable(current).unwrap_or_else(|| {
++                    let sub = SubCharTableRef::new(1, begin, current);
++                    self.set_slot(CONTENTS + index as usize, sub.value());
++                    sub
++                });
++                sub.set_range(from, to, value, self.is_uniprop());
++            }
++        }
++        if from < 128 { self.refresh_ascii(); }
++    }
++
++    pub(crate) fn copy(&self) -> Self {
++        let copy = Self::new(self.purpose(), Value::Nil, self.extra_count());
++        copy.set_default(self.default());
++        copy.set_slot(PARENT, self.slot(PARENT));
++        for index in CONTENTS..self.slot_count() {
++            let value = self.slot(index);
++            copy.set_slot(index, if index < CHAR_TABLE_STANDARD_SLOTS {
++                subtable(value).map_or(value, |sub| sub.copy().value())
++            } else { value });
++        }
++        copy.refresh_ascii();
++        copy
++    }
++
++    /// A walk of current leaf ranges, including nil. This owns no persistent
++    /// range cache or write history; callers that need resolved inheritance
++    /// combine the returned ranges with the actual default/parent fields.
++    pub(crate) fn visit_ranges(&self, visit: &mut impl FnMut(u32, u32, Value)) {
++        let uniprop = self.is_uniprop();
++        for index in 0..SIZES[0] {
++            let begin = (index as u32) << SHIFTS[0];
++            let value = self.slot(CONTENTS + index);
++            if let Some(sub) = subtable(value) { sub.visit_ranges(uniprop, visit); }
++            else { visit(begin, begin + (1 << SHIFTS[0]) - 1, value); }
++        }
++    }
++}
++
++impl SubCharTableRef {
++    pub(crate) fn new(depth: usize, min_char: u32, initial: Value) -> Self {
++        assert!((1..=3).contains(&depth));
++        let header = allocate_words(VectorTag::SubCharTable, 1 + SIZES[depth]);
++        // SAFETY: the packed non-Lisp word and all content slots fit the
++        // fresh allocation. Cell has its contents' C layout/alignment.
++        unsafe {
++            let body = payload(header.as_ptr());
++            body.cast::<Cell<i32>>().write(Cell::new(depth as i32));
++            body.add(4).cast::<Cell<i32>>().write(Cell::new(min_char as i32));
++            let contents = body.add(8).cast::<Cell<Value>>();
++            for index in 0..SIZES[depth] { contents.add(index).write(Cell::new(initial)); }
++            census_on_allocate(header.as_ptr());
++        }
++        Self(header)
++    }
++
++    /// # Safety
++    /// HEADER is a live PVEC_SUB_CHAR_TABLE with valid depth and contents.
++    pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
++        Self(unsafe { NonNull::new_unchecked(header) })
++    }
++
++    #[inline]
++    pub(crate) fn identity(self) -> usize { self.0.as_ptr() as usize }
++
++    #[inline]
++    pub(crate) fn value(self) -> Value {
++        // SAFETY: the canonical word of this initialized subtable.
++        unsafe { Value::from_word(self.identity() | 5) }
++    }
++
++    #[inline]
++    pub(crate) fn mark_bit(&self) -> VectorMark<'_> {
++        // SAFETY: a reached subtable keeps the header alive.
++        unsafe { self.0.as_ref().mark_bit() }
++    }
++
++    #[inline]
++    pub(crate) fn depth(&self) -> usize {
++        // SAFETY: the initialized packed depth field.
++        unsafe { (*payload(self.0.as_ptr()).cast::<Cell<i32>>()).get() as usize }
++    }
++
++    #[inline]
++    pub(crate) fn min_char(&self) -> u32 {
++        // SAFETY: the initialized packed minimum-character field.
++        unsafe { (*payload(self.0.as_ptr()).add(4).cast::<Cell<i32>>()).get() as u32 }
++    }
++
++    #[inline]
++    fn cells(&self) -> &[Cell<Value>] {
++        // SAFETY: exactly SIZES[depth] initialized Lisp cells follow the
++        // packed word, which must not be interpreted or marked as Lisp.
++        unsafe { std::slice::from_raw_parts(payload(self.0.as_ptr()).add(8).cast(), SIZES[self.depth()]) }
++    }
++
++    pub(crate) fn slots(&self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator + '_ {
++        self.cells().iter().map(Cell::get)
++    }
++
++    #[inline]
++    pub(crate) fn slot(&self, index: usize) -> Value { self.cells()[index].get() }
++
++    #[inline]
++    pub(crate) fn set_slot(&self, index: usize, value: Value) { self.cells()[index].set(value); }
++
++    fn child(&self, index: usize, uniprop: bool) -> Value {
++        let value = self.slot(index);
++        if uniprop && compressed(value) { self.uncompress(index, value).value() }
++        else { value }
++    }
++
++    fn get(&self, character: u32, uniprop: bool) -> Value {
++        let index = ((character - self.min_char()) >> SHIFTS[self.depth()]) as usize;
++        let value = self.child(index, uniprop);
++        subtable(value).map_or(value, |sub| sub.get(character, uniprop))
++    }
++
++    fn set(&self, character: u32, value: Value, uniprop: bool) {
++        let depth = self.depth();
++        let index = ((character - self.min_char()) >> SHIFTS[depth]) as usize;
++        if depth == 3 { self.set_slot(index, value); return; }
++        let current = self.child(index, uniprop);
++        let sub = subtable(current).unwrap_or_else(|| {
++            let sub = Self::new(depth + 1, self.min_char() + ((index as u32) << SHIFTS[depth]), current);
++            self.set_slot(index, sub.value());
++            sub
++        });
++        sub.set(character, value, uniprop);
++    }
++
++    fn set_range(&self, from: u32, to: u32, value: Value, uniprop: bool) {
++        let depth = self.depth();
++        let min_char = self.min_char();
++        let from = from.max(min_char);
++        for index in ((from - min_char) >> SHIFTS[depth]) as usize..SIZES[depth] {
++            let begin = min_char + ((index as u32) << SHIFTS[depth]);
++            if begin > to { break; }
++            if from <= begin && begin + (1 << SHIFTS[depth]) - 1 <= to {
++                self.set_slot(index, value);
++            } else {
++                let current = self.child(index, uniprop);
++                let sub = subtable(current).unwrap_or_else(|| {
++                    let sub = Self::new(depth + 1, begin, current);
++                    self.set_slot(index, sub.value());
++                    sub
++                });
++                sub.set_range(from, to, value, uniprop);
++            }
++        }
++    }
++
++    pub(crate) fn copy(&self) -> Self {
++        let copy = Self::new(self.depth(), self.min_char(), Value::Nil);
++        for (index, value) in self.slots().enumerate() {
++            copy.set_slot(index, subtable(value).map_or(value, |sub| sub.copy().value()));
++        }
++        copy
++    }
++
++    fn visit_ranges(&self, uniprop: bool, visit: &mut impl FnMut(u32, u32, Value)) {
++        let depth = self.depth();
++        for index in 0..SIZES[depth] {
++            let begin = self.min_char() + ((index as u32) << SHIFTS[depth]);
++            let value = self.child(index, uniprop);
++            if let Some(sub) = subtable(value) { sub.visit_ranges(uniprop, visit); }
++            else { visit(begin, begin + (1 << SHIFTS[depth]) - 1, value); }
++        }
++    }
++
++    /// chartab.c:uniprop_table_uncompress. Decoding happens once into the
++    /// actual leaf and updates its parent's slot, without a second payload.
++    fn uncompress(&self, index: usize, value: Value) -> Self {
++        let codes = crate::lisp::primitives::string_like(&value)
++            .expect("compressed Unicode-property string").character_codes();
++        let sub = Self::new(3, self.min_char() + (index as u32) * 128, Value::Nil);
++        self.set_slot(index, sub.value());
++        match codes[0] {
++            1 => {
++                let start = codes[1] as usize;
++                for (index, value) in codes[2..].iter().enumerate().take(128usize.saturating_sub(start)) {
++                    sub.set_slot(start + index, if *value > 0 { Value::Integer(*value) } else { Value::Nil });
++                }
++            }
++            2 => {
++                let mut source = 1;
++                let mut destination = 0;
++                while source < codes.len() {
++                    let value = codes[source];
++                    source += 1;
++                    let count = if source < codes.len() && codes[source] >= 128 {
++                        let count = codes[source] as usize - 128;
++                        source += 1;
++                        count
++                    } else { 1 };
++                    for _ in 0..count { sub.set_slot(destination, Value::Integer(value)); destination += 1; }
++                }
++            }
++            _ => unreachable!("compressed property format was checked"),
++        }
++        sub
++    }
++}
++
++fn subtable(value: Value) -> Option<SubCharTableRef> {
++    match value.kind() { Kind::SubCharTable(sub) => Some(sub), _ => None }
++}
++
++fn compressed(value: Value) -> bool {
++    match value.kind() {
++        Kind::String(text) => matches!(text.as_bytes().first(), Some(1 | 2)),
++        Kind::StringObject(string) => matches!(string.borrow().text.as_bytes().first(), Some(1 | 2)),
++        _ => false,
++    }
++}
++
++impl std::fmt::Debug for CharTableRef {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "CharTable({:x})", self.identity()) }
++}
++impl std::fmt::Display for CharTableRef {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:x}", self.identity()) }
++}
++impl std::fmt::Debug for SubCharTableRef {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "SubCharTable({:x})", self.identity()) }
++}
+diff --git a/src/lisp/primitives/tests.rs b/src/lisp/primitives/tests.rs
+--- a/src/lisp/primitives/tests.rs
++++ b/src/lisp/primitives/tests.rs
+@@ -10517,6 +10517,16 @@
+ }
+
+ #[test]
++fn char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values() {
++    let program = include_str!("../../../tests/fixtures/char-table-authoritative-values.el");
++    assert_oracle_contract_matches_interpreter(
++        program,
++        "(initial initial default parent parent replacement-default range t (slot-initial slot-initial t) (replacement 0))",
++        "authoritative char-table values, defaults, parent lookup, extra slots and overwritten-value reclamation",
++    );
++}
++
++#[test]
+ fn overlay_priority_sorting_handles_crossing_intervals_without_a_total_order() {
+     let program = include_str!("../../../tests/fixtures/overlay-priority-crossing-intervals.el");
+     assert_oracle_contract_matches_interpreter(
+diff --git a/tests/fixtures/char-table-authoritative-values.el b/tests/fixtures/char-table-authoritative-values.el
+new file mode 100644
+--- /dev/null
++++ b/tests/fixtures/char-table-authoritative-values.el
+@@ -0,0 +1,42 @@
++;;; -*- lexical-binding: t; -*-
++(let* ((purpose (make-symbol "char-table-object-purpose"))
++       (parent (make-char-table purpose 'parent))
++       (child (make-char-table purpose 'initial))
++       results)
++  (set-char-table-parent child parent)
++  (push (aref child 65) results)
++  (set-char-table-range child nil 'default)
++  (push (aref child 65) results)
++  (aset child 65 nil)
++  (push (aref child 65) results)
++  (set-char-table-range child nil nil)
++  (push (aref child 65) results)
++  (set-char-table-range child t nil)
++  (push (aref child 66) results)
++  (set-char-table-range child nil 'replacement-default)
++  (push (aref child 66) results)
++  (set-char-table-range child '(10 . 20) 'range)
++  (push (char-table-range child '(11 . 14)) results)
++  (let ((first (make-char-table purpose nil))
++        (second (make-char-table purpose nil)))
++    (aset first 700 'old)
++    (aset first 700 'current)
++    (aset second 700 'current)
++    (push (equal first second) results))
++  (put purpose 'char-table-extra-slots 2)
++  (let ((with-extras (make-char-table purpose 'slot-initial)))
++    (push (list (char-table-extra-slot with-extras 0)
++                (char-table-extra-slot with-extras 1)
++                (eq purpose (char-table-subtype with-extras))) results))
++  (let ((weak (make-hash-table :test 'eq :weakness 'key)))
++    ;; The table stays live; replacing a slot must drop the old value even
++    ;; when lookup returns the new value correctly through another index.
++    (funcall (lambda ()
++               (let ((old (vector 'overwritten-value)))
++                 (puthash old 'present weak)
++                 (aset child 900 old)
++                 (aset child 900 'replacement)
++                 (setq old nil))))
++    (garbage-collect)
++    (push (list (aref child 900) (hash-table-count weak)) results))
++  (nreverse results))

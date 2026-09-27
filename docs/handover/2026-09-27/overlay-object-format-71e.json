@@ -1,0 +1,43 @@
+{
+  "at": "2026-09-27T02:05:44.883535+00:00",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools",
+        "-p",
+        "test_overlay_itree.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "test_complete_geometry_and_membership_are_accepted (test_overlay_itree.IntervalEvidenceControls) ... ok\ntest_corrupted_and_incomplete_reports_are_rejected (test_overlay_itree.IntervalEvidenceControls) ... ok\ntest_failed_process_is_rejected_and_its_output_is_preserved (test_overlay_itree.IntervalEvidenceControls) ... ok\ntest_timed_out_process_cannot_pass_with_partial_output (test_overlay_itree.IntervalEvidenceControls) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 1.028s\n\nOK\n"
+    }
+  ]
+}

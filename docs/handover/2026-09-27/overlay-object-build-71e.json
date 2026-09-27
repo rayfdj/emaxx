@@ -1,0 +1,39 @@
+{
+  "status": "finished",
+  "source": "buffer-ownership-check-71e.json",
+  "command": [
+    "cargo",
+    "--config",
+    "profile.dev.package.emaxx.debug=0",
+    "rustc",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "--profile",
+    "test",
+    "--lib",
+    "--all-features",
+    "--message-format=json",
+    "--verbose",
+    "--",
+    "-C",
+    "lto=off"
+  ],
+  "start": "2026-09-27T02:05:40.242730+00:00",
+  "scope": "Fresh all-feature library test binary; not a release/full-gate certificate",
+  "exit_code": 0,
+  "source_verified": true,
+  "compiler_warnings": 0,
+  "artifact": {
+    "path": "/Users/rayd/projects/emaxx/target/runtime-goal/overlay-object-controls-71e/libtest",
+    "sha256": "368b8d79aa8105a0f4c80ed0ae40a483b2b1a89578b2f5e37c95045ce2f7a751",
+    "profile": {
+      "opt_level": "1",
+      "debuginfo": 0,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    }
+  }
+}

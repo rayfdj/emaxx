@@ -1,0 +1,19 @@
+{
+  "at": "2026-09-27T02:21:02.246727+00:00",
+  "command": [
+    "/Users/rayd/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let* ((purpose (make-symbol \"char-table-object-purpose\"))\n       (parent (make-char-table purpose 'parent))\n       (child (make-char-table purpose 'initial))\n       results)\n  (set-char-table-parent child parent)\n  (push (aref child 65) results)\n  (set-char-table-range child nil 'default)\n  (push (aref child 65) results)\n  (aset child 65 nil)\n  (push (aref child 65) results)\n  (set-char-table-range child nil nil)\n  (push (aref child 65) results)\n  (set-char-table-range child t nil)\n  (push (aref child 66) results)\n  (set-char-table-range child nil 'replacement-default)\n  (push (aref child 66) results)\n  (set-char-table-range child '(10 . 20) 'range)\n  (push (char-table-range child '(11 . 14)) results)\n  (let ((first (make-char-table purpose nil))\n        (second (make-char-table purpose nil)))\n    (aset first 700 'old)\n    (aset first 700 'current)\n    (aset second 700 'current)\n    (push (equal first second) results))\n  (put purpose 'char-table-extra-slots 2)\n  (let ((with-extras (make-char-table purpose 'slot-initial)))\n    (push (list (char-table-extra-slot with-extras 0)\n                (char-table-extra-slot with-extras 1)\n                (eq purpose (char-table-subtype with-extras))) results))\n  (let ((weak (make-hash-table :test 'eq :weakness 'key)))\n    ;; The table stays live; replacing a slot must drop the old value even\n    ;; when lookup returns the new value correctly through another index.\n    (funcall (lambda ()\n               (let ((old (vector 'overwritten-value)))\n                 (puthash old 'present weak)\n                 (aset child 900 old)\n                 (aset child 900 'replacement)\n                 (setq old nil))))\n    (garbage-collect)\n    (push (list (aref child 900) (hash-table-count weak)) results))\n  (nreverse results))\n)"
+  ],
+  "fixture": "tests/fixtures/char-table-authoritative-values.el",
+  "fixture_sha256": "23be981aa9b40b9083d6fedf40095f27c0a7e17b09160d89209f453067a00430",
+  "oracle_sha256": "12c762a0768f17c2b9779302cf98bc143c49ac7548c9b0412f17e38a967d19f1",
+  "oracle_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+  "exit_code": 0,
+  "stdout": "(initial initial default parent parent replacement-default range t (slot-initial slot-initial t) (replacement 0))",
+  "stderr": "",
+  "scope": "Char-table baseline semantic/reclamation probe; local GNU has pinned source but not pinned Darwin executable",
+  "correction": "Use a separate Lisp call frame for allocating the overwritten value, then collect after it returns"
+}

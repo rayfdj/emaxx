@@ -1,0 +1,26 @@
+{
+  "at": "2026-09-27T02:22:19.740271+00:00",
+  "command": [
+    "cc",
+    "-std=gnu2x",
+    "-I",
+    "/Users/rayd/projects/emacs/src",
+    "-I",
+    "/Users/rayd/projects/emacs/lib",
+    "target/runtime-goal/gnu-char-table-layout-72.c",
+    "-o",
+    "target/runtime-goal/gnu-char-table-layout-72"
+  ],
+  "compile_exit": 0,
+  "compile_stdout": "",
+  "compile_stderr": "",
+  "source_sha256": "49de3d7ca7183a0323fce59566cda2439b17b1e13765449a699e9240301d6b9c",
+  "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+  "gnu_config_sha256": "a71d24deedf3dc78249ded933d0eac32a39c694dd7bd84b6d3123dec7a65cbbd",
+  "gnu_lisp_header_sha256": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+  "compiler_version": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.6.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+  "exit_code": 0,
+  "stdout": "{\"char_table\":{\"tag\":32,\"size\":552,\"default\":8,\"parent\":16,\"purpose\":24,\"ascii\":32,\"contents\":40,\"extras\":552,\"standard_slots\":68},\"sub_char_table\":{\"tag\":33,\"size\":16,\"depth\":8,\"min_char\":12,\"contents\":16,\"slot_offset\":1},\"bits\":[6,4,5,7]}\n",
+  "stderr": "",
+  "exe_sha256": "85af88eba9cdd425485fbde87f3d493f0ce206c8a69b841ee23c557d9c823a3c"
+}

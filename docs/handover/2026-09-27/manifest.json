@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-09-27T03:02:28.197899+00:00",
+  "base_commit": "9002451fa10c24fb75be650450614913c8c72575",
+  "draft_status": "Unwired, uncompiled low-level char-table implementation; one preserved failing GNU differential. Not part of main production source.",
+  "patch_sha256": "f4fe38f7cb8fde7c6b78c3d673a60299c36e19c1e649c1be3eb2a07260ac6445",
+  "draft_files": {
+    "src/lisp/alloc/vectors/char_tables.rs": {
+      "base_sha256": null,
+      "draft_sha256": "45c7aeaf50a4a59e668131f445d47f0158701fdba9d5b4c9afb09b06902047cf"
+    },
+    "src/lisp/primitives/tests.rs": {
+      "base_sha256": "1129648f4b0e9ae3857bef856f6a3954a9a2a448c5954e57b3f5bcd94c6bb6ac",
+      "draft_sha256": "f372f3ae1d43231224bfddf0768bede74f78d90b0dd588560ccd8c7d38a70e9d"
+    },
+    "tests/fixtures/char-table-authoritative-values.el": {
+      "base_sha256": null,
+      "draft_sha256": "23be981aa9b40b9083d6fedf40095f27c0a7e17b09160d89209f453067a00430"
+    }
+  },
+  "evidence_files": {
+    "overlay-object-ci-completed-71.json": "cd05c70e8804c04e43903504db91525d8478781ba3743359988e8069f293fb5f",
+    "overlay-object-roots-ci-completed-71.json": "9c4a3c8ae92291339c5c64a16f9036eb63280983eb5d1d1898d81c4a8d11d425",
+    "overlay-object-controls-71e.json": "79ced8cbf57d884e192ba000a554c7d547772a3ec76b00998ed1abb7dc7bebbb",
+    "overlay-object-build-71e.json": "c2f0c3db980efe8d47564aa192ce4f67cd2a073e7bcffb53d98360feb4184d59",
+    "overlay-object-format-71e.json": "b4c7a1f915d57175aaaaee64f00c83d069d04628c5ecb2369e3c4a422529723a",
+    "buffer-ownership-check-71e.json": "b0f10bdea0abcaeefcec743038cbc27be5141c165d7e541586bc720ae82079ce",
+    "buffer-ownership-check-71f.json": "b7c1c648622cdaa3e953308ec00168bd2c1d73f1af4b343611f8bd363eee1078",
+    "char-table-controls-72.json": "bc2ec16b6034af9c3084c4363c981f7dcf6274e17e81592ccfee13006a8402cd",
+    "char-table-oracle-72c.json": "92fb655051a8f718183cd0515fd60889fdcfb735ac169d22dbd369fa006d6849",
+    "gnu-char-table-layout-72.json": "6918b575fdbee2475c80846c24368a3556c8d4b935ccab034db7be081389701c",
+    "gnu-char-table-layout-72.c": "49de3d7ca7183a0323fce59566cda2439b17b1e13765449a699e9240301d6b9c",
+    "char-table-architecture-72.md": "9e720e39f86f680ca1d19af273c2249f5395af4f686c20deec1c9c3930028f44",
+    "char-table-controls-72-char-table-baseline.log.gz": "5547e138b09908a79e700697b31130d41e58b5361d23471694e361f030143b2b"
+  },
+  "portability_note": "Copied receipts retain original machine paths. Their raw CI archives are downloadable by run ID; large local binaries/build artifacts are not included.",
+  "compressed_evidence": {
+    "char-table-controls-72-char-table-baseline.log.gz": {
+      "uncompressed_name": "char-table-controls-72-char-table-baseline.log",
+      "uncompressed_sha256": "70e14a0c5c73d69663bc26e51b5da44629f2513335484624f6e1d9d22776f083",
+      "reason": "Preserve raw log bytes, including libtest whitespace, without introducing diff-check warnings."
+    }
+  }
+}
