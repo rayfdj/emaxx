@@ -999,10 +999,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Overlay(source_overlay) = source[6].kind() else {
         panic!("overlay")
     };
-    let source_plist = interp
-        .find_overlay(source_overlay)
-        .expect("overlay exists")
-        .plist;
+    let source_plist = source_overlay.plist();
     // A second owner of the actual list must relocate to the same conses.
     // Serializing pairs and rebuilding a new spine would lose this sharing.
     source_vector.set(8, source_plist);
@@ -1183,14 +1180,14 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Overlay(ov) = slots[6].kind() else {
         panic!("overlay")
     };
-    let overlay = target.find_overlay(ov).expect("overlay installed");
+    let overlay = ov;
     assert!(overlay.is_dead());
     assert_eq!(
-        overlay.plist,
+        overlay.plist(),
         Value::list([Value::symbol("zz-prop"), Value::symbol("yes")])
     );
-    assert_eq!(overlay.plist.word(), slots[8].word());
-    assert_eq!(target.overlay_holder_id(ov), None);
+    assert_eq!(overlay.plist().word(), slots[8].word());
+    assert!(ov.buffer().is_none());
 
     // The local hook list came with the buffer.
     assert_eq!(

@@ -517,8 +517,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
-        (Kind::Overlay(left_id), Kind::Overlay(right_id))
-        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
+        (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
@@ -588,8 +588,8 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
-        (Kind::Overlay(left_id), Kind::Overlay(right_id))
-        | (Kind::CharTable(left_id), Kind::CharTable(right_id))
+        (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::CharTable(left_id), Kind::CharTable(right_id))
         | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
@@ -1836,9 +1836,9 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 9);
             hash_mix(state, id.identity() as u64);
         }
-        Kind::Overlay(id) => {
+        Kind::Overlay(overlay) => {
             hash_mix(state, 10);
-            hash_mix(state, id);
+            hash_mix(state, overlay.identity() as u64);
         }
         Kind::CharTable(id) => {
             hash_mix(state, 11);
@@ -2038,9 +2038,23 @@ pub(crate) fn hash_value_equal_at(
         Kind::Marker(id) => {
             hash_marker_equal(state, id);
         }
-        Kind::Overlay(id) => {
+        Kind::Overlay(overlay) => {
             hash_mix(state, 43);
-            hash_mix(state, id);
+            let (beg, end) = if overlay.is_dead() {
+                (-1, -1)
+            } else {
+                overlay.bounds()
+            };
+            hash_mix(state, beg as u64);
+            hash_mix(state, end as u64);
+            hash_value_equal_at(
+                interp,
+                state,
+                &overlay.plist(),
+                include_properties,
+                depth + 1,
+                remove_symbol_positions,
+            );
         }
         Kind::CharTable(id) => {
             hash_char_table_equal(
@@ -2247,8 +2261,8 @@ pub(crate) fn markers_equal(
 
 pub(crate) fn overlays_equal(
     interp: &Interpreter,
-    left_id: u64,
-    right_id: u64,
+    left: crate::overlay::OverlayRef,
+    right: crate::overlay::OverlayRef,
     seen: &mut HashSet<(usize, usize)>,
     env: Option<&Env>,
 ) -> bool {
@@ -2259,25 +2273,20 @@ pub(crate) fn overlays_equal(
     // termination the same way keymap_records_equal already does; without
     // it this comparison overflowed an 8 GiB stack on
     // test/lisp/cedet/semantic-utest-ia.el.
-    let pair = (
-        (left_id as usize) | (1usize << 62),
-        (right_id as usize) | (1usize << 62),
-    );
+    let pair = (left.identity(), right.identity());
     if !seen.insert(pair) {
         return true;
     }
-    let equal = (|| {
-        let Some(left) = interp.find_overlay(left_id) else {
-            return left_id == right_id;
-        };
-        let Some(right) = interp.find_overlay(right_id) else {
-            return false;
-        };
-        left.beg == right.beg
-            && left.end == right.end
-            && left.buffer_id == right.buffer_id
-            && values_equal_recursive_with_env(interp, &left.plist, &right.plist, seen, env)
-    })();
+    let same_buffer = match (left.buffer(), right.buffer()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.ptr_eq(&b),
+        _ => false,
+    };
+    // Detached overlays all have GNU's public -1 endpoints, regardless of
+    // the last interval coordinates retained in their unlinked node.
+    let equal = same_buffer
+        && (left.is_dead() || left.bounds() == right.bounds())
+        && values_equal_recursive_with_env(interp, &left.plist(), &right.plist(), seen, env);
     seen.remove(&pair);
     equal
 }

@@ -180,7 +180,6 @@ pub(crate) fn sweep_weak_hash_tables(
     for (id, entries, keep) in reachability.tables {
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
-    interp.sweep_unreached_overlays(&reachability.live_overlays);
     // A module function or user pointer whose record the mark phase did
     // not reach is collected with it (the sweep frees the record).
     let epoch = reachability.epoch;
@@ -259,50 +258,68 @@ mod tests {
         };
         interp.find_record_mut(table_id).expect("new table").slots[5] = Value::symbol("key");
         interp.set_global_binding("overlay-weak-table", table);
-        let overlay = call(
-            &mut interp,
-            "make-overlay",
-            &[Value::Integer(1), Value::Integer(1)],
-            &mut env,
-        )
-        .expect("make overlay");
-        let Kind::Overlay(id) = overlay.kind() else {
-            panic!("not an overlay");
-        };
-        assert!(interp.equal_hash_put(table_id.id, overlay, Value::T, &env));
-        call(&mut interp, "garbage-collect", &[], &mut env).expect("collect attached overlay");
-        assert_eq!(
-            interp
-                .hash_table_runtime_entries(table_id.id)
-                .expect("entries")
-                .len(),
-            1
-        );
+        #[inline(never)]
+        fn exercise_reachable(
+            interp: &mut Interpreter,
+            table_id: crate::lisp::types::RecordRef,
+            env: &mut Env,
+        ) {
+            let overlay = call(
+                interp,
+                "make-overlay",
+                &[Value::Integer(1), Value::Integer(1)],
+                env,
+            )
+            .expect("make overlay");
+            let Kind::Overlay(id) = overlay.kind() else {
+                panic!("not an overlay");
+            };
+            assert!(interp.equal_hash_put(table_id.id, overlay, Value::T, env));
+            call(interp, "garbage-collect", &[], env).expect("collect attached overlay");
+            assert_eq!(
+                interp
+                    .hash_table_runtime_entries(table_id.id)
+                    .expect("entries")
+                    .len(),
+                1
+            );
 
-        interp.set_global_binding("overlay-root", overlay);
-        // A self-cycle does not make the detached object an independent root.
-        call(
-            &mut interp,
-            "overlay-put",
-            &[overlay, Value::symbol("self"), overlay],
-            &mut env,
-        )
-        .expect("set cycle");
-        call(&mut interp, "delete-overlay", &[overlay], &mut env).expect("detach");
-        call(&mut interp, "garbage-collect", &[], &mut env)
-            .expect("collect rooted detached overlay");
-        assert!(interp.find_overlay(id).is_some());
-        assert_eq!(
-            interp
-                .hash_table_runtime_entries(table_id.id)
-                .expect("entries")
-                .len(),
-            1
-        );
-
+            interp.set_global_binding("overlay-root", overlay);
+            // A self-cycle does not make the detached object an independent root.
+            call(
+                interp,
+                "overlay-put",
+                &[overlay, Value::symbol("self"), overlay],
+                env,
+            )
+            .expect("set cycle");
+            call(interp, "delete-overlay", &[overlay], env).expect("detach");
+            call(interp, "garbage-collect", &[], env).expect("collect rooted detached overlay");
+            assert!(id.is_dead());
+            assert_eq!(
+                id.get_symbol_prop("self").expect("surviving plist").word(),
+                overlay.word()
+            );
+            assert_eq!(
+                interp
+                    .hash_table_runtime_entries(table_id.id)
+                    .expect("entries")
+                    .len(),
+                1
+            );
+        }
+        // No overlay address escapes this frame; retain the attached and
+        // detached live-root checks before testing eventual reclamation.
+        exercise_reachable(&mut interp, table_id, &mut env);
+        let retained_bytes = crate::lisp::alloc::vectors::live_overlay_node_bytes();
         interp.set_global_binding("overlay-root", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
         call(&mut interp, "garbage-collect", &[], &mut env).expect("collect unreachable cycle");
-        assert!(interp.find_overlay(id).is_none());
+        assert_eq!(
+            crate::lisp::alloc::vectors::live_overlay_node_bytes(),
+            retained_bytes - 80,
+            "the unreachable object's separately owned interval was reclaimed"
+        );
         assert!(
             interp
                 .hash_table_runtime_entries(table_id.id)
@@ -738,8 +755,6 @@ pub(crate) fn insert_impl(
     before_markers: bool,
 ) -> Result<Value, LispError> {
     let combined = combine_insert_args(args)?;
-    let insert_at = interp.buffer.borrow().point();
-    let nchars = combined.text.chars().count();
     insert_text_with_hooks(
         interp,
         &combined.text,
@@ -749,19 +764,6 @@ pub(crate) fn insert_impl(
         before_markers,
         env,
     )?;
-    if before_markers {
-        for overlay in &mut interp.buffer.borrow_mut().overlays {
-            if overlay.is_dead() {
-                continue;
-            }
-            if overlay.beg == insert_at {
-                overlay.beg += nchars;
-            }
-            if overlay.end == insert_at {
-                overlay.end += nchars;
-            }
-        }
-    }
     Ok(Value::Nil)
 }
 
@@ -812,81 +814,83 @@ pub(crate) fn insert_text_with_hooks(
     ensure_no_supersession_threat(interp, env)?;
     let start = interp.buffer.borrow().point();
     let overlay_calls =
-        overlay_insert_hook_calls(&interp.buffer.borrow(), start, text.chars().count());
-    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-    run_change_hooks(
-        interp,
-        "before-change-functions",
-        &[Value::Integer(start as i64), Value::Integer(start as i64)],
-        env,
-    )?;
-    if before_markers {
-        if inherit {
-            interp.insert_current_buffer_before_markers_and_inherit(text);
-        } else {
-            interp.insert_current_buffer_before_markers(text);
-        }
-    } else if inherit {
-        interp.insert_current_buffer_and_inherit(text);
-    } else {
-        interp.insert_current_buffer(text);
-    }
-    for span in props {
-        if inherit {
-            // graft_intervals_into_buffer with inherit: the string's own
-            // intervals are grafted MERGED with what the insertion point
-            // inherited -- the string's keys win, inherited keys the
-            // string does not define stay (format-spec relies on a
-            // propertized replacement keeping the spec region's face).
-            // The string's plist order leads, inherited keys follow.
-            let (span_start, span_end) = (start + span.start, start + span.end);
-            let mut position = span_start;
-            while position < span_end {
-                let existing = interp.buffer.borrow().text_properties_at(position);
-                let mut run_end = position + 1;
-                while run_end < span_end
-                    && interp.buffer.borrow().text_properties_at(run_end) == existing
-                {
-                    run_end += 1;
-                }
-                let mut merged = span.props.clone();
-                for (key, value) in existing {
-                    if !merged.iter().any(|(present, _)| *present == key) {
-                        merged.push((key, value));
-                    }
-                }
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .set_text_properties(position, run_end, &merged);
-                position = run_end;
+        overlay_insert_hook_calls(interp, &interp.buffer.borrow(), start, text.chars().count());
+    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+        run_change_hooks(
+            interp,
+            "before-change-functions",
+            &[Value::Integer(start as i64), Value::Integer(start as i64)],
+            env,
+        )?;
+        if before_markers {
+            if inherit {
+                interp.insert_current_buffer_before_markers_and_inherit(text);
+            } else {
+                interp.insert_current_buffer_before_markers(text);
             }
+        } else if inherit {
+            interp.insert_current_buffer_and_inherit(text);
         } else {
-            // Freshly inserted text: graft the string's plist verbatim so
-            // the stored order matches GNU (add_text_properties would
-            // reverse it).
-            interp.buffer.borrow_mut().set_text_properties(
-                start + span.start,
-                start + span.end,
-                &span.props,
-            );
+            interp.insert_current_buffer(text);
         }
-    }
-    interp.set_inserted_extended_chars(start, extended_chars);
-    let end = start + text.chars().count();
-    run_change_hooks(
-        interp,
-        "after-change-functions",
-        &[
-            Value::Integer(start as i64),
-            Value::Integer(end as i64),
-            Value::Integer(0),
-        ],
-        env,
-    )?;
-    let _ = maybe_lock_current_buffer_on_change(interp, env);
-    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-    Ok(())
+        for span in props {
+            if inherit {
+                // graft_intervals_into_buffer with inherit: the string's own
+                // intervals are grafted MERGED with what the insertion point
+                // inherited -- the string's keys win, inherited keys the
+                // string does not define stay (format-spec relies on a
+                // propertized replacement keeping the spec region's face).
+                // The string's plist order leads, inherited keys follow.
+                let (span_start, span_end) = (start + span.start, start + span.end);
+                let mut position = span_start;
+                while position < span_end {
+                    let existing = interp.buffer.borrow().text_properties_at(position);
+                    let mut run_end = position + 1;
+                    while run_end < span_end
+                        && interp.buffer.borrow().text_properties_at(run_end) == existing
+                    {
+                        run_end += 1;
+                    }
+                    let mut merged = span.props.clone();
+                    for (key, value) in existing {
+                        if !merged.iter().any(|(present, _)| *present == key) {
+                            merged.push((key, value));
+                        }
+                    }
+                    interp
+                        .buffer
+                        .borrow_mut()
+                        .set_text_properties(position, run_end, &merged);
+                    position = run_end;
+                }
+            } else {
+                // Freshly inserted text: graft the string's plist verbatim so
+                // the stored order matches GNU (add_text_properties would
+                // reverse it).
+                interp.buffer.borrow_mut().set_text_properties(
+                    start + span.start,
+                    start + span.end,
+                    &span.props,
+                );
+            }
+        }
+        interp.set_inserted_extended_chars(start, extended_chars);
+        let end = start + text.chars().count();
+        run_change_hooks(
+            interp,
+            "after-change-functions",
+            &[
+                Value::Integer(start as i64),
+                Value::Integer(end as i64),
+                Value::Integer(0),
+            ],
+            env,
+        )?;
+        let _ = maybe_lock_current_buffer_on_change(interp, env);
+        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+        Ok(())
+    })
 }
 
 pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {

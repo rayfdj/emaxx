@@ -1,20 +1,84 @@
 use super::*;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{BufferRef, Kind, OverlayRef};
+use crate::overlay::Traversal;
+
+fn overlay(value: Value) -> Result<OverlayRef, LispError> {
+    match value.kind() {
+        Kind::Overlay(object) => Ok(object),
+        _ => Err(LispError::WrongTypeArgument("overlayp".into(), value)),
+    }
+}
+
+fn overlay_buffer(
+    interp: &Interpreter,
+    value: Option<&Value>,
+    default: BufferRef,
+    moving: bool,
+) -> Result<BufferRef, LispError> {
+    let object = match value.map(|v| v.kind()) {
+        None | Some(Kind::Nil) => default,
+        Some(Kind::Buffer(buffer)) => buffer,
+        Some(_) => {
+            return Err(LispError::WrongTypeArgument(
+                "bufferp".into(),
+                *value.expect("present"),
+            ));
+        }
+    };
+    if !interp
+        .buffer_object(object.id)
+        .is_some_and(|live| live.ptr_eq(&object))
+    {
+        return Err(LispError::Signal(if moving {
+            "Attempt to move overlay to a dead buffer".into()
+        } else {
+            "Attempt to create overlay in a dead buffer".into()
+        }));
+    }
+    Ok(object)
+}
+
+fn overlay_range(
+    interp: &Interpreter,
+    buffer: BufferRef,
+    beg: Value,
+    end: Value,
+) -> Result<(usize, usize), LispError> {
+    // buffer.c checks both marker owners before coercing either endpoint.
+    for value in [beg, end] {
+        if let Kind::Marker(marker) = value.kind()
+            && !marker.buffer().is_some_and(|owner| owner.ptr_eq(&buffer))
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("error"),
+                Value::String("Marker points into wrong buffer".into()),
+                value,
+            ])));
+        }
+    }
+    let beg = position_from_value(interp, &beg)? as i64;
+    let end = position_from_value(interp, &end)? as i64;
+    Ok(clamp_overlay_range(&buffer.borrow(), beg, end))
+}
 
 pub(super) fn next_overlay_change_position(
     buffer: &crate::buffer::Buffer,
     position: usize,
 ) -> usize {
     let mut next = buffer.point_max();
-    for overlay in &buffer.overlays {
-        if overlay.is_dead() {
-            continue;
+    let mut iter =
+        buffer
+            .overlays
+            .intersecting(position as isize, next as isize, Traversal::Ascending);
+    while let Some(overlay) = iter.next() {
+        let (beg, end) = overlay.bounds();
+        if beg > position as isize {
+            next = beg as usize;
+            break;
         }
-        if overlay.beg > position && overlay.beg < next {
-            next = overlay.beg;
-        }
-        if overlay.end > position && overlay.end < next {
-            next = overlay.end;
+        if beg < end && end < next as isize {
+            next = end as usize;
+            iter.narrow(position as isize, next as isize);
         }
     }
     next
@@ -25,18 +89,57 @@ pub(super) fn previous_overlay_change_position(
     position: usize,
 ) -> usize {
     let mut previous = buffer.point_min();
-    for overlay in &buffer.overlays {
-        if overlay.is_dead() {
-            continue;
-        }
-        if overlay.beg < position && overlay.beg > previous {
-            previous = overlay.beg;
-        }
-        if overlay.end < position && overlay.end > previous {
-            previous = overlay.end;
-        }
+    let mut iter =
+        buffer
+            .overlays
+            .intersecting(previous as isize, position as isize, Traversal::Descending);
+    while let Some(overlay) = iter.next() {
+        let (beg, end) = overlay.bounds();
+        previous = if end < position as isize {
+            end as usize
+        } else {
+            previous.max(beg as usize)
+        };
+        iter.narrow(previous as isize, position as isize);
     }
     previous
+}
+
+/// buffer.c:overlays_in supplies both public overlap queries. Enumeration
+/// comes from the tree; there is no creation-ID ordering or separate cache.
+fn overlays_in_range(
+    buffer: &crate::buffer::Buffer,
+    beg: usize,
+    end: usize,
+    empty: bool,
+    trailing: bool,
+) -> Vec<OverlayRef> {
+    let mut result = Vec::new();
+    let zv = buffer.point_max();
+    let search_end = zv + usize::from(end >= zv && (empty || trailing));
+    for overlay in
+        buffer
+            .overlays
+            .intersecting(beg as isize, search_end as isize, Traversal::Ascending)
+    {
+        let (start, stop) = overlay.bounds();
+        if start > end as isize {
+            break;
+        }
+        if start == end as isize {
+            if (!empty || end < zv) && beg < end {
+                break;
+            }
+            if empty && start != stop {
+                continue;
+            }
+        }
+        if !empty && start == stop {
+            continue;
+        }
+        result.push(overlay);
+    }
+    result
 }
 
 define_dispatch!(
@@ -47,50 +150,19 @@ define_dispatch!(
         _env: &mut crate::lisp::types::Env,
     ) -> Result<Value, LispError> {
         match name {
-            // ── Overlay operations ──
             "make-overlay" => {
-                // (make-overlay BEG END &optional BUFFER FRONT-ADVANCE REAR-ADVANCE)
                 if !(2..=5).contains(&args.len()) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let beg = position_from_value(interp, &args[0])? as i64;
-                let end = position_from_value(interp, &args[1])? as i64;
-                let buffer_id = if let Some(buffer_arg) = args.get(2) {
-                    if buffer_arg.is_nil() {
-                        interp.current_buffer_id()
-                    } else if matches!(buffer_arg.kind(), Kind::Buffer(_)) {
-                        interp.resolve_buffer_id(buffer_arg)?
-                    } else {
-                        return Err(LispError::WrongTypeArgument("bufferp".into(), *buffer_arg));
-                    }
-                } else {
-                    interp.current_buffer_id()
-                };
-                let front_advance = args.get(3).is_some_and(|v| v.is_truthy());
-                let rear_advance = args.get(4).is_some_and(|v| v.is_truthy());
-                let ov_id = interp.alloc_overlay_id();
-                let (beg, end) = {
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    clamp_overlay_range(&buffer, beg, end)
-                };
-                let ov = crate::overlay::Overlay::new(
-                    ov_id,
-                    beg,
-                    end,
-                    buffer_id,
-                    front_advance,
-                    rear_advance,
+                let buffer = overlay_buffer(interp, args.get(2), interp.buffer, false)?;
+                let (beg, end) = overlay_range(interp, buffer, args[0], args[1])?;
+                let object = OverlayRef::new(
+                    args.get(3).is_some_and(Value::is_truthy),
+                    args.get(4).is_some_and(Value::is_truthy),
                 );
-                interp
-                    .get_buffer_by_id_mut(buffer_id)
-                    .expect("resolved live buffer id")
-                    .overlays
-                    .push(ov);
-                Ok(Value::Overlay(ov_id))
+                object.move_to(buffer, beg, end);
+                Ok(Value::Overlay(object))
             }
-
             "overlayp" => {
                 need_args(name, args, 1)?;
                 Ok(if matches!(args[0].kind(), Kind::Overlay(_)) {
@@ -99,147 +171,55 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-
             "overlay-buffer" => {
                 need_args(name, args, 1)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                match interp.find_overlay(ov_id) {
-                    Some(ov) if !ov.is_dead() => {
-                        let buf_id = ov.buffer_id.unwrap_or(0);
-                        let buf_name = interp
-                            .buffer_list
-                            .iter()
-                            .find(|(id, _)| *id == buf_id)
-                            .map_or("*unknown*".to_string(), |(_, n)| n.clone());
-                        Ok(interp.buffer_value(buf_id).expect("live buffer object"))
-                    }
-                    _ => Ok(Value::Nil),
-                }
+                Ok(overlay(args[0])?
+                    .buffer()
+                    .map(Value::Buffer)
+                    .unwrap_or(Value::Nil))
             }
-
-            "overlay-start" => {
+            "overlay-start" | "overlay-end" => {
                 need_args(name, args, 1)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
+                let object = overlay(args[0])?;
+                let Some(buffer) = object.buffer() else {
+                    return Ok(Value::Nil);
                 };
-                match interp.find_overlay(ov_id) {
-                    Some(ov) if !ov.is_dead() => {
-                        let pos = if let Some(buffer_id) = ov.buffer_id {
-                            let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                                LispError::Signal(format!("No buffer with id {}", buffer_id))
-                            })?;
-                            if buffer.is_multibyte() {
-                                ov.beg
-                            } else {
-                                buffer_position_to_byte(&buffer, ov.beg).unwrap_or(ov.beg)
-                            }
-                        } else {
-                            ov.beg
-                        };
-                        Ok(Value::Integer(pos as i64))
-                    }
-                    _ => Ok(Value::Nil),
-                }
-            }
-
-            "overlay-end" => {
-                need_args(name, args, 1)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
+                let (beg, end) = object.bounds();
+                let pos = if name == "overlay-start" { beg } else { end } as usize;
+                let buffer = buffer.borrow();
+                let pos = if buffer.is_multibyte() {
+                    pos
+                } else {
+                    buffer_position_to_byte(&buffer, pos).unwrap_or(pos)
                 };
-                match interp.find_overlay(ov_id) {
-                    Some(ov) if !ov.is_dead() => {
-                        let pos = if let Some(buffer_id) = ov.buffer_id {
-                            let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                                LispError::Signal(format!("No buffer with id {}", buffer_id))
-                            })?;
-                            if buffer.is_multibyte() {
-                                ov.end
-                            } else {
-                                buffer_position_to_byte(&buffer, ov.end).unwrap_or(ov.end)
-                            }
-                        } else {
-                            ov.end
-                        };
-                        Ok(Value::Integer(pos as i64))
-                    }
-                    _ => Ok(Value::Nil),
-                }
+                Ok(Value::Integer(pos as i64))
             }
-
             "move-overlay" => {
-                // (move-overlay OVERLAY BEG END &optional BUFFER)
                 if !(3..=4).contains(&args.len()) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                let target_buffer_id = if let Some(buffer_arg) = args.get(3) {
-                    if buffer_arg.is_nil() {
-                        interp.current_buffer_id()
-                    } else if matches!(buffer_arg.kind(), Kind::Buffer(_)) {
-                        interp.resolve_buffer_id(buffer_arg)?
-                    } else {
-                        return Err(LispError::WrongTypeArgument("bufferp".into(), *buffer_arg));
-                    }
-                } else {
-                    interp.current_buffer_id()
-                };
-                let beg = position_from_value(interp, &args[1])? as i64;
-                let end = position_from_value(interp, &args[2])? as i64;
-                let (beg, end) = {
-                    let buffer = interp.get_buffer_by_id(target_buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", target_buffer_id))
-                    })?;
-                    clamp_overlay_range(&buffer, beg, end)
-                };
-                let mut overlay = take_overlay(interp, ov_id).unwrap_or_else(|| {
-                    crate::overlay::Overlay::new(ov_id, beg, end, target_buffer_id, false, false)
-                });
-                overlay.beg = beg;
-                overlay.end = end;
-                overlay.buffer_id = Some(target_buffer_id);
-                // buffer.c Fmove_overlay: an overlay left empty by the
-                // move evaporates on the spot (rfn-eshadow's shadow
-                // overlay parks empty between shadowed states).
-                if overlay.beg == overlay.end
-                    && overlay
-                        .get_prop(&Value::Symbol("evaporate".into()))
-                        .is_some_and(|value| value.is_truthy())
+                let object = overlay(args[0])?;
+                let buffer = overlay_buffer(
+                    interp,
+                    args.get(3),
+                    object.buffer().unwrap_or(interp.buffer),
+                    true,
+                )?;
+                let (beg, end) = overlay_range(interp, buffer, args[1], args[2])?;
+                object.move_to(buffer, beg, end);
+                if beg == end
+                    && overlay_property_with_category(interp, &object, "evaporate")
+                        .is_some_and(|v| v.is_truthy())
                 {
-                    overlay.buffer_id = None;
+                    object.detach();
                 }
-                interp.install_overlay(target_buffer_id, overlay);
-                Ok(Value::Overlay(ov_id))
+                Ok(args[0])
             }
-
             "delete-overlay" => {
                 need_args(name, args, 1)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                interp.delete_overlay(ov_id);
+                overlay(args[0])?.detach();
                 Ok(Value::Nil)
             }
-
             "delete-all-overlays" => {
                 let buffer_id = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => interp.current_buffer_id(),
@@ -248,136 +228,51 @@ define_dispatch!(
                 interp.delete_buffer_overlays(buffer_id);
                 Ok(Value::Nil)
             }
-
             "overlay-put" => {
                 need_args(name, args, 3)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                let key = args[1];
-                let value = args[2];
-                let mut evaporated = false;
-                if let Some(mut ov) = interp.find_overlay_mut(ov_id) {
-                    ov.put_prop(key, value);
-                    // buffer.c Foverlay_put: giving an already-empty
-                    // overlay the evaporate property deletes it on the
-                    // spot (rfn-eshadow's shadow overlay starts life
-                    // this way; move-overlay later revives it).
-                    if matches!(args[1].kind(), Kind::Symbol(prop) if prop == "evaporate")
-                        && value.is_truthy()
-                        && ov.beg == ov.end
-                    {
-                        evaporated = true;
-                    }
+                let object = overlay(args[0])?;
+                object.put_prop(args[1], args[2]);
+                if matches!(args[1].kind(), Kind::Symbol(prop) if prop == "evaporate")
+                    && args[2].is_truthy()
+                    && object.beg() == object.end()
+                {
+                    object.detach();
                 }
-                if evaporated {
-                    interp.delete_overlay(ov_id);
-                }
-                Ok(value)
+                Ok(args[2])
             }
-
             "overlay-get" => {
                 need_args(name, args, 2)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                let key = args[1];
-                match interp.find_overlay(ov_id) {
-                    Some(ov) => {
-                        if let Kind::Symbol(name) = key.kind() {
-                            Ok(overlay_property_with_category(interp, &ov, &name)
-                                .unwrap_or(Value::Nil))
-                        } else {
-                            Ok(ov.get_prop(&key).unwrap_or(Value::Nil))
-                        }
-                    }
-                    None => Ok(Value::Nil),
+                let object = overlay(args[0])?;
+                Ok(if let Kind::Symbol(prop) = args[1].kind() {
+                    overlay_property_with_category(interp, &object, &prop)
+                } else {
+                    object.get_prop(&args[1])
                 }
+                .unwrap_or(Value::Nil))
             }
-
             "overlay-properties" => {
                 need_args(name, args, 1)?;
-                let ov_id = match args[0].kind() {
-                    Kind::Overlay(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("overlayp".into(), args[0]));
-                    }
-                };
-                match interp.find_overlay(ov_id) {
-                    Some(ov) => {
-                        // buffer.c:Foverlay_properties returns copy-sequence:
-                        // the spine is fresh, while keys and values are shared.
-                        Ok(Value::list(ov.plist.to_vec()?))
-                    }
-                    None => Ok(Value::Nil),
-                }
+                Ok(Value::list(overlay(args[0])?.plist().to_vec()?))
             }
-
             "overlays-at" => {
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
-                let buffer = interp.buffer.borrow();
-                let mut overlays = buffer
-                    .overlays
-                    .iter()
-                    .filter(|ov| !ov.is_dead() && ov.beg <= pos && pos < ov.end)
-                    .collect::<Vec<_>>();
-                overlays.sort_by_key(|overlay| std::cmp::Reverse(overlay.id));
-                let result: Vec<Value> = overlays
-                    .into_iter()
-                    .map(|overlay| Value::Overlay(overlay.id))
-                    .collect();
-                Ok(Value::list(result))
+                let mut objects =
+                    overlays_in_range(&interp.buffer.borrow(), pos, pos + 1, false, true);
+                if let Some(sorted) = args.get(1).filter(|value| value.is_truthy()) {
+                    let window = window_record_id_from_value(interp, sorted);
+                    sort_overlays(interp, &mut objects, window);
+                    objects.reverse();
+                }
+                Ok(Value::list(objects.into_iter().map(Value::Overlay)))
             }
-
             "overlays-in" => {
                 need_args(name, args, 2)?;
                 let beg = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
-                // GNU treats the accessible end as the endpoint for empty
-                // overlays.  After narrowing, an overlay at ZV is visible to
-                // `overlays-in ZV ZV' even when it is not at the buffer's Z.
-                let zv = interp.buffer.borrow().point_max();
-                let buffer = interp.buffer.borrow();
-                let mut overlays = buffer
-                    .overlays
-                    .iter()
-                    .filter(|ov| {
-                        if ov.is_dead() {
-                            return false;
-                        }
-                        if ov.beg == ov.end {
-                            // Zero-length overlay at pos P:
-                            // Include if P is in [beg, end), or if beg==end and P==beg,
-                            // or if P==end and end >= ZV (at the accessible end).
-                            return ov.beg >= interp.buffer.borrow().point_min()
-                                && ov.beg <= zv
-                                && ((ov.beg >= beg && ov.beg < end)
-                                    || (beg == end && ov.beg == beg)
-                                    || (ov.beg == end && end >= zv));
-                        }
-                        // Non-empty overlay: include if it overlaps [beg, end)
-                        ov.beg < end && ov.end > beg
-                    })
-                    .collect::<Vec<_>>();
-                // GNU's interval tree enumerates ascending start positions
-                // and, for equal starts, newest overlays first.  The public
-                // order is documented as arbitrary but remains observable to
-                // stable Lisp sorts such as diff-mode's overlay report.
-                overlays.sort_by_key(|overlay| (overlay.beg, std::cmp::Reverse(overlay.id)));
-                let result: Vec<Value> = overlays
-                    .into_iter()
-                    .map(|overlay| Value::Overlay(overlay.id))
-                    .collect();
-                Ok(Value::list(result))
+                let objects = overlays_in_range(&interp.buffer.borrow(), beg, end, true, false);
+                Ok(Value::list(objects.into_iter().map(Value::Overlay)))
             }
-
             "next-overlay-change" => {
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
@@ -385,7 +280,6 @@ define_dispatch!(
                     next_overlay_change_position(&interp.buffer.borrow(), pos) as i64,
                 ))
             }
-
             "previous-overlay-change" => {
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
@@ -393,27 +287,19 @@ define_dispatch!(
                     previous_overlay_change_position(&interp.buffer.borrow(), pos) as i64,
                 ))
             }
-
             "overlay-lists" => {
-                // Returns (BEFORE-LIST . AFTER-LIST) relative to point.
-                let pt = interp.buffer.borrow().point();
-                let mut before = Vec::new();
-                let mut after = Vec::new();
-                for ov in &interp.buffer.borrow().overlays {
-                    if ov.is_dead() {
-                        continue;
-                    }
-                    if ov.end <= pt {
-                        before.push(Value::Overlay(ov.id));
-                    } else {
-                        after.push(Value::Overlay(ov.id));
-                    }
-                }
-                Ok(Value::cons(Value::list(before), Value::list(after)))
+                let buffer = interp.buffer.borrow();
+                let mut objects: Vec<_> = buffer
+                    .overlays
+                    .intersecting(1, (buffer.size_total() + 1) as isize, Traversal::Descending)
+                    .map(Value::Overlay)
+                    .collect();
+                objects.reverse();
+                Ok(Value::list([Value::list(objects)]))
             }
-
             "overlay-recenter" => {
-                // In real Emacs this recenters the overlay cache. We're a no-op.
+                need_args(name, args, 1)?;
+                position_from_value(interp, &args[0])?;
                 Ok(Value::Nil)
             }
         }

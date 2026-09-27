@@ -45,11 +45,7 @@ impl Interpreter {
             if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
                 buffer.goto_char(pos);
-                if let Some(props) = props.clone() {
-                    buffer.insert_with_properties(s, Some(props));
-                } else {
-                    buffer.insert(s);
-                }
+                buffer.insert_with_properties_and_markers(s, props.clone(), before_markers);
                 let restored = if saved_point > pos || (saved_point == pos && before_markers) {
                     saved_point + nchars
                 } else {
@@ -175,7 +171,9 @@ impl Interpreter {
         let pos = self.buffer.borrow().point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.borrow_mut().insert(s);
+        self.buffer
+            .borrow_mut()
+            .insert_with_properties_and_markers(s, None, true);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
         self.mirror_insert_to_related_buffers(&related, pos, s, None, true);
     }
@@ -191,7 +189,7 @@ impl Interpreter {
             .inherited_text_properties(pos, defaults.as_ref());
         self.buffer
             .borrow_mut()
-            .insert_with_properties(s, Some(props.clone()));
+            .insert_with_properties_and_markers(s, Some(props.clone()), true);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
         self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), true);
     }
@@ -390,100 +388,10 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Borrow the overlay in its owning buffer, or its detached allocation.
-    pub fn find_overlay(&self, id: u64) -> Option<std::cell::Ref<'_, crate::overlay::Overlay>> {
-        for buffer in std::iter::once(&self.buffer)
-            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
-        {
-            if let Ok(overlay) = std::cell::Ref::filter_map(buffer.borrow(), |buffer| {
-                buffer.overlays.iter().find(|overlay| overlay.id == id)
-            }) {
-                return Some(overlay);
-            }
-        }
-        std::cell::Ref::filter_map(self.detached_overlays.borrow(), |overlays| {
-            overlays.get(&id)
-        })
-        .ok()
-    }
-
-    pub fn find_overlay_mut(
-        &mut self,
-        id: u64,
-    ) -> Option<std::cell::RefMut<'_, crate::overlay::Overlay>> {
-        for buffer in std::iter::once(&self.buffer)
-            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
-        {
-            if let Ok(overlay) = std::cell::RefMut::filter_map(buffer.borrow_mut(), |buffer| {
-                buffer.overlays.iter_mut().find(|overlay| overlay.id == id)
-            }) {
-                return Some(overlay);
-            }
-        }
-        std::cell::RefMut::filter_map(self.detached_overlays.borrow_mut(), |overlays| {
-            overlays.get_mut(&id)
-        })
-        .ok()
-    }
-
-    /// Remove an overlay from its current owner, for moving or deleting it.
-    pub fn take_overlay(&mut self, id: u64) -> Option<crate::overlay::Overlay> {
-        for buffer in std::iter::once(&self.buffer)
-            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
-        {
-            let mut buffer = buffer.borrow_mut();
-            if let Some(pos) = buffer.overlays.iter().position(|overlay| overlay.id == id) {
-                return Some(buffer.overlays.swap_remove(pos));
-            }
-        }
-        self.detached_overlays.get_mut().remove(&id)
-    }
-
-    pub(crate) fn delete_overlay(&mut self, id: u64) {
-        if let Some(mut overlay) = self.take_overlay(id) {
-            overlay.buffer_id = None;
-            self.detached_overlays.get_mut().insert(id, overlay);
-        }
-    }
-
-    /// buffer.c:delete_all_overlays detaches the objects; it does not destroy
-    /// their plists. Lisp references may still use or move them afterwards.
+    /// buffer.c:delete_all_overlays unlinks objects without destroying them.
     pub(crate) fn delete_buffer_overlays(&mut self, id: u64) {
-        let Some(mut buffer) = self.get_buffer_by_id_mut(id) else {
-            return;
-        };
-        let overlays = std::mem::take(&mut buffer.overlays);
-        drop(buffer);
-        self.detached_overlays
-            .get_mut()
-            .extend(overlays.into_iter().map(|mut overlay| {
-                overlay.buffer_id = None;
-                (overlay.id, overlay)
-            }));
-    }
-
-    pub(crate) fn sweep_unreached_overlays(&mut self, live: &super::MarkedIds) {
-        let state = &mut **self;
-        state
-            .detached_overlays
-            .get_mut()
-            .retain(|id, _| live.contains(id));
-        for buffer in std::iter::once(&mut state.buffer)
-            .chain(state.inactive_buffers.iter_mut().map(|(_, buffer)| buffer))
-        {
-            // Edits can evaporate overlays without passing through the
-            // interpreter. Move reachable detached objects out of the edit
-            // path and discard unreachable ones after the shared mark phase.
-            for overlay in buffer.borrow_mut().overlays.extract_if(.., |overlay| {
-                overlay.is_dead() || !live.contains(&overlay.id)
-            }) {
-                if live.contains(&overlay.id) {
-                    state
-                        .detached_overlays
-                        .get_mut()
-                        .insert(overlay.id, overlay);
-                }
-            }
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+            buffer.overlays.clear();
         }
     }
 }

@@ -2530,68 +2530,70 @@ define_dispatch!(
                 ensure_region_modifiable(interp, start, end, env)?;
                 ensure_no_supersession_threat(interp, env)?;
                 let overlay_calls =
-                    overlay_change_hook_calls(&interp.buffer.borrow(), start, end, start);
-                run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-                run_change_hooks(
-                    interp,
-                    "before-change-functions",
-                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                    env,
-                )?;
+                    overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end, start);
+                with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+                    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                    run_change_hooks(
+                        interp,
+                        "before-change-functions",
+                        &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                        env,
+                    )?;
 
-                let mut output = Vec::new();
-                let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
-                    let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
-                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
-                    (result.is_ok(), decoder.get_ref().len())
-                } else {
-                    let mut decoder = flate2::bufread::ZlibDecoder::new(&input[..]);
-                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
-                    (result.is_ok(), decoder.get_ref().len())
-                };
-                let old_length = end - start;
-                if !complete && args.get(2).is_none_or(Value::is_nil) {
+                    let mut output = Vec::new();
+                    let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
+                        let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
+                        let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                        (result.is_ok(), decoder.get_ref().len())
+                    } else {
+                        let mut decoder = flate2::bufread::ZlibDecoder::new(&input[..]);
+                        let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                        (result.is_ok(), decoder.get_ref().len())
+                    };
+                    let old_length = end - start;
+                    if !complete && args.get(2).is_none_or(Value::is_nil) {
+                        run_change_hooks(
+                            interp,
+                            "after-change-functions",
+                            &[
+                                Value::Integer(start as i64),
+                                Value::Integer(end as i64),
+                                Value::Integer(old_length as i64),
+                            ],
+                            env,
+                        )?;
+                        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                        return Ok(Value::Nil);
+                    }
+
+                    let saved_point = interp.buffer.borrow().point();
+                    interp
+                        .delete_region_current_buffer(start, end)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    interp.buffer.borrow_mut().goto_char(start);
+                    let text = decode_raw_text_bytes(&output);
+                    interp.insert_current_buffer(&text);
+                    {
+                        let point = saved_point.min(interp.buffer.borrow().point_max());
+                        interp.buffer.borrow_mut().goto_char(point);
+                    }
                     run_change_hooks(
                         interp,
                         "after-change-functions",
                         &[
                             Value::Integer(start as i64),
-                            Value::Integer(end as i64),
+                            Value::Integer((start + output.len()) as i64),
                             Value::Integer(old_length as i64),
                         ],
                         env,
                     )?;
                     run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-                    return Ok(Value::Nil);
-                }
-
-                let saved_point = interp.buffer.borrow().point();
-                interp
-                    .delete_region_current_buffer(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                interp.buffer.borrow_mut().goto_char(start);
-                let text = decode_raw_text_bytes(&output);
-                interp.insert_current_buffer(&text);
-                {
-                    let point = saved_point.min(interp.buffer.borrow().point_max());
-                    interp.buffer.borrow_mut().goto_char(point);
-                }
-                run_change_hooks(
-                    interp,
-                    "after-change-functions",
-                    &[
-                        Value::Integer(start as i64),
-                        Value::Integer((start + output.len()) as i64),
-                        Value::Integer(old_length as i64),
-                    ],
-                    env,
-                )?;
-                run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-                if complete {
-                    Ok(Value::T)
-                } else {
-                    Ok(Value::Integer(remaining as i64))
-                }
+                    if complete {
+                        Ok(Value::T)
+                    } else {
+                        Ok(Value::Integer(remaining as i64))
+                    }
+                })
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;

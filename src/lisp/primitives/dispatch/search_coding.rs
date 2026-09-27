@@ -215,97 +215,102 @@ fn apply_buffer_replacement_hunks(
     let old_len = target_end - target_start;
     let new_len = source_chars.len();
     let overlay_calls = overlay_change_hook_calls(
+        interp,
         &interp.buffer.borrow(),
         target_start,
         target_end,
         target_start + new_len,
     );
-    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-    run_change_hooks(
-        interp,
-        "before-change-functions",
-        &[
-            Value::Integer(target_start as i64),
-            Value::Integer(target_end as i64),
-        ],
-        env,
-    )?;
+    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+        run_change_hooks(
+            interp,
+            "before-change-functions",
+            &[
+                Value::Integer(target_start as i64),
+                Value::Integer(target_end as i64),
+            ],
+            env,
+        )?;
 
-    // GNU records the excursion before applying its diff.  A marker, rather
-    // than a numeric point, is essential here: if a matching character near
-    // point survives, point must continue to follow that character.
-    let saved_point = interp.buffer.borrow().point();
-    let saved_point_marker = match interp.make_marker().kind() {
-        Kind::Marker(id) => id,
-        _ => unreachable!("make_marker returns a marker"),
-    };
-    interp.set_marker(
-        saved_point_marker,
-        Some(saved_point),
-        Some(interp.current_buffer_id()),
-    )?;
+        // GNU records the excursion before applying its diff.  A marker, rather
+        // than a numeric point, is essential here: if a matching character near
+        // point survives, point must continue to follow that character.
+        let saved_point = interp.buffer.borrow().point();
+        let saved_point_marker = match interp.make_marker().kind() {
+            Kind::Marker(id) => id,
+            _ => unreachable!("make_marker returns a marker"),
+        };
+        interp.set_marker(
+            saved_point_marker,
+            Some(saved_point),
+            Some(interp.current_buffer_id()),
+        )?;
 
-    let restore_hooks = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
-    // The saved point is a marker held here, in no Lisp object, across
-    // the edits: a root while they run.
-    let held: &[Value] = &[Value::Marker(saved_point_marker)];
-    let edit_result: Result<(), LispError> = interp.with_lisp_stack_roots(&held, |interp| {
-        for hunk in hunks.iter().rev() {
-            let from = target_start + hunk.old_start;
-            let to = target_start + hunk.old_end;
-            if from < to {
-                interp
-                    .delete_region_current_buffer(from, to)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-            }
-            if hunk.new_start < hunk.new_end {
-                let inserted: String = source_chars[hunk.new_start..hunk.new_end].iter().collect();
-                let inserted_len = hunk.new_end - hunk.new_start;
-                interp.buffer.borrow_mut().goto_char(from);
-                interp.insert_current_buffer(&inserted);
-                // `insert' can inherit edge properties.  `replace-buffer-contents'
-                // grafts the source intervals instead, including property-free gaps.
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .set_text_properties(from, from + inserted_len, &[]);
-                for span in clipped_property_spans(source_props, hunk.new_start, hunk.new_end) {
-                    interp.buffer.borrow_mut().set_text_properties(
-                        from + span.start,
-                        from + span.end,
-                        &span.props,
-                    );
+        let restore_hooks =
+            interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
+        // The saved point is a marker held here, in no Lisp object, across
+        // the edits: a root while they run.
+        let held: &[Value] = &[Value::Marker(saved_point_marker)];
+        let edit_result: Result<(), LispError> = interp.with_lisp_stack_roots(&held, |interp| {
+            for hunk in hunks.iter().rev() {
+                let from = target_start + hunk.old_start;
+                let to = target_start + hunk.old_end;
+                if from < to {
+                    interp
+                        .delete_region_current_buffer(from, to)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                }
+                if hunk.new_start < hunk.new_end {
+                    let inserted: String =
+                        source_chars[hunk.new_start..hunk.new_end].iter().collect();
+                    let inserted_len = hunk.new_end - hunk.new_start;
+                    interp.buffer.borrow_mut().goto_char(from);
+                    interp.insert_current_buffer(&inserted);
+                    // `insert' can inherit edge properties.  `replace-buffer-contents'
+                    // grafts the source intervals instead, including property-free gaps.
+                    interp
+                        .buffer
+                        .borrow_mut()
+                        .set_text_properties(from, from + inserted_len, &[]);
+                    for span in clipped_property_spans(source_props, hunk.new_start, hunk.new_end) {
+                        interp.buffer.borrow_mut().set_text_properties(
+                            from + span.start,
+                            from + span.end,
+                            &span.props,
+                        );
+                    }
                 }
             }
-        }
-        Ok(())
-    });
-    let restore_result = interp.restore_special_dynamic(restore_hooks, env);
-    let restored_point = interp
-        .marker_position(saved_point_marker)
-        .unwrap_or(saved_point)
-        .clamp(
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        );
-    interp.buffer.borrow_mut().goto_char(restored_point);
-    let _ = interp.set_marker(saved_point_marker, None, None);
-    edit_result?;
-    restore_result?;
+            Ok(())
+        });
+        let restore_result = interp.restore_special_dynamic(restore_hooks, env);
+        let restored_point = interp
+            .marker_position(saved_point_marker)
+            .unwrap_or(saved_point)
+            .clamp(
+                interp.buffer.borrow().point_min(),
+                interp.buffer.borrow().point_max(),
+            );
+        interp.buffer.borrow_mut().goto_char(restored_point);
+        let _ = interp.set_marker(saved_point_marker, None, None);
+        edit_result?;
+        restore_result?;
 
-    run_change_hooks(
-        interp,
-        "after-change-functions",
-        &[
-            Value::Integer(target_start as i64),
-            Value::Integer((target_start + new_len) as i64),
-            Value::Integer(old_len as i64),
-        ],
-        env,
-    )?;
-    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-    let _ = maybe_lock_current_buffer_on_change(interp, env);
-    Ok(())
+        run_change_hooks(
+            interp,
+            "after-change-functions",
+            &[
+                Value::Integer(target_start as i64),
+                Value::Integer((target_start + new_len) as i64),
+                Value::Integer(old_len as i64),
+            ],
+            env,
+        )?;
+        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+        let _ = maybe_lock_current_buffer_on_change(interp, env);
+        Ok(())
+    })
 }
 
 define_dispatch!(
@@ -595,84 +600,89 @@ define_dispatch!(
                 let saved_markers =
                     interp.live_marker_positions_for_buffer(interp.current_buffer_id());
                 let overlay_calls = overlay_change_hook_calls(
+                    interp,
                     &interp.buffer.borrow(),
                     start,
                     end,
                     start + replacement_len,
                 );
-                run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-                run_change_hooks(
-                    interp,
-                    "before-change-functions",
-                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                    env,
-                )?;
-                interp
-                    .delete_region_current_buffer(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                interp.buffer.borrow_mut().goto_char(start);
-                interp.insert_current_buffer(&replacement);
-                let (source_len, spans) = source_spans;
-                if !spans.is_empty() && source_len == replacement_len {
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        for span in &spans {
-                            buffer.set_text_properties(
-                                start + span.start,
-                                start + span.end,
-                                &span.props,
-                            );
-                        }
-                    });
-                }
-                if let Some(action) = case_action {
-                    casify_buffer_region(interp, start, start + replacement_len, action, env)?;
-                }
-                let removed_len = end.saturating_sub(start);
-                for (marker_id, original) in saved_markers {
-                    let Some(original_pos) = original else {
-                        continue;
-                    };
-                    let insertion_type = interp.marker_insertion_type(marker_id).unwrap_or(false);
-                    let new_pos = if original_pos < start {
-                        original_pos
-                    } else if original_pos == start {
-                        start
-                    } else if original_pos < end {
-                        if insertion_type {
-                            start + replacement_len
-                        } else {
+                with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+                    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                    run_change_hooks(
+                        interp,
+                        "before-change-functions",
+                        &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                        env,
+                    )?;
+                    interp
+                        .delete_region_current_buffer(start, end)
+                        .map_err(|e| LispError::Signal(e.to_string()))?;
+                    interp.buffer.borrow_mut().goto_char(start);
+                    interp.insert_current_buffer(&replacement);
+                    let (source_len, spans) = source_spans;
+                    if !spans.is_empty() && source_len == replacement_len {
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            for span in &spans {
+                                buffer.set_text_properties(
+                                    start + span.start,
+                                    start + span.end,
+                                    &span.props,
+                                );
+                            }
+                        });
+                    }
+                    if let Some(action) = case_action {
+                        casify_buffer_region(interp, start, start + replacement_len, action, env)?;
+                    }
+                    let removed_len = end.saturating_sub(start);
+                    for (marker_id, original) in saved_markers {
+                        let Some(original_pos) = original else {
+                            continue;
+                        };
+                        let insertion_type =
+                            interp.marker_insertion_type(marker_id).unwrap_or(false);
+                        let new_pos = if original_pos < start {
+                            original_pos
+                        } else if original_pos == start {
                             start
-                        }
-                    } else {
-                        ((original_pos as isize) + replacement_len as isize - removed_len as isize)
-                            .max(start as isize) as usize
-                    };
-                    let _ = interp.set_marker(
-                        marker_id,
-                        Some(new_pos),
-                        Some(interp.current_buffer_id()),
-                    );
-                }
-                run_change_hooks(
-                    interp,
-                    "after-change-functions",
-                    &[
-                        Value::Integer(start as i64),
-                        Value::Integer((start + replacement_len) as i64),
-                        Value::Integer((end - start) as i64),
-                    ],
-                    env,
-                )?;
-                run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-                interp.last_match_data = Some(regexp::update_match_data_after_replace(
-                    &match_data,
-                    replace_index,
-                    start,
-                    end,
-                    replacement_len,
-                ));
-                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                Ok(Value::Nil)
+                        } else if original_pos < end {
+                            if insertion_type {
+                                start + replacement_len
+                            } else {
+                                start
+                            }
+                        } else {
+                            ((original_pos as isize) + replacement_len as isize
+                                - removed_len as isize)
+                                .max(start as isize) as usize
+                        };
+                        let _ = interp.set_marker(
+                            marker_id,
+                            Some(new_pos),
+                            Some(interp.current_buffer_id()),
+                        );
+                    }
+                    run_change_hooks(
+                        interp,
+                        "after-change-functions",
+                        &[
+                            Value::Integer(start as i64),
+                            Value::Integer((start + replacement_len) as i64),
+                            Value::Integer((end - start) as i64),
+                        ],
+                        env,
+                    )?;
+                    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                    interp.last_match_data = Some(regexp::update_match_data_after_replace(
+                        &match_data,
+                        replace_index,
+                        start,
+                        end,
+                        replacement_len,
+                    ));
+                    interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                    Ok(Value::Nil)
+                })
             }
 
             "replace-buffer-contents" => {
@@ -1028,39 +1038,46 @@ define_dispatch!(
                         let new_end = start + text.chars().count();
                         ensure_region_modifiable(interp, start, end, env)?;
                         ensure_no_supersession_threat(interp, env)?;
-                        let overlay_calls =
-                            overlay_change_hook_calls(&interp.buffer.borrow(), start, end, new_end);
-                        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-                        run_change_hooks(
+                        let overlay_calls = overlay_change_hook_calls(
                             interp,
-                            "before-change-functions",
-                            &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                            env,
-                        )?;
-                        replace_buffer_region_with_text(interp, start, end, &text)?;
-                        // decode_coding counts produced characters even
-                        // into a unibyte destination, so the spans keep
-                        // their character offsets there.
-                        for span in &transformed_props {
-                            interp.buffer.borrow_mut().add_text_properties(
-                                start + span.start,
-                                start + span.end,
-                                &span.props,
-                            );
-                        }
-                        run_change_hooks(
-                            interp,
-                            "after-change-functions",
-                            &[
-                                Value::Integer(start as i64),
-                                Value::Integer(new_end as i64),
-                                Value::Integer(old_length as i64),
-                            ],
-                            env,
-                        )?;
-                        let _ = maybe_lock_current_buffer_on_change(interp, env);
-                        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-                        Ok(Value::Integer(transformed_length as i64))
+                            &interp.buffer.borrow(),
+                            start,
+                            end,
+                            new_end,
+                        );
+                        with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+                            run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                            run_change_hooks(
+                                interp,
+                                "before-change-functions",
+                                &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                                env,
+                            )?;
+                            replace_buffer_region_with_text(interp, start, end, &text)?;
+                            // decode_coding counts produced characters even
+                            // into a unibyte destination, so the spans keep
+                            // their character offsets there.
+                            for span in &transformed_props {
+                                interp.buffer.borrow_mut().add_text_properties(
+                                    start + span.start,
+                                    start + span.end,
+                                    &span.props,
+                                );
+                            }
+                            run_change_hooks(
+                                interp,
+                                "after-change-functions",
+                                &[
+                                    Value::Integer(start as i64),
+                                    Value::Integer(new_end as i64),
+                                    Value::Integer(old_length as i64),
+                                ],
+                                env,
+                            )?;
+                            let _ = maybe_lock_current_buffer_on_change(interp, env);
+                            run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                            Ok(Value::Integer(transformed_length as i64))
+                        })
                     }
                     Destination::Buffer(buffer_id) => {
                         let saved_buffer_id = interp.current_buffer_id();

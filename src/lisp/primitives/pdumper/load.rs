@@ -520,9 +520,13 @@ impl Loader<'_> {
                     markers.push((offset, marker));
                 }
                 DumpType::Overlay => {
-                    let id = self.reader.word(offset)?;
-                    self.objects.insert(offset, Value::Overlay(id));
-                    overlays.push((offset, id));
+                    let flags = self.reader.word(offset)?;
+                    let overlay = crate::overlay::OverlayRef::new(
+                        flags & OVERLAY_FRONT_ADVANCE != 0,
+                        flags & OVERLAY_REAR_ADVANCE != 0,
+                    );
+                    self.objects.insert(offset, Value::Overlay(overlay));
+                    overlays.push((offset, overlay));
                 }
                 DumpType::Finalizer => {
                     let object = crate::lisp::alloc::FinalizerRef::new(Value::Nil);
@@ -708,9 +712,8 @@ impl Loader<'_> {
                 ));
             }
         }
-        for (offset, id) in overlays {
-            let (holder, overlay) = self.load_overlay(offset, id)?;
-            self.interp.install_overlay(holder, overlay);
+        for (offset, overlay) in overlays {
+            self.load_overlay(offset, overlay)?;
         }
         let mut finalizer_records = Vec::new();
         for (offset, id) in finalizers {
@@ -1454,32 +1457,25 @@ impl Loader<'_> {
         Ok(())
     }
 
-    /// An overlay record: flags, bounds, the holding buffer's id, the
-    /// buffer field (nil for the deleted overlays that can be written),
-    /// and the property list.
+    /// Relocate fields after all overlay identities exist, preserving cycles
+    /// and shared plists without allocating a temporary object or identity ID.
     fn load_overlay(
         &mut self,
         offset: u32,
-        id: u64,
-    ) -> Result<(u64, crate::overlay::Overlay), LoadError> {
-        let flags = self.reader.word(offset + 8)?;
-        let beg = self.reader.word(offset + 16)? as usize;
-        let end = self.reader.word(offset + 24)? as usize;
-        let holder = self.reader.word(offset + 32)?;
-        let buffer_id = self.optional_buffer_id_at(offset + 40)?;
-        let plist = self.value_at(offset + 48)?;
-        Ok((
-            holder,
-            crate::overlay::Overlay {
-                id,
-                beg,
-                end,
-                front_advance: flags & OVERLAY_FRONT_ADVANCE != 0,
-                rear_advance: flags & OVERLAY_REAR_ADVANCE != 0,
-                buffer_id,
-                plist,
-            },
-        ))
+        overlay: crate::overlay::OverlayRef,
+    ) -> Result<(), LoadError> {
+        let beg = self.reader.word(offset + 8)? as isize;
+        let end = self.reader.word(offset + 16)? as isize;
+        overlay.restore_bounds(beg, end);
+        overlay.set_plist(self.value_at(offset + 32)?);
+        match self.value_at(offset + 24)?.kind() {
+            Kind::Nil => {}
+            Kind::Buffer(buffer) if 0 < beg && beg <= end => {
+                overlay.move_to(buffer, beg as usize, end as usize)
+            }
+            _ => return Err(LoadError::Error("invalid overlay buffer or bounds".into())),
+        }
+        Ok(())
     }
 
     /// A cold text run: NBYTES of GNU's internal representation at DATA.
@@ -1504,17 +1500,6 @@ impl Loader<'_> {
             value => string_like(&value.value())
                 .map(|string| Some(string.text))
                 .ok_or_else(|| LoadError::Error(format!("field at {field} is not a string"))),
-        }
-    }
-
-    /// A field that is a buffer or nil.
-    fn optional_buffer_id_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
-        match (self.value_at(field)?).kind() {
-            Kind::Nil => Ok(None),
-            Kind::Buffer(buffer) => Ok(Some(buffer.id)),
-            other => Err(LoadError::Error(format!(
-                "field at {field} is not a buffer: {other:?}"
-            ))),
         }
     }
 

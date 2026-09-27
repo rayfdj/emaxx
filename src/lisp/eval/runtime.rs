@@ -1321,13 +1321,6 @@ impl Interpreter {
         }
     }
 
-    /// Allocate a new unique overlay ID.
-    pub fn alloc_overlay_id(&mut self) -> u64 {
-        let id = self.next_overlay_id;
-        self.next_overlay_id += 1;
-        id
-    }
-
     pub fn alloc_record_id(&mut self) -> u64 {
         let id = self.next_record_id;
         self.next_record_id += 1;

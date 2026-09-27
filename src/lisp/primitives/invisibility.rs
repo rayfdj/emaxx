@@ -145,7 +145,7 @@ pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u
 pub(crate) fn invisible_class_at(buffer: &Buffer, spec: &InvisibilitySpec, pos: usize) -> u8 {
     let mut best: Option<(i64, u8)> = None;
     for overlay in &buffer.overlays {
-        if overlay.is_dead() || pos < overlay.beg || pos >= overlay.end {
+        if overlay.is_dead() || pos < overlay.beg() || pos >= overlay.end() {
             continue;
         }
         let Some(value) = overlay.get_prop(&Value::Symbol("invisible".into())) else {

@@ -256,11 +256,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
-    ("next_overlay_id", "carried in the remembered scalars"),
-    (
-        "detached_overlays",
-        "an allocation table, not a Lisp root; reachable deleted overlays are written by dump_overlay and restored here by install_overlay, as GNU pdumper.c:dump_overlay carries their Lisp fields",
-    ),
     ("category_context_generation", "a cache generation"),
     ("case_context_generation", "a cache generation"),
     ("regexp_syntax_class_cache", "a cache"),
@@ -811,10 +806,6 @@ impl Interpreter {
                     Value::Integer(self.next_buffer_id as i64),
                 ),
                 pair(
-                    Value::symbol("next-overlay-id"),
-                    Value::Integer(self.next_overlay_id as i64),
-                ),
-                pair(
                     Value::symbol("next-char-table-id"),
                     Value::Integer(self.next_char_table_id as i64),
                 ),
@@ -1342,9 +1333,6 @@ mod install {
                             }
                             "next-buffer-id" => {
                                 self.next_buffer_id = self.next_buffer_id.max(id(&name)?)
-                            }
-                            "next-overlay-id" => {
-                                self.next_overlay_id = self.next_overlay_id.max(id(&name)?);
                             }
                             "next-char-table-id" => {
                                 self.next_char_table_id = self.next_char_table_id.max(id(&name)?);

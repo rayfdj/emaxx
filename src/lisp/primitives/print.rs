@@ -2180,8 +2180,8 @@ fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
         (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right)) => left == right,
-        (Kind::Overlay(left), Kind::Overlay(right))
-        | (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
+        (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),
+        (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         _ => false,

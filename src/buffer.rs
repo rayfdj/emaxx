@@ -57,7 +57,6 @@ impl Clone for BufferMark {
 /// Positions are 1-based to match Emacs semantics: position 1 is
 /// before the first character, position (len+1) is after the last.
 /// Internally we convert to 0-based char indices into the rope.
-#[derive(Clone)]
 pub struct Buffer {
     /// Human-visible name (e.g. "*scratch*" or "main.rs").
     pub name: String,
@@ -153,7 +152,7 @@ pub struct Buffer {
     point_before_last_boundary: Option<usize>,
 
     /// Overlays attached to this buffer.
-    pub overlays: Vec<crate::overlay::Overlay>,
+    pub overlays: crate::overlay::OverlayTree,
 
     /// Sparse text property spans over [start, end) buffer positions.
     text_properties: Vec<TextPropertySpan>,
@@ -169,6 +168,45 @@ pub struct Buffer {
 
     /// Whether positions in this buffer are interpreted as multibyte character positions.
     multibyte: bool,
+}
+
+// A Buffer clone is a text snapshot, without linked Lisp overlay objects.
+// The image copier relocates the original buffer's overlay graph explicitly.
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            last_name: self.last_name.clone(),
+            text: self.text.clone(),
+            char_cache: self.char_cache.clone(),
+            pt: self.pt,
+            mark: self.mark.clone(),
+            mark_active: self.mark_active,
+            modiff: self.modiff,
+            chars_modiff: self.chars_modiff,
+            edit_serial: self.edit_serial,
+            text_edit_serial: self.text_edit_serial,
+            edits: self.edits.clone(),
+            save_modiff: self.save_modiff,
+            saved_text: self.saved_text.clone(),
+            forced_modified: self.forced_modified,
+            autosaved: self.autosaved,
+            begv: self.begv,
+            zv: self.zv,
+            file: self.file.clone(),
+            file_truename: self.file_truename.clone(),
+            visited_file_modtime: self.visited_file_modtime,
+            undo_list: self.undo_list.clone(),
+            undo_list_view: self.undo_list_view.clone(),
+            undo_disabled: self.undo_disabled,
+            point_before_last_boundary: self.point_before_last_boundary,
+            overlays: crate::overlay::OverlayTree::default(),
+            text_properties: self.text_properties.clone(),
+            extended_chars: self.extended_chars.clone(),
+            inhibit_hooks: self.inhibit_hooks,
+            multibyte: self.multibyte,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -423,7 +461,7 @@ impl Buffer {
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             point_before_last_boundary: None,
-            overlays: Vec::new(),
+            overlays: crate::overlay::OverlayTree::default(),
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
             inhibit_hooks: false,
@@ -461,7 +499,7 @@ impl Buffer {
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             point_before_last_boundary: None,
-            overlays: Vec::new(),
+            overlays: crate::overlay::OverlayTree::default(),
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
             inhibit_hooks: false,
@@ -1198,9 +1236,6 @@ impl Buffer {
             rewrite_undo_entry(entry, copy);
         }
         self.undo_list_view = UndoListViewCache::default();
-        for overlay in &mut self.overlays {
-            overlay.plist = copy(&overlay.plist);
-        }
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
@@ -1244,11 +1279,7 @@ impl Buffer {
         if let Some(view) = self.undo_list_view.0.borrow().as_ref() {
             visit(&view.value);
         }
-        for overlay in &self.overlays {
-            if !overlay.is_dead() {
-                visit(&Value::Overlay(overlay.id));
-            }
-        }
+        self.overlays.visit_lisp_values(visit);
     }
 
     /// How many text-property spans this buffer holds (the census's
@@ -1442,6 +1473,15 @@ impl Buffer {
         s: &str,
         props: Option<Vec<(String, Value)>>,
     ) -> usize {
+        self.insert_with_properties_and_markers(s, props, false)
+    }
+
+    pub(crate) fn insert_with_properties_and_markers(
+        &mut self,
+        s: &str,
+        props: Option<Vec<(String, Value)>>,
+        before_markers: bool,
+    ) -> usize {
         let nchars = s.chars().count();
         if nchars == 0 {
             return self.pt;
@@ -1485,8 +1525,7 @@ impl Buffer {
         }
 
         // Adjust overlays
-        crate::overlay::adjust_for_insert(&mut self.overlays, insert_at, nchars);
-        crate::overlay::evaporate(&mut self.overlays);
+        self.overlays.insert_gap(insert_at, nchars, before_markers);
 
         self.adjust_text_properties_for_insert(insert_at, nchars);
         self.adjust_extended_chars_for_insert(insert_at, nchars);
@@ -1616,8 +1655,7 @@ impl Buffer {
         }
 
         // Adjust overlays and evaporate empty ones
-        crate::overlay::adjust_for_delete(&mut self.overlays, from, to);
-        crate::overlay::evaporate(&mut self.overlays);
+        self.overlays.delete_gap(from, to.saturating_sub(from));
         self.adjust_text_properties_for_delete(from, to);
         self.adjust_extended_chars_for_delete(from, to);
 
@@ -1976,7 +2014,7 @@ impl Buffer {
         self.point_before_last_boundary = None;
         self.text_properties = Vec::new();
         self.extended_chars = Vec::new();
-        self.overlays = Vec::new();
+        self.overlays.clear();
         // Fkill_buffer detaches only markers whose buffer is dying. Its
         // mark can have been moved into another buffer and must survive there.
         self.mark_active = false;
@@ -2061,7 +2099,7 @@ impl Buffer {
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: parts.undo_disabled,
             point_before_last_boundary: parts.point_before_last_boundary,
-            overlays: Vec::new(),
+            overlays: crate::overlay::OverlayTree::default(),
             text_properties: parts.text_properties,
             extended_chars: parts.extended_chars,
             inhibit_hooks: parts.inhibit_hooks,
@@ -2110,6 +2148,8 @@ impl Buffer {
             ) => {
                 std::mem::swap(marker, other_marker);
                 owner.swap_marker_chains(*other_owner);
+                self.overlays.set_owner(*owner);
+                other.overlays.set_owner(*other_owner);
             }
             (BufferMark::Position(mark), BufferMark::Position(other_mark)) => {
                 std::mem::swap(mark, other_mark)
@@ -2841,8 +2881,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right)) => left == right,
-        (Kind::Overlay(left), Kind::Overlay(right))
-        | (Kind::CharTable(left), Kind::CharTable(right))
+        (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),
+        (Kind::CharTable(left), Kind::CharTable(right))
         | (Kind::Frame(left), Kind::Frame(right)) => left == right,
         (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,

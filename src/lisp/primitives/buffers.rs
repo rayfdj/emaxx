@@ -16,19 +16,12 @@ pub(crate) fn clamp_overlay_range(
     } else {
         buffer_byte_to_position_boundary(buffer, end.max(0) as usize).unwrap_or(1)
     } as i64;
-    let min = buffer.point_min() as i64;
-    let max = buffer.point_max() as i64;
+    let min = 1;
+    let max = (buffer.size_total() + 1) as i64;
     let clamp = |pos: i64| pos.clamp(min, max) as usize;
     let beg = clamp(beg);
     let end = clamp(end);
     if beg > end { (end, beg) } else { (beg, end) }
-}
-
-pub(crate) fn take_overlay(
-    interp: &mut Interpreter,
-    overlay_id: u64,
-) -> Option<crate::overlay::Overlay> {
-    interp.take_overlay(overlay_id)
 }
 
 pub(crate) fn highest_priority_overlay_property(
@@ -57,55 +50,143 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     prop: &str,
     at_insertion_position: bool,
     window_id: Option<u64>,
-) -> Option<(Value, u64)> {
-    let mut overlays: Vec<&crate::overlay::Overlay> = buffer
+) -> Option<(Value, crate::overlay::OverlayRef)> {
+    let mut overlays: Vec<crate::overlay::OverlayRef> = buffer
         .overlays
-        .iter()
-        .filter(|overlay| {
-            !overlay.is_dead()
-                && overlay_covers_position(overlay, pos, at_insertion_position)
-                && window_id.is_none_or(|window_id| {
-                    // GNU's `overlay_matches_window' treats a `window'
-                    // property as restrictive only when its value is a
-                    // window.  Other values leave the overlay visible in
-                    // every window.
-                    overlay_property_with_category(interp, overlay, "window")
-                        .and_then(|window| window_record_id_from_value(interp, &window))
-                        .is_none_or(|overlay_window_id| overlay_window_id == window_id)
-                })
-        })
+        .intersecting(
+            pos as isize - isize::from(at_insertion_position),
+            pos as isize + 1,
+            crate::overlay::Traversal::Ascending,
+        )
+        .filter(|overlay| overlay_covers_position(overlay, pos, at_insertion_position))
         .collect();
-    overlays.sort_by(|a, b| {
-        a.priority()
-            .cmp(&b.priority())
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    sort_overlays(interp, &mut overlays, window_id);
     overlays.into_iter().rev().find_map(|overlay| {
-        overlay_property_with_category(interp, overlay, prop).map(|value| (value, overlay.id))
+        overlay_property_with_category(interp, &overlay, prop).map(|value| (value, overlay))
     })
 }
 
+pub(crate) fn sort_overlays(
+    interp: &Interpreter,
+    overlays: &mut Vec<crate::overlay::OverlayRef>,
+    window_id: Option<u64>,
+) {
+    // buffer.c:compare_overlays combines interval nesting with secondary
+    // priority; crossing intervals can make this relation non-transitive.
+    // Rust's sort_by requires a total order and can panic here. Use the same
+    // platform qsort as GNU, with a callback that cannot call Lisp or unwind.
+    #[repr(C)]
+    struct SortItem {
+        overlay: crate::overlay::OverlayRef,
+        beg: isize,
+        end: isize,
+        priority: i64,
+        secondary: i64,
+    }
+    unsafe extern "C" fn compare(a: *const libc::c_void, b: *const libc::c_void) -> libc::c_int {
+        // SAFETY: qsort supplies aligned elements of the live SortItem array.
+        let (a, b) = unsafe { (&*a.cast::<SortItem>(), &*b.cast::<SortItem>()) };
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let order = if a.priority != b.priority {
+            a.priority.cmp(&b.priority)
+        } else if a.beg < b.beg {
+            if a.end < b.end && a.secondary > b.secondary {
+                Greater
+            } else {
+                Less
+            }
+        } else if a.beg > b.beg {
+            if a.end > b.end && a.secondary < b.secondary {
+                Less
+            } else {
+                Greater
+            }
+        } else if a.end != b.end {
+            b.end.cmp(&a.end)
+        } else if a.secondary != b.secondary {
+            a.secondary.cmp(&b.secondary)
+        } else {
+            a.overlay.identity().cmp(&b.overlay.identity())
+        };
+        match order {
+            Less => -1,
+            Equal => 0,
+            Greater => 1,
+        }
+    }
+    let mut items: Vec<_> = overlays
+        .iter()
+        .copied()
+        .filter(|overlay| {
+            window_id.is_none_or(|window| {
+                overlay_property_with_category(interp, overlay, "window")
+                    .and_then(|value| window_record_id_from_value(interp, &value))
+                    .is_none_or(|owner| owner == window)
+            })
+        })
+        .map(|overlay| {
+            let (priority, secondary) = match overlay_property_with_category(
+                interp, &overlay, "priority",
+            )
+            .map(|v| v.kind())
+            {
+                Some(Kind::Integer(value)) => (value, 0),
+                Some(Kind::Cons(cell)) => (
+                    match cell.car.get().kind() {
+                        Kind::Integer(v) => v,
+                        _ => 0,
+                    },
+                    match cell.cdr.get().kind() {
+                        Kind::Integer(v) => v,
+                        _ => 0,
+                    },
+                ),
+                _ => (0, 0),
+            };
+            let (beg, end) = overlay.bounds();
+            SortItem {
+                overlay,
+                beg,
+                end,
+                priority,
+                secondary,
+            }
+        })
+        .collect();
+    if items.len() > 1 {
+        // SAFETY: the exclusive Vec borrow keeps this initialized, trivially
+        // movable array alive. The comparator reads only its two elements;
+        // no references survive a callback or any subsequent bytewise move.
+        unsafe {
+            libc::qsort(
+                items.as_mut_ptr().cast(),
+                items.len(),
+                std::mem::size_of::<SortItem>(),
+                Some(compare),
+            );
+        }
+    }
+    overlays.clear();
+    overlays.extend(items.into_iter().map(|item| item.overlay));
+}
+
 pub(crate) fn overlay_covers_position(
-    overlay: &crate::overlay::Overlay,
+    overlay: &crate::overlay::OverlayRef,
     pos: usize,
     at_insertion_position: bool,
 ) -> bool {
+    let (beg, end) = overlay.bounds();
+    let pos = pos as isize;
     if !at_insertion_position {
-        return overlay.beg < overlay.end && overlay.beg <= pos && pos < overlay.end;
+        return beg < end && beg <= pos && pos < end;
     }
 
     // `get-pos-property' asks whether a character inserted at POS would
-    // belong to the overlay.  Endpoint advancement controls that question:
-    // front-advancing excludes the beginning, rear-advancing includes the
-    // end.  An empty overlay covers an insertion only when both endpoint
-    // rules agree.
-    (overlay.beg < pos && pos < overlay.end)
-        || (overlay.beg == pos && !overlay.front_advance && pos < overlay.end)
-        || (overlay.beg < pos && overlay.end == pos && overlay.rear_advance)
-        || (overlay.beg == overlay.end
-            && overlay.beg == pos
-            && !overlay.front_advance
-            && overlay.rear_advance)
+    // belong to the overlay. Endpoint advancement controls that question.
+    (beg < pos && pos < end)
+        || (beg == pos && !overlay.front_advance() && pos < end)
+        || (beg < pos && end == pos && overlay.rear_advance())
+        || (beg == end && beg == pos && !overlay.front_advance() && overlay.rear_advance())
 }
 
 pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {

@@ -3662,7 +3662,6 @@ const NATIVE_TYPE_FLOAT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NativeIdentity {
-    Overlay(u64),
     CharTable(u64),
     Frame(u64),
 }
@@ -3670,7 +3669,6 @@ enum NativeIdentity {
 impl NativeIdentity {
     fn hash_word(&self) -> usize {
         let (kind, payload) = match self {
-            Self::Overlay(value) => (11, *value as usize),
             Self::CharTable(value) => (12, *value as usize),
             Self::Frame(value) => (13, *value as usize),
         };
@@ -4065,6 +4063,7 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::ReaderForm
                                 | crate::lisp::alloc::VectorTag::Buffer
                                 | crate::lisp::alloc::VectorTag::Terminal
+                                | crate::lisp::alloc::VectorTag::Overlay
                                 | crate::lisp::alloc::VectorTag::Marker
                                 | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
@@ -4145,6 +4144,7 @@ impl NativeMark<'_> {
             | Kind::ReaderForm(_)
             | Kind::BuiltinFunc(_)
             | Kind::Buffer(_)
+            | Kind::Overlay(_)
             | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::Finalizer(_) => {
@@ -4838,6 +4838,7 @@ impl NativeHeap {
             | Kind::ReaderForm(_)
             | Kind::Finalizer(_)
             | Kind::Buffer(_)
+            | Kind::Overlay(_)
             | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::BuiltinFunc(_) => Ok(value.word()),
@@ -5112,6 +5113,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
+                        | crate::lisp::alloc::VectorTag::Overlay
                         | crate::lisp::alloc::VectorTag::Marker
                         | crate::lisp::alloc::VectorTag::Finalizer
                 )
@@ -5261,7 +5263,6 @@ impl NativeHeap {
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
     Ok(match value.kind() {
-        Kind::Overlay(id) => (NativeIdentity::Overlay(id), TAG_VECTORLIKE),
         Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
         Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
         Kind::Nil
@@ -5280,6 +5281,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::Finalizer(_)
         | Kind::BuiltinFunc(_)
         | Kind::Buffer(_)
+        | Kind::Overlay(_)
         | Kind::Marker(_)
         | Kind::Terminal(_)
         | Kind::Cons(_) => {
@@ -10300,6 +10302,209 @@ mod tests {
     }
 
     #[test]
+    fn native_overlays_share_plist_and_interval_fields_with_bytecode() {
+        extern "C" fn write_overlay(vector: NativeWord, plist: NativeWord) -> NativeWord {
+            // Configured GNU layout: header/plist/buffer/interval at 0/8/16/24;
+            // the interval's advancement bits follow its data word at byte 72.
+            unsafe {
+                let overlay = ((vector & !TAG_MASK) as *const NativeWord).add(1).read();
+                let fields = (overlay & !TAG_MASK) as *mut NativeWord;
+                fields.add(1).write(plist);
+                let interval = fields.add(3).read() as *mut u8;
+                let flags = interval.add(72);
+                flags.write(flags.read() | 4);
+                overlay
+            }
+        }
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.insert_current_buffer("abcde");
+        let overlay = crate::overlay::OverlayRef::new(false, false);
+        overlay.move_to(interpreter.buffer, 2, 5);
+        let value = Value::Overlay(overlay);
+        let aliases = Value::vector([value, value]);
+        let plist = Value::list([Value::symbol("native-overlay-property"), aliases]);
+        let mut runtime = NativeRuntime::default();
+        let mut second = NativeHeapOwner::new();
+        assert_eq!(
+            runtime.heap.encode(&value).expect("encode overlay"),
+            value.word()
+        );
+        assert_eq!(second.encode(&value).expect("second heap"), value.word());
+        assert_eq!(
+            second.decode(value.word()).expect("checked word").word(),
+            value.word()
+        );
+        assert_eq!(
+            unsafe { second.decode_live(value.word()) }
+                .expect("live word")
+                .word(),
+            value.word()
+        );
+        assert!(
+            second
+                .decode((value.word() & !TAG_MASK) | TAG_STRING)
+                .is_err()
+        );
+        assert_eq!(value.word() & TAG_MASK, TAG_VECTORLIKE);
+        unsafe {
+            let fields = (value.word() & !TAG_MASK) as *const NativeWord;
+            assert_eq!(fields.read(), (1 << 62) | (4 << 24) | (2 << 12) | 1);
+            assert_eq!(fields.add(2).read(), interpreter.buffer.identity());
+            let node = fields.add(3).read() as *const NativeWord;
+            assert_eq!(node.add(3).read(), 2);
+            assert_eq!(node.add(4).read(), 5);
+            assert_eq!(node.add(8).read(), value.word());
+        }
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                write_overlay as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[aliases, plist],
+            )
+            .expect("native overlay write");
+        assert_eq!(result.word(), value.word());
+        assert_eq!(overlay.plist().word(), plist.word());
+        assert!(overlay.front_advance());
+        assert_eq!(
+            overlay
+                .get_symbol_prop("native-overlay-property")
+                .expect("written property")
+                .word(),
+            aliases.word()
+        );
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{c0}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let function = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-byte-code",
+            &[
+                Value::Integer(0),
+                code,
+                Value::vector([value]),
+                Value::Integer(1),
+            ],
+            &mut environment,
+        )
+        .expect("overlay-returning bytecode");
+        assert_eq!(
+            interpreter
+                .call_function_value(function, None, &[], &mut environment)
+                .expect("bytecode overlay word")
+                .word(),
+            value.word()
+        );
+        interpreter.buffer.borrow_mut().goto_char(2);
+        interpreter.insert_current_buffer("λ");
+        assert_eq!(overlay.bounds(), (3, 6));
+        assert!(runtime.heap.handles.is_empty());
+        assert!(second.handles.is_empty());
+    }
+
+    #[test]
+    fn native_overlay_roots_retain_plists_without_retaining_buffers_or_dead_cycles() {
+        #[inline(never)]
+        fn allocate() -> [usize; 5] {
+            let buffer = crate::lisp::types::BufferRef::new(
+                991,
+                crate::buffer::Buffer::from_text("unregistered-overlay-owner", "abc"),
+            );
+            let live = crate::overlay::OverlayRef::new(false, true);
+            live.move_to(buffer, 1, 3);
+            live.put_prop(Value::symbol("self"), Value::Overlay(live));
+            let dead = crate::overlay::OverlayRef::new(true, false);
+            dead.put_prop(Value::symbol("self"), Value::Overlay(dead));
+            [
+                Value::Overlay(live),
+                live.plist(),
+                Value::Buffer(buffer),
+                Value::Overlay(dead),
+                dead.plist(),
+            ]
+            .map(|value| value.word() ^ HIDE)
+        }
+        #[inline(never)]
+        fn retain(
+            heap: &mut NativeHeapOwner,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack: *const NativeWord,
+            hidden: [usize; 5],
+        ) {
+            heap.collect(stack, &[hidden[0] ^ HIDE], interpreter, environment);
+            let value = heap.decode(hidden[0] ^ HIDE).expect("native overlay root");
+            let Kind::Overlay(overlay) = value.kind() else {
+                panic!("overlay")
+            };
+            assert!(
+                overlay.is_dead(),
+                "a rooted overlay does not mark its weak buffer"
+            );
+            assert_eq!(overlay.plist().word(), hidden[1] ^ HIDE);
+            assert_eq!(
+                overlay.get_symbol_prop("self").expect("live cycle").word(),
+                value.word()
+            );
+            for word in &hidden[2..] {
+                assert!(
+                    heap.decode(word ^ HIDE).is_err(),
+                    "unreachable buffer or cycle"
+                );
+            }
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        let stack = 0;
+        // The allocator is shared with preceding tests. Establish the byte
+        // baseline after reclaiming their garbage, then require this test's
+        // rooted node and eventual reclamation to change it by exactly 80.
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        let before = crate::lisp::alloc::vectors::live_overlay_node_bytes();
+        let hidden = allocate();
+        crate::lisp::alloc::clobber_stack();
+        retain(
+            &mut heap,
+            &mut interpreter,
+            &environment,
+            std::ptr::from_ref(&stack),
+            hidden,
+        );
+        assert_eq!(
+            crate::lisp::alloc::vectors::live_overlay_node_bytes(),
+            before + 80
+        );
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for word in hidden {
+            assert!(
+                heap.decode(word ^ HIDE).is_err(),
+                "last native root removed"
+            );
+        }
+        assert_eq!(
+            crate::lisp::alloc::vectors::live_overlay_node_bytes(),
+            before
+        );
+    }
+
+    #[test]
     fn native_markers_share_fields_with_buffer_marks_and_bytecode() {
         extern "C" fn move_mark(vector: NativeWord) -> NativeWord {
             // GNU's vector slot holds the actual PVEC_MARKER word. The C
@@ -11364,11 +11569,8 @@ mod tests {
     #[test]
     fn native_handle_cache_keys_use_gnu_object_identity_words() {
         let char_table_identity = NativeIdentity::CharTable(19);
-        let overlay_identity = NativeIdentity::Overlay(19);
-        assert_ne!(
-            char_table_identity.hash_word(),
-            overlay_identity.hash_word()
-        );
+        let frame_identity = NativeIdentity::Frame(19);
+        assert_ne!(char_table_identity.hash_word(), frame_identity.hash_word());
         let occupied_buckets = (0..4_096_u64)
             .map(|id| NativeIdentity::CharTable(id).hash_word() & 4_095)
             .collect::<HashSet<_>>();
@@ -11390,23 +11592,30 @@ mod tests {
         // two kinds that still use the migration bridge. These identities
         // are local codec controls; no interpreter dereferences them.
         let char_table = Value::CharTable(19);
-        let overlay = Value::Overlay(19);
+        let frame = Value::Frame(19);
         let char_table_word = heap
             .encode(&char_table)
             .expect("encode char_table identity");
-        let overlay_word = heap.encode(&overlay).expect("encode overlay identity");
-        assert_ne!(char_table_word, overlay_word);
+        let frame_word = heap.encode(&frame).expect("encode frame identity");
+        assert_ne!(char_table_word, frame_word);
         assert_eq!(
             heap.encode(&char_table).expect("reuse char_table handle"),
             char_table_word
         );
-        assert_eq!(
-            heap.encode(&overlay).expect("reuse overlay handle"),
-            overlay_word
-        );
+        assert_eq!(heap.encode(&frame).expect("reuse frame handle"), frame_word);
         assert_eq!(heap.handle_by_value.len(), 2);
         assert!(heap.handle_by_value.contains_key(&char_table_identity));
-        assert!(heap.handle_by_value.contains_key(&overlay_identity));
+        assert!(heap.handle_by_value.contains_key(&frame_identity));
+        let overlay = Value::Overlay(crate::overlay::OverlayRef::new(false, true));
+        let word = heap.encode(&overlay).expect("encode canonical overlay");
+        assert_eq!(word, overlay.word());
+        assert_eq!(heap.encode(&overlay).expect("same overlay"), word);
+        assert_eq!(
+            heap.handle_by_value.len(),
+            2,
+            "overlay has no bridge handle"
+        );
+        assert_eq!(heap.decode(word).expect("decode overlay").word(), word);
     }
 
     #[test]

@@ -3017,6 +3017,7 @@ struct ImageGraphCopier {
     finalizers: std::collections::HashMap<usize, Value>,
     buffers: std::collections::HashMap<usize, Value>,
     markers: std::collections::HashMap<usize, Value>,
+    overlays: std::collections::HashMap<usize, Value>,
     terminals: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
@@ -3035,6 +3036,7 @@ impl ImageGraphCopier {
             finalizers: Default::default(),
             buffers: Default::default(),
             markers: Default::default(),
+            overlays: Default::default(),
             terminals: Default::default(),
             record_owner,
         }
@@ -3082,6 +3084,27 @@ impl ImageGraphCopier {
                 }
                 value
             }
+            Kind::Overlay(overlay) => {
+                if let Some(copied) = self.overlays.get(&overlay.identity()) {
+                    return *copied;
+                }
+                let copied = crate::overlay::OverlayRef::new(
+                    overlay.front_advance(),
+                    overlay.rear_advance(),
+                );
+                let value = Value::Overlay(copied);
+                self.overlays.insert(overlay.identity(), value);
+                let (beg, end) = overlay.bounds();
+                copied.restore_bounds(beg, end);
+                copied.set_plist(self.copy(&overlay.plist()));
+                if let Some(buffer) = overlay.buffer() {
+                    let Kind::Buffer(buffer) = self.copy(&Value::Buffer(buffer)).kind() else {
+                        unreachable!()
+                    };
+                    copied.move_to(buffer, beg as usize, end as usize);
+                }
+                value
+            }
             Kind::Buffer(buffer) => {
                 if let Some(copied) = self.buffers.get(&buffer.identity()) {
                     return *copied;
@@ -3100,6 +3123,14 @@ impl ImageGraphCopier {
                 object
                     .borrow_mut()
                     .rewrite_lisp_values(&mut |child| self.copy(child));
+                for overlay in buffer.borrow().overlays.iter() {
+                    let Kind::Overlay(copy) = self.copy(&Value::Overlay(overlay)).kind() else {
+                        unreachable!()
+                    };
+                    // The graph may reach this overlay before its buffer.
+                    // Linking here also completes that recursive case.
+                    copy.move_to(object, overlay.beg(), overlay.end());
+                }
                 copied
             }
             Kind::Finalizer(object) => {
@@ -3324,9 +3355,9 @@ impl ImageGraphCopier {
 /// - `floats' counts allocator-owned one-word float cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers and finalizers are allocator-owned pseudovectors. Overlays owned
-///   by live buffers and rooted char-tables are still host state and use the
-///   measured C footprint rather than their actual Rust storage. Frames,
+/// - Markers, overlays, and finalizers are allocator-owned pseudovectors.
+///   Overlays' separately owned interval nodes are counted as native bytes.
+///   Rooted char-tables still use a C footprint for their host state. Frames,
 ///   terminals, buffers, and fixed-layout records with a direct GNU
 ///   pseudovector counterpart are included as well.
 #[derive(Default)]
@@ -3341,6 +3372,7 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) intervals: usize,
     pub(crate) buffers: usize,
     pub(crate) hash_table_bytes: usize,
+    pub(crate) overlay_node_bytes: usize,
 }
 
 // alloc.c:total_bytes_of_live_objects and Fgarbage_collect report GNU C
@@ -3360,7 +3392,6 @@ pub(crate) const GNU_BUFFER_SIZE: usize = 992;
 // configured GNU 64-bit VECSIZE values for the remaining host-state objects.
 // Allocator-owned buffers and terminals use their actual vector footprints.
 pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
-pub(crate) const GNU_OVERLAY_VECTOR_SLOTS: usize = 3;
 pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
 /// The mark bits of one collection, keyed by object address or id.  The
@@ -3383,7 +3414,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    overlays: MarkedIds,
     char_tables: MarkedIds,
     frames: MarkedIds,
 }
@@ -3416,7 +3446,6 @@ impl LispReachability<'_, '_> {
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
-            overlays: MarkedIds::default(),
             char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
         }
@@ -3428,7 +3457,6 @@ pub(crate) struct WeakHashReachability {
     /// which the sweep tests.
     pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    pub(crate) live_overlays: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -3450,7 +3478,7 @@ impl LispReachability<'_, '_> {
             Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
-            Kind::Overlay(id) => self.overlays.contains(&id),
+            Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
             Kind::CharTable(id) => self.char_tables.contains(&id),
             Kind::Frame(id) => self.frames.contains(&id),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
@@ -3518,7 +3546,7 @@ impl LispReachability<'_, '_> {
             Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
-            Kind::Overlay(id) => self.overlays.insert(id),
+            Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
             Kind::CharTable(id) => self.char_tables.insert(id),
             Kind::Frame(id) => self.frames.insert(id),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
@@ -3588,12 +3616,9 @@ impl LispReachability<'_, '_> {
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
             }
-            Kind::Overlay(id) => {
-                // alloc.c:mark_overlay follows the plist whether the overlay
-                // was reached through a buffer or through another Lisp object.
-                if let Some(overlay) = interp.find_overlay(id) {
-                    self.enqueue(&overlay.plist);
-                }
+            Kind::Overlay(overlay) => {
+                // alloc.c:mark_overlay traces only the strong plist slot.
+                self.enqueue(&overlay.plist());
             }
             Kind::CharTable(id) => {
                 // The slots in place (alloc.c's mark_char_table).
@@ -3715,6 +3740,7 @@ impl LiveObjectCensus {
             .saturating_add(self.intervals.saturating_mul(GNU_INTERVAL_SIZE))
             .saturating_add(self.strings.saturating_mul(GNU_STRING_SIZE))
             .saturating_add(self.hash_table_bytes)
+            .saturating_add(self.overlay_node_bytes)
     }
 }
 
@@ -4006,18 +4032,6 @@ impl Interpreter {
         !self.doomed_finalizers.is_empty()
     }
 
-    /// The buffer whose overlay list holds the object, if any. Detached
-    /// overlays do not need a live buffer to retain their properties.
-    pub(crate) fn overlay_holder_id(&self, id: u64) -> Option<u64> {
-        if self.buffer.borrow().overlays.iter().any(|ov| ov.id == id) {
-            return Some(self.current_buffer_id);
-        }
-        self.inactive_buffers
-            .iter()
-            .find(|(_, buffer)| buffer.borrow().overlays.iter().any(|ov| ov.id == id))
-            .map(|(id, _)| *id)
-    }
-
     /// Install a buffer with the id the image gave it, replacing a buffer
     /// with that id.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -4040,28 +4054,6 @@ impl Interpreter {
             None => self.buffer_list.push((id, name)),
         }
         self.next_buffer_id = self.next_buffer_id.max(id + 1);
-    }
-
-    /// Restore an overlay from an image, independently owning detached ones.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_overlay(&mut self, holder: u64, overlay: crate::overlay::Overlay) {
-        self.next_overlay_id = self.next_overlay_id.max(overlay.id + 1);
-        self.take_overlay(overlay.id);
-        if overlay.is_dead() {
-            self.detached_overlays
-                .borrow_mut()
-                .insert(overlay.id, overlay);
-            return;
-        }
-        let holder = if self.get_buffer_by_id(holder).is_some() {
-            holder
-        } else {
-            self.current_buffer_id
-        };
-        let mut buffer = self
-            .get_buffer_by_id_mut(holder)
-            .expect("the current buffer is live");
-        buffer.overlays.push(overlay);
     }
 
     /// Install an image object's actual finalizer at the end of the list.
@@ -4280,7 +4272,6 @@ impl Interpreter {
         WeakHashReachability {
             epoch: marked.epoch,
             tables,
-            live_overlays: std::mem::take(&mut marked.overlays),
         }
     }
 
@@ -4654,11 +4645,6 @@ impl Interpreter {
         let mut vector_slots = vectors.slots;
         let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
         let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        let live_overlays = std::iter::once(&self.buffer)
-            .chain(self.inactive_buffers.iter().map(|(_, buffer)| buffer))
-            .map(|buffer| buffer.borrow().overlays.len())
-            .sum::<usize>()
-            .saturating_add(self.detached_overlays.borrow().len());
         let char_table_slots = self
             .char_tables
             .iter()
@@ -4666,11 +4652,9 @@ impl Interpreter {
             .sum::<usize>();
         vector_count = vector_count
             .saturating_add(live_frames)
-            .saturating_add(live_overlays)
             .saturating_add(self.char_tables.len());
         vector_slots = vector_slots
             .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
-            .saturating_add(live_overlays.saturating_mul(GNU_OVERLAY_VECTOR_SLOTS))
             .saturating_add(char_table_slots);
         // The records are vectors of the sweep's count (alloc.c counts a
         // record among the vectors).
@@ -4689,6 +4673,7 @@ impl Interpreter {
             intervals: strings.property_spans,
             buffers: allocated_buffers,
             hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
+            overlay_node_bytes: crate::lisp::alloc::vectors::live_overlay_node_bytes(),
         };
         census.intervals += self.buffer.borrow().text_property_span_count();
         for (_, buffer) in &self.inactive_buffers {
@@ -5042,10 +5027,6 @@ impl Interpreter {
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
                 process.contact = c.copy(&process.contact.clone());
-            }
-            let mut copy = |value: &Value| c.copy(value);
-            for overlay in clone.detached_overlays.get_mut().values_mut() {
-                overlay.plist = copy(&overlay.plist);
             }
         }
 
@@ -5417,12 +5398,6 @@ pub struct InterpreterState {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
-    /// Next overlay ID for identity tracking.
-    next_overlay_id: u64,
-    /// Deleted overlays remain Lisp objects even after their buffer dies.
-    /// This allocation table is swept by Lisp reachability, not a GC root.
-    detached_overlays: RefCell<HashMap<u64, crate::overlay::Overlay>>,
-    /// Next marker ID for identity tracking.
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
     /// Write generations per kind of table, bumped by the character-table
@@ -6211,8 +6186,6 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            next_overlay_id: 1,
-            detached_overlays: RefCell::new(HashMap::new()),
             char_tables: vec![
                 CharTableState::with_entries(
                     standard_syntax_table_id,

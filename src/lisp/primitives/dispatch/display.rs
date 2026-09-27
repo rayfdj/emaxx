@@ -1410,7 +1410,7 @@ pub(crate) fn window_face_spans(
 ) -> Vec<(usize, usize, Value)> {
     let mut spans = Vec::new();
     let is_current = buffer_id == interp.current_buffer_id();
-    let mut overlay_spans: Vec<(i64, u64, usize, usize, Value)> = Vec::new();
+    let mut overlay_spans: Vec<(i64, usize, usize, usize, Value)> = Vec::new();
     {
         let buffer = if is_current {
             interp.buffer.borrow()
@@ -1483,17 +1483,17 @@ pub(crate) fn window_face_spans(
             pos = end;
         }
         for overlay in &buffer.overlays {
-            if overlay.is_dead() || overlay.beg >= to || overlay.end <= from {
+            if overlay.is_dead() || overlay.beg() >= to || overlay.end() <= from {
                 continue;
             }
             let Some(face) = crate::lisp::primitives::strings::overlay_property_with_category(
-                interp, overlay, "face",
+                interp, &overlay, "face",
             )
             .filter(|face| !face.is_nil())
             .or_else(|| {
                 face_alias_names.iter().find_map(|name| {
                     crate::lisp::primitives::strings::overlay_property_with_category(
-                        interp, overlay, name,
+                        interp, &overlay, name,
                     )
                     .filter(|face| !face.is_nil())
                 })
@@ -1501,15 +1501,15 @@ pub(crate) fn window_face_spans(
                 continue;
             };
             let priority = crate::lisp::primitives::strings::overlay_property_with_category(
-                interp, overlay, "priority",
+                interp, &overlay, "priority",
             )
             .and_then(|priority| priority.as_integer().ok())
             .unwrap_or(0);
             overlay_spans.push((
                 priority,
-                overlay.id,
-                overlay.beg.max(from),
-                overlay.end.min(to),
+                overlay.identity(),
+                overlay.beg().max(from),
+                overlay.end().min(to),
                 face,
             ));
         }

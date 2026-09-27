@@ -1492,6 +1492,7 @@ pub use crate::lisp::alloc::VectorRef;
 pub type LambdaRef = crate::lisp::alloc::ClosureRef;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 mod marker;
+pub use crate::overlay::{OverlayRef, OverlayValue};
 pub use marker::{MarkerRef, MarkerValue};
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
@@ -2043,7 +2044,6 @@ const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
 /// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_OVERLAY: usize = 4;
 const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
 const SUB_SHIFT: u32 = 3;
@@ -2094,8 +2094,8 @@ pub enum Kind {
     Buffer(BufferRef),
     /// The canonical GNU-layout marker allocation.
     Marker(MarkerRef),
-    /// An overlay object, identified by unique id.
-    Overlay(u64),
+    /// The canonical GNU-layout overlay allocation.
+    Overlay(OverlayRef),
     /// A char-table object, identified by unique id.
     CharTable(u64),
     /// An opaque frame object, identified by unique id.
@@ -2192,8 +2192,8 @@ impl Value {
         Value::from_bits(marker.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Overlay(id: u64) -> Value {
-        Value::from_bits(special(SUB_OVERLAY, id as usize))
+    pub fn Overlay(overlay: OverlayRef) -> Value {
+        Value::from_bits(overlay.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn CharTable(id: u64) -> Value {
@@ -2313,6 +2313,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Marker => {
                             Kind::Marker(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Overlay => {
+                            Kind::Overlay(OverlayRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
@@ -2341,7 +2344,6 @@ impl Value {
             _ => {
                 let payload = (word >> PAYLOAD_SHIFT) as u64;
                 match (word >> SUB_SHIFT) & 31 {
-                    SUB_OVERLAY => Kind::Overlay(payload),
                     SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),
                     // SAFETY: every word this implementation makes has

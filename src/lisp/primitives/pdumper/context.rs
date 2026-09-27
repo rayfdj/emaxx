@@ -40,7 +40,7 @@ pub(crate) enum ObjectKey {
     /// `Value::Buffer' naming one buffer is one object.
     Buffer(u64),
     Marker(usize),
-    Overlay(u64),
+    Overlay(usize),
     CharTable(u64),
     Frame(u64),
     Terminal(usize),
@@ -76,7 +76,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
-        Kind::Overlay(id) => ObjectKey::Overlay(id),
+        Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
         Kind::CharTable(id) => ObjectKey::CharTable(id),
         Kind::Frame(id) => ObjectKey::Frame(id),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
@@ -1055,7 +1055,7 @@ impl DumpContext {
                 DumpType::Buffer,
             ),
             Kind::Marker(marker) => (self.dump_marker(marker)?, DumpType::Marker),
-            Kind::Overlay(id) => (self.dump_overlay(interp, id, object)?, DumpType::Overlay),
+            Kind::Overlay(overlay) => (self.dump_overlay(overlay)?, DumpType::Overlay),
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
             Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
@@ -1794,42 +1794,22 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_overlay: the Lisp fields (buffer, plist) and the interval
-    /// node's bounds and advance flags.  A live overlay's buffer is a
-    /// field, so the buffer is dumped too, and refuses; only a deleted
-    /// overlay gets through. Detached objects need no holding buffer.
-    fn dump_overlay(
-        &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
-    ) -> Result<u32, DumpError> {
-        let Some(overlay) = interp.find_overlay(id) else {
-            return Err(self.unsupported(object, "overlay without an object"));
-        };
-        let holder = interp.overlay_holder_id(id);
-        let buffer = overlay.buffer_id.and_then(|id| interp.buffer_value(id));
-        let mut flags = 0;
-        if overlay.front_advance {
-            flags |= OVERLAY_FRONT_ADVANCE;
-        }
-        if overlay.rear_advance {
-            flags |= OVERLAY_REAR_ADVANCE;
-        }
+    /// pdumper.c:dump_overlay writes fields and interval bounds. A live
+    /// buffer refuses dumping, so only detached overlays pass that contract.
+    fn dump_overlay(&mut self, overlay: crate::overlay::OverlayRef) -> Result<u32, DumpError> {
+        let flags = (u64::from(overlay.front_advance()) * OVERLAY_FRONT_ADVANCE)
+            | (u64::from(overlay.rear_advance()) * OVERLAY_REAR_ADVANCE);
+        let (beg, end) = overlay.bounds();
         let start = self.object_start()?;
-        let mut words = vec![
-            id,
-            flags,
-            overlay.beg as u64,
-            overlay.end as u64,
-            holder.unwrap_or(NO_POSITION),
-            0,
-            0,
-        ];
-        let fields = [(5, buffer.unwrap_or(Value::Nil)), (6, overlay.plist)];
-        for (index, value) in fields {
-            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
-        }
+        let mut words = vec![flags, beg as u64, end as u64, 0, 0];
+        self.field_lv(
+            start,
+            &mut words,
+            3,
+            &overlay.buffer().map(Value::Buffer).unwrap_or(Value::Nil),
+            WEIGHT_STRONG,
+        );
+        self.field_lv(start, &mut words, 4, &overlay.plist(), WEIGHT_STRONG);
         self.object_finish(&words)
     }
 

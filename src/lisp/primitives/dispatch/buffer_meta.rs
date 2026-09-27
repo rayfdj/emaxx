@@ -500,30 +500,10 @@ define_dispatch!(
                         base.full_property_spans(),
                         base.point(),
                         base.mark(),
-                        base.overlays.clone(),
+                        base.overlays.iter().collect::<Vec<_>>(),
                         base.restriction(),
                         base.is_multibyte(),
                     )
-                };
-                let overlays = if clone {
-                    base_overlays
-                        .into_iter()
-                        .map(|mut overlay| {
-                            overlay.id = interp.alloc_overlay_id();
-                            overlay.buffer_id = Some(new_id);
-                            // buffer.c:copy_overlays copies each overlay plist's
-                            // spine, retaining the identity of its values.
-                            overlay.plist = Value::list(
-                                overlay
-                                    .plist
-                                    .to_vec()
-                                    .expect("an overlay has a proper plist"),
-                            );
-                            overlay
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
                 };
                 if let Some(object) = interp.buffer_object(new_id) {
                     object.replace_state(crate::buffer::Buffer::from_text(&new_name, &text));
@@ -544,7 +524,19 @@ define_dispatch!(
                     for span in props {
                         buffer.set_text_properties(span.start, span.end, &span.props);
                     }
-                    buffer.overlays = overlays;
+                    drop(buffer);
+                    if clone {
+                        // buffer.c:copy_overlays walks ascending intervals,
+                        // allocates new objects, and copies only plist spines.
+                        for source in base_overlays {
+                            let overlay = crate::overlay::OverlayRef::new(
+                                source.front_advance(),
+                                source.rear_advance(),
+                            );
+                            overlay.set_plist(Value::list(source.plist().to_vec()?));
+                            overlay.move_to(object, source.beg(), source.end());
+                        }
+                    }
                 }
                 interp.register_indirect_buffer(new_id, base_id);
                 if clone {

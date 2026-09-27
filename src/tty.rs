@@ -1984,7 +1984,7 @@ fn visual_line_at(
         if overlay.is_dead() {
             continue;
         }
-        if overlay.beg < overlay.end
+        if overlay.beg() < overlay.end()
             && let Some(value) = overlay.get_prop(&Value::Symbol("display".into()))
             && crate::lisp::primitives::string_text(&value).is_ok()
         {
@@ -1992,7 +1992,13 @@ fn visual_line_at(
                 .get_prop(&Value::Symbol("priority".into()))
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(0);
-            overlay_displays.push((overlay.beg, overlay.end, priority, overlay.id, value));
+            overlay_displays.push((
+                overlay.beg(),
+                overlay.end(),
+                priority,
+                overlay.identity(),
+                value,
+            ));
         }
         for (name, after) in [("before-string", false), ("after-string", true)] {
             let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
@@ -2005,9 +2011,9 @@ fn visual_line_at(
                 continue;
             }
             overlay_strings.push((
-                if after { overlay.end } else { overlay.beg },
+                if after { overlay.end() } else { overlay.beg() },
                 after,
-                overlay.id,
+                overlay.identity(),
                 value,
             ));
         }
@@ -3387,7 +3393,7 @@ fn redraw_with_echo_policy(
                         _ => continue,
                     };
                     let line_start = buffer
-                        .line_start_at(overlay.beg.clamp(buffer.point_min(), buffer.point_max()));
+                        .line_start_at(overlay.beg().clamp(buffer.point_min(), buffer.point_max()));
                     let Some(row) = plan.rendered.iter().position(|(_, _, seg, start, _)| {
                         *seg == 0 && *start != usize::MAX && *start == line_start
                     }) else {
@@ -3573,7 +3579,7 @@ fn redraw_with_echo_policy(
                 .flat_map(|overlay| {
                     ["before-string", "after-string"]
                         .into_iter()
-                        .filter_map(|name| overlay.get_prop(&Value::Symbol(name.into())))
+                        .filter_map(move |name| overlay.get_prop(&Value::Symbol(name.into())))
                         .flat_map(|value| crate::lisp::primitives::string_face_spans(&value))
                         .map(|(_, _, face)| face)
                 })
@@ -4386,7 +4392,7 @@ fn compose_echo_row(
         struct OverlayString {
             position: usize,
             after: bool,
-            id: u64,
+            id: usize,
             text: String,
             base_faces: Vec<Value>,
             spans: crate::lisp::primitives::EchoSpans,
@@ -4413,9 +4419,9 @@ fn compose_echo_row(
                         continue;
                     };
                     strings.push(OverlayString {
-                        position: if after { overlay.end } else { overlay.beg },
+                        position: if after { overlay.end() } else { overlay.beg() },
                         after,
-                        id: overlay.id,
+                        id: overlay.identity(),
                         text,
                         base_faces: Vec::new(),
                         spans: crate::lisp::primitives::string_face_spans(&value),

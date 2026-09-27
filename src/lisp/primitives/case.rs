@@ -453,38 +453,40 @@ pub(crate) fn casify_buffer_region(
     let new_changed_end = new_end - unchanged_suffix;
     ensure_region_modifiable(interp, lo, hi, env)?;
     ensure_no_supersession_threat(interp, env)?;
-    let overlay_calls = overlay_change_hook_calls(&interp.buffer.borrow(), lo, hi, new_end);
-    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-    run_change_hooks(
-        interp,
-        "before-change-functions",
-        &[Value::Integer(lo as i64), Value::Integer(hi as i64)],
-        env,
-    )?;
-    if mapped == text {
-        return Ok(hi);
-    }
-    if new_length == old_length {
-        interp
-            .buffer
-            .borrow_mut()
-            .replace_region_in_place(lo, hi, &mapped, false);
-    } else {
-        replace_buffer_region_with_text(interp, lo, hi, &mapped)?;
-    }
-    run_change_hooks(
-        interp,
-        "after-change-functions",
-        &[
-            Value::Integer(changed_start as i64),
-            Value::Integer(new_changed_end as i64),
-            Value::Integer((old_changed_end - changed_start) as i64),
-        ],
-        env,
-    )?;
-    let _ = maybe_lock_current_buffer_on_change(interp, env);
-    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-    Ok(new_end)
+    let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), lo, hi, new_end);
+    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+        run_change_hooks(
+            interp,
+            "before-change-functions",
+            &[Value::Integer(lo as i64), Value::Integer(hi as i64)],
+            env,
+        )?;
+        if mapped == text {
+            return Ok(hi);
+        }
+        if new_length == old_length {
+            interp
+                .buffer
+                .borrow_mut()
+                .replace_region_in_place(lo, hi, &mapped, false);
+        } else {
+            replace_buffer_region_with_text(interp, lo, hi, &mapped)?;
+        }
+        run_change_hooks(
+            interp,
+            "after-change-functions",
+            &[
+                Value::Integer(changed_start as i64),
+                Value::Integer(new_changed_end as i64),
+                Value::Integer((old_changed_end - changed_start) as i64),
+            ],
+            env,
+        )?;
+        let _ = maybe_lock_current_buffer_on_change(interp, env);
+        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+        Ok(new_end)
+    })
 }
 
 pub(crate) fn parse_region_bound(value: &Value) -> Result<(usize, usize), LispError> {

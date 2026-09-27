@@ -69,6 +69,7 @@ pub enum VectorTag {
     Free = 1,
     Bignum = 2,
     Marker = 3,
+    Overlay = 4,
     Finalizer = 5,
     Buffer = 13,
     Terminal = 16,
@@ -87,6 +88,7 @@ impl VectorTag {
             1 => Self::Free,
             2 => Self::Bignum,
             3 => Self::Marker,
+            4 => Self::Overlay,
             5 => Self::Finalizer,
             13 => Self::Buffer,
             16 => Self::Terminal,
@@ -271,6 +273,7 @@ static LIVE_CLOSURES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BUFFERS: AtomicUsize = AtomicUsize::new(0);
+static LIVE_OVERLAYS: AtomicUsize = AtomicUsize::new(0);
 /// The records' share of `total_vectors' and `total_vector_slots'
 /// (alloc.c counts a record as a vector of its slots).
 static LIVE_RECORDS: AtomicUsize = AtomicUsize::new(0);
@@ -708,6 +711,11 @@ impl Vectorlike for crate::lisp::types::MarkerValue {
     const TAG: VectorTag = VectorTag::Marker;
 }
 
+impl Vectorlike for crate::lisp::types::OverlayValue {
+    const TAG: VectorTag = VectorTag::Overlay;
+    const LISP_SLOTS: usize = 1;
+}
+
 impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
@@ -834,9 +842,11 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTORS, 1);
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
-            VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker => {
+            VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker | VectorTag::Overlay => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
+                } else if (*header).tag() == VectorTag::Overlay {
+                    raise(&LIVE_OVERLAYS, 1);
                 }
                 raise(&LIVE_VECTORS, 1);
                 // alloc.c:sweep_vectors counts the actual allocation, including
@@ -884,6 +894,9 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
+            VectorTag::Overlay => {
+                std::ptr::drop_in_place(body.cast::<crate::lisp::types::OverlayValue>())
+            }
             VectorTag::Marker => {
                 let marker = body.cast::<crate::lisp::types::MarkerValue>();
                 debug_assert!((*marker).is_detached());
@@ -932,6 +945,7 @@ struct SweepStats {
     closure_slots: usize,
     bignums: usize,
     buffers: usize,
+    overlays: usize,
     records: usize,
     record_slots: usize,
     string_objects: usize,
@@ -959,8 +973,12 @@ impl SweepStats {
                     self.vectors += 1;
                     self.vector_slots += 4;
                 }
-                VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker => {
+                VectorTag::Buffer
+                | VectorTag::Terminal
+                | VectorTag::Marker
+                | VectorTag::Overlay => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
+                    self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
                     self.vector_slots += (*header).nbytes() / WORD_SIZE;
                 }
@@ -1002,7 +1020,11 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                 // this pass neither frees storage nor changes those headers.
                 unsafe {
                     if (*header).tag() == VectorTag::Buffer {
-                        crate::lisp::types::BufferRef::from_raw(header).sweep_markers(epoch);
+                        let buffer = crate::lisp::types::BufferRef::from_raw(header);
+                        buffer.sweep_markers(epoch);
+                        if !buffer.mark_bit().is_marked(epoch) {
+                            buffer.borrow_mut().overlays.clear();
+                        }
                     }
                     if matches!(kind, BlockKind::LargeVector) {
                         break;
@@ -1089,6 +1111,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_CLOSURE_SLOTS.store(stats.closure_slots, Ordering::Relaxed);
     LIVE_BIGNUMS.store(stats.bignums, Ordering::Relaxed);
     LIVE_BUFFERS.store(stats.buffers, Ordering::Relaxed);
+    LIVE_OVERLAYS.store(stats.overlays, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
     LIVE_STRING_OBJECTS.store(stats.string_objects, Ordering::Relaxed);
@@ -1212,6 +1235,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             }
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
             VectorTag::Marker => Value::Marker(VectorlikeRef::from_raw(header)),
+            VectorTag::Overlay => Value::Overlay(VectorlikeRef::from_raw(header)),
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
@@ -1222,4 +1246,10 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }
+}
+
+/// Each canonical overlay owns one configured 80-byte interval node. The
+/// vector census already includes its 32-byte header and payload allocation.
+pub(crate) fn live_overlay_node_bytes() -> usize {
+    LIVE_OVERLAYS.load(Ordering::Relaxed) * 80
 }

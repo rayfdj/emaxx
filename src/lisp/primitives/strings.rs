@@ -1178,7 +1178,7 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: &str,
-) -> (Value, Option<u64>) {
+) -> (Value, Option<crate::overlay::OverlayRef>) {
     if let Some((value, overlay_id)) =
         highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false, None)
     {
@@ -1192,7 +1192,7 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
 
 pub(crate) fn overlay_property_with_category(
     interp: &Interpreter,
-    overlay: &crate::overlay::Overlay,
+    overlay: &crate::overlay::OverlayRef,
     prop: &str,
 ) -> Option<Value> {
     let direct = overlay.get_symbol_prop(prop);
