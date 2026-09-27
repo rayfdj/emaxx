@@ -23497,6 +23497,98 @@ fn interactive_undo_restores_the_unmodified_state() {
 }
 
 #[test]
+fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
+    let program = r#"(let ((map (make-sparse-keymap)) (menu (make-sparse-keymap)))
+        (use-global-map map)
+        (define-key map [134217759] 'menu-hint-action)
+        (define-key map [67108927] 'menu-hint-action)
+        (define-key menu [item] '(menu-item "Action" menu-hint-action))
+        (define-key map [menu-bar sample] menu)
+        (list (key-description (where-is-internal 'menu-hint-action nil t))
+              (progn (define-key map [134217759] nil t)
+                     (key-description (where-is-internal 'menu-hint-action nil t)))
+              (progn (define-key map [67108927] nil t)
+                     (define-key map [f7] 'menu-hint-action)
+                     (key-description (where-is-internal 'menu-hint-action nil t)))
+              (progn (define-key map [f7] nil t)
+                     (where-is-internal 'menu-hint-action nil t))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        r#"("C-M-_" "C-?" "<f7>" nil)"#,
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let map = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("global map");
+    let menu = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("menu map");
+    let command = Value::symbol("menu-hint-action");
+    call(&mut interp, "use-global-map", &[map], &mut env).expect("select global map");
+    for code in [134_217_759, 67_108_927] {
+        call(
+            &mut interp,
+            "define-key",
+            &[map, Value::vector([Value::Integer(code)]), command],
+            &mut env,
+        )
+        .expect("bind modified event");
+    }
+    let item = Value::list([
+        Value::symbol("menu-item"),
+        Value::String("Action".into()),
+        command,
+    ]);
+    call(
+        &mut interp,
+        "define-key",
+        &[menu, Value::vector([Value::symbol("item")]), item],
+        &mut env,
+    )
+    .expect("menu item");
+    call(
+        &mut interp,
+        "define-key",
+        &[
+            map,
+            Value::vector([Value::symbol("menu-bar"), Value::symbol("sample")]),
+            menu,
+        ],
+        &mut env,
+    )
+    .expect("menu-bar binding");
+    for (remove, add, expected) in [
+        (None, None, "Action  C-M-_"),
+        (Some(Value::Integer(134_217_759)), None, "Action  C-?"),
+        (
+            Some(Value::Integer(67_108_927)),
+            Some(Value::symbol("f7")),
+            "Action  <f7>",
+        ),
+        (Some(Value::symbol("f7")), None, "Action"),
+    ] {
+        if let Some(event) = remove {
+            call(
+                &mut interp,
+                "define-key",
+                &[map, Value::vector([event]), Value::Nil, Value::T],
+                &mut env,
+            )
+            .expect("remove live binding");
+        }
+        if let Some(event) = add {
+            call(
+                &mut interp,
+                "define-key",
+                &[map, Value::vector([event]), command],
+                &mut env,
+            )
+            .expect("add symbolic binding");
+        }
+        let pane = tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Sample");
+        assert_eq!(pane.items.len(), 1);
+        assert_eq!(pane.items[0].text, expected);
+    }
+}
+
+#[test]
 fn command_error_echo_accepts_mutable_error_message_strings() {
     let program = r#"(let ((text (copy-sequence "before")))
         (list (error-message-string '(beginning-of-buffer))

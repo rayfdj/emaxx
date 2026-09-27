@@ -2507,49 +2507,23 @@ pub(crate) fn tty_menu_pane_from_keymap(
     let mut items = Vec::new();
     let mut width = 0usize;
     for (key, caption, def, enabled) in raw {
-        // parse_menu_item's equivalent-key hint: the first non-menu
-        // binding of the command, through the real where-is machinery
-        // (a [menu-bar ...] or [open]-style menu path is not a key).
+        // keyboard.c:parse_menu_item requests FIRSTONLY=t. That applies
+        // the preferred-modifier rules and rejects menu paths; taking
+        // the first entry of the complete binding list is different.
         let hint = if matches!(def.kind(), Kind::Symbol(_)) {
-            super::call(interp, "where-is-internal", std::slice::from_ref(&def), env)
-                .ok()
-                .and_then(|keys| keys.to_vec().ok())
-                .and_then(|keys| {
-                    // GNU prefers a typed key sequence (its where-is
-                    // sorts ASCII sequences first) and never shows a
-                    // menu path as the equivalent key.
-                    let event_kinds = |key: &Value| {
-                        key.to_vec()
-                            .ok()
-                            .map(|events| events.iter().skip(1).cloned().collect::<Vec<_>>())
-                            .unwrap_or_default()
-                    };
-                    let is_menu_path = |key: &Value| {
-                        matches!(
-                            event_kinds(key).first().map(|v| v.kind()),
-                            Some(Kind::Symbol(head))
-                                if head == "menu-bar"
-                                    || head == "tool-bar"
-                                    || head == "tab-bar"
-                                    || head == "mode-line"
-                        )
-                    };
-                    let typed = keys.iter().find(|key| {
-                        event_kinds(key)
-                            .first()
-                            .is_some_and(|event| matches!(event.kind(), Kind::Integer(_)))
-                    });
-                    typed
-                        .or_else(|| keys.iter().find(|key| !is_menu_path(key)))
-                        .cloned()
-                })
-                .and_then(|key| {
-                    super::call(interp, "key-description", &[key], env)
-                        .ok()
-                        .and_then(|description| {
-                            crate::lisp::primitives::string_text(&description).ok()
-                        })
-                })
+            super::call(
+                interp,
+                "where-is-internal",
+                &[def, Value::Nil, Value::T],
+                env,
+            )
+            .ok()
+            .filter(|key| !key.is_nil())
+            .and_then(|key| {
+                super::call(interp, "key-description", &[key], env)
+                    .ok()
+                    .and_then(|description| crate::lisp::primitives::string_text(&description).ok())
+            })
         } else {
             None
         };
