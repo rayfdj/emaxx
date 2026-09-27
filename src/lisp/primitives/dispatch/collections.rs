@@ -1165,9 +1165,10 @@ define_dispatch!(
                 };
                 match char_table_range_spec(&args[1], name)? {
                     None => Ok(id.default()),
-                    Some((start, end)) => Ok(interp
-                        .char_table_range(id, start, end)
-                        .unwrap_or(Value::Nil)),
+                    Some((start, _)) if matches!(args[1].kind(), Kind::Cons(_)) => {
+                        Ok(id.range_value(start))
+                    }
+                    Some((start, _)) => Ok(id.get(start)),
                 }
             }
 

@@ -2129,10 +2129,6 @@ impl Interpreter {
         Some(table.get(key))
     }
 
-    pub fn char_table_range(&self, table: CharTableRef, start: u32, _end: u32) -> Option<Value> {
-        Some(table.get(start))
-    }
-
     pub(crate) fn char_table_effective_ranges(
         &self,
         table: CharTableRef,

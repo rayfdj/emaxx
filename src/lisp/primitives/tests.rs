@@ -10521,6 +10521,39 @@ fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
 }
 
 #[test]
+fn char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache() {
+    let program = r#"(let* ((parent (make-char-table nil 'parent))
+                            (table (make-char-table nil nil)))
+        (set-char-table-parent table parent)
+        (let ((inherited (list (aref table 65)
+                               (char-table-range table 65)
+                               (char-table-range table '(65 . 66))
+                               (char-table-range table '(65 . 64)))))
+          (aset table 65 'old)
+          (fillarray table 'new)
+          (list inherited (aref table 65) (char-table-range table 65)
+                (char-table-range table '(65 . 66))
+                (char-table-range table '(65 . 65)))))"#;
+    let expected = "((parent parent nil nil) old old new new)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("read range contract")
+        .expect("range form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("evaluate range contract");
+    let printed =
+        call(&mut interp, "prin1-to-string", &[result], &mut env).expect("print range result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
 fn char_table_compressed_unicode_slots_decode_into_the_canonical_tree() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/char-table-uniprop.el"),

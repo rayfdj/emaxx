@@ -214,8 +214,23 @@ impl CharTableRef {
             let ascii = self.slot(ASCII);
             return subtable(ascii).map_or(ascii, |sub| sub.slot(character as usize));
         }
+        self.contents_get(character)
+    }
+
+    fn contents_get(&self, character: u32) -> Value {
         let value = self.slot(CONTENTS + (character >> SHIFTS[0]) as usize);
         subtable(value).map_or(value, |sub| sub.get(character, self.is_uniprop()))
+    }
+
+    /// chartab.c:char_table_ref_and_range reads this tree and its default,
+    /// without following the parent or consulting the ASCII cache.
+    pub(crate) fn range_value(&self, character: u32) -> Value {
+        let value = self.contents_get(character);
+        if value.is_nil() {
+            self.default()
+        } else {
+            value
+        }
     }
 
     pub(crate) fn set(&self, character: u32, value: Value) {

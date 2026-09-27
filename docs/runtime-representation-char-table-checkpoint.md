@@ -82,9 +82,21 @@ Local evidence is under `target/runtime-goal/resume-2026-09-28/`:
 - Source 10 adds reader coverage for more than ten literal extras, bounds malformed
   compressed input, and validates character arguments before radix access.
   All-target/all-feature check, strict Clippy, rustfmt and diff checks passed.
-  The full serial gate is running against binary
+  Its full serial gate used binary
   `55ac4ab8b303d4213cc8e3ac7096416d96c7a98e40b41dee4a6790b7a318ede1`;
-  results belong in `full-gate-source10/summary.json`. Pending is not passing.
+  eval_01 passed 385 tests, no failures or ignores. The assistant interrupted
+  eval_02 after a separate GNU probe found the cons-range defect below. This is
+  partial evidence, not a full pass. Retain `full-gate-source10/summary.json`
+  and its `interruption-note.json`; the runner's generic "interrupted by user"
+  text does not describe who requested the stop.
+- Source 11 fixes `char-table-range` for cons ranges: GNU reads local radix
+  contents and default, ignoring both parent and ASCII cache, even for a
+  single-character cons range. The new regression failed before the repair
+  (`((parent parent parent parent) old old old old)`) and passes after it
+  (`((parent parent nil nil) old old new new)`), as does the source-matched GNU
+  comparison. Before/after logs and the failing executable are preserved.
+  Full validation must restart from this source; source 10's partial result
+  cannot certify the fix.
 
 Local GNU is pristine source `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, native
 capable, but executable SHA-256
