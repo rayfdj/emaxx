@@ -1,0 +1,8 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/deps/emaxx-d6db30a035de0230",
+  "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source11-release-libtest",
+  "sha256": "80405bf4d014e72c382c875df1926fc92d381d9959de24acd7d0fa78a506363d",
+  "source_manifest": "source11-manifest.json",
+  "source_unchanged_after_build": true,
+  "validation": "built only; no release tests executed"
+}

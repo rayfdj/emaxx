@@ -119,16 +119,53 @@ Local evidence is under `target/runtime-goal/resume-2026-09-28/`:
   Source 13 removed the unused final root bound store, which the Lisp primitive
   discards, while preserving bounds propagated by recursive scans. Source 14's
   all-target/all-feature check, strict Clippy, formatting and diff checks pass
-  with no warnings. Its complete selected run and rebuilt full gate are pending.
+  with no warnings. All 24 selected tests passed in both the development test
+  profile (206.84 seconds) and release (31.82 seconds), zero ignored. Their
+  immutable binaries are `6808ece7d01f2d3148aa83772dd27ecc7484b03c0585fe466e813b5201fb2083`
+  and `21b6753f22b26030620e974cf6bf1b68d835d7dec90c06fcda5019080e1a3d4b`.
+- Source 14's full gate passed eval_01 (385 tests) and was interrupted by the
+  assistant during eval_02 after release terminal startup exposed an out-of-range
+  char-table lookup. Preserve the runner summary and interruption note; this is
+  not a full-gate pass. The unmodified terminal differential and smoke tests both
+  failed startup with an isolated empty HOME. Earlier attempts lacked sandbox
+  PTY access or inherited personal configuration and are retained as failed
+  setup evidence, not equivalent comparisons.
+- The startup panic comes from modified key events reaching the full keymap's
+  character table. GNU `keymap.c` only uses that table for unmodified characters.
+  A related numeric casing probe also panicked: GNU `casefiddle.c` strips event
+  flags before lookup, retaining its C-int conversion and original-object return
+  behavior. Source 15 repairs both bounds failures and passes compiler, strict
+  Clippy and formatting checks. Its three new GNU differential tests report
+  one pass (numeric casing), two failures, zero ignored: non-character cons
+  key events signal `listp`, and where-is collapses an explicit Control flag
+  to a control character and returns separate ESC/character events for Meta.
+  Do not weaken those expectations. Its release binary and fresh image pass the
+  unmodified isolated-HOME terminal smoke test (56.58 seconds). The first smoke
+  invocation misspelled the script filename and exited 2; that setup failure
+  is retained separately.
+- A generated source-14 diagnostic applied 512 operations across four tables,
+  checking point/default/range reads and complete map results after every step.
+  The same Lisp input through both normal batch CLIs produced byte-identical
+  171,163-byte output, SHA-256
+  `83bf76cd86f3dbb7fb8390bd74e8d90137cef3201e9e6ebe07aa904d211d9c82`.
+  This finite generated coverage is not a full semantic proof. Its uncontrolled
+  elapsed times (GNU approximately 0.33 seconds, Emaxx 4 seconds) are retained;
+  they are not authoritative performance measurements.
 
 Local GNU is pristine source `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, native
 capable, but executable SHA-256
 `7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82` differs from
 the locked Darwin oracle. The comparisons above are source-matched diagnostics,
 not a pinned-oracle frozen compatibility certificate. The lock was not changed.
+The ordinary affected-file frozen command was attempted and rejected this exact
+executable hash during preflight (exit 2); no frozen result was produced.
 Builds use Rust 1.97.1. Selected builds use the existing opt-level-1 test profile;
 the full serial gate uses the existing gate profile with assertions and overflow
 checks. None of these runs establishes release performance.
+
+Portable raw receipts and compressed logs through source 14 are indexed by
+[the evidence manifest](handover/2026-09-28/manifest.json). Local executable
+hashes remain provenance, not portable binaries or validation on another host.
 
 ## Remaining work
 

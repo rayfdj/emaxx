@@ -1,0 +1,7 @@
+{
+  "returncode": 0,
+  "stdout": "((7 nil nil t) (7 nil t nil) (7 t nil nil) (8 t nil nil))",
+  "stderr": "",
+  "program_file": "range-uniprop-cases.el",
+  "note": "Four deterministic GNU range-decompression graph comparisons; source-matched local GNU, not pinned certificate."
+}

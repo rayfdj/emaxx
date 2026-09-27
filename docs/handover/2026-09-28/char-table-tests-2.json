@@ -1,0 +1,445 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/debug/deps/emaxx-062fd247b26fb761",
+    "char_table",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 171.539875416,
+  "sha256": "cf56eb96c3d0d6654abb267405d3c4cfdb0e60997ae782221db89edbb4bce0cb",
+  "compiler_messages": [
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: method `ptr_eq` is never used\n  --> src/lisp/alloc/vectors/char_tables.rs:73:19\n   |\n45 | impl CharTableRef {\n   | ----------------- method in this implementation\n...\n73 |     pub(crate) fn ptr_eq(&self, other: &Self) -> bool { self.0 == other.0 }\n   |                   ^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "note",
+            "message": "`#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default",
+            "rendered": null,
+            "spans": []
+          }
+        ],
+        "level": "warning",
+        "message": "method `ptr_eq` is never used",
+        "spans": [
+          {
+            "byte_end": 1863,
+            "byte_start": 1846,
+            "column_end": 18,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "src/lisp/alloc/vectors/char_tables.rs",
+            "is_primary": false,
+            "label": "method in this implementation",
+            "line_end": 45,
+            "line_start": 45,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 18,
+                "highlight_start": 1,
+                "text": "impl CharTableRef {"
+              }
+            ]
+          },
+          {
+            "byte_end": 2897,
+            "byte_start": 2891,
+            "column_end": 25,
+            "column_start": 19,
+            "expansion": null,
+            "file_name": "src/lisp/alloc/vectors/char_tables.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 73,
+            "line_start": 73,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 25,
+                "highlight_start": 19,
+                "text": "    pub(crate) fn ptr_eq(&self, other: &Self) -> bool { self.0 == other.0 }"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: method `current_definition_generation` is never used\n    --> src/lisp/eval/bindings.rs:1040:19\n     |\n  35 | impl Interpreter {\n     | ---------------- method in this implementation\n...\n1040 |     pub(crate) fn current_definition_generation(&self) -> u64 {\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "warning",
+        "message": "method `current_definition_generation` is never used",
+        "spans": [
+          {
+            "byte_end": 1037,
+            "byte_start": 1021,
+            "column_end": 17,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "src/lisp/eval/bindings.rs",
+            "is_primary": false,
+            "label": "method in this implementation",
+            "line_end": 35,
+            "line_start": 35,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 17,
+                "highlight_start": 1,
+                "text": "impl Interpreter {"
+              }
+            ]
+          },
+          {
+            "byte_end": 48911,
+            "byte_start": 48882,
+            "column_end": 48,
+            "column_start": 19,
+            "expansion": null,
+            "file_name": "src/lisp/eval/bindings.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 1040,
+            "line_start": 1040,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 48,
+                "highlight_start": 19,
+                "text": "    pub(crate) fn current_definition_generation(&self) -> u64 {"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: method `char_table_parent` is never used\n    --> src/lisp/eval/runtime.rs:2106:12\n     |\n  37 | impl Interpreter {\n     | ---------------- method in this implementation\n...\n2106 |     pub fn char_table_parent(&self, table: CharTableRef) -> Option<Option<CharTableRef>> { Some(table.parent()) }\n     |            ^^^^^^^^^^^^^^^^^\n\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "warning",
+        "message": "method `char_table_parent` is never used",
+        "spans": [
+          {
+            "byte_end": 911,
+            "byte_start": 895,
+            "column_end": 17,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "src/lisp/eval/runtime.rs",
+            "is_primary": false,
+            "label": "method in this implementation",
+            "line_end": 37,
+            "line_start": 37,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 17,
+                "highlight_start": 1,
+                "text": "impl Interpreter {"
+              }
+            ]
+          },
+          {
+            "byte_end": 82575,
+            "byte_start": 82558,
+            "column_end": 29,
+            "column_start": 12,
+            "expansion": null,
+            "file_name": "src/lisp/eval/runtime.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 2106,
+            "line_start": 2106,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 29,
+                "highlight_start": 12,
+                "text": "    pub fn char_table_parent(&self, table: CharTableRef) -> Option<Option<CharTableRef>> { Some(table.parent()) }"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: method `contains_key` is never used\n   --> src/lisp/primitives/pdumper/load.rs:261:8\n    |\n228 | impl<V: Copy> OffsetTable<V> {\n    | ---------------------------- method in this implementation\n...\n261 |     fn contains_key(&self, offset: &u32) -> bool {\n    |        ^^^^^^^^^^^^\n\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "warning",
+        "message": "method `contains_key` is never used",
+        "spans": [
+          {
+            "byte_end": 8414,
+            "byte_start": 8386,
+            "column_end": 29,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "src/lisp/primitives/pdumper/load.rs",
+            "is_primary": false,
+            "label": "method in this implementation",
+            "line_end": 228,
+            "line_start": 228,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 29,
+                "highlight_start": 1,
+                "text": "impl<V: Copy> OffsetTable<V> {"
+              }
+            ]
+          },
+          {
+            "byte_end": 9438,
+            "byte_start": 9426,
+            "column_end": 20,
+            "column_start": 8,
+            "expansion": null,
+            "file_name": "src/lisp/primitives/pdumper/load.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 261,
+            "line_start": 261,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 20,
+                "highlight_start": 8,
+                "text": "    fn contains_key(&self, offset: &u32) -> bool {"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: method `optional_at` is never used\n    --> src/lisp/primitives/pdumper/load.rs:1000:8\n     |\n 339 | impl Loader<'_> {\n     | --------------- method in this implementation\n...\n1000 |     fn optional_at(&mut self, field: u32) -> Result<Option<Value>, LoadError> {\n     |        ^^^^^^^^^^^\n\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "warning",
+        "message": "method `optional_at` is never used",
+        "spans": [
+          {
+            "byte_end": 11886,
+            "byte_start": 11871,
+            "column_end": 16,
+            "column_start": 1,
+            "expansion": null,
+            "file_name": "src/lisp/primitives/pdumper/load.rs",
+            "is_primary": false,
+            "label": "method in this implementation",
+            "line_end": 339,
+            "line_start": 339,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 16,
+                "highlight_start": 1,
+                "text": "impl Loader<'_> {"
+              }
+            ]
+          },
+          {
+            "byte_end": 42142,
+            "byte_start": 42131,
+            "column_end": 19,
+            "column_start": 8,
+            "expansion": null,
+            "file_name": "src/lisp/primitives/pdumper/load.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 1000,
+            "line_start": 1000,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 19,
+                "highlight_start": 8,
+                "text": "    fn optional_at(&mut self, field: u32) -> Result<Option<Value>, LoadError> {"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///Users/nbmhqa186/projects/emaxx#30.2.0",
+      "manifest_path": "/Users/nbmhqa186/projects/emaxx/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "emaxx",
+        "src_path": "/Users/nbmhqa186/projects/emaxx/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "warning: constant `MAX_CHAR` is never used\n    --> src/lisp/primitives/print.rs:1808:7\n     |\n1808 | const MAX_CHAR: u32 = 0x3f_ffff;\n     |       ^^^^^^^^\n\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "warning",
+        "message": "constant `MAX_CHAR` is never used",
+        "spans": [
+          {
+            "byte_end": 70539,
+            "byte_start": 70531,
+            "column_end": 15,
+            "column_start": 7,
+            "expansion": null,
+            "file_name": "src/lisp/primitives/print.rs",
+            "is_primary": true,
+            "label": null,
+            "line_end": 1808,
+            "line_start": 1808,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 15,
+                "highlight_start": 7,
+                "text": "const MAX_CHAR: u32 = 0x3f_ffff;"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "dead_code",
+          "explanation": null
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "exit_code": 2,
+  "stdout": "",
+  "stderr": "\nthread 'main' (840326) panicked at src/lisp/alloc/vectors/char_tables.rs:234:9:\nassertion failed: character <= CHAR_TABLE_MAX_CHAR\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nbatch runtime panicked\n",
+  "binary": "source14-release-emaxx-fingerprinted",
+  "image": "source14-release-emaxx.pdmp"
+}

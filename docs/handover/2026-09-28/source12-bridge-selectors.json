@@ -1,0 +1,9 @@
+[
+  "native_gc_traces_canonical_symbols_and_reclaims_unreachable_symbols",
+  "native_gc_traces_canonical_floats_and_reclaims_unreachable_floats",
+  "native_gc_finalizers_trace_callbacks_across_collectors_and_reclaim",
+  "native_gc_traces_direct_vector_closure_cycles_and_reclaims_them",
+  "native_gc_traces_string_properties_and_reclaims_string_cycles",
+  "native_gc_traces_and_reclaims_record_reader_and_bignum_graphs",
+  "native_gc_sweeps_unreachable_reference_counted_handles"
+]

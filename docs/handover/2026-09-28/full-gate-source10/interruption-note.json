@@ -1,0 +1,14 @@
+{
+  "actor": "assistant",
+  "reason": "GNU comparison revealed char-table-range cons ranges must read local contents/default and ignore parent and ASCII cache. The obsolete full gate was interrupted to repair this defect and rerun all required validation.",
+  "completed_groups": {
+    "eval_01": {
+      "passed": 385,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "interrupted_group": "eval_02",
+  "is_full_pass": false,
+  "raw_summary_note": "The runner uses the generic text interrupted by user for SIGINT; no user requested this interruption."
+}

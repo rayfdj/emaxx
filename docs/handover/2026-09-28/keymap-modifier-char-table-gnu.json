@@ -1,0 +1,7 @@
+{
+  "exit_code": 0,
+  "stdout": "((22 inherited modified t inherited plain plain) (23 inherited modified t inherited plain plain) (24 inherited modified t inherited plain plain) (25 inherited modified t inherited plain plain) (26 inherited modified t inherited plain plain) (27 inherited modified t inherited plain plain))",
+  "stderr": "",
+  "program_file": "keymap-modifier-char-table.el",
+  "gnu_binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+}

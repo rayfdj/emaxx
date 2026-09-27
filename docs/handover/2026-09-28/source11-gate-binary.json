@@ -1,0 +1,8 @@
+{
+  "head": "499744a7e5e519849bc2a3747846cc666fdeba6a",
+  "source_manifest": "source11-manifest.json",
+  "source_unchanged_after_build": true,
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/gate/deps/emaxx-2172bc5d2c1706ff",
+  "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source11-gate-libtest",
+  "sha256": "c366d400d263a7e64ccc1fd89da17e14787a63b0e8e00c4321f662e6122f11b8"
+}

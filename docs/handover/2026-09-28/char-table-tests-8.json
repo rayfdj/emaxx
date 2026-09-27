@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source8/emaxx-062fd247b26fb761",
+    "char_table",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "sha256_before": "a7b9fb60d9a7ece023292d83f5864f02f0bbf24c3e78b322456682fedd66520d",
+  "exit_code": 0,
+  "seconds": 398.808264708,
+  "sha256_after": "a7b9fb60d9a7ece023292d83f5864f02f0bbf24c3e78b322456682fedd66520d"
+}

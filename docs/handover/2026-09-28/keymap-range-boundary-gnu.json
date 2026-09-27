@@ -1,0 +1,6 @@
+{
+  "program": "(mapcar (lambda (range)\n          (condition-case err\n              (let ((map (make-keymap)))\n                (define-key map (vector range) 'binding))\n            (error (list (car err) (cadr err) (nth 2 err)))))\n        '((97 . -1) (97 . 4194304) (97 . wrong) (4194304 . 97) (-1 . 97)))",
+  "exit_code": 0,
+  "stdout": "((wrong-type-argument characterp -1) (wrong-type-argument characterp 4194304) (wrong-type-argument characterp wrong) binding binding)",
+  "stderr": ""
+}

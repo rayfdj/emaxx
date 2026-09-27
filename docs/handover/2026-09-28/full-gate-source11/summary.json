@@ -1,0 +1,84 @@
+{
+  "artifact_root": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source11",
+  "cargo_stages": [],
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_BACKTRACE": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "error": "interrupted by user",
+  "execution_override": {
+    "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+    "script": "/Users/nbmhqa186/projects/emaxx/tools/serial_grouped_gate.py"
+  },
+  "format_version": 1,
+  "git": {
+    "dirty": false,
+    "head": "499744a7e5e519849bc2a3747846cc666fdeba6a"
+  },
+  "inventory": {
+    "groups": {
+      "batch": 50,
+      "compat_runtime": 84,
+      "eval_01": 385,
+      "eval_02": 295,
+      "eval_03": 320,
+      "eval_04": 254,
+      "eval_05": 351,
+      "lightweight": 495,
+      "primitives": 511,
+      "tty": 58
+    },
+    "ignored_tests": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "scheduled_tests": 2803,
+    "sha256": "82b3c29fd178b98bc7c602f13f38acb9f3e198174e87445c8c21d6357562dc6d",
+    "total_tests": 2803
+  },
+  "profile": "gate",
+  "repetitions": 1,
+  "runs": [],
+  "schedule": [
+    [
+      "eval_01"
+    ],
+    [
+      "eval_02"
+    ],
+    [
+      "eval_03"
+    ],
+    [
+      "eval_04"
+    ],
+    [
+      "eval_05"
+    ],
+    [
+      "primitives"
+    ],
+    [
+      "compat_runtime"
+    ],
+    [
+      "tty"
+    ],
+    [
+      "batch"
+    ],
+    [
+      "lightweight"
+    ]
+  ],
+  "scope": "full",
+  "status": "interrupted",
+  "test_binary": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/gate/deps/emaxx-2172bc5d2c1706ff",
+    "sha256": "c366d400d263a7e64ccc1fd89da17e14787a63b0e8e00c4321f662e6122f11b8"
+  },
+  "timeout_seconds": 3600
+}

@@ -1,0 +1,39 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx",
+    "-Q",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-startup-probe.txt"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-smoke-isolated-home",
+    "EMACSLOADPATH": "/Users/nbmhqa186/projects/emacs/lisp:/Users/nbmhqa186/projects/emacs/lisp/calc:/Users/nbmhqa186/projects/emacs/lisp/calendar:/Users/nbmhqa186/projects/emacs/lisp/cedet:/Users/nbmhqa186/projects/emacs/lisp/emacs-lisp:/Users/nbmhqa186/projects/emacs/lisp/emulation:/Users/nbmhqa186/projects/emacs/lisp/erc:/Users/nbmhqa186/projects/emacs/lisp/eshell:/Users/nbmhqa186/projects/emacs/lisp/gnus:/Users/nbmhqa186/projects/emacs/lisp/image:/Users/nbmhqa186/projects/emacs/lisp/international:/Users/nbmhqa186/projects/emacs/lisp/language:/Users/nbmhqa186/projects/emacs/lisp/leim:/Users/nbmhqa186/projects/emacs/lisp/mail:/Users/nbmhqa186/projects/emacs/lisp/mh-e:/Users/nbmhqa186/projects/emacs/lisp/net:/Users/nbmhqa186/projects/emacs/lisp/nxml:/Users/nbmhqa186/projects/emacs/lisp/obsolete:/Users/nbmhqa186/projects/emacs/lisp/org:/Users/nbmhqa186/projects/emacs/lisp/play:/Users/nbmhqa186/projects/emacs/lisp/progmodes:/Users/nbmhqa186/projects/emacs/lisp/term:/Users/nbmhqa186/projects/emacs/lisp/textmodes:/Users/nbmhqa186/projects/emacs/lisp/url:/Users/nbmhqa186/projects/emacs/lisp/use-package:/Users/nbmhqa186/projects/emacs/lisp/vc"
+  },
+  "wait_status": null,
+  "bytes": 232,
+  "screen": [
+    "",
+    "thread 'main' (836566) panicked at src/lisp/alloc/vectors/char_tables.rs:216:9:",
+    "                                                                               a",
+    "ssertion failed: character <= CHAR_TABLE_MAX_CHAR",
+    "                                                 note: run with `RUST_BACKTRACE=",
+    "1` environment variable to display a backtrace",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ]
+}

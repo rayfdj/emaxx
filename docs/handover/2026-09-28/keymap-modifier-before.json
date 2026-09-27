@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((map (make-keymap)) (parent (make-keymap)))\n  (set-keymap-parent map parent)\n  (define-key map [97] 'plain)\n  (mapcar (lambda (bit)\n            (let* ((event (logior 97 (lsh 1 bit))) (key (vector event)))\n              (define-key parent key 'inherited)\n              (let ((before (lookup-key map key)))\n                (define-key map key 'modified)\n                (list bit before (lookup-key map key)\n                      (equal (where-is-internal 'modified map t) key)\n                      (progn (define-key map key nil t) (lookup-key map key))\n                      (lookup-key map [97]) (aref (cadr map) 97)))))\n          '(22 23 24 25 26 27)))\n)"
+  ],
+  "exit_code": 2,
+  "binary_sha256": "c84a1743603e9c865d7d58b9cd555f5355eb37a8be311f99c7095873827e13d7",
+  "image_sha256": "c3f8f3697a79c7d5788b37901c2e8209baef2769189aad48eae187b4ea4bc907",
+  "head": "1ac30ee886521d087cb5213c2c8ca79551b4c725",
+  "stdout": "",
+  "stderr": "\nthread 'main' (838343) panicked at src/lisp/alloc/vectors/char_tables.rs:216:9:\nassertion failed: character <= CHAR_TABLE_MAX_CHAR\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nbatch runtime panicked\n"
+}

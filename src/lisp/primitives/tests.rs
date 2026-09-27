@@ -10554,6 +10554,33 @@ fn char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache() {
 }
 
 #[test]
+fn char_table_keymaps_keep_modified_events_out_of_character_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-modifier-char-table.el"),
+        "((22 inherited modified t inherited plain plain) (23 inherited modified t inherited plain plain) (24 inherited modified t inherited plain plain) (25 inherited modified t inherited plain plain) (26 inherited modified t inherited plain plain) (27 inherited modified t inherited plain plain))",
+        "keymap modified events, inheritance, where-is and removal",
+    );
+}
+
+#[test]
+fn char_table_keymap_ranges_validate_character_bounds() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-range-char-table.el"),
+        "((wrong-type-argument characterp -1) (wrong-type-argument characterp 4194304) (wrong-type-argument characterp wrong) binding binding)",
+        "keymap character range errors and non-character cons events",
+    );
+}
+
+#[test]
+fn char_table_casing_preserves_gnu_modifier_and_integer_semantics() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/case-modifier-char-table.el"),
+        "(((4194369 4194401 4194369 4194369) (8388673 8388705 8388673 8388673) (16777281 16777313 16777281 16777281) (33554497 33554529 33554497 33554497) (67108929 67108961 67108929 67108929) (134217793 134217825 134217793 134217793)) (((wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p)) (268435456 268435456 268435456 268435456) (65 4294967393 65 65) (4294967361 97 4294967361 4294967361) (2305843009213693951 2305843009213693951 2305843009213693951 2305843009213693951) ((wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p))))",
+        "numeric casing modifier bits, C-int narrowing and type errors",
+    );
+}
+
+#[test]
 fn char_table_cons_ranges_expand_compressed_neighbors_until_values_differ() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/char-table-range-uniprop.el"),

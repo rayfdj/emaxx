@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source9/emaxx-062fd247b26fb761",
+    "char_table",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "sha256_before": "a6f888207bb6d8aef0c4b0dc4d71f2b1f2ebfab41a5d69be61afd7263668f17a",
+  "environment": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "exit_code": 0,
+  "seconds": 164.28714425,
+  "sha256_after": "a6f888207bb6d8aef0c4b0dc4d71f2b1f2ebfab41a5d69be61afd7263668f17a"
+}

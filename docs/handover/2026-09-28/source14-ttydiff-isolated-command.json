@@ -1,0 +1,14 @@
+{
+  "command": [
+    "python3",
+    "tools/ttydiff.py",
+    "target/runtime-resume/release/emaxx",
+    "../emacs/src/emacs",
+    "../emacs/lisp"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-isolated-home",
+    "EMAXX_TTYDIFF_REQUIRE": "1"
+  },
+  "reason": "Both legs need the same empty personal configuration; no scenario, selector, timeout, expected result or implementation was changed."
+}

@@ -225,9 +225,14 @@ define_dispatch!(
                 need_arg_range(name, args, 3, 4)?;
                 if let Ok(events) = vector_items(&args[1])
                     && let [event] = events.as_slice()
-                    && let Some((Kind::Integer(start), Kind::Integer(end))) =
-                        event.cons_values().map(|(a0, a1)| (a0.kind(), a1.kind()))
+                    && let Some((start, end)) = event.cons_values()
+                    && let Kind::Integer(start) = start.kind()
+                    && (0..=0x3f_ffff).contains(&start)
                 {
+                    let end = match end.kind() {
+                        Kind::Integer(end) if (0..=0x3f_ffff).contains(&end) => end,
+                        _ => return Err(wrong_type_argument("characterp", end)),
+                    };
                     keymap_define_character_range(interp, &args[0], start, end, args[2])?;
                     return Ok(args[2]);
                 }

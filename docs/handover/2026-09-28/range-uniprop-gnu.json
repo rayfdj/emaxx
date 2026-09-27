@@ -1,0 +1,14 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let* ((compressed (prin1-to-string (string 2 7 256)))\n       (depth2 (concat \"#^^[2 4096 \" compressed \" \" compressed\n                       (apply #'concat (make-list 30 \" nil\")) \"]\"))\n       (depth1 (concat \"#^^[1 0 nil \" depth2\n                       (apply #'concat (make-list 14 \" nil\")) \"]\"))\n       (table (read (concat \"#^[nil nil char-code-property-table nil \" depth1\n                            (apply #'concat (make-list 63 \" nil\"))\n                            \" nil nil nil nil nil]\")))\n       (control (copy-sequence table)))\n  (list (equal table control)\n        (char-table-range table '(4096 . 4351))\n        (progn (aref control 4096) (equal table control))\n        (progn (aref control 4224) (equal table control)))))"
+  ],
+  "returncode": 0,
+  "stdout": "(t 7 nil t)",
+  "stderr": "",
+  "oracle_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "limit": "source-matched GNU diagnosis; not pinned Darwin certification"
+}

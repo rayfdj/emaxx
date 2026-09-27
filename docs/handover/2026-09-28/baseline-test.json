@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/debug/deps/emaxx-062fd247b26fb761",
+    "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 30.801703167,
+  "sha256": "c3cb53150424e37bd4ae4fcfb18df3428c8d4f52878e84cf431fe972380faa22",
+  "compiler_messages": []
+}

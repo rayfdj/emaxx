@@ -3127,6 +3127,7 @@ pub(crate) fn keymap_remove_binding(
         let event = keymap_entry_key_value(std::slice::from_ref(part), key);
         if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
+            && code <= 0x3f_ffff
         {
             interp.char_table_set(table_id, code, Value::Nil)?;
         }
@@ -3309,6 +3310,7 @@ fn keymap_lookup_direct_binding_exact_parts(
         let event = keymap_entry_key_value(std::slice::from_ref(part), part);
         if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
+            && code <= 0x3f_ffff
             && let Some(value) = interp.char_table_get(table_id, code)
             && !value.is_nil()
         {
@@ -3354,6 +3356,7 @@ fn keymap_lookup_binding_exact_parts_bounded(
         let event = keymap_entry_key_value(std::slice::from_ref(part), part);
         if let Kind::Integer(code) = event.kind()
             && let Ok(code) = u32::try_from(code)
+            && code <= 0x3f_ffff
             && let Some(value) = interp.char_table_get(table_id, code)
             && !value.is_nil()
         {
