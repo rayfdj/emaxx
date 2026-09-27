@@ -19,6 +19,28 @@ const PURPOSE: usize = 2;
 const ASCII: usize = 3;
 const CONTENTS: usize = 4;
 
+/// chartab.c:char_table_ref_and_range shrinks these bounds while examining
+/// adjacent slots. Examining a compressed Unicode slot expands it in place,
+/// which is observable even when the Lisp caller only uses the returned value.
+struct RangeQuery {
+    from: u32,
+    to: u32,
+    default: Value,
+    uniprop: bool,
+}
+
+impl RangeQuery {
+    fn value(&mut self, value: Value, character: u32) -> Value {
+        if let Some(sub) = subtable(value) {
+            sub.ref_and_range(character, self)
+        } else if value.is_nil() {
+            self.default
+        } else {
+            value
+        }
+    }
+}
+
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CharTableRef(NonNull<VectorHeader>);
@@ -224,13 +246,37 @@ impl CharTableRef {
 
     /// chartab.c:char_table_ref_and_range reads this tree and its default,
     /// without following the parent or consulting the ASCII cache.
-    pub(crate) fn range_value(&self, character: u32) -> Value {
-        let value = self.contents_get(character);
-        if value.is_nil() {
-            self.default()
-        } else {
-            value
+    pub(crate) fn range_value(&self, from: u32, to: u32) -> Value {
+        let mut query = RangeQuery {
+            from,
+            to,
+            default: self.default(),
+            uniprop: self.is_uniprop(),
+        };
+        let index = (from >> SHIFTS[0]) as usize;
+        let value = query.value(self.slot(CONTENTS + index), from);
+        let mut left = index;
+        while query.from < (left as u32) << SHIFTS[0] {
+            let character = ((left as u32) << SHIFTS[0]) - 1;
+            left -= 1;
+            let previous = query.value(self.slot(CONTENTS + left), character);
+            if !previous.eq_value(value) {
+                query.from = character + 1;
+                break;
+            }
         }
+        let mut right = index;
+        while query.to >= ((right + 1) as u32) << SHIFTS[0] {
+            right += 1;
+            let character = (right as u32) << SHIFTS[0];
+            let next = query.value(self.slot(CONTENTS + right), character);
+            if !next.eq_value(value) {
+                // The Lisp primitive discards the final bounds. Recursive
+                // subtable scans still propagate theirs to stop this walk.
+                break;
+            }
+        }
+        value
     }
 
     pub(crate) fn set(&self, character: u32, value: Value) {
@@ -479,6 +525,35 @@ impl SubCharTableRef {
         let index = ((character - self.min_char()) >> SHIFTS[self.depth()]) as usize;
         let value = self.child(index, uniprop);
         subtable(value).map_or(value, |sub| sub.get(character, uniprop))
+    }
+
+    fn ref_and_range(&self, character: u32, query: &mut RangeQuery) -> Value {
+        let depth = self.depth();
+        let minimum = self.min_char();
+        let shift = SHIFTS[depth];
+        let index = ((character - minimum) >> shift) as usize;
+        let value = query.value(self.child(index, query.uniprop), character);
+        let mut left = index;
+        while left > 0 && query.from < minimum + ((left as u32) << shift) {
+            let character = minimum + ((left as u32) << shift) - 1;
+            left -= 1;
+            let previous = query.value(self.child(left, query.uniprop), character);
+            if !previous.eq_value(value) {
+                query.from = character + 1;
+                break;
+            }
+        }
+        let mut right = index;
+        while right + 1 < SIZES[depth] && minimum + (((right + 1) as u32) << shift) <= query.to {
+            right += 1;
+            let character = minimum + ((right as u32) << shift);
+            let next = query.value(self.child(right, query.uniprop), character);
+            if !next.eq_value(value) {
+                query.to = character - 1;
+                break;
+            }
+        }
+        value
     }
 
     fn set(&self, character: u32, value: Value, uniprop: bool) {

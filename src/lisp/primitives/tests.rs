@@ -10554,6 +10554,15 @@ fn char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache() {
 }
 
 #[test]
+fn char_table_cons_ranges_expand_compressed_neighbors_until_values_differ() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/char-table-range-uniprop.el"),
+        "((7 nil nil t) (7 nil t nil) (7 t nil nil) (8 t nil nil))",
+        "char-table cons range decompression",
+    );
+}
+
+#[test]
 fn char_table_compressed_unicode_slots_decode_into_the_canonical_tree() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/char-table-uniprop.el"),

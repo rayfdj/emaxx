@@ -95,8 +95,31 @@ Local evidence is under `target/runtime-goal/resume-2026-09-28/`:
   (`((parent parent parent parent) old old old old)`) and passes after it
   (`((parent parent nil nil) old old new new)`), as does the source-matched GNU
   comparison. Before/after logs and the failing executable are preserved.
-  Full validation must restart from this source; source 10's partial result
-  cannot certify the fix.
+  Its full gate was subsequently interrupted by the assistant during eval_01
+  when the adjacent-decompression defect below was found. No full-gate result
+  is claimed for source 11. Its release test binary built successfully but
+  no release tests ran from it.
+- Source 12 ports the rest of GNU's range scan, including neighboring compressed
+  slots whose expansion is observable through `equal`. Four cases cover equal
+  runs, the first differing run, a single-character range and reversed bounds.
+  Before repair the actual result was
+  `((7 t nil nil) (7 t nil nil) (7 t nil nil) (8 t nil nil))`, versus GNU's
+  `((7 nil nil t) (7 nil t nil) (7 t nil nil) (8 t nil nil))`. The test failed
+  before repair and passed afterward. Preserve the before binary and logs.
+- The handover's stale bridge controls were reproduced: finalizer and unreachable
+  handle tests failed because markers now produce zero handles. Seven controls
+  now use actual live/dead frames and explicitly assert a nonempty handle table.
+  Marker reclamation remains covered. All seven repaired controls pass.
+- Source 12 selected results were 23 passed, one failed, zero ignored. The new
+  native-cache test incorrectly called GNU subr.el's `string-match-p` wrapper
+  through the bare primitive dispatcher. Source 14 calls its actual C owner,
+  `string-match`, and that test passes: raw native slot stores and mutation of
+  a shared descriptor invalidate warmed regexp results.
+- Source 12 also produced one unused-assignment warning and failed strict Clippy.
+  Source 13 removed the unused final root bound store, which the Lisp primitive
+  discards, while preserving bounds propagated by recursive scans. Source 14's
+  all-target/all-feature check, strict Clippy, formatting and diff checks pass
+  with no warnings. Its complete selected run and rebuilt full gate are pending.
 
 Local GNU is pristine source `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, native
 capable, but executable SHA-256

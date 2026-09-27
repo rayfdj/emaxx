@@ -9209,10 +9209,11 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let bridge_control = interpreter.make_marker();
+        let bridge_control = interpreter.selected_frame_value();
         interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
             .expect("other kinds still have handles");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let (root, live, dead) = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
         heap.collect(
@@ -10147,18 +10148,20 @@ mod tests {
         fn encode_temporary(
             heap: &mut NativeHeapOwner,
             interpreter: &mut Interpreter,
-        ) -> [usize; 3] {
+        ) -> [usize; 4] {
             let value = Value::string("temporary native string");
             let string = heap.encode(&value).expect("encode native string word");
             let integer = heap
                 .encode(&Value::Integer(i64::MAX))
                 .expect("encode native bignum word");
-            // Retain both canonical-object assertions and exercise a
-            // remaining migration handle whose lifetime GC controls.
+            // Keep string, bignum and marker reclamation coverage, and use
+            // an actual dead frame for the remaining migration handle.
             let marker = heap
                 .encode(&interpreter.make_marker())
-                .expect("encode remaining marker handle");
-            [string ^ HIDE, integer ^ HIDE, marker ^ HIDE]
+                .expect("encode canonical marker");
+            let frame = Value::Frame(interpreter.install_dead_frame());
+            let frame = heap.encode(&frame).expect("encode remaining frame handle");
+            [string ^ HIDE, integer ^ HIDE, marker ^ HIDE, frame ^ HIDE]
         }
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
@@ -10259,10 +10262,11 @@ mod tests {
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
         // Exercise typed float tracing while other kinds still have handles.
-        let bridge_control = interpreter.make_marker();
+        let bridge_control = interpreter.selected_frame_value();
         interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
-            .expect("unrelated remaining marker handle");
+            .expect("unrelated remaining frame handle");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let (root, live, dead) = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
         heap.collect(
@@ -11149,10 +11153,11 @@ mod tests {
         let mut owner = Interpreter::new();
         let mut collector = Interpreter::new();
         let mut heap = NativeHeapOwner::new();
-        let bridge_control = owner.make_marker();
+        let bridge_control = owner.selected_frame_value();
         owner.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
             .expect("also exercise the collector with a remaining bridge kind");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let environment = Env::new();
         owner.set_global_binding("recorded-finalizer-runs", Value::Integer(0));
         let hidden = make_graph(&mut owner);
@@ -11350,6 +11355,69 @@ mod tests {
     }
 
     #[test]
+    fn native_char_table_stores_invalidate_warm_regexp_syntax_caches() {
+        use crate::lisp::types::CharTableRef;
+
+        unsafe extern "C" fn replace_ascii(table: NativeWord, value: NativeWord) -> NativeWord {
+            unsafe {
+                let root = (table - TAG_VECTORLIKE) as *mut NativeWord;
+                let leaf = (*root.add(4) - TAG_VECTORLIKE) as *mut NativeWord;
+                *leaf.add(2 + 97) = value;
+                table
+            }
+        }
+
+        fn matches_word(interpreter: &mut Interpreter, environment: &mut Env) -> Value {
+            crate::lisp::primitives::call(
+                interpreter,
+                "string-match",
+                &[Value::string("\\`\\w\\'"), Value::string("a")],
+                environment,
+            )
+            .expect("match with the current syntax table")
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.set_global_binding("case-fold-search", Value::Nil);
+        let punctuation = Value::cons(Value::Integer(1), Value::Nil);
+        let word = Value::cons(Value::Integer(2), Value::Nil);
+        let table = CharTableRef::new(Value::symbol("syntax-table"), punctuation, 0);
+        table.set(97, punctuation);
+        interpreter.set_current_syntax_table(table);
+        for _ in 0..2 {
+            assert_eq!(matches_word(&mut interpreter, &mut environment), Value::Nil);
+        }
+
+        let mut runtime = NativeRuntime::default();
+        for (descriptor, expected) in [
+            (word, Value::Integer(0)),
+            (punctuation, Value::Nil),
+            (word, Value::Integer(0)),
+        ] {
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    replace_ascii as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::CharTable(table), descriptor],
+                )
+                .expect("native syntax field store");
+            // The first query must invalidate the old rendering; the second
+            // exercises its newly warmed cache without a Rust table setter.
+            for _ in 0..2 {
+                assert_eq!(matches_word(&mut interpreter, &mut environment), expected);
+            }
+        }
+        // A descriptor's identity can stay unchanged while its class changes.
+        word.set_car(Value::Integer(1))
+            .expect("mutate shared descriptor");
+        assert_eq!(matches_word(&mut interpreter, &mut environment), Value::Nil);
+        assert!(runtime.heap.handles.is_empty());
+    }
+
+    #[test]
     fn native_char_table_gc_traces_inline_slots_and_reclaims_detached_graphs() {
         use crate::lisp::types::CharTableRef;
 
@@ -11529,10 +11597,11 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let bridge_control = interpreter.make_marker();
+        let bridge_control = interpreter.selected_frame_value();
         interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
             .expect("exercise marking with another kind still bridged");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let hidden = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
         collect_live_graph(
@@ -11690,10 +11759,11 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let bridge_control = interpreter.make_marker();
+        let bridge_control = interpreter.selected_frame_value();
         interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
             .expect("remaining bridge control");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let hidden = make_graph(&mut heap);
         crate::lisp::alloc::clobber_stack();
         collect_live_graph(
@@ -11941,10 +12011,11 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let bridge_control = interpreter.make_marker();
+        let bridge_control = interpreter.selected_frame_value();
         interpreter.set_global_binding("native-layout-bridge-control", bridge_control);
         heap.encode(&bridge_control)
             .expect("remaining bridge control");
+        assert_eq!(heap.handles.iter().flatten().count(), 1);
         let hidden = make_graph(&mut interpreter);
         crate::lisp::alloc::clobber_stack();
         collect_live_graph(
