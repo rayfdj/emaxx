@@ -18758,7 +18758,7 @@ fn native_minibuffer_runs_initial_post_command_hook_before_input() {
         .expect("initial post-command setup should evaluate");
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -19477,7 +19477,7 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
         .expect("start keyboard macro recording");
@@ -21782,7 +21782,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(121)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     assert_eq!(
@@ -21796,7 +21796,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|| None)));
+    set_tty_event_reader(Some(Box::new(|_| None)));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
@@ -21815,7 +21815,7 @@ fn tty_event_reader_does_not_preempt_queued_events() {
         Value::list([Value::Integer(97)]),
         &mut env,
     );
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(98)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(98)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     assert_eq!(
@@ -21840,7 +21840,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 
     let polls = std::rc::Rc::new(std::cell::Cell::new(0));
     let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move || {
+    set_tty_event_poller(Some(Box::new(move |_| {
         let count = poll_count.get();
         poll_count.set(count + 1);
         Some((count > 0).then_some(Value::Integer(120)))
@@ -21893,7 +21893,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     let poll_observation = std::rc::Rc::clone(&saw_output);
     let polls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
     let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move || {
+    set_tty_event_poller(Some(Box::new(move |_| {
         let count = poll_count.get() + 1;
         poll_count.set(count);
         Some((poll_observation.get() || count >= 100_000).then_some(Value::Integer(120)))
@@ -22002,7 +22002,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_poller(Some(Box::new(|| Some(None))));
+    set_tty_event_poller(Some(Box::new(|_| Some(None))));
     let result = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -22057,7 +22057,7 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     let result = call(
         &mut interp,
@@ -22110,7 +22110,7 @@ fn write_region_mustbenew_consumes_a_full_negative_answer() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "write-region",
@@ -22154,7 +22154,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
@@ -22192,7 +22192,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
 
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
@@ -22222,7 +22222,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
     interp.set_variable("emaxx-default-history", Value::Nil, &mut env);
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     let result = call(
         &mut interp,
@@ -22268,7 +22268,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -22318,7 +22318,7 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -22344,7 +22344,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     // The frontend's reader answers None for C-g; the loop signals quit.
-    set_tty_event_reader(Some(Box::new(|| None)));
+    set_tty_event_reader(Some(Box::new(|_| None)));
     let result = call(
         &mut interp,
         "read-string",
@@ -22372,7 +22372,7 @@ fn tty_completing_read_completes_with_tab() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -22398,7 +22398,7 @@ fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let current = Value::Buffer(interp.buffer);
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&prompts);
     set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
@@ -22462,7 +22462,7 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -22502,7 +22502,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // Observe the live minibuffer from the frame-redraw hook, exactly
     // where the frontend composes the echo row.
     let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>> =
@@ -22620,7 +22620,7 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
                     .collect(),
             ));
         let feed = std::rc::Rc::clone(&script);
-        set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+        set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     };
     let history = Value::Symbol("emaxx--test-history".into());
     feed_events("first\r");
@@ -24113,7 +24113,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // The frame-redraw hook runs once per minibuffer iteration; observing
     // the layout there sees the pop-up while the read is still live.
     type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>)>;
@@ -24243,7 +24243,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let observed: std::rc::Rc<std::cell::RefCell<Vec<usize>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
@@ -24292,7 +24292,7 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, String)>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);

@@ -1,0 +1,371 @@
+{
+  "purpose": "isolated diagnostic with original per-action timing and comparison, plus Emaxx trace logging; not a full gate result",
+  "commands": {
+    "gnu": [
+      "/Users/nbmhqa186/projects/emacs/src/emacs",
+      "-nw",
+      "-Q",
+      "--eval",
+      "(progn (setq features (delq 'ns features)) (define-key global-map [?\\s-c] nil) (define-key global-map [?\\s-u] nil) (makunbound 'menu-bar-edit-menu) (load \"/Users/nbmhqa186/projects/emacs/lisp/menu-bar.el\" nil t t))",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/mouse-bar-click.dat"
+    ],
+    "emaxx": [
+      "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation/release/emaxx",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/mouse-bar-click.dat"
+    ]
+  },
+  "environment_overrides": {
+    "gnu": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/home",
+      "TMPDIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/tmp"
+    },
+    "emaxx": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/home",
+      "TMPDIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/tmp",
+      "EMACSLOADPATH": "/Users/nbmhqa186/projects/emacs/lisp:/Users/nbmhqa186/projects/emacs/lisp/calc:/Users/nbmhqa186/projects/emacs/lisp/calendar:/Users/nbmhqa186/projects/emacs/lisp/cedet:/Users/nbmhqa186/projects/emacs/lisp/emacs-lisp:/Users/nbmhqa186/projects/emacs/lisp/emulation:/Users/nbmhqa186/projects/emacs/lisp/erc:/Users/nbmhqa186/projects/emacs/lisp/eshell:/Users/nbmhqa186/projects/emacs/lisp/gnus:/Users/nbmhqa186/projects/emacs/lisp/image:/Users/nbmhqa186/projects/emacs/lisp/international:/Users/nbmhqa186/projects/emacs/lisp/language:/Users/nbmhqa186/projects/emacs/lisp/leim:/Users/nbmhqa186/projects/emacs/lisp/mail:/Users/nbmhqa186/projects/emacs/lisp/mh-e:/Users/nbmhqa186/projects/emacs/lisp/net:/Users/nbmhqa186/projects/emacs/lisp/nxml:/Users/nbmhqa186/projects/emacs/lisp/obsolete:/Users/nbmhqa186/projects/emacs/lisp/org:/Users/nbmhqa186/projects/emacs/lisp/play:/Users/nbmhqa186/projects/emacs/lisp/progmodes:/Users/nbmhqa186/projects/emacs/lisp/term:/Users/nbmhqa186/projects/emacs/lisp/textmodes:/Users/nbmhqa186/projects/emacs/lisp/url:/Users/nbmhqa186/projects/emacs/lisp/use-package:/Users/nbmhqa186/projects/emacs/lisp/vc",
+      "EMAXX_TTY_LOG": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-mouse-bar-click-trace.log"
+    }
+  },
+  "fixture": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source36-menu-diag-ycjkziyz/mouse-bar-click.dat",
+  "actions": [
+    {
+      "index": 0,
+      "keys_hex": "1b78787465726d2d6d6f7573652d6d6f64650d",
+      "settle": 1.0,
+      "quiet": 0.2,
+      "explicit_settle": false,
+      "screens": {
+        "gnu": [
+          "File Edit Options Buffers Tools Help",
+          "line 01 alpha beta gamma",
+          "line 02 alpha beta gamma",
+          "line 03 alpha beta gamma",
+          "line 04 alpha beta gamma",
+          "line 05 alpha beta gamma",
+          "line 06 alpha beta gamma",
+          "line 07 alpha beta gamma",
+          "line 08 alpha beta gamma",
+          "line 09 alpha beta gamma",
+          "line 10 alpha beta gamma",
+          "line 11 alpha beta gamma",
+          "line 12 alpha beta gamma",
+          "line 13 alpha beta gamma",
+          "line 14 alpha beta gamma",
+          "line 15 alpha beta gamma",
+          "line 16 alpha beta gamma",
+          "line 17 alpha beta gamma",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          "Xterm-Mouse mode enabled"
+        ],
+        "emaxx": [
+          "File Edit Options Buffers Tools Help",
+          "line 01 alpha beta gamma",
+          "line 02 alpha beta gamma",
+          "line 03 alpha beta gamma",
+          "line 04 alpha beta gamma",
+          "line 05 alpha beta gamma",
+          "line 06 alpha beta gamma",
+          "line 07 alpha beta gamma",
+          "line 08 alpha beta gamma",
+          "line 09 alpha beta gamma",
+          "line 10 alpha beta gamma",
+          "line 11 alpha beta gamma",
+          "line 12 alpha beta gamma",
+          "line 13 alpha beta gamma",
+          "line 14 alpha beta gamma",
+          "line 15 alpha beta gamma",
+          "line 16 alpha beta gamma",
+          "line 17 alpha beta gamma",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          "M-x xterm-mouse-mode"
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "keys_hex": "1b5b3c303b363b314d",
+      "settle": 1.0,
+      "quiet": 0.2,
+      "explicit_settle": false,
+      "screens": {
+        "gnu": [
+          "File Edit Options Buffers Tools Help",
+          "line 01 alpha beta gamma",
+          "line 02 alpha beta gamma",
+          "line 03 alpha beta gamma",
+          "line 04 alpha beta gamma",
+          "line 05 alpha beta gamma",
+          "line 06 alpha beta gamma",
+          "line 07 alpha beta gamma",
+          "line 08 alpha beta gamma",
+          "line 09 alpha beta gamma",
+          "line 10 alpha beta gamma",
+          "line 11 alpha beta gamma",
+          "line 12 alpha beta gamma",
+          "line 13 alpha beta gamma",
+          "line 14 alpha beta gamma",
+          "line 15 alpha beta gamma",
+          "line 16 alpha beta gamma",
+          "line 17 alpha beta gamma",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          "You can run the command \u2018xterm-mouse-mode\u2019 with M-x xt-m"
+        ],
+        "emaxx": [
+          "File Edit Options Buffers Tools Help",
+          "line 01 alpha beta gamma",
+          "line 02 alpha beta gamma",
+          "line 03 alpha beta gamma",
+          "line 04 alpha beta gamma",
+          "line 05 alpha beta gamma",
+          "line 06 alpha beta gamma",
+          "line 07 alpha beta gamma",
+          "line 08 alpha beta gamma",
+          "line 09 alpha beta gamma",
+          "line 10 alpha beta gamma",
+          "line 11 alpha beta gamma",
+          "line 12 alpha beta gamma",
+          "line 13 alpha beta gamma",
+          "line 14 alpha beta gamma",
+          "line 15 alpha beta gamma",
+          "line 16 alpha beta gamma",
+          "line 17 alpha beta gamma",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          ""
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "keys_hex": "1b5b3c303b363b316d",
+      "settle": 3.0,
+      "quiet": 0.5,
+      "explicit_settle": true,
+      "screens": {
+        "gnu": [
+          "File Edit > tions Buffers Tools Help",
+          "line Undo                    C-x u",
+          "line Redo                    C-M-_",
+          "line Cut                     C-w",
+          "line Copy                    M-w",
+          "line Paste                   C-y",
+          "line Paste from Kill Menu >",
+          "line Clear",
+          "line Select All              C-x h",
+          "line --",
+          "line Search >",
+          "line Incremental Search >",
+          "line Replace >",
+          "line Go To >",
+          "line Bookmarks >",
+          "line --",
+          "line Fill",
+          "line Execute Command         M-x",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          ""
+        ],
+        "emaxx": [
+          "File Edit Options Buffers Tools Help",
+          "line 01 alpha beta gamma",
+          "line 02 alpha beta gamma",
+          "line 03 alpha beta gamma",
+          "line 04 alpha beta gamma",
+          "line 05 alpha beta gamma",
+          "line 06 alpha beta gamma",
+          "line 07 alpha beta gamma",
+          "line 08 alpha beta gamma",
+          "line 09 alpha beta gamma",
+          "line 10 alpha beta gamma",
+          "line 11 alpha beta gamma",
+          "line 12 alpha beta gamma",
+          "line 13 alpha beta gamma",
+          "line 14 alpha beta gamma",
+          "line 15 alpha beta gamma",
+          "line 16 alpha beta gamma",
+          "line 17 alpha beta gamma",
+          "line 18 alpha beta gamma",
+          "line 19 alpha beta gamma",
+          "line 20 alpha beta gamma",
+          "line 21 alpha beta gamma",
+          "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+          ""
+        ]
+      }
+    }
+  ],
+  "final_screens": {
+    "gnu": [
+      "File Edit > tions Buffers Tools Help",
+      "line Undo                    C-x u",
+      "line Redo                    C-M-_",
+      "line Cut                     C-w",
+      "line Copy                    M-w",
+      "line Paste                   C-y",
+      "line Paste from Kill Menu >",
+      "line Clear",
+      "line Select All              C-x h",
+      "line --",
+      "line Search >",
+      "line Incremental Search >",
+      "line Replace >",
+      "line Go To >",
+      "line Bookmarks >",
+      "line --",
+      "line Fill",
+      "line Execute Command         M-x",
+      "line 18 alpha beta gamma",
+      "line 19 alpha beta gamma",
+      "line 20 alpha beta gamma",
+      "line 21 alpha beta gamma",
+      "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+      ""
+    ],
+    "emaxx": [
+      "File Edit Options Buffers Tools Help",
+      "line 01 alpha beta gamma",
+      "line 02 alpha beta gamma",
+      "line 03 alpha beta gamma",
+      "line 04 alpha beta gamma",
+      "line 05 alpha beta gamma",
+      "line 06 alpha beta gamma",
+      "line 07 alpha beta gamma",
+      "line 08 alpha beta gamma",
+      "line 09 alpha beta gamma",
+      "line 10 alpha beta gamma",
+      "line 11 alpha beta gamma",
+      "line 12 alpha beta gamma",
+      "line 13 alpha beta gamma",
+      "line 14 alpha beta gamma",
+      "line 15 alpha beta gamma",
+      "line 16 alpha beta gamma",
+      "line 17 alpha beta gamma",
+      "line 18 alpha beta gamma",
+      "line 19 alpha beta gamma",
+      "line 20 alpha beta gamma",
+      "line 21 alpha beta gamma",
+      "-UU-:---  F1  mouse-bar-click.dat   Top   L1     (Fundamental) -----------------",
+      ""
+    ]
+  },
+  "differences": [
+    [
+      0,
+      "File Edit > tions Buffers Tools Help",
+      "File Edit Options Buffers Tools Help"
+    ],
+    [
+      1,
+      "line Undo                    C-x u",
+      "line 01 alpha beta gamma"
+    ],
+    [
+      2,
+      "line Redo                    C-M-_",
+      "line 02 alpha beta gamma"
+    ],
+    [
+      3,
+      "line Cut                     C-w",
+      "line 03 alpha beta gamma"
+    ],
+    [
+      4,
+      "line Copy                    M-w",
+      "line 04 alpha beta gamma"
+    ],
+    [
+      5,
+      "line Paste                   C-y",
+      "line 05 alpha beta gamma"
+    ],
+    [
+      6,
+      "line Paste from Kill Menu >",
+      "line 06 alpha beta gamma"
+    ],
+    [
+      7,
+      "line Clear",
+      "line 07 alpha beta gamma"
+    ],
+    [
+      8,
+      "line Select All              C-x h",
+      "line 08 alpha beta gamma"
+    ],
+    [
+      9,
+      "line --",
+      "line 09 alpha beta gamma"
+    ],
+    [
+      10,
+      "line Search >",
+      "line 10 alpha beta gamma"
+    ],
+    [
+      11,
+      "line Incremental Search >",
+      "line 11 alpha beta gamma"
+    ],
+    [
+      12,
+      "line Replace >",
+      "line 12 alpha beta gamma"
+    ],
+    [
+      13,
+      "line Go To >",
+      "line 13 alpha beta gamma"
+    ],
+    [
+      14,
+      "line Bookmarks >",
+      "line 14 alpha beta gamma"
+    ],
+    [
+      15,
+      "line --",
+      "line 15 alpha beta gamma"
+    ],
+    [
+      16,
+      "line Fill",
+      "line 16 alpha beta gamma"
+    ],
+    [
+      17,
+      "line Execute Command         M-x",
+      "line 17 alpha beta gamma"
+    ],
+    [
+      "cursor",
+      "(1, 4) on 'line Undo                    C-x u'",
+      "(1, 0) on 'line 01 alpha beta gamma'"
+    ]
+  ],
+  "compared_rows": 22,
+  "elapsed_seconds_diagnostic_only": 20.139070708000002,
+  "binary_sha256": "e2288502e8d71576f2c8a8c1032cb2f06ee1316e262144a68b3614539df397ef",
+  "image_sha256": "c1af4785ee0d5a4ecf87a11acedf001174728a587d2b511b572b83e3cd0a13ee",
+  "gnu_binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+}

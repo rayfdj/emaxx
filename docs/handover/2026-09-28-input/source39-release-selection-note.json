@@ -1,0 +1,30 @@
+{
+  "purpose": "All ordinary tty unit tests plus every primitive test installing a reader or poller callback; original tests, assertions and existing opt-in ignores unchanged. Selected release validation, not the full gate.",
+  "filters": [
+    "tty::tests::",
+    "native_minibuffer_runs_initial_post_command_hook_before_input",
+    "keyboard_macro_records_minibuffer_command_events_exactly_once",
+    "tty_event_reader_feeds_interactive_event_reads",
+    "tty_event_reader_quit_signals_gnu_quit",
+    "tty_event_reader_does_not_preempt_queued_events",
+    "blocking_tty_event_read_redraws_after_a_due_timer",
+    "blocking_tty_event_read_redraws_after_process_output",
+    "timed_tty_event_read_pumps_process_output_and_deferred_callbacks",
+    "live_minibuffer_recursive_commands_restore_the_outer_command_identity",
+    "write_region_mustbenew_consumes_a_full_negative_answer",
+    "tty_events_answer_interactive_minibuffer_prompts",
+    "read_string_history_keeps_the_minibuffer_map_and_initial_properties",
+    "live_read_string_records_an_accepted_default_in_history",
+    "tty_minibuffer_edits_complete_and_recall_history",
+    "tty_minibuffer_history_recall_submits_the_recalled_entry",
+    "tty_minibuffer_quit_signals_gnu_quit",
+    "tty_completing_read_completes_with_tab",
+    "tty_read_buffer_formats_a_buffer_default_into_the_prompt",
+    "tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands",
+    "minibuffer_prompt_carries_its_face_through_the_read",
+    "tty_real_minibuffer_history_recalls_through_simple_el",
+    "tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it",
+    "tmm_nested_menu_keeps_the_completions_window_at_its_first_line",
+    "minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window"
+  ]
+}

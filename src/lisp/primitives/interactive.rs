@@ -756,14 +756,14 @@ pub(crate) fn parse_interactive_string(
 
 // Terminal-driven event input, installed by the tty frontend for the
 // duration of an interactive session.  The reader blocks on the terminal
-// and returns one key event, or `None' for C-g; without a reader the
+// and returns one event, or `None' for C-g; without a reader the
 // queued-events contract below is unchanged.
 thread_local! {
     static TTY_EVENT_READER: std::cell::RefCell<Option<TtyEventReader>> =
         const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) type TtyEventReader = Box<dyn FnMut() -> Option<Value>>;
+pub(crate) type TtyEventReader = Box<dyn FnMut(&mut Interpreter) -> Option<Value>>;
 
 // A non-blocking companion to the reader: wait briefly for one event and
 // answer None when the terminal stays quiet.  Blocking reads poll
@@ -777,7 +777,7 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-pub(crate) type TtyEventPoller = Box<dyn FnMut() -> Option<Option<Value>>>;
+pub(crate) type TtyEventPoller = Box<dyn FnMut(&mut Interpreter) -> Option<Option<Value>>>;
 
 pub(crate) fn set_tty_event_reader(reader: Option<TtyEventReader>) {
     TTY_EVENT_READER.with_borrow_mut(|slot| *slot = reader);
@@ -787,16 +787,24 @@ pub(crate) fn set_tty_event_poller(poller: Option<TtyEventPoller>) {
     TTY_EVENT_POLLER.with_borrow_mut(|slot| *slot = poller);
 }
 
-fn read_via_tty_event_reader(cursor_in_echo_area: bool) -> Option<Option<Value>> {
+fn read_via_tty_event_reader(
+    interp: &mut Interpreter,
+    cursor_in_echo_area: bool,
+) -> Option<Option<Value>> {
     TTY_CURSOR_IN_ECHO_AREA.set(cursor_in_echo_area);
-    let result = TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()));
+    let result =
+        TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader(interp)));
     TTY_CURSOR_IN_ECHO_AREA.set(false);
     result
 }
 
-fn poll_via_tty_event_poller(cursor_in_echo_area: bool) -> Option<Option<Option<Value>>> {
+fn poll_via_tty_event_poller(
+    interp: &mut Interpreter,
+    cursor_in_echo_area: bool,
+) -> Option<Option<Option<Value>>> {
     TTY_CURSOR_IN_ECHO_AREA.set(cursor_in_echo_area);
-    let result = TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller()));
+    let result =
+        TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller(interp)));
     TTY_CURSOR_IN_ECHO_AREA.set(false);
     result
 }
@@ -1546,7 +1554,7 @@ pub(crate) fn pop_unread_command_event_value(
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
-        while let Some(step) = poll_via_tty_event_poller(cursor_in_echo_area) {
+        while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
             match step {
                 None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
                 Some(Some(event)) => {
@@ -1589,7 +1597,7 @@ pub(crate) fn pop_unread_command_event_value(
                 }
             }
         }
-        if let Some(read) = read_via_tty_event_reader(cursor_in_echo_area) {
+        if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
             return match read {
                 Some(event) => {
                     record_external_input_event(interp, &event, env);
@@ -2337,7 +2345,7 @@ pub(crate) fn read_tty_event_with_timeout(
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
-        let Some(step) = poll_via_tty_event_poller(cursor_in_echo_area) else {
+        let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) else {
             return Ok(None);
         };
         match step {
