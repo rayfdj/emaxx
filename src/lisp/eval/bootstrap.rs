@@ -1,5 +1,5 @@
-use super::{CharTableEntry, CodingSystemState};
-use crate::lisp::types::Value;
+use super::CodingSystemState;
+use crate::lisp::types::{CharTableRef, Kind, Value};
 
 fn symbol(name: &str) -> Value {
     Value::Symbol(name.into())
@@ -68,132 +68,54 @@ fn c_defined_coding_plist(name: &str) -> Value {
     )
 }
 
-pub(super) fn syntax_spec_value(spec: &str) -> Value {
-    Value::String(spec.to_string().into())
-}
-
-pub(super) fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
-    vec![
-        CharTableEntry {
-            start: ' ' as u32,
-            end: ' ' as u32,
-            value: syntax_spec_value(" "),
-        },
-        CharTableEntry {
-            start: '\t' as u32,
-            end: '\t' as u32,
-            value: syntax_spec_value(" "),
-        },
-        CharTableEntry {
-            start: '\n' as u32,
-            end: '\n' as u32,
-            value: syntax_spec_value(" "),
-        },
-        CharTableEntry {
-            start: '\r' as u32,
-            end: '\r' as u32,
-            value: syntax_spec_value(" "),
-        },
-        CharTableEntry {
-            start: '\u{0c}' as u32,
-            end: '\u{0c}' as u32,
-            value: syntax_spec_value(" "),
-        },
-        CharTableEntry {
-            start: '_' as u32,
-            end: '_' as u32,
-            value: syntax_spec_value("_"),
-        },
-        CharTableEntry {
-            start: '\\' as u32,
-            end: '\\' as u32,
-            value: syntax_spec_value("\\"),
-        },
-        CharTableEntry {
-            start: '\'' as u32,
-            end: '\'' as u32,
-            value: syntax_spec_value("."),
-        },
-        CharTableEntry {
-            start: '"' as u32,
-            end: '"' as u32,
-            value: syntax_spec_value("\""),
-        },
-        CharTableEntry {
-            start: '(' as u32,
-            end: '(' as u32,
-            value: syntax_spec_value("()"),
-        },
-        CharTableEntry {
-            start: ')' as u32,
-            end: ')' as u32,
-            value: syntax_spec_value(")("),
-        },
-        CharTableEntry {
-            start: '[' as u32,
-            end: '[' as u32,
-            value: syntax_spec_value("(]"),
-        },
-        CharTableEntry {
-            start: ']' as u32,
-            end: ']' as u32,
-            value: syntax_spec_value(")["),
-        },
-        CharTableEntry {
-            start: '{' as u32,
-            end: '{' as u32,
-            value: syntax_spec_value("(}"),
-        },
-        CharTableEntry {
-            start: '}' as u32,
-            end: '}' as u32,
-            value: syntax_spec_value("){"),
-        },
-    ]
-}
-
-/// GNU lisp-data-mode-syntax-table (lisp-mode.el): every non-alphanumeric
-/// ASCII character is a symbol constituent unless overridden below (Lisp
-/// symbols carry -, ., {, } and friends).  Lookup is last-entry-wins, so
-/// the specific overrides follow the symbol-constituent ranges.
-pub(super) fn lisp_data_syntax_table_entries() -> Vec<CharTableEntry> {
-    let mut entries: Vec<CharTableEntry> = [(0u32, 47u32), (58, 64), (91, 96), (123, 127)]
-        .into_iter()
-        .map(|(start, end)| CharTableEntry {
-            start,
-            end,
-            value: syntax_spec_value("_"),
-        })
-        .collect();
-    for ch in [' ', '\t', '\x0c', '\u{a0}'] {
-        entries.push(CharTableEntry {
-            start: ch as u32,
-            end: ch as u32,
-            value: syntax_spec_value(" "),
-        });
+/// syntax.c:init_syntax_once.  The shared code conses are the actual Lisp
+/// descriptors, including their observable identity across syntax tables.
+pub(super) fn initial_syntax_table(codes: Value) -> CharTableRef {
+    let Kind::Vector(codes) = codes.kind() else {
+        unreachable!()
+    };
+    let code = |index| codes.get(index).expect("syntax code");
+    let table = CharTableRef::new(Value::symbol("syntax-table"), code(0), 0);
+    for ch in 0..32 {
+        table.set(ch, code(1));
     }
-    for (ch, spec) in [
-        ('\n', ">"),
-        (';', "<"),
-        ('`', "'"),
-        ('\'', "'"),
-        (',', "'"),
-        ('#', "'"),
-        ('@', "_ p"),
-        ('"', "\""),
-        ('\\', "\\"),
-        ('(', "()"),
-        (')', ")("),
-        ('[', "(]"),
-        (']', ")["),
+    table.set(127, code(1));
+    for ch in [' ', '\t', '\n', '\r', '\u{c}'] {
+        table.set(ch as u32, code(0));
+    }
+    for (start, end) in [('a', 'z'), ('A', 'Z'), ('0', '9')] {
+        for ch in start as u32..=end as u32 {
+            table.set(ch, code(2));
+        }
+    }
+    for ch in ['$', '%'] {
+        table.set(ch as u32, code(2));
+    }
+    for (ch, class, matching) in [
+        ('(', 4, ')'),
+        (')', 5, '('),
+        ('[', 4, ']'),
+        (']', 5, '['),
+        ('{', 4, '}'),
+        ('}', 5, '{'),
     ] {
-        entries.push(CharTableEntry {
-            start: ch as u32,
-            end: ch as u32,
-            value: syntax_spec_value(spec),
-        });
+        table.set(
+            ch as u32,
+            Value::cons(Value::Integer(class), Value::Integer(matching as i64)),
+        );
     }
-    entries
+    // GNU creates separate conses for these two initial entries.
+    for (ch, class) in [('"', 7), ('\\', 9)] {
+        table.set(ch as u32, Value::cons(Value::Integer(class), Value::Nil));
+    }
+    for ch in "_-+*/&|<>=".chars() {
+        table.set(ch as u32, code(3));
+    }
+    for ch in ".,;:?!#@~^'`".chars() {
+        table.set(ch as u32, code(1));
+    }
+    table.set_range(128, 0x3fffff, code(2));
+    table
 }
 
 pub(super) fn current_exec_path() -> Value {

@@ -378,7 +378,8 @@ pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
         Kind::Vector(vector) => Some((4, vector.identity())),
         Kind::StringObject(state) => Some((1, state.identity())),
         Kind::Record(id) => Some((2, id.identity())),
-        Kind::CharTable(id) => Some((3, id as usize)),
+        Kind::CharTable(id) => Some((3, id.identity())),
+        Kind::SubCharTable(id) => Some((5, id.identity())),
         _ => None,
     }
 }
@@ -465,38 +466,21 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        Kind::CharTable(id) => {
-            let (default, extra_slots, entries) = match interp.find_char_table(id) {
-                Some(table) => (
-                    table.default,
-                    table.extra_slots.clone(),
-                    table.entries.clone(),
-                ),
-                None => return Ok(*subtree),
-            };
-
-            let default = substitute_object_recurse(interp, object, placeholder, &default, seen)?;
-            let mut updated_slots = Vec::with_capacity(extra_slots.len());
-            for slot in extra_slots {
-                updated_slots.push(substitute_object_recurse(
-                    interp,
-                    object,
-                    placeholder,
-                    &slot,
-                    seen,
-                )?);
+        Kind::CharTable(table) => {
+            for (index, value) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    substitute_object_recurse(interp, object, placeholder, &value, seen)?,
+                );
             }
-            let mut updated_entries = Vec::with_capacity(entries.len());
-            for mut entry in entries {
-                entry.value =
-                    substitute_object_recurse(interp, object, placeholder, &entry.value, seen)?;
-                updated_entries.push(entry);
-            }
-
-            if let Some(table) = interp.find_char_table_mut(id) {
-                table.default = default;
-                table.extra_slots = updated_slots;
-                table.replace_entries(updated_entries);
+            Ok(*subtree)
+        }
+        Kind::SubCharTable(table) => {
+            for (index, value) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    substitute_object_recurse(interp, object, placeholder, &value, seen)?,
+                );
             }
             Ok(*subtree)
         }

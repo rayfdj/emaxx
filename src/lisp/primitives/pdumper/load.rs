@@ -6,15 +6,14 @@
 //! magic, the incomplete marker, the fingerprint), then rebuilds one Rust
 //! object per object-start entry and applies the relocation tables to
 //! its fields, so sharing and cycles come back as they were written.
-//! Records and char-tables are installed in the interpreter with the ids
-//! the image gave them: the id is the identity every `Value::Record' and
-//! `Value::CharTable' carries.
+//! Character tables and their internal nodes use the same graph relocation
+//! as vectors; no numeric object identity or range history is reconstructed.
 
 use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{Kind, SharedText, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SharedText, SubCharTableRef, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -258,10 +257,6 @@ impl<V: Copy> OffsetTable<V> {
             .get(*offset as usize / DUMP_ALIGNMENT)
             .and_then(|slot| slot.as_ref())
     }
-
-    fn contains_key(&self, offset: &u32) -> bool {
-        self.get(offset).is_some()
-    }
 }
 
 /// The reconstructed objects by start offset.  An object's number is
@@ -401,6 +396,7 @@ impl Loader<'_> {
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
         let mut char_tables = Vec::new();
+        let mut sub_char_tables = Vec::new();
         let mut buffers = Vec::new();
         let mut markers = Vec::new();
         let mut overlays = Vec::new();
@@ -482,9 +478,25 @@ impl Loader<'_> {
                     }
                 }
                 DumpType::CharTable => {
-                    let id = self.reader.word(offset)?;
-                    self.objects.insert(offset, Value::CharTable(id));
-                    char_tables.push((offset, id));
+                    let slots = self.reader.word(offset)? as usize;
+                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+                        .contains(&slots)
+                    {
+                        return Err(LoadError::Error("invalid char-table slot count".into()));
+                    }
+                    let table = CharTableRef::new(Value::Nil, Value::Nil, slots - 68);
+                    self.objects.insert(offset, Value::CharTable(table));
+                    char_tables.push((offset, table));
+                }
+                DumpType::SubCharTable => {
+                    let depth = self.reader.word(offset)? as usize;
+                    let min_char = self.reader.word(offset + 8)?;
+                    if !(1..=3).contains(&depth) || min_char > 0x3fffff {
+                        return Err(LoadError::Error("invalid sub-char-table header".into()));
+                    }
+                    let table = SubCharTableRef::new(depth, min_char as u32, Value::Nil);
+                    self.objects.insert(offset, Value::SubCharTable(table));
+                    sub_char_tables.push((offset, table));
                 }
                 DumpType::Buffer => {
                     let id = self.reader.word(offset)?;
@@ -677,9 +689,15 @@ impl Loader<'_> {
                 }
             }
         }
-        for (offset, id) in char_tables {
-            let table = self.load_char_table(offset, id)?;
-            self.interp.install_char_table(table);
+        for (offset, table) in char_tables {
+            for index in 0..table.slot_count() {
+                table.set_slot(index, self.value_at(offset + 8 * (index as u32 + 1))?);
+            }
+        }
+        for (offset, table) in sub_char_tables {
+            for index in 0..table.slots().len() {
+                table.set_slot(index, self.value_at(offset + 8 * (index as u32 + 2))?);
+            }
         }
         for (string_offset, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
@@ -984,15 +1002,6 @@ impl Loader<'_> {
         ))
     }
 
-    /// A slot that is absent (the unbound word, no relocation) or a value.
-    fn optional_at(&mut self, field: u32) -> Result<Option<Value>, LoadError> {
-        let word = self.reader.word(field)?;
-        if !self.relocs.contains_key(&field) && word == WORD_UNBOUND {
-            return Ok(None);
-        }
-        self.value_at(field).map(Some)
-    }
-
     fn load_string(
         &mut self,
         offset: u32,
@@ -1077,62 +1086,6 @@ impl Loader<'_> {
             slots,
         ));
         Ok(self.interp.record_value(id))
-    }
-
-    /// A char-table record: id, subtype, default, parent, extra slots,
-    /// range entries, category docstrings.
-    fn load_char_table(
-        &mut self,
-        offset: u32,
-        id: u64,
-    ) -> Result<crate::lisp::eval::CharTableState, LoadError> {
-        let subtype = self
-            .optional_at(offset + 8)?
-            .map(|value| {
-                symbol_of(value, "char-table subtype").map(|symbol| symbol.as_str().to_owned())
-            })
-            .transpose()?;
-        let default = self.value_at(offset + 16)?;
-        let parent_word = self.reader.word(offset + 24)?;
-        let parent = (parent_word != u64::MAX).then_some(parent_word);
-        let mut at = offset + 32;
-        let nextra = self.reader.word(at)? as usize;
-        at += 8;
-        let mut extra_slots = Vec::with_capacity(nextra);
-        for _ in 0..nextra {
-            extra_slots.push(self.value_at(at)?);
-            at += 8;
-        }
-        let nentries = self.reader.word(at)? as usize;
-        at += 8;
-        let mut entries = Vec::with_capacity(nentries);
-        for _ in 0..nentries {
-            let start = self.reader.word(at)? as u32;
-            let end = self.reader.word(at + 8)? as u32;
-            let value = self.value_at(at + 16)?;
-            entries.push((start, end, value));
-            at += 24;
-        }
-        let ndocs = self.reader.word(at)? as usize;
-        at += 8;
-        let mut category_docs = Vec::with_capacity(ndocs);
-        for _ in 0..ndocs {
-            let character = self.reader.word(at)? as u32;
-            let doc = string_like(&self.value_at(at + 8)?)
-                .map(|string| string.text)
-                .ok_or_else(|| LoadError::Error("category docstring is not a string".into()))?;
-            category_docs.push((character, doc));
-            at += 16;
-        }
-        Ok(char_table_state_for_load(
-            id,
-            subtype,
-            default,
-            parent,
-            entries,
-            extra_slots,
-            category_docs,
-        ))
     }
 
     /// A text-properties record: count, then (start, end, nprops, (name,
@@ -1504,7 +1457,7 @@ impl Loader<'_> {
     }
 
     /// A field that is a char-table or nil.
-    fn optional_char_table_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
+    fn optional_char_table_at(&mut self, field: u32) -> Result<Option<CharTableRef>, LoadError> {
         match (self.value_at(field)?).kind() {
             Kind::Nil => Ok(None),
             Kind::CharTable(id) => Ok(Some(id)),

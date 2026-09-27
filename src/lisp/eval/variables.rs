@@ -1489,11 +1489,6 @@ impl Interpreter {
                 .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
                 .collect();
         }
-        if name == "ascii-case-table"
-            && let Kind::CharTable(id) = value.kind()
-        {
-            self.mark_ascii_case_table(id);
-        }
         if self
             .buffer_locals
             .get(&self.current_buffer_id())

@@ -218,7 +218,7 @@ pub(crate) fn translate_region_with_table(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
-    table_id: u64,
+    table_id: crate::lisp::types::CharTableRef,
 ) -> Result<Value, LispError> {
     let source = (from..to)
         .map(|position| {
@@ -776,6 +776,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::Marker(_) => "marker",
         Kind::Overlay(_) => "overlay",
         Kind::CharTable(_) => "char-table",
+        Kind::SubCharTable(_) => "sub-char-table",
         Kind::Frame(_) => "frame",
         Kind::Terminal(_) => "terminal",
         Kind::Record(id) => {
@@ -876,35 +877,27 @@ pub(crate) fn buffer_byte_to_position_boundary(
     Some(text.chars().count() + 1)
 }
 
-pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>, LispError> {
+pub(crate) fn char_table_range_spec(
+    value: &Value,
+    name: &str,
+) -> Result<Option<(u32, u32)>, LispError> {
+    let character = |value: Value| match value.kind() {
+        Kind::Integer(code) if (0..=0x3f_ffff).contains(&code) => Ok(code as u32),
+        _ => Err(LispError::WrongTypeArgument("characterp".into(), value)),
+    };
     match value.kind() {
         Kind::Nil => Ok(None),
-        Kind::T => Ok(Some((0, char::MAX as u32))),
-        Kind::Integer(codepoint) if codepoint >= 0 => {
-            Ok(Some((codepoint as u32, codepoint as u32)))
+        Kind::Integer(code) if (0..=0x3f_ffff).contains(&code) => {
+            Ok(Some((code as u32, code as u32)))
         }
-        Kind::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            let start = car.get().as_integer()?;
-            let end = cdr.get().as_integer()?;
-            if start < 0 || end < 0 {
-                return Err(LispError::Signal("Args out of range".into()));
-            }
-            Ok(Some((start as u32, end as u32)))
-        }
-        other => Err(LispError::TypeError(
-            "character-or-cons-or-nil".into(),
-            other.value().type_name(),
-        )),
+        Kind::Cons(cell) => Ok(Some((
+            character(cell.car.get())?,
+            character(cell.cdr.get())?,
+        ))),
+        _ => Err(LispError::Signal(format!(
+            "Invalid RANGE argument to `{name}'"
+        ))),
     }
-}
-
-pub(crate) fn normalize_category_set(text: &str) -> String {
-    let mut chars: Vec<char> = text.chars().collect();
-    chars.sort_unstable();
-    chars.dedup();
-    chars.into_iter().collect()
 }
 
 pub(crate) fn normalize_string_index(

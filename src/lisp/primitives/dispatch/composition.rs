@@ -343,7 +343,11 @@ fn register_composition(
     Ok(Some((key, relative, tail, width)))
 }
 
-fn char_table_id_from_var(interp: &Interpreter, env: &Env, name: &str) -> Option<u64> {
+fn char_table_id_from_var(
+    interp: &Interpreter,
+    env: &Env,
+    name: &str,
+) -> Option<crate::lisp::types::CharTableRef> {
     match (interp.lookup_var(name, env)?).kind() {
         Kind::CharTable(id) => Some(id),
         _ => None,

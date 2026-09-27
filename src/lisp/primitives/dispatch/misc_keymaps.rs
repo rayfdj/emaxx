@@ -1590,6 +1590,7 @@ define_dispatch!(
                     Kind::Marker(_) => "marker",
                     Kind::Overlay(_) => "overlay",
                     Kind::CharTable(_) => "char-table",
+                    Kind::SubCharTable(_) => "sub-char-table",
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",
                     Kind::Record(id) => {

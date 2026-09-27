@@ -175,59 +175,19 @@ pub(crate) fn keymap_records_equal(
 
 fn char_tables_equal(
     interp: &Interpreter,
-    left_id: u64,
-    right_id: u64,
+    left: crate::lisp::types::CharTableRef,
+    right: crate::lisp::types::CharTableRef,
     seen: &mut HashSet<(usize, usize)>,
     env: Option<&Env>,
 ) -> bool {
-    if left_id == right_id {
+    if left == right || !seen.insert((left.identity(), right.identity())) {
         return true;
     }
-    // Keep char-table recursion keys disjoint from the small numeric record
-    // IDs used elsewhere in this equality walk.
-    let pair = (
-        (left_id as usize) ^ usize::MAX,
-        (right_id as usize) ^ usize::MAX,
-    );
-    if !seen.insert(pair) {
-        return true;
-    }
-    let (Some(left), Some(right)) = (
-        interp.find_char_table(left_id),
-        interp.find_char_table(right_id),
-    ) else {
-        return false;
-    };
-    left.subtype == right.subtype
-        && values_equal_recursive_with_env(interp, &left.default, &right.default, seen, env)
-        && left.extra_slots.len() == right.extra_slots.len()
+    left.slot_count() == right.slot_count()
         && left
-            .extra_slots
-            .iter()
-            .zip(&right.extra_slots)
-            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
-        && left.entries.len() == right.entries.len()
-        && left
-            .entries
-            .iter()
-            .zip(&right.entries)
-            .all(|(left_entry, right_entry)| {
-                left_entry.start == right_entry.start
-                    && left_entry.end == right_entry.end
-                    && values_equal_recursive_with_env(
-                        interp,
-                        &left_entry.value,
-                        &right_entry.value,
-                        seen,
-                        env,
-                    )
-            })
-        && left.category_docs == right.category_docs
-        && match (left.parent, right.parent) {
-            (None, None) => true,
-            (Some(left), Some(right)) => char_tables_equal(interp, left, right, seen, env),
-            _ => false,
-        }
+            .slots()
+            .zip(right.slots())
+            .all(|(a, b)| values_equal_recursive_with_env(interp, &a, &b, seen, env))
 }
 
 pub(crate) fn keymap_record_equals_list(
@@ -365,6 +325,16 @@ fn values_equal_recursive_with_env(
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
             char_tables_equal(interp, left_id, right_id, seen, env)
         }
+        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => {
+            left == right
+                || (!seen.insert((left.identity(), right.identity()))
+                    || (left.depth() == right.depth()
+                        && left.min_char() == right.min_char()
+                        && left.slots().zip(right.slots()).all(|(a, b)| {
+                            values_equal_recursive_with_env(interp, &a, &b, seen, env)
+                        })))
+        }
+
         (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Record(left_id), Kind::Record(right_id))
@@ -518,8 +488,9 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::CharTable(left_id), Kind::CharTable(right_id))
-        | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
+        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
+        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
+        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
@@ -589,8 +560,9 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::CharTable(left_id), Kind::CharTable(right_id))
-        | (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
+        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
+        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
+        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
@@ -1840,9 +1812,13 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 10);
             hash_mix(state, overlay.identity() as u64);
         }
-        Kind::CharTable(id) => {
+        Kind::CharTable(table) => {
             hash_mix(state, 11);
-            hash_mix(state, id);
+            hash_mix(state, table.identity() as u64);
+        }
+        Kind::SubCharTable(table) => {
+            hash_mix(state, 44);
+            hash_mix(state, table.identity() as u64);
         }
         Kind::Frame(id) => {
             hash_mix(state, 18);
@@ -2056,6 +2032,7 @@ pub(crate) fn hash_value_equal_at(
                 remove_symbol_positions,
             );
         }
+        Kind::SubCharTable(_) => hash_mix(state, 42),
         Kind::CharTable(id) => {
             hash_char_table_equal(
                 interp,
@@ -2109,61 +2086,22 @@ pub(crate) fn hash_marker_equal(state: &mut u64, marker: crate::lisp::types::Mar
 pub(crate) fn hash_char_table_equal(
     interp: &Interpreter,
     state: &mut u64,
-    id: u64,
+    table: crate::lisp::types::CharTableRef,
     include_properties: bool,
     depth: u32,
     remove_symbol_positions: bool,
 ) {
     hash_mix(state, 44);
-    let Some(table) = interp.find_char_table(id) else {
-        hash_mix(state, id);
-        return;
-    };
-
-    match &table.subtype {
-        Some(subtype) => {
-            hash_mix(state, 1);
-            hash_str(state, subtype);
-        }
-        None => hash_mix(state, 0),
-    }
-    hash_mix(state, table.parent.unwrap_or(0));
-    hash_value_equal_at(
-        interp,
-        state,
-        &table.default,
-        include_properties,
-        depth + 1,
-        remove_symbol_positions,
-    );
-    hash_mix(state, table.extra_slots.len() as u64);
-    for slot in table.extra_slots.iter().take(SXHASH_MAX_LEN) {
+    hash_mix(state, table.slot_count() as u64);
+    for value in table.slots().take(SXHASH_MAX_LEN) {
         hash_value_equal_at(
             interp,
             state,
-            slot,
+            &value,
             include_properties,
             depth + 1,
             remove_symbol_positions,
         );
-    }
-    hash_mix(state, table.entries.len() as u64);
-    for entry in table.entries.iter().take(SXHASH_MAX_LEN) {
-        hash_mix(state, entry.start as u64);
-        hash_mix(state, entry.end as u64);
-        hash_value_equal_at(
-            interp,
-            state,
-            &entry.value,
-            include_properties,
-            depth + 1,
-            remove_symbol_positions,
-        );
-    }
-    hash_mix(state, table.category_docs.len() as u64);
-    for (code, doc) in &table.category_docs {
-        hash_mix(state, *code as u64);
-        hash_str(state, doc);
     }
 }
 
@@ -5038,8 +4976,7 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
             if let Some(Kind::CharTable(id)) = interp
                 .lookup_var("standard-display-table", env)
                 .map(|v| v.kind())
-                && let Some(table) = interp.find_char_table(id)
-                && table.subtype.as_deref() == Some("display-table")
+                && id.has_purpose("display-table")
                 && let Some(entry) = interp.char_table_get(id, 0x2018)
                 && crate::lisp::primitives::interactive::is_vector_value(&entry)
                 && crate::lisp::primitives::buffers::vector_items(&entry)

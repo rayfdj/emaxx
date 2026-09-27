@@ -18,6 +18,9 @@
 //! ARRAY_MARK_FLAG: small vectors share a block bitmap, and large vectors
 //! carry their mark past the payload. Ordinary object access reads neither.
 
+pub(crate) mod char_tables;
+pub use char_tables::{CharTableRef, SubCharTableRef};
+
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
 use std::cell::{Cell, RefCell};
@@ -75,6 +78,8 @@ pub enum VectorTag {
     Terminal = 16,
     Subr = 18,
     Closure = 31,
+    CharTable = 32,
+    SubCharTable = 33,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
@@ -94,6 +99,8 @@ impl VectorTag {
             16 => Self::Terminal,
             18 => Self::Subr,
             31 => Self::Closure,
+            32 => Self::CharTable,
+            33 => Self::SubCharTable,
             34 => Self::Record,
             40 => Self::StringObject,
             41 => Self::ReaderForm,
@@ -216,7 +223,12 @@ impl VectorHeader {
         if self.is_pseudovector() {
             let traced = self.size & PSEUDOVECTOR_SIZE_MASK;
             let rest = (self.size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK;
-            HEADER_SIZE + (traced + rest) * WORD_SIZE
+            let bytes = HEADER_SIZE + (traced + rest) * WORD_SIZE;
+            if matches!(self.tag(), VectorTag::CharTable | VectorTag::SubCharTable) {
+                vroundup(bytes)
+            } else {
+                bytes
+            }
         } else {
             vroundup(HEADER_SIZE + self.size * std::mem::size_of::<Value>())
         }
@@ -842,7 +854,12 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTORS, 1);
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
-            VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker | VectorTag::Overlay => {
+            VectorTag::Buffer
+            | VectorTag::Terminal
+            | VectorTag::Marker
+            | VectorTag::Overlay
+            | VectorTag::CharTable
+            | VectorTag::SubCharTable => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -908,7 +925,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
             // destructor. Its children are reclaimed by tracing, as in C.
-            VectorTag::Closure => {}
+            VectorTag::Closure | VectorTag::CharTable | VectorTag::SubCharTable => {}
             VectorTag::StringObject => {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
@@ -976,7 +993,9 @@ impl SweepStats {
                 VectorTag::Buffer
                 | VectorTag::Terminal
                 | VectorTag::Marker
-                | VectorTag::Overlay => {
+                | VectorTag::Overlay
+                | VectorTag::CharTable
+                | VectorTag::SubCharTable => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
@@ -1239,6 +1258,8 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
+            VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
+            VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),

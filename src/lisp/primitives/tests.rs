@@ -1652,7 +1652,11 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::buffer(1, "*scratch*"),
         Value::Marker(crate::lisp::types::MarkerRef::new()),
         Value::Overlay(crate::overlay::OverlayRef::new(false, false)),
-        Value::CharTable(1),
+        Value::CharTable(crate::lisp::types::CharTableRef::new(
+            Value::Nil,
+            Value::Nil,
+            0,
+        )),
         interp.create_record("representative", Vec::new()),
         Value::Finalizer(crate::lisp::alloc::FinalizerRef::new(Value::Nil)),
         Value::Unbound,
@@ -10517,6 +10521,35 @@ fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
 }
 
 #[test]
+fn char_table_compressed_unicode_slots_decode_into_the_canonical_tree() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/char-table-uniprop.el"),
+        "(t (default default 7 8 default default) (4 4 4 0 0 9 default default) nil t (changed 7))",
+        "lazy Unicode-property decompression, zero versus nil, and copied subtable ownership",
+    );
+}
+
+#[test]
+fn char_table_identity_callbacks_and_specialized_values_follow_gnu() {
+    let program = include_str!("../../../tests/fixtures/char-table-identity.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((initial args-out-of-range t nil nil error all all (wrong-type-argument characterp)) (t t t t t (8388610 . 50)) (t 128 "Za" 95 t t t t t nil nil t error) ((((1 . 3) a) (1000 b) (1001 changed) (1002 b) ((131072 . 131075) late)) t) (ascii-old new new new) (t t nil))"#,
+        "char-table symbol identity, fixed extras, canonical syntax/category values, live map callbacks, ASCII fields and reader cycles",
+    );
+}
+
+#[test]
+fn char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values() {
+    let program = include_str!("../../../tests/fixtures/char-table-authoritative-values.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(initial initial default parent parent replacement-default range t (slot-initial slot-initial t) (replacement 0))",
+        "authoritative char-table values, defaults, parent lookup, extra slots and overwritten-value reclamation",
+    );
+}
+
+#[test]
 fn overlay_priority_sorting_handles_crossing_intervals_without_a_total_order() {
     let program = include_str!("../../../tests/fixtures/overlay-priority-crossing-intervals.el");
     assert_oracle_contract_matches_interpreter(
@@ -18752,7 +18785,7 @@ fn native_overlay_and_char_table_census_uses_gnu_layouts() {
     assert_eq!(after.vectors - before.vectors, 2);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        crate::lisp::eval::GNU_CHAR_TABLE_VECTOR_SLOTS + 4
+        70 + 4 // char-table header + 68 Lisp slots, rounded to 16 bytes
     );
 }
 

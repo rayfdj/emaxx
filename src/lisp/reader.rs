@@ -1180,7 +1180,9 @@ impl<'a> Reader<'a> {
                 self.locate_symbols = saved_locate;
                 let fields = fields?;
                 if !sub_table {
-                    if fields.len() < 68 {
+                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+                        .contains(&fields.len())
+                    {
                         return Err(LispError::ReadError("invalid size char-table".into()));
                     }
                 } else {
@@ -2316,6 +2318,22 @@ mod tests {
                         if matches!(crate::lisp::types::kinds(fields).as_slice(), [Kind::Integer(3), Kind::Integer(0), ..])
                 )
         ));
+
+        // make-char-table limits the property to ten extras; literal reader
+        // objects carry their own size and may have more (lread.c).
+        let wide = read_one(&format!(
+            "#^[{}]",
+            std::iter::repeat_n("nil", 88).collect::<Vec<_>>().join(" ")
+        ));
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let materialized = interp
+            .materialize_read_object_literals(wide, &mut crate::lisp::types::Env::new())
+            .expect("wide char-table literal");
+        let Kind::CharTable(table) = materialized.kind() else {
+            panic!("canonical char-table")
+        };
+        assert_eq!(table.extra_count(), 20);
+        assert_eq!(table.extra(19), Some(Value::Nil));
 
         assert!(matches!(
             Reader::new("#^[nil]").read().as_ref().map_err(LispError::kind),

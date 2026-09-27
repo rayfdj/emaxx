@@ -224,6 +224,7 @@ pub(crate) enum DumpType {
     /// An interpreted closure (`Value::Lambda').
     Closure = 11,
     CharTable = 16,
+    SubCharTable = 28,
     /// A record or pseudovector kept as its slots (`Value::Record').
     Record = 17,
     /// A bool-vector: bits in the cold section.
@@ -266,6 +267,7 @@ impl DumpType {
             10 => Self::TextProperties,
             11 => Self::Closure,
             16 => Self::CharTable,
+            28 => Self::SubCharTable,
             17 => Self::Record,
             18 => Self::BoolVector,
             19 => Self::BuiltinSymbolCells,
@@ -428,7 +430,6 @@ pub(crate) enum RootSlot {
     StandardSyntaxTable = 37,
     StandardCategoryTable = 38,
     StandardCaseTable = 39,
-    AsciiCaseTables = 40,
     SyntaxWordChars = 41,
     Fontsets = 42,
     LispFaces = 43,
@@ -447,6 +448,7 @@ pub(crate) enum RootSlot {
     /// Not GNU: Emaxx's keymap facade records, reachable only through
     /// the view-to-record index (GNU's keymaps are the lists themselves).
     KeymapRecords = 55,
+    SyntaxCodeObjects = 56,
 }
 
 impl RootSlot {
@@ -492,7 +494,6 @@ impl RootSlot {
             37 => Self::StandardSyntaxTable,
             38 => Self::StandardCategoryTable,
             39 => Self::StandardCaseTable,
-            40 => Self::AsciiCaseTables,
             41 => Self::SyntaxWordChars,
             42 => Self::Fontsets,
             43 => Self::LispFaces,
@@ -507,6 +508,7 @@ impl RootSlot {
             52 => Self::FontSelectionOrder,
             54 => Self::RememberedScalars,
             55 => Self::KeymapRecords,
+            56 => Self::SyntaxCodeObjects,
             _ => return None,
         })
     }

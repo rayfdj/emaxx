@@ -228,6 +228,8 @@ pub(crate) fn print_ref_key(
             &cell,
         ))),
         Kind::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
+        Kind::CharTable(table) => Some(PrintRefKey::Vector(table.identity())),
+        Kind::SubCharTable(table) => Some(PrintRefKey::Vector(table.identity())),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
@@ -430,6 +432,8 @@ fn walk_print_graph(
                     }
                 }
             }
+            Kind::CharTable(table) => pending.extend(table.slots().rev()),
+            Kind::SubCharTable(table) => pending.extend(table.slots().rev()),
             Kind::Lambda(lambda) => {
                 pending.extend(interp.interpreted_closure_slots(&lambda).into_iter().rev());
             }
@@ -1160,11 +1164,45 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#[{}]", rendered_slots.join(" ")))
         }
-        Kind::BuiltinFunc(_)
-        | Kind::Buffer(_)
-        | Kind::Marker(_)
-        | Kind::Overlay(_)
-        | Kind::CharTable(_) => {
+        Kind::CharTable(table) => {
+            let mut fields = Vec::new();
+            for (index, field) in table.slots().enumerate() {
+                if context.options.length.is_some_and(|limit| index >= limit) {
+                    fields.push("...".into());
+                    break;
+                }
+                fields.push(render_prin1_with_context(
+                    interp,
+                    &field,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
+            }
+            Ok(format!("#^[{}]", fields.join(" ")))
+        }
+        Kind::SubCharTable(table) => {
+            let mut fields = vec![table.depth().to_string(), table.min_char().to_string()];
+            for field in table.slots() {
+                if context
+                    .options
+                    .length
+                    .is_some_and(|limit| fields.len() >= limit)
+                {
+                    fields.push("...".into());
+                    break;
+                }
+                fields.push(render_prin1_with_context(
+                    interp,
+                    &field,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
+            }
+            Ok(format!("#^^[{}]", fields.join(" ")))
+        }
+        Kind::BuiltinFunc(_) | Kind::Buffer(_) | Kind::Marker(_) | Kind::Overlay(_) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
@@ -1786,406 +1824,116 @@ pub(crate) fn materialize_read_hash_table_literal_fields(
 }
 
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
-const MAX_CHAR: u32 = 0x3f_ffff;
 
-// GNU's reader turns `#^[...]' and nested `#^^[...]' syntax directly into
-// character-table objects.  Emaxx's parser is deliberately independent of
-// the interpreter, so it leaves private marker forms and materializes them at
-// the read/evaluation boundary.  The serialized trie is flattened into the
-// runtime's non-overlapping range representation once, at construction time.
+// Reader forms become the actual root/subtable graph. Each object is
+// published before its fields so repeated references keep their identity.
 pub(crate) fn materialize_read_char_table_literals(
     interp: &mut Interpreter,
     value: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut seen = HashSet::new();
-    materialize_char_table_literals_inner(interp, value, env, &mut seen)
-}
-
-fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::CharTable { fields } => Some(fields.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn sub_char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::SubCharTable { fields } => Some(fields.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    materialize_char_table_literals_inner(interp, value, env, &mut HashMap::new())
 }
 
 fn materialize_char_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
     env: &mut Env,
-    seen: &mut HashSet<usize>,
+    seen: &mut HashMap<usize, Value>,
 ) -> Result<Value, LispError> {
-    if let Some(fields) = char_table_literal_fields(value) {
-        return char_table_from_literal_fields(interp, &fields, env, seen);
+    if let Some(copy) = seen.get(&value.word()) {
+        return Ok(*copy);
     }
-    if let Kind::Vector(vector) = value.kind() {
-        if !seen.insert(vector.identity()) {
-            return Ok(*value);
+    if let Kind::ReaderForm(form) = value.kind() {
+        let (copy, fields, skip) = match form.as_ref() {
+            crate::lisp::types::ReaderForm::CharTable { fields } => {
+                if !(CHAR_TABLE_STANDARD_SLOTS
+                    ..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+                    .contains(&fields.len())
+                {
+                    return Err(LispError::ReadError("invalid size char-table".into()));
+                }
+                (
+                    Value::CharTable(crate::lisp::types::CharTableRef::new(
+                        Value::Nil,
+                        Value::Nil,
+                        fields.len() - CHAR_TABLE_STANDARD_SLOTS,
+                    )),
+                    fields,
+                    0,
+                )
+            }
+            crate::lisp::types::ReaderForm::SubCharTable { fields } => {
+                let depth = fields[0].as_integer()? as usize;
+                let minimum = fields[1].as_integer()? as u32;
+                (
+                    Value::SubCharTable(crate::lisp::types::SubCharTableRef::new(
+                        depth,
+                        minimum,
+                        Value::Nil,
+                    )),
+                    fields,
+                    2,
+                )
+            }
+            _ => return Ok(*value),
+        };
+        seen.insert(value.word(), copy);
+        for (index, field) in fields.iter().skip(skip).enumerate() {
+            let field = interp.materialize_read_record_literals(field, env)?;
+            let field = materialize_read_hash_table_literals(interp, &field, env)?;
+            let field = materialize_char_table_literals_inner(interp, &field, env, seen)?;
+            match copy.kind() {
+                Kind::CharTable(table) => table.set_slot(index, field),
+                Kind::SubCharTable(table) => table.set_slot(index, field),
+                _ => unreachable!(),
+            }
         }
-        let slots = vector.slots().collect::<Vec<_>>();
-        for (index, slot) in slots.iter().enumerate() {
-            vector.set(
-                index,
-                materialize_char_table_literals_inner(interp, slot, env, seen)?,
-            );
+        return Ok(copy);
+    }
+    seen.insert(value.word(), *value);
+    match value.kind() {
+        Kind::Vector(vector) => {
+            for (index, field) in vector.slots().enumerate() {
+                vector.set(
+                    index,
+                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
+                );
+            }
         }
-        return Ok(*value);
+        Kind::Cons(cell) => {
+            cell.car.set(materialize_char_table_literals_inner(
+                interp,
+                &cell.car.get(),
+                env,
+                seen,
+            )?);
+            cell.cdr.set(materialize_char_table_literals_inner(
+                interp,
+                &cell.cdr.get(),
+                env,
+                seen,
+            )?);
+        }
+        Kind::CharTable(table) => {
+            for (index, field) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
+                );
+            }
+        }
+        Kind::SubCharTable(table) => {
+            for (index, field) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
+                );
+            }
+        }
+        _ => {}
     }
-    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(*value);
-    };
-    let ptr = car_cell.cell_id();
-    if !seen.insert(ptr) {
-        return Ok(*value);
-    }
-    let car = car_cell.get();
-    car_cell.set(materialize_char_table_literals_inner(
-        interp, &car, env, seen,
-    )?);
-    let cdr = cdr_cell.get();
-    cdr_cell.set(materialize_char_table_literals_inner(
-        interp, &cdr, env, seen,
-    )?);
     Ok(*value)
-}
-
-fn invalid_char_table_literal(message: &str) -> LispError {
-    LispError::ReadError(message.into())
-}
-
-fn char_table_from_literal_fields(
-    interp: &mut Interpreter,
-    fields: &[Value],
-    env: &mut Env,
-    seen: &mut HashSet<usize>,
-) -> Result<Value, LispError> {
-    if fields.len() < CHAR_TABLE_STANDARD_SLOTS {
-        return Err(invalid_char_table_literal("invalid size char-table"));
-    }
-
-    let default = materialize_literal_value(interp, &fields[0], env, seen)?;
-    let parent = materialize_literal_value(interp, &fields[1], env, seen)?;
-    let subtype = match fields[2].kind() {
-        Kind::Nil => None,
-        Kind::T => Some("t".into()),
-        Kind::Symbol(symbol) => Some(symbol.to_string()),
-        _ => None,
-    };
-    let uncompress_property_values = subtype.as_deref() == Some("char-code-property-table");
-    let decomposition_words = fields
-        .get(CHAR_TABLE_STANDARD_SLOTS)
-        .and_then(|value| value.as_symbol().ok())
-        .filter(|property| *property == "decomposition")
-        .and_then(|_| fields.get(CHAR_TABLE_STANDARD_SLOTS + 4))
-        .and_then(literal_vector_values);
-    let table = interp.make_char_table(subtype, default);
-    let Kind::CharTable(id) = table.kind() else {
-        unreachable!("make_char_table always returns a character table")
-    };
-
-    let mut entries = Vec::new();
-    {
-        let mut flatten_context = CharTableFlattenContext {
-            entries: &mut entries,
-            seen,
-            uncompress_property_values,
-            decomposition_words: decomposition_words.as_deref(),
-        };
-        for (index, value) in fields[4..CHAR_TABLE_STANDARD_SLOTS].iter().enumerate() {
-            let start = (index as u32) << 16;
-            let end = start + 0xffff;
-            // GNU consults the dedicated ASCII slot for 0..127 and never
-            // falls through to root slot zero.
-            flatten_char_table_value(
-                interp,
-                value,
-                start.max(128),
-                end,
-                env,
-                &mut flatten_context,
-            )?;
-        }
-        flatten_char_table_value(interp, &fields[3], 0, 127, env, &mut flatten_context)?;
-    }
-
-    let extra_slots = fields[CHAR_TABLE_STANDARD_SLOTS..]
-        .iter()
-        .map(|value| materialize_literal_value(interp, value, env, seen))
-        .collect::<Result<Vec<_>, _>>()?;
-    let state = interp
-        .find_char_table_mut(id)
-        .expect("new character table must exist");
-    state.parent = match parent.kind() {
-        Kind::CharTable(parent_id) => Some(parent_id),
-        _ => None,
-    };
-    state.replace_entries(entries);
-    state.extra_slots = extra_slots;
-    Ok(table)
-}
-
-struct CharTableFlattenContext<'a> {
-    entries: &'a mut Vec<crate::lisp::eval::CharTableEntry>,
-    seen: &'a mut HashSet<usize>,
-    uncompress_property_values: bool,
-    decomposition_words: Option<&'a [Value]>,
-}
-
-fn flatten_char_table_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    allowed_start: u32,
-    allowed_end: u32,
-    env: &mut Env,
-    context: &mut CharTableFlattenContext<'_>,
-) -> Result<(), LispError> {
-    if allowed_start > allowed_end || allowed_start > MAX_CHAR {
-        return Ok(());
-    }
-    if let Some(fields) = sub_char_table_literal_fields(value) {
-        let kinds = fields.iter().map(|v| v.kind()).collect::<Vec<_>>();
-        let [
-            Kind::Integer(depth @ 1..=3),
-            Kind::Integer(min_char),
-            contents @ ..,
-        ] = kinds.as_slice()
-        else {
-            return Err(invalid_char_table_literal("invalid sub-char-table header"));
-        };
-        let (expected, width) = match depth {
-            1 => (16, 4096),
-            2 => (32, 128),
-            3 => (128, 1),
-            _ => unreachable!("validated sub-char-table depth"),
-        };
-        if contents.len() != expected || !(0..=i64::from(MAX_CHAR)).contains(min_char) {
-            return Err(invalid_char_table_literal(
-                "invalid size or minimum in sub-char-table",
-            ));
-        }
-        let min_char = *min_char as u32;
-        for (index, content) in contents.iter().enumerate() {
-            let start = min_char.saturating_add(index as u32 * width);
-            let end = start.saturating_add(width - 1).min(MAX_CHAR);
-            flatten_char_table_value(
-                interp,
-                &content.value(),
-                start.max(allowed_start),
-                end.min(allowed_end),
-                env,
-                context,
-            )?;
-        }
-        return Ok(());
-    }
-
-    if context.uncompress_property_values
-        && let Some(values) = uncompress_char_property_values(value, context.decomposition_words)?
-    {
-        for (offset, value) in values.into_iter().enumerate() {
-            if let Some(value) = value {
-                let character = allowed_start.saturating_add(offset as u32);
-                if character <= allowed_end && character <= MAX_CHAR {
-                    append_char_table_range(context.entries, character, character, value);
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    let value = materialize_literal_value(interp, value, env, context.seen)?;
-    if value.is_nil() {
-        return Ok(());
-    }
-    append_char_table_range(
-        context.entries,
-        allowed_start,
-        allowed_end.min(MAX_CHAR),
-        value,
-    );
-    Ok(())
-}
-
-fn literal_vector_values(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first().map(|(a0, a1)| (a0.kind(), a1)) {
-        Some((Kind::Symbol(marker), values)) if marker == "vector-literal" => Some(values.to_vec()),
-        _ => Some(items),
-    }
-}
-
-fn uncompress_char_property_values(
-    value: &Value,
-    decomposition_words: Option<&[Value]>,
-) -> Result<Option<Vec<Option<Value>>>, LispError> {
-    let text = match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
-        _ => return Ok(None),
-    };
-    let mut chars = text.chars().map(u32::from).peekable();
-    let Some(format) = chars.next() else {
-        return Ok(None);
-    };
-    if format == 0
-        && let Some(words) = decomposition_words
-    {
-        return Ok(Some(uncompress_decomposition_values(chars, words)?));
-    }
-    if !matches!(format, 1 | 2) {
-        return Ok(None);
-    }
-    let mut values = Vec::with_capacity(128);
-    if format == 1 {
-        let start = chars
-            .next()
-            .ok_or_else(|| invalid_char_table_literal("truncated simple Unicode property table"))?
-            as usize;
-        values.resize(start.min(128), None);
-        for value in chars.take(128usize.saturating_sub(values.len())) {
-            values.push((value != 0).then_some(Value::Integer(value as i64)));
-        }
-    } else {
-        while values.len() < 128 {
-            let Some(value) = chars.next() else {
-                break;
-            };
-            let count = match chars.peek().copied() {
-                Some(encoded) if encoded >= 128 => {
-                    chars.next();
-                    (encoded - 128) as usize
-                }
-                _ => 1,
-            };
-            values.extend(
-                std::iter::repeat_n(Some(Value::Integer(value as i64)), count)
-                    .take(128 - values.len()),
-            );
-        }
-    }
-    values.resize(128, None);
-    Ok(Some(values))
-}
-
-// Generated decomposition tables use the word-list delta format implemented
-// by GNU unidata-get-decomposition.  Decode a whole 128-character leaf once
-// while reading the table, so normal property lookup remains an O(log n)
-// char-table operation and never needs the generated byte-code decoder.
-fn uncompress_decomposition_values(
-    chars: impl Iterator<Item = u32>,
-    words: &[Value],
-) -> Result<Vec<Option<Value>>, LispError> {
-    let encoded = chars.collect::<Vec<_>>();
-    let mut values = vec![None; 128];
-    let mut index = 0usize;
-    let mut position = 0usize;
-    let mut difference_head = 0usize;
-    let mut previous = Vec::<Value>::new();
-    let mut head = Vec::<Value>::new();
-    let mut tail = Vec::<Value>::new();
-
-    while position < encoded.len() && index < values.len() {
-        let code = encoded[position];
-        position += 1;
-        if code < 3 {
-            if !head.is_empty() || !tail.is_empty() {
-                head.append(&mut tail);
-                previous.clone_from(&head);
-                values[index] = Some(Value::list(head.drain(..)));
-            }
-            index += 1;
-            if code == 0 {
-                continue;
-            }
-            if code == 1 {
-                difference_head = usize::try_from(*encoded.get(position).ok_or_else(|| {
-                    invalid_char_table_literal("truncated decomposition property table")
-                })?)
-                .map_err(|_| invalid_char_table_literal("invalid decomposition delta"))?;
-                position += 1;
-            }
-            let head_len = difference_head / 16;
-            let tail_start = difference_head % 16;
-            head.extend(previous.iter().take(head_len).cloned());
-            tail.extend(previous.iter().skip(tail_start).cloned());
-            continue;
-        }
-
-        let word_index = usize::try_from(code - 3)
-            .map_err(|_| invalid_char_table_literal("invalid decomposition word index"))?;
-        head.push(
-            words
-                .get(word_index)
-                .cloned()
-                .unwrap_or(Value::Integer(i64::from(code))),
-        );
-    }
-    if index < values.len() && (!head.is_empty() || !tail.is_empty()) {
-        head.extend(tail);
-        values[index] = Some(Value::list(head));
-    }
-    Ok(values)
-}
-
-fn materialize_literal_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    seen: &mut HashSet<usize>,
-) -> Result<Value, LispError> {
-    // GNU's reader constructs every identity-bearing object recursively.  A
-    // character-table slot can itself contain a `#[...]' decoder (the Unicode
-    // name table does), so materialize record/closure literals before the
-    // hash- and character-table passes.  Each object kind keeps an independent
-    // cycle/identity context: sharing `seen` would make a later pass mistake an
-    // ordinary cons already visited by an earlier pass for a cycle.
-    let value = interp.materialize_read_record_literals(value, env)?;
-    let value = materialize_read_hash_table_literals(interp, &value, env)?;
-    materialize_char_table_literals_inner(interp, &value, env, seen)
-}
-
-fn append_char_table_range(
-    entries: &mut Vec<crate::lisp::eval::CharTableEntry>,
-    start: u32,
-    end: u32,
-    value: Value,
-) {
-    if let Some(previous) = entries.last_mut()
-        && previous.end.checked_add(1) == Some(start)
-        && char_table_values_share_identity(&previous.value, &value)
-    {
-        previous.end = end;
-        return;
-    }
-    entries.push(crate::lisp::eval::CharTableEntry { start, end, value });
-}
-
-fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
-    match (left.kind(), right.kind()) {
-        (Kind::T, Kind::T) | (Kind::Nil, Kind::Nil) | (Kind::Unbound, Kind::Unbound) => true,
-        (Kind::Integer(left), Kind::Integer(right)) => left == right,
-        (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
-        (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left), Kind::Marker(right)) => left == right,
-        (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),
-        (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
-        (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
-        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
-        _ => false,
-    }
 }
 
 fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {

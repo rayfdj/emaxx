@@ -3662,14 +3662,12 @@ const NATIVE_TYPE_FLOAT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NativeIdentity {
-    CharTable(u64),
     Frame(u64),
 }
 
 impl NativeIdentity {
     fn hash_word(&self) -> usize {
         let (kind, payload) = match self {
-            Self::CharTable(value) => (12, *value as usize),
             Self::Frame(value) => (13, *value as usize),
         };
         // Hashbrown consumes both low bucket bits and high control bits.  A
@@ -4064,6 +4062,8 @@ impl NativeMark<'_> {
                                 | crate::lisp::alloc::VectorTag::Buffer
                                 | crate::lisp::alloc::VectorTag::Terminal
                                 | crate::lisp::alloc::VectorTag::Overlay
+                                | crate::lisp::alloc::VectorTag::CharTable
+                                | crate::lisp::alloc::VectorTag::SubCharTable
                                 | crate::lisp::alloc::VectorTag::Marker
                                 | crate::lisp::alloc::VectorTag::Finalizer,
                                 TAG_SYMBOL | TAG_VECTORLIKE,
@@ -4145,6 +4145,8 @@ impl NativeMark<'_> {
             | Kind::BuiltinFunc(_)
             | Kind::Buffer(_)
             | Kind::Overlay(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
             | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::Finalizer(_) => {
@@ -4839,6 +4841,8 @@ impl NativeHeap {
             | Kind::Finalizer(_)
             | Kind::Buffer(_)
             | Kind::Overlay(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
             | Kind::Marker(_)
             | Kind::Terminal(_)
             | Kind::BuiltinFunc(_) => Ok(value.word()),
@@ -5114,6 +5118,8 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
                         | crate::lisp::alloc::VectorTag::Overlay
+                        | crate::lisp::alloc::VectorTag::CharTable
+                        | crate::lisp::alloc::VectorTag::SubCharTable
                         | crate::lisp::alloc::VectorTag::Marker
                         | crate::lisp::alloc::VectorTag::Finalizer
                 )
@@ -5263,7 +5269,6 @@ impl NativeHeap {
 
 fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
     Ok(match value.kind() {
-        Kind::CharTable(id) => (NativeIdentity::CharTable(id), TAG_VECTORLIKE),
         Kind::Frame(id) => (NativeIdentity::Frame(id), TAG_VECTORLIKE),
         Kind::Nil
         | Kind::T
@@ -5282,6 +5287,8 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
         | Kind::BuiltinFunc(_)
         | Kind::Buffer(_)
         | Kind::Overlay(_)
+        | Kind::CharTable(_)
+        | Kind::SubCharTable(_)
         | Kind::Marker(_)
         | Kind::Terminal(_)
         | Kind::Cons(_) => {
@@ -11268,6 +11275,167 @@ mod tests {
     }
 
     #[test]
+    fn native_char_tables_share_words_and_expose_gnu_inline_fields() {
+        use crate::lisp::types::CharTableRef;
+
+        unsafe extern "C" fn replace_ascii(table: NativeWord, value: NativeWord) -> NativeWord {
+            // GNU Lisp_Char_Table: header, default, parent, purpose, ASCII,
+            // 64 contents, extras. Lisp_Sub_Char_Table: header, i32 depth/min,
+            // then Lisp words. No interpreter lookup or synchronization.
+            unsafe {
+                let root = (table - TAG_VECTORLIKE) as *mut NativeWord;
+                let leaf = (*root.add(4) - TAG_VECTORLIKE) as *mut NativeWord;
+                *leaf.add(2 + 65) = value;
+                *root.add(1 + 68) = value;
+                *root.add(1) = value;
+                table
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let table = CharTableRef::new(Value::symbol("native-char-table"), Value::Nil, 2);
+        table.set(65, Value::Integer(19));
+        let Kind::SubCharTable(leaf) = table.slot(3).kind() else {
+            panic!("ASCII leaf")
+        };
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        for value in [Value::CharTable(table), Value::SubCharTable(leaf)] {
+            let word = first.encode(&value).expect("canonical char-table word");
+            assert_eq!(word, value.word());
+            assert_eq!(second.encode(&value).expect("another heap"), word);
+            assert_eq!(first.decode(word).expect("checked char-table").word(), word);
+            assert_eq!(
+                unsafe { second.decode_live(word) }
+                    .expect("rooted char-table")
+                    .word(),
+                word
+            );
+            assert!(first.decode(word - TAG_VECTORLIKE + TAG_FLOAT).is_err());
+            assert!(first.decode(word + std::mem::size_of::<Value>()).is_err());
+        }
+        let root = (Value::CharTable(table).word() - TAG_VECTORLIKE) as *const NativeWord;
+        let sub = (Value::SubCharTable(leaf).word() - TAG_VECTORLIKE) as *const NativeWord;
+        unsafe {
+            assert_eq!(*root & 0xfff, 70);
+            assert_eq!((*root >> 24) & 0x3f, 32);
+            assert_eq!(*root.add(3), table.purpose().word());
+            assert_eq!((*sub >> 24) & 0x3f, 33);
+            assert_eq!(*sub.add(1).cast::<i32>(), 3);
+            assert_eq!(*sub.add(1).cast::<i32>().add(1), 0);
+        }
+        let replacement = Value::vector([Value::Integer(73)]);
+        let mut runtime = NativeRuntime::default();
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                replace_ascii as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::CharTable(table), replacement],
+            )
+            .expect("native field stores");
+        assert_eq!(returned.word(), Value::CharTable(table).word());
+        assert_eq!(table.get(65).word(), replacement.word());
+        assert_eq!(table.get(900).word(), replacement.word());
+        assert_eq!(
+            table.extra(0).expect("first extra slot").word(),
+            replacement.word()
+        );
+        assert!(first.handles.is_empty());
+        assert!(second.handles.is_empty());
+        assert!(first.handle_by_value.is_empty());
+        assert!(second.handle_by_address.is_empty());
+    }
+
+    #[test]
+    fn native_char_table_gc_traces_inline_slots_and_reclaims_detached_graphs() {
+        use crate::lisp::types::CharTableRef;
+
+        #[inline(never)]
+        fn make_graph() -> [usize; 7] {
+            let table = CharTableRef::new(Value::Nil, Value::Nil, 1);
+            let parent = CharTableRef::new(Value::Nil, Value::Nil, 0);
+            let child = Value::vector([Value::CharTable(table)]);
+            table.set_parent(Some(parent));
+            table.set_extra(0, child);
+            parent.set(700, child);
+            let sub = parent.slot(4);
+            let dead = CharTableRef::new(Value::Nil, Value::Nil, 1);
+            let dead_child = Value::vector([Value::CharTable(dead)]);
+            dead.set_extra(0, dead_child);
+            let overwritten = Value::vector([Value::Integer(23)]);
+            table.set(65, overwritten);
+            table.set(65, Value::Nil);
+            [
+                Value::CharTable(table),
+                Value::CharTable(parent),
+                child,
+                sub,
+                Value::CharTable(dead),
+                dead_child,
+                overwritten,
+            ]
+            .map(|v| v.word() ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn collect_live(
+            heap: &mut NativeHeapOwner,
+            interp: &mut Interpreter,
+            env: &Env,
+            stack: *const NativeWord,
+            hidden: [usize; 7],
+        ) {
+            heap.collect(stack, &[hidden[0] ^ HIDE], interp, env);
+            for word in &hidden[..4] {
+                assert!(heap.decode(word ^ HIDE).is_ok(), "reachable field");
+            }
+            for word in &hidden[4..] {
+                assert!(heap.decode(word ^ HIDE).is_err(), "unreachable field");
+            }
+            let Kind::CharTable(table) = heap
+                .decode(hidden[0] ^ HIDE)
+                .expect("root table survived")
+                .kind()
+            else {
+                panic!("table")
+            };
+            assert_eq!(table.get(700).word(), hidden[2] ^ HIDE);
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let hidden = make_graph();
+        crate::lisp::alloc::clobber_stack();
+        collect_live(
+            &mut heap,
+            &mut interpreter,
+            &environment,
+            std::ptr::from_ref(&stack_marker),
+            hidden,
+        );
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for word in &hidden[..4] {
+            assert!(
+                heap.decode(word ^ HIDE).is_err(),
+                "formerly reachable graph"
+            );
+        }
+    }
+
+    #[test]
     fn native_vectors_and_interpreted_closures_share_words_across_heaps() {
         let mut first = NativeHeapOwner::new();
         let mut second = NativeHeapOwner::new();
@@ -11568,11 +11736,11 @@ mod tests {
 
     #[test]
     fn native_handle_cache_keys_use_gnu_object_identity_words() {
-        let char_table_identity = NativeIdentity::CharTable(19);
+        let other_frame_identity = NativeIdentity::Frame(20);
         let frame_identity = NativeIdentity::Frame(19);
-        assert_ne!(char_table_identity.hash_word(), frame_identity.hash_word());
+        assert_ne!(other_frame_identity.hash_word(), frame_identity.hash_word());
         let occupied_buckets = (0..4_096_u64)
-            .map(|id| NativeIdentity::CharTable(id).hash_word() & 4_095)
+            .map(|id| NativeIdentity::Frame(id).hash_word() & 4_095)
             .collect::<HashSet<_>>();
         assert!(occupied_buckets.len() > 2_000);
 
@@ -11588,23 +11756,23 @@ mod tests {
         assert_eq!(builtin_word, builtin.word());
         assert!(heap.handle_by_value.is_empty());
 
-        // Keep the original cross-kind key and handle-reuse contract for
-        // two kinds that still use the migration bridge. These identities
+        // Keep distinct-key and handle-reuse coverage for
+        // the two remaining frame bridge objects. These identities
         // are local codec controls; no interpreter dereferences them.
-        let char_table = Value::CharTable(19);
+        let other_frame = Value::Frame(20);
         let frame = Value::Frame(19);
-        let char_table_word = heap
-            .encode(&char_table)
-            .expect("encode char_table identity");
+        let other_frame_word = heap
+            .encode(&other_frame)
+            .expect("encode other_frame identity");
         let frame_word = heap.encode(&frame).expect("encode frame identity");
-        assert_ne!(char_table_word, frame_word);
+        assert_ne!(other_frame_word, frame_word);
         assert_eq!(
-            heap.encode(&char_table).expect("reuse char_table handle"),
-            char_table_word
+            heap.encode(&other_frame).expect("reuse other_frame handle"),
+            other_frame_word
         );
         assert_eq!(heap.encode(&frame).expect("reuse frame handle"), frame_word);
         assert_eq!(heap.handle_by_value.len(), 2);
-        assert!(heap.handle_by_value.contains_key(&char_table_identity));
+        assert!(heap.handle_by_value.contains_key(&other_frame_identity));
         assert!(heap.handle_by_value.contains_key(&frame_identity));
         let overlay = Value::Overlay(crate::overlay::OverlayRef::new(false, true));
         let word = heap.encode(&overlay).expect("encode canonical overlay");

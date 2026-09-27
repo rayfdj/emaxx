@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 pub(crate) const RAW_BYTE8_BASE: u32 = 0x3FFF00;
@@ -128,10 +129,10 @@ pub(crate) fn simple_upcase_char(code: u32) -> u32 {
 /// leaves a table nil when the operation cannot use it.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct CasingContext {
-    titlecase: Option<u64>,
-    special_upcase: Option<u64>,
-    special_downcase: Option<u64>,
-    special_titlecase: Option<u64>,
+    titlecase: Option<CharTableRef>,
+    special_upcase: Option<CharTableRef>,
+    special_downcase: Option<CharTableRef>,
+    special_titlecase: Option<CharTableRef>,
 }
 
 impl CasingContext {
@@ -178,7 +179,9 @@ impl CasingContext {
     }
 }
 
-pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u64), LispError> {
+pub(crate) fn current_case_table_ids(
+    interp: &mut Interpreter,
+) -> Result<(CharTableRef, CharTableRef), LispError> {
     let down = interp.current_case_table_id();
     let up = match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
         Some(Kind::CharTable(id)) => id,
@@ -187,7 +190,11 @@ pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u
     Ok((down, up))
 }
 
-pub(crate) fn case_table_mapping(interp: &Interpreter, table_id: u64, code: u32) -> Option<u32> {
+pub(crate) fn case_table_mapping(
+    interp: &Interpreter,
+    table_id: CharTableRef,
+    code: u32,
+) -> Option<u32> {
     for candidate in [Some(code), alternate_case_key(code)].into_iter().flatten() {
         let Some(Kind::Integer(mapped)) = interp
             .char_table_explicit_get(table_id, candidate)
@@ -236,7 +243,7 @@ pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_wor
 pub(crate) fn full_upcase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    up_table: u64,
+    up_table: CharTableRef,
     ch: char,
 ) -> String {
     let code = ch as u32;
@@ -254,7 +261,7 @@ pub(crate) fn full_upcase_string(
 pub(crate) fn full_downcase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    down_table: u64,
+    down_table: CharTableRef,
     ch: char,
     final_sigma: bool,
 ) -> String {
@@ -278,7 +285,7 @@ pub(crate) fn full_downcase_string(
 pub(crate) fn full_titlecase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    up_table: u64,
+    up_table: CharTableRef,
     ch: char,
 ) -> String {
     let code = ch as u32;
@@ -301,8 +308,8 @@ pub(crate) fn full_titlecase_string(
 pub(crate) fn simple_case_char_for_action(
     interp: &Interpreter,
     context: &CasingContext,
-    down_table: u64,
-    up_table: u64,
+    down_table: CharTableRef,
+    up_table: CharTableRef,
     code: u32,
     action: CaseAction,
 ) -> u32 {

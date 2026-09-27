@@ -1196,9 +1196,7 @@ fn copy_keymap_1(
 
 /// `Fcopy_sequence' of the char-table, then every entry's definition sent
 /// through `copy_keymap_item' (keymap.c copy_keymap_set_char_table through
-/// map_char_table).  The values are rewritten in place: `equal' compares
-/// two tables entry by entry, so appending would leave the copy unequal to
-/// the original even with the same mappings.
+/// map_char_table). Rewrite each copied range in its existing radix tree.
 fn copy_keymap_char_table(
     interp: &mut Interpreter,
     table: &Value,
@@ -1209,27 +1207,13 @@ fn copy_keymap_char_table(
     let Kind::CharTable(copy_id) = copy.kind() else {
         return Ok(copy);
     };
-    let entries = interp.char_table_entries(copy_id).unwrap_or_default();
-    let mut replaced = Vec::with_capacity(entries.len());
-    let mut changed = false;
-    for entry in entries {
-        let item = syntax::char_table_public_value(interp, copy_id, entry.value);
-        let copied = copy_keymap_item(interp, &item, depth, env)?;
-        if crate::lisp::primitives::values_eq_in_env(interp, &copied, &item, env) {
-            replaced.push(entry);
-        } else {
-            changed = true;
-            replaced.push(crate::lisp::eval::CharTableEntry {
-                start: entry.start,
-                end: entry.end,
-                value: copied,
-            });
+    interp.with_lisp_stack_roots(&copy, |interp| {
+        for entry in copy_id.effective_ranges() {
+            let copied = copy_keymap_item(interp, &entry.value, depth, env)?;
+            copy_id.set_range(entry.start, entry.end, copied);
         }
-    }
-    if changed {
-        interp.char_table_replace_entries(copy_id, replaced)?;
-    }
-    Ok(copy)
+        Ok(copy)
+    })
 }
 
 /// keymap.c copy_keymap_item: a `(menu-item NAME BINDING . REST)' gets

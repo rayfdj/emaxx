@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub use crate::lisp::alloc::vectors::{CharTableRef, SubCharTableRef};
 pub use crate::lisp::native_comp::abi::BuiltinRef;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -2044,7 +2045,6 @@ const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
 /// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_CHAR_TABLE: usize = 5;
 const SUB_FRAME: usize = 6;
 const SUB_SHIFT: u32 = 3;
 const PAYLOAD_SHIFT: u32 = 8;
@@ -2096,8 +2096,9 @@ pub enum Kind {
     Marker(MarkerRef),
     /// The canonical GNU-layout overlay allocation.
     Overlay(OverlayRef),
-    /// A char-table object, identified by unique id.
-    CharTable(u64),
+    /// The canonical GNU char-table and internal radix nodes.
+    CharTable(CharTableRef),
+    SubCharTable(SubCharTableRef),
     /// An opaque frame object, identified by unique id.
     Frame(u64),
     /// An opaque terminal object, identified by unique id.
@@ -2196,8 +2197,12 @@ impl Value {
         Value::from_bits(overlay.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn CharTable(id: u64) -> Value {
-        Value::from_bits(special(SUB_CHAR_TABLE, id as usize))
+    pub fn CharTable(table: CharTableRef) -> Value {
+        Value::from_bits(table.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn SubCharTable(table: SubCharTableRef) -> Value {
+        Value::from_bits(table.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Frame(id: u64) -> Value {
@@ -2319,6 +2324,12 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::CharTable => {
+                            Kind::CharTable(CharTableRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::SubCharTable => {
+                            Kind::SubCharTable(SubCharTableRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
@@ -2344,7 +2355,6 @@ impl Value {
             _ => {
                 let payload = (word >> PAYLOAD_SHIFT) as u64;
                 match (word >> SUB_SHIFT) & 31 {
-                    SUB_CHAR_TABLE => Kind::CharTable(payload),
                     SUB_FRAME => Kind::Frame(payload),
                     // SAFETY: every word this implementation makes has
                     // one of the sub-tags above.
@@ -2414,6 +2424,7 @@ impl Kind {
             Kind::Marker(v) => Value::Marker(v),
             Kind::Overlay(v) => Value::Overlay(v),
             Kind::CharTable(v) => Value::CharTable(v),
+            Kind::SubCharTable(v) => Value::SubCharTable(v),
             Kind::Frame(v) => Value::Frame(v),
             Kind::Terminal(v) => Value::Terminal(v),
             Kind::Record(v) => Value::Record(v),
@@ -3034,6 +3045,7 @@ impl Value {
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::CharTable(id) => format!("char-table<{}>", id),
+            Kind::SubCharTable(id) => format!("sub-char-table<{:x}>", id.identity()),
             Kind::Frame(id) => format!("frame<{}>", id),
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::Record(record) => format!("record<{}>", record.id),
@@ -3139,7 +3151,33 @@ fn values_equal_recursive(
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => a == b,
         (Kind::Overlay(a), Kind::Overlay(b)) => a == b,
-        (Kind::CharTable(a), Kind::CharTable(b)) => a == b,
+        (Kind::CharTable(a), Kind::CharTable(b)) => {
+            if a == b
+                || !seen
+                    .get_or_insert_with(HashSet::new)
+                    .insert((a.identity(), b.identity()))
+            {
+                return true;
+            }
+            a.slot_count() == b.slot_count()
+                && a.slots()
+                    .zip(b.slots())
+                    .all(|(a, b)| values_equal_recursive(&a, &b, seen))
+        }
+        (Kind::SubCharTable(a), Kind::SubCharTable(b)) => {
+            if a == b
+                || !seen
+                    .get_or_insert_with(HashSet::new)
+                    .insert((a.identity(), b.identity()))
+            {
+                return true;
+            }
+            a.depth() == b.depth()
+                && a.min_char() == b.min_char()
+                && a.slots()
+                    .zip(b.slots())
+                    .all(|(a, b)| values_equal_recursive(&a, &b, seen))
+        }
         (Kind::Frame(a), Kind::Frame(b)) => a == b,
         (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
@@ -3244,7 +3282,8 @@ fn format_value(
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
-        Kind::CharTable(id) => write!(f, "#<char-table id:{}>", id),
+        Kind::CharTable(id) => write!(f, "#<char-table {id}>"),
+        Kind::SubCharTable(id) => write!(f, "#<sub-char-table {:x}>", id.identity()),
         Kind::Frame(id) => write!(f, "#<frame id:{}>", id),
         Kind::Terminal(terminal) => write!(f, "#<terminal id:{}>", terminal.id),
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),

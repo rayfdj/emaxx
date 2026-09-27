@@ -1,5 +1,5 @@
 use crate::file_system as fs;
-use crate::lisp::types::RecordRef;
+use crate::lisp::types::{CharTableRef, RecordRef, SubCharTableRef};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -1160,37 +1160,7 @@ impl ErtTestDefinition {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct CharTableState {
-    pub id: u64,
-    pub subtype: Option<String>,
-    pub default: Value,
-    pub parent: Option<u64>,
-    pub extra_slots: Vec<Value>,
-    pub entries: Vec<CharTableEntry>,
-    pub category_docs: Vec<(u32, String)>,
-    ascii_entry_indices: Option<Box<[usize; 128]>>,
-    /// A stamp no other table in the process ever carries: taken from one
-    /// process-wide counter when the table is made and again on every
-    /// write through the table door (`find_char_table_mut'), so a cache
-    /// derived from a table's contents can key on (id, stamp) and stay
-    /// valid across writes to every other table.  The process-wide counter
-    /// keeps a table an image installs, or a second interpreter allocates,
-    /// under the same id from ever repeating a stamp a cache may still
-    /// hold for its predecessor.
-    generation: u64,
-    /// Lazily-built non-overlapping view of `entries': each map key is a
-    /// range start, the payload its inclusive end plus the index of the
-    /// newest log entry covering it.  The log itself must stay append-only
-    /// (printing and `equal' compare it verbatim), so this is an index over
-    /// it, kept incrementally current by `push_entry' and dropped whenever
-    /// the log is replaced wholesale.
-    resolved_ranges: std::cell::RefCell<Option<ResolvedCharRanges>>,
-}
-
-/// Range start -> (inclusive range end, newest covering entry index).
-type ResolvedCharRanges = std::collections::BTreeMap<u32, (u32, usize)>;
-
+/// A transient range produced from the current radix leaves.
 #[derive(Clone, Debug)]
 pub struct CharTableEntry {
     pub start: u32,
@@ -1198,212 +1168,23 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
-/// The (id, stamp) of every table in a character table's parent chain, the
-/// table itself first: everything an inherited lookup of that table reads.
-/// A cache keyed on it survives a write to any table outside the chain,
-/// where one process-wide generation recompiled cc-mode's largest patterns
-/// (hundreds of milliseconds each) whenever any mode touched any table.
-pub(crate) type CharTableChainSignature = Vec<(u64, u64)>;
+/// Exact words and mutable leaf data read by a derived regexp cache.
+/// Native stores bypass Rust mutation APIs; a generation is not sufficient.
+pub(crate) type CharTableChainSignature = Vec<usize>;
 
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {
-    table_id: u64,
+    table_id: CharTableRef,
     chain: CharTableChainSignature,
     rendered: [String; 16],
-    /// FNV over the sixteen renderings: two tables that render alike
-    /// (cperl-mode copies its table into every buffer) compile a pattern
-    /// alike, so the compiled-regexp cache keys on this, not the table.
     rendered_hash: u64,
 }
 
-/// Range segments of the syntax table, resolved once for the scanners that
-/// cannot hold an interpreter borrow (`skip-chars-forward' and friends).
-/// Keyed like the rendered-class cache so a chain write invalidates it.
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
-    table_id: u64,
+    table_id: CharTableRef,
     chain: CharTableChainSignature,
     pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
-}
-
-/// The process-wide source of char-table stamps (see CharTableState).
-static NEXT_CHAR_TABLE_GENERATION: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
-
-fn next_char_table_generation() -> u64 {
-    NEXT_CHAR_TABLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-impl CharTableState {
-    pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
-        Self::with_entries(id, subtype, default, None, Vec::new())
-    }
-
-    pub(crate) fn with_entries(
-        id: u64,
-        subtype: Option<String>,
-        default: Value,
-        parent: Option<u64>,
-        entries: Vec<CharTableEntry>,
-    ) -> Self {
-        let ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
-        Self {
-            id,
-            subtype,
-            default,
-            parent,
-            extra_slots: Vec::new(),
-            entries,
-            category_docs: Vec::new(),
-            ascii_entry_indices,
-            generation: next_char_table_generation(),
-            resolved_ranges: std::cell::RefCell::new(None),
-        }
-    }
-
-    /// The table's current stamp (see the field).
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// A write is about to reach the table's contents: take a fresh stamp.
-    pub(crate) fn note_written(&mut self) {
-        self.generation = next_char_table_generation();
-    }
-
-    fn build_ascii_entry_indices(entries: &[CharTableEntry]) -> Option<Box<[usize; 128]>> {
-        let mut indices = None;
-        for (index, entry) in entries.iter().enumerate() {
-            if entry.start >= 128 {
-                continue;
-            }
-            let indices = indices.get_or_insert_with(|| Box::new([usize::MAX; 128]));
-            for slot in entry.start as usize..=entry.end.min(127) as usize {
-                indices[slot] = index;
-            }
-        }
-        indices
-    }
-
-    pub(crate) fn push_entry(&mut self, entry: CharTableEntry) {
-        let index = self.entries.len();
-        let start = entry.start;
-        let end = entry.end;
-        self.entries.push(entry);
-        if let Some(map) = self.resolved_ranges.get_mut().as_mut() {
-            Self::overlay_resolved_range(map, start, end, index);
-        }
-        if start >= 128 {
-            return;
-        }
-        let indices = self
-            .ascii_entry_indices
-            .get_or_insert_with(|| Box::new([usize::MAX; 128]));
-        for slot in start as usize..=end.min(127) as usize {
-            indices[slot] = index;
-        }
-    }
-
-    pub(crate) fn replace_entries(&mut self, entries: Vec<CharTableEntry>) {
-        self.ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
-        self.entries = entries;
-        *self.resolved_ranges.get_mut() = None;
-    }
-
-    pub(crate) fn clear_entries(&mut self) {
-        self.entries.clear();
-        self.ascii_entry_indices = None;
-        *self.resolved_ranges.get_mut() = None;
-    }
-
-    /// Overlay `[start, end] -> index' onto a non-overlapping range map,
-    /// trimming or splitting whatever older ranges it eclipses.
-    fn overlay_resolved_range(map: &mut ResolvedCharRanges, start: u32, end: u32, index: usize) {
-        if let Some((&prev_start, &(prev_end, prev_index))) = map.range(..start).next_back()
-            && prev_end >= start
-        {
-            map.insert(prev_start, (start - 1, prev_index));
-            if prev_end > end {
-                map.insert(end + 1, (prev_end, prev_index));
-            }
-        }
-        let eclipsed: Vec<u32> = map.range(start..=end).map(|(&s, _)| s).collect();
-        for eclipsed_start in eclipsed {
-            let (eclipsed_end, eclipsed_index) = map
-                .remove(&eclipsed_start)
-                .expect("resolved range vanished mid-overlay");
-            if eclipsed_end > end {
-                map.insert(end + 1, (eclipsed_end, eclipsed_index));
-            }
-        }
-        map.insert(start, (end, index));
-    }
-
-    fn with_resolved_ranges<R>(&self, read: impl FnOnce(&ResolvedCharRanges) -> R) -> R {
-        let mut borrow = self.resolved_ranges.borrow_mut();
-        let map = borrow.get_or_insert_with(|| {
-            let mut map = ResolvedCharRanges::new();
-            for (index, entry) in self.entries.iter().enumerate() {
-                Self::overlay_resolved_range(&mut map, entry.start, entry.end, index);
-            }
-            map
-        });
-        read(map)
-    }
-
-    pub(crate) fn explicit_entry(&self, key: u32) -> Option<&CharTableEntry> {
-        if key < 128 {
-            let index = *self.ascii_entry_indices.as_ref()?.get(key as usize)?;
-            return (index != usize::MAX)
-                .then_some(index)
-                .and_then(|index| self.entries.get(index));
-        }
-        self.with_resolved_ranges(|map| {
-            let (_, &(end, index)) = map.range(..=key).next_back()?;
-            (end >= key).then_some(index)
-        })
-        .and_then(|index| self.entries.get(index))
-    }
-
-    /// The effective explicit ranges in ascending character order: newer log
-    /// entries mask older ones, and nil writes mask without being reported
-    /// as values.
-    pub(crate) fn effective_ranges(&self) -> Vec<CharTableEntry> {
-        self.with_resolved_ranges(|map| {
-            map.iter()
-                .filter_map(|(&start, &(end, index))| {
-                    let value = &self.entries[index].value;
-                    (!value.is_nil()).then_some(CharTableEntry {
-                        start,
-                        end,
-                        value: *value,
-                    })
-                })
-                .collect()
-        })
-    }
-
-    /// Append points in `[start, end]` at which this table's effective
-    /// explicit range can change.  `resolved_ranges` already folds the
-    /// append-only write log into the current, non-overlapping view, so
-    /// callers do not need to rescan every historical write.
-    pub(crate) fn append_change_boundaries(&self, start: u32, end: u32, boundaries: &mut Vec<u32>) {
-        self.with_resolved_ranges(|map| {
-            if let Some((_, &(range_end, _))) = map.range(..start).next_back()
-                && range_end >= start
-                && range_end < end
-            {
-                boundaries.push(range_end + 1);
-            }
-
-            for (&range_start, &(range_end, _)) in map.range(start..=end) {
-                boundaries.push(range_start);
-                if range_end < end {
-                    boundaries.push(range_end + 1);
-                }
-            }
-        });
-    }
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -3143,6 +2924,30 @@ impl ImageGraphCopier {
                 new_object.set_function(self.copy(&object.function()));
                 copied
             }
+            Kind::CharTable(table) => {
+                if let Some(copy) = self.vectors.get(&table.identity()) {
+                    return *copy;
+                }
+                let copy = CharTableRef::new(Value::Nil, Value::Nil, table.extra_count());
+                self.vectors
+                    .insert(table.identity(), Value::CharTable(copy));
+                for (index, value) in table.slots().enumerate() {
+                    copy.set_slot(index, self.copy(&value));
+                }
+                Value::CharTable(copy)
+            }
+            Kind::SubCharTable(table) => {
+                if let Some(copy) = self.vectors.get(&table.identity()) {
+                    return *copy;
+                }
+                let copy = SubCharTableRef::new(table.depth(), table.min_char(), Value::Nil);
+                self.vectors
+                    .insert(table.identity(), Value::SubCharTable(copy));
+                for (index, value) in table.slots().enumerate() {
+                    copy.set_slot(index, self.copy(&value));
+                }
+                Value::SubCharTable(copy)
+            }
             Kind::Vector(vector) => {
                 if vector.len() == 0 {
                     return *value;
@@ -3392,7 +3197,6 @@ pub(crate) const GNU_BUFFER_SIZE: usize = 992;
 // configured GNU 64-bit VECSIZE values for the remaining host-state objects.
 // Allocator-owned buffers and terminals use their actual vector footprints.
 pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
-pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
 /// The mark bits of one collection, keyed by object address or id.  The
 /// sets hash by identity (alloc.c's mark bit is a flag on the object; a
@@ -3414,7 +3218,6 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    char_tables: MarkedIds,
     frames: MarkedIds,
 }
 
@@ -3446,7 +3249,6 @@ impl LispReachability<'_, '_> {
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
-            char_tables: MarkedIds::default(),
             frames: MarkedIds::default(),
         }
     }
@@ -3479,7 +3281,8 @@ impl LispReachability<'_, '_> {
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
-            Kind::CharTable(id) => self.char_tables.contains(&id),
+            Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
+            Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::Frame(id) => self.frames.contains(&id),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
@@ -3547,7 +3350,8 @@ impl LispReachability<'_, '_> {
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
-            Kind::CharTable(id) => self.char_tables.insert(id),
+            Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
+            Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::Frame(id) => self.frames.insert(id),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
@@ -3620,16 +3424,15 @@ impl LispReachability<'_, '_> {
                 // alloc.c:mark_overlay traces only the strong plist slot.
                 self.enqueue(&overlay.plist());
             }
-            Kind::CharTable(id) => {
-                // The slots in place (alloc.c's mark_char_table).
-                if let Some(table) = interp.find_char_table(id) {
-                    self.enqueue(&table.default);
-                    for child in &table.extra_slots {
-                        self.enqueue(child);
-                    }
-                    for entry in &table.entries {
-                        self.enqueue(&entry.value);
-                    }
+            Kind::CharTable(table) => {
+                for value in table.slots() {
+                    self.enqueue(&value);
+                }
+            }
+            Kind::SubCharTable(table) => {
+                // alloc.c:mark_char_table skips the packed depth/min_char word.
+                for value in table.slots() {
+                    self.enqueue(&value);
                 }
             }
             Kind::Frame(id) => {
@@ -3929,30 +3732,6 @@ impl Interpreter {
         }
     }
 
-    /// Install a char-table with the id the image gave it.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_char_table(&mut self, state: CharTableState) {
-        self.next_char_table_id = self.next_char_table_id.max(state.id + 1);
-        self.category_context_generation += 1;
-        self.case_context_generation += 1;
-        let index = self.char_table_index_for(state.id);
-        self.char_tables[index] = state;
-    }
-
-    /// The table is indexed by id (`find_char_table'): the slot for ID,
-    /// with any gap below it filled by empty tables, as the image can
-    /// install tables out of id order and a remembered next id can
-    /// exceed the tables the image carried.
-    pub(crate) fn char_table_index_for(&mut self, id: u64) -> usize {
-        let index = usize::try_from(id - 1).expect("char-table id fits");
-        while self.char_tables.len() <= index {
-            let filler = self.char_tables.len() as u64 + 1;
-            self.char_tables
-                .push(CharTableState::new(filler, None, Value::Nil));
-        }
-        index
-    }
-
     // ----- pdumper.c:dump_buffer and its neighbours: what the writer reads
     // of a buffer, a marker, an overlay and the finalizer list, and what
     // the loader installs.
@@ -4004,7 +3783,7 @@ impl Interpreter {
     }
 
     /// BVAR (b, syntax_table) when the buffer has set one.
-    pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<u64> {
+    pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_syntax_tables
             .iter()
             .rev()
@@ -4013,7 +3792,7 @@ impl Interpreter {
     }
 
     /// BVAR (b, case_table) when the buffer has set one.
-    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<u64> {
+    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_case_tables
             .iter()
             .rev()
@@ -4132,14 +3911,14 @@ impl Interpreter {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: u64) {
+    pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
         self.buffer_syntax_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
         self.buffer_syntax_tables.push((id, table));
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: u64) {
+    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: CharTableRef) {
         self.buffer_case_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
         self.buffer_case_tables.push((id, table));
@@ -4403,8 +4182,21 @@ impl Interpreter {
         for terminal in &self.terminals {
             mark(&Value::Terminal(*terminal));
         }
-        for table in &self.char_tables {
-            mark(&Value::CharTable(table.id));
+        mark(&self.syntax_code_objects);
+        mark(&Value::CharTable(self.standard_syntax_table_id));
+        for table in self
+            .standard_category_table_id
+            .iter()
+            .chain(self.standard_case_table_id.iter())
+        {
+            mark(&Value::CharTable(*table));
+        }
+        for (_, table) in self
+            .buffer_syntax_tables
+            .iter()
+            .chain(self.buffer_case_tables.iter())
+        {
+            mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
             mark(value);
@@ -4645,17 +4437,9 @@ impl Interpreter {
         let mut vector_slots = vectors.slots;
         let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
         let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        let char_table_slots = self
-            .char_tables
-            .iter()
-            .map(|table| GNU_CHAR_TABLE_VECTOR_SLOTS.saturating_add(table.extra_slots.len()))
-            .sum::<usize>();
-        vector_count = vector_count
-            .saturating_add(live_frames)
-            .saturating_add(self.char_tables.len());
-        vector_slots = vector_slots
-            .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
-            .saturating_add(char_table_slots);
+        vector_count = vector_count.saturating_add(live_frames);
+        vector_slots =
+            vector_slots.saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS));
         // The records are vectors of the sweep's count (alloc.c counts a
         // record among the vectors).
         let (record_count, record_slots) = crate::lisp::alloc::live_record_census();
@@ -4838,14 +4622,25 @@ impl Interpreter {
                 };
                 *terminal = copied;
             }
-            for table in &mut clone.char_tables {
-                table.default = c.copy(&table.default.clone());
-                for slot in &mut table.extra_slots {
-                    *slot = c.copy(slot);
-                }
-                for entry in &mut table.entries {
-                    entry.value = c.copy(&entry.value.clone());
-                }
+            let copy_table = |c: &mut ImageGraphCopier, table: CharTableRef| {
+                let Kind::CharTable(copy) = c.copy(&Value::CharTable(table)).kind() else {
+                    unreachable!()
+                };
+                copy
+            };
+            clone.syntax_code_objects = c.copy(&clone.syntax_code_objects);
+            clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
+            clone.standard_category_table_id = clone
+                .standard_category_table_id
+                .map(|table| copy_table(c, table));
+            clone.standard_case_table_id = clone
+                .standard_case_table_id
+                .map(|table| copy_table(c, table));
+            for (_, table) in clone.buffer_syntax_tables.iter_mut() {
+                *table = copy_table(c, *table);
+            }
+            for (_, table) in &mut clone.buffer_case_tables {
+                *table = copy_table(c, *table);
             }
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
@@ -5038,7 +4833,6 @@ impl Interpreter {
         clone.keymap_bindings_cache.get_mut().clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
-        clone.syntax_table_mutable_entries_cache.get_mut().clear();
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
         clone.bc_live_programs.clear();
@@ -5398,15 +5192,6 @@ pub struct InterpreterState {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
-    /// Char tables allocated by the interpreter.
-    char_tables: Vec<CharTableState>,
-    /// Write generations per kind of table, bumped by the character-table
-    /// mutation door (see find_char_table_mut) for the caches derived from
-    /// the category and the case tables.  Syntax renderings use none: they
-    /// key on the stamps of the tables in the chain they read
-    /// (`char_table_chain_signature').
-    category_context_generation: u64,
-    case_context_generation: u64,
     /// The rendered current-table syntax classes are expensive to derive and
     /// are reused by many different compiled patterns.  This small cache
     /// is stamped with the table identity and its chain signature; regexp
@@ -5414,11 +5199,6 @@ pub struct InterpreterState {
     /// entry objects whose in-place changes bypass the table mutation door.
     regexp_syntax_class_cache: RefCell<Vec<RegexpSyntaxClassCache>>,
     syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
-    /// Whether a syntax table chain holds entries whose in-place mutation
-    /// bypasses the table door (a cons or mutable string), per table id and
-    /// chain signature: the compiled-regexp cache keys a pattern on the
-    /// cons-mutation generation only for such a chain.
-    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, CharTableChainSignature, bool)>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -5488,15 +5268,11 @@ pub struct InterpreterState {
     pub(crate) safe_terminal_coding: Option<String>,
     input_interrupt_mode: bool,
     /// Shared standard category table.
-    standard_category_table_id: Option<u64>,
+    standard_category_table_id: Option<CharTableRef>,
     /// Shared standard case table.
-    standard_case_table_id: Option<u64>,
-    /// Case tables derived from GNU's ASCII-only case table.
-    ascii_case_table_ids: Vec<u64>,
+    standard_case_table_id: Option<CharTableRef>,
     /// Buffer-local case tables keyed by buffer id.
-    buffer_case_tables: Vec<(u64, u64)>,
-    /// Next char-table ID for identity tracking.
-    next_char_table_id: u64,
+    buffer_case_tables: Vec<(u64, CharTableRef)>,
     /// Allocated record objects.
     /// The records by id (`find_record'), a registry and not a root:
     /// a record the sweep frees leaves it (`purge_freed_records').
@@ -5573,7 +5349,7 @@ pub struct InterpreterState {
     /// not scan every other live buffer's locals on each variable read.
     buffer_locals: BufferLocalBindings,
     /// Buffer-local syntax tables keyed by buffer id.
-    buffer_syntax_tables: Vec<(u64, u64)>,
+    buffer_syntax_tables: Vec<(u64, CharTableRef)>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -5684,7 +5460,8 @@ pub struct InterpreterState {
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
-    standard_syntax_table_id: u64,
+    syntax_code_objects: Value,
+    standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
     load_path: Value,
@@ -5824,7 +5601,9 @@ impl Interpreter {
             slots: vec![Value::Nil],
             kind: RecordKind::Obarray,
         });
-        let standard_syntax_table_id = 1u64;
+        let syntax_code_objects =
+            Value::vector((0..16).map(|code| Value::cons(Value::Integer(code), Value::Nil)));
+        let standard_syntax_table_id = initial_syntax_table(syntax_code_objects);
         let local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
@@ -6186,70 +5965,8 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            char_tables: vec![
-                CharTableState::with_entries(
-                    standard_syntax_table_id,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    None,
-                    standard_syntax_table_entries(),
-                ),
-                // GNU text-mode-syntax-table: `"' and `\' are
-                // punctuation, `'' is a word constituent with the prefix
-                // flag (Bug#15014 hinges on `"' NOT being a string quote).
-                CharTableState::with_entries(
-                    2,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(standard_syntax_table_id),
-                    vec![
-                        CharTableEntry {
-                            start: '"' as u32,
-                            end: '"' as u32,
-                            value: Value::String(".".into()),
-                        },
-                        CharTableEntry {
-                            start: '\\' as u32,
-                            end: '\\' as u32,
-                            value: Value::String(".".into()),
-                        },
-                        CharTableEntry {
-                            start: '\'' as u32,
-                            end: '\'' as u32,
-                            value: Value::String("w p".into()),
-                        },
-                    ],
-                ),
-                // GNU lisp-data-mode-syntax-table.  Lisp symbols inherit its
-                // punctuation entries, including the generic `@' prefix.
-                CharTableState::with_entries(
-                    3,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(standard_syntax_table_id),
-                    lisp_data_syntax_table_entries(),
-                ),
-                // GNU emacs-lisp-mode-syntax-table is a child of the data
-                // table, but deliberately removes `@''s generic prefix flag:
-                // syntax-propertize adds it back only for the `,@' reader
-                // token (bug#24542).
-                CharTableState::with_entries(
-                    4,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(3),
-                    vec![CharTableEntry {
-                        start: '@' as u32,
-                        end: '@' as u32,
-                        value: syntax_spec_value("_"),
-                    }],
-                ),
-            ],
-            category_context_generation: 0,
-            case_context_generation: 0,
             regexp_syntax_class_cache: RefCell::new(Vec::new()),
             syntax_segment_cache: RefCell::new(None),
-            syntax_table_mutable_entries_cache: RefCell::new(Vec::new()),
             equal_hash_tables: HashMap::default(),
             custom_hash_tables: HashMap::default(),
             hash_tables_under_test: HashSet::default(),
@@ -6355,9 +6072,7 @@ impl Interpreter {
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_table_id: None,
-            ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 5,
             records: vec![Some(main_thread), Some(standard_obarray)],
             record_owner,
             record_ids_by_type_index: [
@@ -6451,6 +6166,7 @@ impl Interpreter {
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
+            syntax_code_objects,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -6502,6 +6218,22 @@ impl Interpreter {
             state: Some(InterpreterStateOwner::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
+        for (purpose, extras) in [
+            ("case-table", 3),
+            ("category-table", 2),
+            ("char-code-property-table", 5),
+            ("display-table", 6),
+            ("char-script-table", 1),
+            ("glyphless-char-display", 1),
+            ("translation-table", 2),
+            ("fontset", 8),
+            ("fontset-info", 1),
+            ("syntax-table", 0),
+            ("keymap", 0),
+        ] {
+            interp.put_symbol_property(purpose, "char-table-extra-slots", Value::Integer(extras));
+        }
+
         interp.register_state_as_root();
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         interp.symbol_properties_by_id.borrow_mut().clear();

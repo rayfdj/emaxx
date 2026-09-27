@@ -606,29 +606,30 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     let Kind::CharTable(table_id) = slots[1].kind() else {
         panic!("char-table")
     };
-    let table = target
-        .find_char_table(table_id)
-        .expect("installed char-table");
-    assert_eq!(table.subtype.as_deref(), Some("zz-purpose"));
-    assert_eq!(table.default, Value::symbol("dflt"));
+    let table = table_id;
+    assert!(table.has_purpose("zz-purpose"));
+    assert_eq!(table.default(), Value::symbol("dflt"));
     assert_eq!(
         table
-            .entries
+            .ranges()
             .iter()
-            .map(|entry| (entry.start, entry.end, entry.value))
+            .map(|e| (e.start, e.end, e.value))
             .collect::<Vec<_>>(),
         vec![
+            (0, 64, Value::symbol("dflt")),
+            (65, 65, Value::symbol("upper")),
+            (66, 96, Value::symbol("dflt")),
             (97, 122, Value::symbol("lower")),
-            (65, 65, Value::symbol("upper"))
+            (123, 0x3fffff, Value::symbol("dflt")),
         ]
     );
+    assert_eq!(table.extra_count(), 1);
     assert_eq!(
         table
-            .extra_slots
-            .iter()
-            .map(|slot| string_like(slot).map(|s| s.text))
-            .collect::<Vec<_>>(),
-        vec![Some("extra".to_owned())]
+            .extra(0)
+            .and_then(|value| string_like(&value))
+            .map(|s| s.text),
+        Some("extra".into())
     );
 
     // The bool-vector's bits came through the cold section.
@@ -1087,11 +1088,14 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
             .iter()
             .any(|(symbol, value)| symbol == "zz-dump-local" && *value == Value::Integer(42))
     );
+    let loaded_syntax_table = target
+        .buffer_syntax_table_id(source_id)
+        .expect("restored syntax table");
+    assert_ne!(loaded_syntax_table, source_syntax_table);
     assert_eq!(
-        target.buffer_syntax_table_id(source_id),
-        Some(source_syntax_table)
+        Value::CharTable(loaded_syntax_table),
+        Value::CharTable(source_syntax_table)
     );
-    assert!(target.find_char_table(source_syntax_table).is_some());
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");

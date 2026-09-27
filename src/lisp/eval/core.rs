@@ -423,6 +423,7 @@ impl Interpreter {
             | Kind::Marker(_)
             | Kind::Overlay(_)
             | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
             | Kind::Frame(_)
             | Kind::Terminal(_)
             | Kind::Record(_)

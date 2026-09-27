@@ -70,11 +70,60 @@ impl CircularReadMaterializer<'_> {
             && crate::lisp::reader::contains_circular_read_syntax(&literal)
     }
 
+    fn char_table_placeholder(
+        &mut self,
+        form: &crate::lisp::types::ReaderFormRef,
+        label: Option<u32>,
+    ) -> Result<Option<Value>, LispError> {
+        if let Some(value) = self.records.get(&form.identity()).copied() {
+            if let Some(label) = label {
+                self.labels.insert(label, value);
+            }
+            return Ok(Some(value));
+        }
+        let (value, fields, skip) = match form.as_ref() {
+            ReaderForm::CharTable { fields } => (
+                Value::CharTable(CharTableRef::new(Value::Nil, Value::Nil, fields.len() - 68)),
+                fields,
+                0,
+            ),
+            ReaderForm::SubCharTable { fields } => (
+                Value::SubCharTable(SubCharTableRef::new(
+                    fields[0].as_integer()? as usize,
+                    fields[1].as_integer()? as u32,
+                    Value::Nil,
+                )),
+                fields,
+                2,
+            ),
+            _ => return Ok(None),
+        };
+        self.records.insert(form.identity(), value);
+        if let Some(label) = label {
+            self.labels.insert(label, value);
+        }
+        for (index, field) in fields.iter().skip(skip).enumerate() {
+            let field = self.resolve(field)?;
+            let field = self
+                .interpreter
+                .materialize_read_object_literals(field, self.environment)?;
+            match value.kind() {
+                Kind::CharTable(table) => table.set_slot(index, field),
+                Kind::SubCharTable(table) => table.set_slot(index, field),
+                _ => unreachable!(),
+            }
+        }
+        Ok(Some(value))
+    }
+
     fn record_placeholder(
         &mut self,
         form: &crate::lisp::types::ReaderFormRef,
         label: Option<u32>,
     ) -> Result<Option<Value>, LispError> {
+        if let Some(table) = self.char_table_placeholder(form, label)? {
+            return Ok(Some(table));
+        }
         let identity = form.identity();
         if let Some(record) = self.records.get(&identity).cloned() {
             if let Some(label) = label {

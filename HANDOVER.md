@@ -1,5 +1,10 @@
 # Resume the compact runtime goal here
 
+**Development continuation:** the char-table draft has been applied and wired on
+`runtime-char-tables`. Read the [28 September continuation](docs/runtime-representation-char-table-checkpoint.md)
+for implementation, failures, exact selected evidence and pending validation.
+Do not reapply the old patch on this branch. The full goal remains incomplete.
+
 **Active goal:** implement one compact, authoritative Lisp object representation
 shared by interpreter, bytecode VM and native code, then reduce instruction/call
 cost toward GNU C performance. Preserve GNU semantics, complete the adversarial

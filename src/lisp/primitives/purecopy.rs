@@ -246,6 +246,7 @@ fn purecopy_inner(
         Kind::Record(id) => return purecopy_record(interp, id.id, table, env),
         Kind::Buffer(_)
         | Kind::CharTable(_)
+        | Kind::SubCharTable(_)
         | Kind::Frame(_)
         | Kind::Terminal(_)
         | Kind::Finalizer(_)

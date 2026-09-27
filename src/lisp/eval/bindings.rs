@@ -1037,10 +1037,6 @@ impl Interpreter {
         self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
     }
 
-    pub(crate) fn current_definition_generation(&self) -> u64 {
-        self.definition_generation
-    }
-
     /// Whether the macroexpansion probe already concluded (at the current
     /// definition generation) that NAME is not a macro.
     pub(crate) fn known_not_macro(&self, name: &str) -> bool {

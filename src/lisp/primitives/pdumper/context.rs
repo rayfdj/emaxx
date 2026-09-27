@@ -10,7 +10,7 @@
 
 use super::super::*;
 use super::image::*;
-use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
+use crate::lisp::eval::{RecordKind, RecordState};
 use crate::lisp::types::{ConsCell, Kind, SymbolName};
 use std::collections::{HashMap, VecDeque};
 
@@ -41,7 +41,8 @@ pub(crate) enum ObjectKey {
     Buffer(u64),
     Marker(usize),
     Overlay(usize),
-    CharTable(u64),
+    CharTable(usize),
+    SubCharTable(usize),
     Frame(u64),
     Terminal(usize),
     Record(u64),
@@ -77,7 +78,8 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
-        Kind::CharTable(id) => ObjectKey::CharTable(id),
+        Kind::CharTable(table) => ObjectKey::CharTable(table.identity()),
+        Kind::SubCharTable(table) => ObjectKey::SubCharTable(table.identity()),
         Kind::Frame(id) => ObjectKey::Frame(id),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
@@ -544,6 +546,7 @@ impl DumpContext {
             Kind::BuiltinFunc(_) => DumpType::Subr,
             Kind::Lambda(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
+            Kind::SubCharTable(_) => DumpType::SubCharTable,
             Kind::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
             Kind::Buffer(_) => DumpType::Buffer,
             Kind::Marker(_) => DumpType::Marker,
@@ -1042,10 +1045,8 @@ impl DumpContext {
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
             Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
-            Kind::CharTable(id) => (
-                self.dump_char_table(interp, id, object)?,
-                DumpType::CharTable,
-            ),
+            Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
+            Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
             Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
@@ -1514,56 +1515,31 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// A char-table as Emaxx keeps it: id, subtype, default, parent,
-    /// extra slots, the range entries in their log order, and the
-    /// category docstrings.  GNU's is a tree of sub-char-tables; the
-    /// observable table is the same.
+    /// Canonical root slots, including the ASCII alias and actual purpose.
     fn dump_char_table(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
+        table: crate::lisp::types::CharTableRef,
     ) -> Result<u32, DumpError> {
-        let Some(table) = interp.find_char_table(id) else {
-            return Err(self.unsupported(object, "char-table without an object"));
-        };
-        let subtype = table.subtype.clone();
-        let default = table.default;
-        let parent = table.parent;
-        let extra_slots = table.extra_slots.clone();
-        let entries = table
-            .entries
-            .iter()
-            .map(|entry| (entry.start, entry.end, entry.value))
-            .collect::<Vec<_>>();
-        let category_docs = table.category_docs.clone();
         let start = self.object_start()?;
-        let mut words = vec![id, WORD_UNBOUND, 0, parent.unwrap_or(u64::MAX)];
-        let mut fields = Vec::new();
-        if let Some(subtype) = subtype {
-            fields.push((1, Value::symbol(&subtype)));
+        let mut words = vec![0; 1 + table.slot_count()];
+        words[0] = table.slot_count() as u64;
+        for (index, value) in table.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 1, &value, WEIGHT_STRONG);
         }
-        fields.push((2, default));
-        words.push(extra_slots.len() as u64);
-        for slot in extra_slots {
-            fields.push((words.len(), slot));
-            words.push(0);
-        }
-        words.push(entries.len() as u64);
-        for (range_start, range_end, value) in entries {
-            words.push(u64::from(range_start));
-            words.push(u64::from(range_end));
-            fields.push((words.len(), value));
-            words.push(0);
-        }
-        words.push(category_docs.len() as u64);
-        for (character, doc) in category_docs {
-            words.push(u64::from(character));
-            fields.push((words.len(), Value::string(&doc)));
-            words.push(0);
-        }
-        for (index, value) in fields {
-            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        self.object_finish(&words)
+    }
+
+    /// The packed non-Lisp word is separate from the relocated Lisp slots.
+    fn dump_sub_char_table(
+        &mut self,
+        table: crate::lisp::types::SubCharTableRef,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = vec![0; 2 + table.slots().len()];
+        words[0] = table.depth() as u64;
+        words[1] = u64::from(table.min_char());
+        for (index, value) in table.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 2, &value, WEIGHT_STRONG);
         }
         self.object_finish(&words)
     }
@@ -2343,31 +2319,6 @@ pub(crate) fn record_state_for_load(
         slots,
         kind,
     }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn char_table_state_for_load(
-    id: u64,
-    subtype: Option<String>,
-    default: Value,
-    parent: Option<u64>,
-    entries: Vec<(u32, u32, Value)>,
-    extra_slots: Vec<Value>,
-    category_docs: Vec<(u32, String)>,
-) -> CharTableState {
-    let mut table = CharTableState::with_entries(
-        id,
-        subtype,
-        default,
-        parent,
-        entries
-            .into_iter()
-            .map(|(start, end, value)| crate::lisp::eval::CharTableEntry { start, end, value })
-            .collect(),
-    );
-    table.extra_slots = extra_slots;
-    table.category_docs = category_docs;
-    table
 }
 
 /// The string's bytes as GNU stores them: the internal multibyte form for

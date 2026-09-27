@@ -1713,7 +1713,7 @@ impl GlyphlessDisplayMethod {
 
 struct GlyphlessDisplayContext<'a> {
     interpreter: &'a Interpreter,
-    table_id: Option<u64>,
+    table_id: Option<crate::lisp::types::CharTableRef>,
     terminal_coding: String,
 }
 
