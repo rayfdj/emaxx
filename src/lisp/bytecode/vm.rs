@@ -236,7 +236,7 @@ pub(crate) enum UnwindEntry {
 }
 
 impl TraceLispRoots for UnwindEntry {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         match self {
             // These are restore tokens, not an alternate binding stack.
             // A thread switch updates the canonical interpreter specpdl.
@@ -707,7 +707,7 @@ pub struct CachedProgram {
 }
 
 impl TraceLispRoots for CachedProgram {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(&Value::Vector(self.constants));
         if let ArgSpec::Legacy(arguments) = &self.argspec {
             marker.value(arguments);

@@ -1308,10 +1308,7 @@ impl Interpreter {
     }
 
     /// alloc.c:mark_finalizer_list retains both the object and its callback.
-    pub(crate) fn mark_doomed_finalizers(
-        &self,
-        marked: &mut crate::lisp::eval::LispReachability<'_, '_>,
-    ) {
+    pub(crate) fn mark_doomed_finalizers(&self, marked: &mut crate::lisp::eval::LispReachability) {
         // SAFETY: tracing changes marks, never links, and invokes no Lisp.
         for object in unsafe { self.doomed_finalizers.iter() } {
             marked.mark(self, &Value::Finalizer(object));
@@ -2299,7 +2296,7 @@ impl Interpreter {
         Some(unsafe { &mut *record.as_ptr() })
     }
 
-    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+    pub(crate) fn forget_keymap_public_view(&mut self, keymap_id: u64) {
         if let Some(old_ids) = self.keymap_public_cons_ids.remove(&keymap_id) {
             for cell_id in old_ids {
                 let mut remove = false;
@@ -2312,9 +2309,23 @@ impl Interpreter {
                 }
             }
         }
+        self.keymap_public_view_watch.remove(&keymap_id);
+    }
 
+    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+        self.forget_keymap_public_view(keymap_id);
+        let Kind::Cons(root) = view.kind() else {
+            return;
+        };
+        let root_id = crate::lisp::types::ConsCell::identity(&root);
+        // Only root identity needs a reverse index. Field stores never
+        // look up an owner; the derived binding view checks its own inputs.
+        self.keymap_public_cons_owners
+            .entry(root_id)
+            .or_default()
+            .push(keymap_id);
+        self.keymap_public_cons_ids.insert(keymap_id, vec![root_id]);
         let mut seen = std::collections::HashSet::new();
-        let mut owned_ids = Vec::new();
         let mut watched_cells = Vec::new();
         let mut tail = *view;
         while let Kind::Cons(cell) = tail.kind() {
@@ -2324,20 +2335,12 @@ impl Interpreter {
             }
             // The parent's list is spliced in as the tail (its first cell
             // carries the `keymap' symbol); its cells are the parent's own.
-            let Kind::Cons(root) = view.kind() else {
-                break;
-            };
-            if cell_id != crate::lisp::types::ConsCell::identity(&root)
+            if cell_id != root_id
                 && matches!(cell.car.get().kind(), Kind::Symbol(name) if name == "keymap")
             {
                 break;
             }
-            owned_ids.push(cell_id);
             watched_cells.push(cell);
-            self.keymap_public_cons_owners
-                .entry(cell_id)
-                .or_default()
-                .push(keymap_id);
 
             // A binding pair is itself mutable keymap structure.  Do not
             // claim arbitrary binding definitions or included keymap roots;
@@ -2346,24 +2349,16 @@ impl Interpreter {
             if let Kind::Cons(entry_cell) = entry.kind()
                 && !matches!(entry.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "keymap")
             {
-                let entry_id = crate::lisp::types::ConsCell::identity(&entry_cell);
-                owned_ids.push(entry_id);
                 watched_cells.push(entry_cell);
-                self.keymap_public_cons_owners
-                    .entry(entry_id)
-                    .or_default()
-                    .push(keymap_id);
             }
             tail = cell.cdr.get();
         }
-        self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
         let watch = crate::lisp::types::ConsMutationSnapshot::cells(watched_cells.iter());
         self.keymap_public_view_watch.insert(keymap_id, watch);
     }
 
     /// Whether the record of keymap KEYMAP_ID still describes its public
-    /// view: no watched cell stored through Rust, and no canonical word of
-    /// a cell generated code can reach changed since the record was built
+    /// view: no canonical word of a cell changed since the record was built
     /// from the view.  A record without a snapshot (a loaded or copied one)
     /// is not current until it is rebuilt once.
     pub(crate) fn runtime_keymap_view_is_current(&self, keymap_id: u64) -> bool {
@@ -2394,25 +2389,23 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn keymap_public_cons_owner_ids(&self, value: &Value) -> Vec<u64> {
-        value
-            .cons_id()
-            .and_then(|id| self.keymap_public_cons_owners.get(&id))
-            .cloned()
-            .unwrap_or_default()
-    }
-
     pub(crate) fn keymap_public_root_owner_id(&self, value: &Value) -> Option<u64> {
+        if !matches!(value.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
+            return None;
+        }
         let root = value.cons_id()?;
         self.keymap_public_cons_owners
             .get(&root)?
             .iter()
             .copied()
             .find(|owner| {
-                self.keymap_public_cons_ids
-                    .get(owner)
-                    .and_then(|ids| ids.first())
-                    .is_some_and(|id| *id == root)
+                self.find_record(*owner)
+                    .and_then(|record| {
+                        record
+                            .slots
+                            .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)
+                    })
+                    .is_some_and(|view| view.word() == value.word())
             })
     }
 

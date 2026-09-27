@@ -2523,18 +2523,26 @@ pub(crate) fn keymap_char_table(record: &crate::lisp::eval::RecordState) -> Opti
 /// it to another walker.  Read-side operations must not lose the full-map
 /// portion merely because that boundary projected the record as a Lisp list.
 pub(crate) fn keymap_char_table_value(interp: &Interpreter, keymap: &Value) -> Option<Value> {
-    if let Some(id) = keymap_record_id(interp, keymap) {
-        return interp.find_record(id).and_then(keymap_char_table);
-    }
-    if !is_keymap_placeholder(keymap) {
+    let view = runtime_keymap_public_view(interp, keymap).unwrap_or(*keymap);
+    if !matches!(view.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
         return None;
     }
-    keymap
-        .to_vec()
-        .ok()?
-        .into_iter()
-        .skip(1)
-        .find(|item| matches!(item.kind(), Kind::CharTable(_)))
+    let mut tail = view.cdr().ok()?;
+    let mut cycle = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        let item = cell.car.get();
+        if matches!(item.kind(), Kind::Symbol(name) if name == "keymap") {
+            break; // The inherited parent's cells are not this map's table.
+        }
+        if matches!(item.kind(), Kind::CharTable(_)) {
+            return Some(item);
+        }
+        tail = cell.cdr.get();
+    }
+    None
 }
 
 pub(crate) fn keymap_bindings(
@@ -2717,21 +2725,6 @@ fn runtime_keymap_binding_from_public_entry(
 /// tail with `setcdr'.  Emaxx stores keymaps in records so their identity is
 /// stable across Rust-owned lookup tables; this is the single mutation door
 /// that translates the public `(keymap ...)' tail back into that record.
-pub(crate) fn replace_runtime_keymap_tail(
-    interp: &mut Interpreter,
-    keymap: &Value,
-    tail: &Value,
-) -> Result<bool, LispError> {
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(false);
-    };
-    if let Some(view) = runtime_keymap_public_view(interp, keymap) {
-        view.set_cdr(*tail)?;
-    }
-    sync_runtime_keymap_from_public_view(interp, id)?;
-    Ok(true)
-}
-
 /// What a public `(keymap ...)' view holds, read from the list itself.
 struct ParsedKeymapView {
     name: Value,
@@ -2880,21 +2873,14 @@ pub(crate) fn ensure_runtime_keymap_current(
 }
 
 pub(crate) fn keymap_parent_values(interp: &Interpreter, keymap: &Value) -> Vec<Value> {
-    if let Some(id) = keymap_record_id(interp, keymap) {
-        return interp
-            .find_record(id)
-            .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT))
-            .filter(|parent| parent.is_truthy())
-            .cloned()
-            .into_iter()
-            .collect();
-    }
-    keymap
-        .to_vec()
-        .unwrap_or_default()
+    let view = runtime_keymap_public_view(interp, keymap).unwrap_or(*keymap);
+    let Ok((items, parent)) = keymap_public_view_own_items(&view) else {
+        return Vec::new();
+    };
+    items
         .into_iter()
-        .skip(1)
         .filter(|item| is_keymap_value(interp, item))
+        .chain(parent.is_truthy().then_some(parent))
         .collect()
 }
 
@@ -4887,24 +4873,23 @@ fn keymap_has_prefix(
     keymap: &Value,
     requested_parts: &[Value],
 ) -> Result<bool, LispError> {
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(false);
-    };
-    let Some(record) = interp.find_record(id) else {
-        return Ok(false);
-    };
-    for binding in keymap_bindings(record)?.into_iter() {
-        let binding_parts = binding_key_parts(&binding);
-        if binding_parts.len() > requested_parts.len()
-            && key_parts_match(&binding_parts[..requested_parts.len()], requested_parts)
-        {
-            return Ok(true);
+    let mut pending = vec![*keymap];
+    let mut seen = HashSet::new();
+    while let Some(map) = pending.pop() {
+        if !seen.insert(map.word()) {
+            continue;
         }
+        for binding in keymap_direct_bindings(interp, &map)?.iter() {
+            let binding_parts = binding_key_parts(binding);
+            if binding_parts.len() > requested_parts.len()
+                && key_parts_match(&binding_parts[..requested_parts.len()], requested_parts)
+            {
+                return Ok(true);
+            }
+        }
+        pending.extend(keymap_parent_values(interp, &map));
     }
-    match record.slots.get(KEYMAP_PARENT_SLOT).map(|v| v.kind()) {
-        Some(Kind::Nil) | None => Ok(false),
-        Some(parent) => keymap_has_prefix(interp, &parent.value(), requested_parts),
-    }
+    Ok(false)
 }
 
 // Whether KEY is a proper prefix of a longer binding in the active keymaps,

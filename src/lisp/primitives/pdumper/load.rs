@@ -573,8 +573,8 @@ impl Loader<'_> {
                     };
                     // The placeholder's relocated words, stored as
                     // pdumper.c stores them: nothing has seen the cell.
-                    cell.car.initialize(car);
-                    cell.cdr.initialize(cdr);
+                    cell.car.set(car);
+                    cell.cdr.set(cdr);
                 }
                 DumpType::Closure => {
                     let Kind::Lambda(closure) = self.objects[&offset].kind() else {

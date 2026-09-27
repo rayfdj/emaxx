@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source57-debug-libtest",
+    "cons_payload_is_exactly_two_lisp_words",
+    "unprepared_cons_fields_share_native_and_interpreter_stores",
+    "conses_share_one_word_across_live_native_heaps",
+    "native_reads_cons_fields_reached_through_canonical_vector_slots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "60d4115467901397f9b3269401e3212ee2cdf407cb72c5b8ed17b0b8595ff1e3"
+}

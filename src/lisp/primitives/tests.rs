@@ -148,6 +148,15 @@ fn native_string_words_preserve_mutation_and_cycles_across_execution_modes() {
 }
 
 #[test]
+fn cons_mutation_reads_current_macro_keymap_and_shared_graph_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/runtime-cons-mutation.el"),
+        "((t t 37) (t (17 payload)) (t table-command parent-command))",
+        "cons mutation, macro state, keymap inheritance and cyclic graph roots",
+    );
+}
+
+#[test]
 fn put_text_property_preserves_string_identity_and_mutation() {
     assert_oracle_contract_matches_interpreter(
         r#"(let (results)

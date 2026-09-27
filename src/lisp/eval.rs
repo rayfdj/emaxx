@@ -1346,7 +1346,7 @@ fn next_record_owner() -> u32 {
 /// alloc.c queues all doomed objects before marking any finalizer list.
 /// The shared allocator can also sweep objects owned by parked interpreters.
 /// Keep their doomed objects until their own evaluator can run the callbacks.
-fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability<'_, '_>) {
+fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability) {
     let epoch = marked.epoch;
     let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
     let states = crate::lisp::alloc::live_states();
@@ -1367,7 +1367,6 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
             // SAFETY: as above; only Lisp marks are updated in this phase.
             let other = unsafe { Interpreter::registered_gc_view(state) };
             let mut other_marked = LispReachability::with_epoch(epoch);
-            other_marked.native = marked.native.as_deref_mut();
             other.mark_doomed_finalizers(&mut other_marked);
         }
     }
@@ -3272,8 +3271,7 @@ pub(crate) const GNU_BUFFER_SIZE: usize = 992;
 /// SipHash of every visited address made the mark phase a quarter hashing).
 pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
 
-pub(crate) struct LispReachability<'mark, 'heap> {
-    native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+pub(crate) struct LispReachability {
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
     /// alloc.c's `mark_stk': the objects reached and not yet traced,
@@ -3289,7 +3287,7 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     retaining: bool,
 }
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     /// A marker for another interpreter state in the same collection:
     /// the same epoch on the objects (conses, vectors, strings, symbols
     /// are the process's), its own sets for the kinds marked by id (a
@@ -3301,7 +3299,7 @@ impl LispReachability<'_, '_> {
     }
 }
 
-impl Default for LispReachability<'_, '_> {
+impl Default for LispReachability {
     /// A fresh collection: its own epoch, so nothing is marked in it yet.
     fn default() -> Self {
         let mut marker = Self::default_without_epoch();
@@ -3310,10 +3308,9 @@ impl Default for LispReachability<'_, '_> {
     }
 }
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     fn default_without_epoch() -> Self {
         Self {
-            native: None,
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
@@ -3330,7 +3327,7 @@ pub(crate) struct WeakHashReachability {
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
@@ -3342,7 +3339,7 @@ impl LispReachability<'_, '_> {
                 crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
                     || symbol.mark_bit().is_marked(self.epoch)
             }
-            Kind::Cons(value) => value.mark.is_marked(self.epoch),
+            Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
@@ -3375,6 +3372,20 @@ impl LispReachability<'_, '_> {
     pub(crate) fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
         self.enqueue(value);
         self.trace_pending(interp)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trace_order_for_test(interp: &Interpreter, value: Value) -> (u32, Vec<Value>) {
+        let mut marked = Self::default();
+        let mut visited = Vec::new();
+        marked.enqueue(&value);
+        while let Some(value) = marked.pending.pop() {
+            if marked.mark_object(&value) {
+                visited.push(value);
+                marked.trace_fields(interp, &value);
+            }
+        }
+        (marked.epoch, visited)
     }
 
     /// alloc.c:process_mark_stack: pop an object, mark it, and if it
@@ -3411,7 +3422,7 @@ impl LispReachability<'_, '_> {
             Kind::String(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
-            Kind::Cons(value) => value.mark.mark(self.epoch),
+            Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
@@ -3428,21 +3439,6 @@ impl LispReachability<'_, '_> {
     }
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
-        // alloc.c completes one graph traversal before sweeping either
-        // vectors or conses. Follow native words here, including edges
-        // discovered by the weak-table fixed point, rather than sweeping
-        // that storage before this pass can discover it.
-        if let Some(native) = self.native.as_deref_mut() {
-            let children = native.trace_lisp_value(value);
-            for child in &children {
-                self.enqueue(child);
-            }
-            // The native walk refreshes reached cons views before returning.
-            // Trace their actual typed fields too: equivalent buffer references
-            // can still own different allocations in the two representations.
-            // This extra traversal disappears with the shared object payload.
-        }
-
         match value.kind() {
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
@@ -3465,8 +3461,8 @@ impl LispReachability<'_, '_> {
             }
             Kind::Cons(cell) => {
                 // The two words, read in place.
-                self.enqueue(&cell.car.get());
                 self.enqueue(&cell.cdr.get());
+                self.enqueue(&cell.car.get());
             }
             Kind::Vector(vector) => {
                 // Slot by slot, in place.
@@ -3640,20 +3636,6 @@ pub(crate) fn initial_process_environment() -> &'static [(String, String)] {
 }
 
 impl Interpreter {
-    /// Mark Lisp objects from the interpreter's actual roots, then apply
-    /// GNU's iterative weak-hash rule.  Hash entries are deliberately not
-    /// roots of a weak table; an entry that survives one table can mark an
-    /// object which in turn makes an entry in another table survive, so the
-    /// pass repeats to a fixed point exactly like alloc.c.
-    #[cfg(test)]
-    pub(crate) fn weak_hash_reachability(
-        &self,
-        env: &Env,
-        native_roots: &[Value],
-    ) -> WeakHashReachability {
-        self.weak_hash_reachability_with_native(env, native_roots, None)
-    }
-
     /// pdumper.c:dump_roots for the interpreter's staticpro'd slots: the
     /// single-value fields the mark phase above starts from, then the
     /// root groups of `dump_roots.rs' (each the Lisp value GNU keeps for
@@ -3793,6 +3775,7 @@ impl Interpreter {
             self.equal_hash_tables.remove(&id);
             self.custom_hash_tables.remove(&id);
             self.immutable_hash_tables.remove(&id);
+            self.forget_keymap_public_view(id);
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
             // the tree-sitter parser, node and query states, a finished
@@ -4000,16 +3983,14 @@ impl Interpreter {
         self.buffer_case_tables.push((id, table));
     }
 
-    pub(crate) fn weak_hash_reachability_with_native(
+    /// Mark actual roots, then iterate weak-table reachability to a fixed
+    /// point. Both native and interpreter roots enter this one graph walk.
+    pub(crate) fn weak_hash_reachability(
         &self,
         env: &Env,
         native_roots: &[Value],
-        native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
     ) -> WeakHashReachability {
-        let mut marked = LispReachability {
-            native,
-            ..LispReachability::default()
-        };
+        let mut marked = LispReachability::default();
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);
@@ -4043,9 +4024,7 @@ impl Interpreter {
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
             let mut other_marked = LispReachability::with_epoch(marked.epoch);
-            // These roots share the allocator and the collecting native
-            // heap. Keep their existing native edges in this same mark pass.
-            other_marked.native = marked.native.as_deref_mut();
+            // These roots share the allocator and this collection's epoch.
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
@@ -4170,7 +4149,7 @@ impl Interpreter {
     /// The staticpro'd roots of this state (pdumper.c:dump_roots' slots,
     /// eval.c's specpdl and the C-side object lists), marked into MARKED:
     /// the mark phase's own, and any other state alive in the process.
-    pub(crate) fn mark_static_roots_into(&self, marked: &mut LispReachability<'_, '_>) {
+    pub(crate) fn mark_static_roots_into(&self, marked: &mut LispReachability) {
         let mut mark = |value: &Value| {
             marked.mark(self, value);
         };
@@ -5191,19 +5170,16 @@ pub struct InterpreterState {
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
     /// Runtime keymaps keep stable record identity internally while exposing
-    /// GNU's mutable cons-list surface to Lisp.  This reverse index makes a
-    /// nested `setcar'/`setcdr' on that surface update its owning record at
-    /// the mutation door instead of requiring read-side rescans.
+    /// GNU's mutable cons-list surface to Lisp. This temporary reverse index
+    /// resolves public roots to their records. Ordinary field stores do not
+    /// consult it. It leaves with the remaining derived keymap records.
     keymap_public_cons_owners: HashMap<usize, Vec<u64>>,
     /// Forward half of `keymap_public_cons_owners', used to unregister one
     /// refreshed keymap without scanning every live public cons view.
     keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
-    /// Per keymap record, the mutation dependencies of its public view (the
-    /// spine and the binding pairs, the cells the owner index names): a
-    /// store through the Rust primitives reaches the record at the store,
-    /// but generated code stores into the canonical words of a cell it
-    /// reached through native pointers without crossing into Rust, and only
-    /// a check of those words finds it.  A record whose snapshot is not
+    /// Per keymap record, weak dependencies of its public view's spine and
+    /// binding pairs. Both ordinary and generated stores write the actual
+    /// words without notification. A record whose snapshot is not
     /// current (or missing) is rebuilt from its view before it is read.
     keymap_public_view_watch: HashMap<u64, crate::lisp::types::ConsMutationSnapshot>,
     /// The ID of the current buffer.
@@ -5417,22 +5393,11 @@ pub struct InterpreterState {
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
-    /// Bumped on every function/macro (re)definition, plist write and cons
-    /// mutation; validates the `not_macro_names' verdicts below, which a
-    /// `(macro . f)' cell changed in place would otherwise outlive.
-    definition_generation: u64,
     /// Bumped only when a function cell is bound, rebound or voided: what
     /// the funcall resolutions below depend on.  A cons mutation cannot
     /// change a resolution (the cached value shares the cell's object), so
-    /// it does not cost them, as it did when they shared the generation
-    /// above (cc-mode's constant `setcar's kept every call site cold).
+    /// it does not invalidate them.
     function_binding_generation: u64,
-    /// Names the macroexpansion probe determined are NOT macros, from
-    /// GLOBAL state only (no cl-flet frame involved), stamped with the
-    /// generation that verdict was computed at.  Skips the whole probe on
-    /// the hot per-form path while any definition change invalidates all
-    /// verdicts at once.
-    not_macro_names: HashMap<String, u64, crate::lisp::primitives::FnvBuildHasher>,
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
@@ -6162,9 +6127,7 @@ impl Interpreter {
             functions_index: HashMap::default(),
             functions_position: HashMap::default(),
             network_connect_counter: 0,
-            definition_generation: 0,
             function_binding_generation: 0,
-            not_macro_names: HashMap::default(),
             provided_features: STARTUP_FEATURES
                 .iter()
                 .map(|feature| feature.name.to_string())

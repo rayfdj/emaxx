@@ -656,10 +656,6 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        // Lisp macro expanders may consult arbitrary symbol properties.
-        // Treat every plist write as a definition change so a previously
-        // cached expansion cannot outlive the metadata it depended on.
-        self.note_definition_changed();
         let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
             let plist = self.symbol_properties[index].1;
@@ -919,9 +915,6 @@ impl Interpreter {
     }
 
     pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        // Replacing the whole plist has the same cache-coherence contract as
-        // `put' and `remprop', including when the new plist is empty.
-        self.note_definition_changed();
         if plist.is_nil() {
             if let Some(existing) = self.symbol_property_index(name) {
                 self.symbol_properties.remove(existing);
@@ -1282,31 +1275,6 @@ impl Interpreter {
         }
         self.globals.remove(symbol);
         self.note_obarray_removal();
-    }
-
-    /// The native word of SYMBOL's plain value, if the cell still holds
-    /// one produced under STAMP (see `SymbolCells::native_word').
-    pub(crate) fn cached_native_symbol_word(
-        &self,
-        symbol: &SymbolName,
-        stamp: u64,
-    ) -> Option<usize> {
-        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
-            return None;
-        }
-        self.globals.native_word(symbol, stamp)
-    }
-
-    pub(crate) fn cache_native_symbol_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
-        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
-            return;
-        }
-        self.globals.set_native_word(symbol, stamp, word);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn native_symbol_words_under(&self, stamp: u64) -> usize {
-        self.globals.native_words_under(stamp)
     }
 
     fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {

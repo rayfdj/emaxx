@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source64-release-libtest",
+    "--exact",
+    "lisp::native_comp::runtime::tests::cons_weak_snapshots_reject_reused_slots_with_identical_fields",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1"
+  },
+  "binary_sha256": "7928f60cbd99091c3267694b559a30216e512d3b2292c7ac01605d86010113ef",
+  "exit_code": 101,
+  "elapsed_seconds": 0.02711225
+}

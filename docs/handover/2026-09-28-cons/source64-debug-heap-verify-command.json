@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source64-debug-libtest",
+    "native_gc",
+    "cons_weak_snapshots",
+    "cons_interior_pointers",
+    "collection_frees_unreached_conses",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "binary_sha256": "576b02bf9827cf39fe654004101af79dbfee4027fef0a2f106af0c0c1f9dc8d7"
+}

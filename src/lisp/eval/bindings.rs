@@ -792,35 +792,23 @@ impl Interpreter {
         self.raw_function_binding(name, env)
     }
 
-    /// Resolve NAME the way GNU macro dispatch sees the function cell:
-    /// macros live in function cells, so only genuine function-binding
-    /// frames (typed cl-flet/cl-labels frames) can shadow them — a plain
-    /// `let'-bound value never
-    /// does in GNU.  Skipping the per-entry scan of ordinary frames
-    /// keeps the per-form macro probe cheap on deep call stacks.  The
-    /// bool is true when the binding came from an env frame (such a
-    /// verdict must not be cached as a global fact).
-    fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
-        self.raw_function_binding(name, env)
-            .map(|value| (value, false))
-    }
-
-    /// `macro_position_binding' with symbol-alias indirection, for the
-    /// is-this-an-autoloaded-macro probe in macro expansion.  The bool
-    /// is true when any step resolved through an env frame.
-    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
-        let mut current = name.to_string();
-        let mut seen = HashSet::new();
-        let mut from_frame = false;
+    /// eval.c:Fmacroexpand resolves the current function cell, then reads
+    /// its actual car/cdr. No cached verdict may outlive a direct cons store.
+    /// The usual non-alias path needs no allocation or indirection tracking.
+    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<Value> {
+        let binding = self.raw_function_binding(name, env)?;
+        let Kind::Symbol(mut current) = binding.kind() else {
+            return Some(binding);
+        };
+        let mut seen = Vec::new();
         loop {
-            if !seen.insert(current.clone()) {
+            if current.as_str() == name || seen.contains(&current.id()) {
                 return None;
             }
-            let (binding, frame_hit) = self.macro_position_binding(&current, env)?;
-            from_frame |= frame_hit;
-            match binding.kind() {
-                Kind::Symbol(next) => current = next.to_string(),
-                other => return Some((other.value(), from_frame)),
+            seen.push(current.id());
+            match self.raw_function_binding_symbol(&current, env)?.kind() {
+                Kind::Symbol(next) => current = next,
+                other => return Some(other.value()),
             }
         }
     }
@@ -858,8 +846,9 @@ impl Interpreter {
     }
 
     pub fn has_macro_binding(&self, name: &str) -> bool {
-        self.function_cell_macro_expander(name, &Env::new())
-            .is_some()
+        self.macro_position_function(name, &Env::new())
+            .and_then(|function| function.cons_values())
+            .is_some_and(|(head, _)| matches!(head.kind(), Kind::Symbol(name) if name == "macro"))
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
@@ -1024,29 +1013,10 @@ impl Interpreter {
         self.uninterned_standard_symbol_names.contains(name)
     }
 
-    /// Invalidate all cached not-a-macro verdicts; called on every
-    /// function or macro (re)definition.
-    pub(crate) fn note_definition_changed(&mut self) {
-        self.definition_generation = self.definition_generation.wrapping_add(1);
-    }
-
-    /// A function cell was bound, rebound or voided: every cached funcall
-    /// resolution and every macro verdict is stale.
+    /// A function cell was bound, rebound or voided: cached funcall
+    /// resolutions must be checked again.
     pub(crate) fn note_function_binding_changed(&mut self) {
-        self.note_definition_changed();
         self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
-    }
-
-    /// Whether the macroexpansion probe already concluded (at the current
-    /// definition generation) that NAME is not a macro.
-    pub(crate) fn known_not_macro(&self, name: &str) -> bool {
-        self.not_macro_names.get(name).copied() == Some(self.definition_generation)
-    }
-
-    /// Record a global (frame-independent) not-a-macro verdict for NAME.
-    pub(crate) fn note_not_macro(&mut self, name: &str) {
-        let generation = self.definition_generation;
-        self.not_macro_names.insert(name.to_string(), generation);
     }
 
     /// Set a variable in the innermost local frame, or in globals.
@@ -1223,32 +1193,6 @@ impl Interpreter {
             return;
         }
         self.set_global_binding_resolved(symbol, value);
-    }
-
-    // GNU stores a macro in the function cell as (macro . EXPANDER); emaxx
-    // keeps a native macro table, so synthesize the GNU shape on demand
-    // (nadvice reads and rewrites it when advising macros).
-    // Follow the function cell (through symbol aliases) to a
-    // (macro . EXPANDER) cons; nadvice installs advised macros that way.
-    pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
-        let mut current: Option<SymbolName> = None;
-        for _ in 0..10 {
-            let (binding, _) =
-                self.macro_position_binding(current.as_ref().map_or(name, |s| s.as_str()), env)?;
-            match binding.kind() {
-                Kind::Symbol(next) => current = Some(next),
-                Kind::Cons(cons_cell) => {
-                    let car = &cons_cell.car;
-                    let cdr = &cons_cell.cdr;
-                    return match car.get().kind() {
-                        Kind::Symbol(head) if head == "macro" => Some(cdr.get()),
-                        _ => None,
-                    };
-                }
-                _ => return None,
-            }
-        }
-        None
     }
 
     // GNU defalias consults the symbol's `defalias-fset-function' (nadvice

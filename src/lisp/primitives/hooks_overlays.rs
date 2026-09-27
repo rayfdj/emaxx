@@ -447,7 +447,7 @@ pub(crate) struct OverlayHookCalls {
 }
 
 impl crate::lisp::eval::roots::TraceLispRoots for OverlayHookCalls {
-    fn trace_lisp_roots(&self, marker: &mut crate::lisp::eval::roots::LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut crate::lisp::eval::roots::LispRootMarker<'_>) {
         for call in &self.calls {
             marker.value(&Value::Overlay(call.overlay));
             marker.value(&call.functions);

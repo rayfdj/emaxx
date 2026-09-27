@@ -1,0 +1,31 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source64-release-libtest",
+    "lisp::native_comp::",
+    "lisp::types::tests::",
+    "lisp::eval::symbol_cells::tests::",
+    "lisp::primitives::pdumper::",
+    "garbage_collect",
+    "collection_frees",
+    "threads_",
+    "suspended_",
+    "weak_",
+    "finalizer",
+    "keymap",
+    "macro",
+    "syntax",
+    "frame",
+    "terminal",
+    "cons_mutation",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "7928f60cbd99091c3267694b559a30216e512d3b2292c7ac01605d86010113ef"
+}

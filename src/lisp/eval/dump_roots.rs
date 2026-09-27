@@ -330,9 +330,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "network_connect_counter",
         "the running process's connections",
     ),
-    ("definition_generation", "a cache generation"),
     ("function_binding_generation", "a cache generation"),
-    ("not_macro_names", "a cache"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",

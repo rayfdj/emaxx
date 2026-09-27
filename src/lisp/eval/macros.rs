@@ -696,26 +696,6 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn try_macroexpand_with_environment(
-        &mut self,
-        name: &str,
-        args: &[Value],
-        macro_environment: Option<&Value>,
-        caller: MacroCaller,
-        env: &mut Env,
-    ) -> Result<Option<Value>, LispError> {
-        // GNU resolves the function cell first and binds `lexical-binding'
-        // only after that resolution proves the form is a macro call. A
-        // generation-stamped global non-macro verdict gives us the same
-        // answer without buffer-local binding, watcher notification, and
-        // unwind setup on every ordinary interpreted call. An explicit
-        // macro environment must still run.
-        if macro_environment.is_none() && self.known_not_macro(name) {
-            return Ok(None);
-        }
-        self.try_macroexpand_with_environment_inner(name, args, macro_environment, caller, env)
-    }
-
     /// Run only the macro expander itself with GNU's temporary
     /// `lexical-binding' value.
     ///
@@ -783,7 +763,7 @@ impl Interpreter {
         }
     }
 
-    fn try_macroexpand_with_environment_inner(
+    pub(super) fn try_macroexpand_with_environment(
         &mut self,
         name: &str,
         args: &[Value],
@@ -799,48 +779,35 @@ impl Interpreter {
                 .map(Some);
         }
 
-        // A cached (and still current) not-a-macro verdict skips the whole
-        // probe.  cl-flet frame shadowing can only make a name LESS of a
-        // macro, so a global "not a macro" verdict stays correct under any
-        // frames; verdicts influenced by frames are never cached.
-        if self.known_not_macro(name) {
-            return Ok(None);
-        }
-
         let mut attempted_autoload = false;
         loop {
-            // GNU keeps global macros in the function cell as
-            // (macro . EXPANDER);
-            // nadvice fsets advised macros (and advised macro ALIASES) that
-            // way, so the cell wins over the native macro table.
-            if let Some(expander) = self.function_cell_macro_expander(name, env) {
+            let Some(function) = self.macro_position_function(name, env) else {
+                return Ok(None);
+            };
+            let Some((head, expander)) = function.cons_values() else {
+                return Ok(None);
+            };
+            // GNU reads (macro . EXPANDER) from the current function cell.
+            // Direct/native stores must be visible without notifying a
+            // per-name cache. Resolve once, including symbol aliases.
+            if matches!(head.kind(), Kind::Symbol(name) if name == "macro") {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
                     interp.call_expander(expander, name, args, env)
                 })?;
                 return Ok(Some(expanded));
             }
 
-            if attempted_autoload {
-                self.note_not_macro(name);
+            if attempted_autoload
+                || !matches!(head.kind(), Kind::Symbol(name) if name == "autoload")
+            {
                 return Ok(None);
             }
-            // Only global state can hold an autoload stub (env frames
-            // never resolve to autoload conses), so probe the macro
-            // position without scanning ordinary frames.
-            let Some((function, from_frame)) = self.macro_position_function(name, env) else {
-                self.note_not_macro(name);
-                return Ok(None);
-            };
             let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
-                if !from_frame {
-                    self.note_not_macro(name);
-                }
                 return Ok(None);
             };
             let loads_macro =
                 crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
             if !loads_macro {
-                self.note_not_macro(name);
                 return Ok(None);
             }
             self.load_autoload_target(&file, env)?;

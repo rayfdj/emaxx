@@ -1,0 +1,94 @@
+{
+  "passed": true,
+  "records": [
+    {
+      "case": "runtime-cons-mutation",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.266132667,
+      "stdout": "((t t 37) (t (17 payload)) (t table-command parent-command))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-cons-mutation",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 1.2363126660000001,
+      "stdout": "((t t 37) (t (17 payload)) (t table-command parent-command))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-value-ordering",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.16039012499999994,
+      "stdout": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-value-ordering",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.667386375,
+      "stdout": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-vector-native-words",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 2.0042361659999997,
+      "stdout": "((t t 45) (t t 45))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-vector-native-words",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 9.442594707999998,
+      "stdout": "((t t 45) (t t 45))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-string-native-words",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 2.2100797919999984,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-string-native-words",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 10.096458083000002,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    }
+  ],
+  "qualification": "Eight diagnostic processes over four identical inputs; not frozen or performance certification."
+}

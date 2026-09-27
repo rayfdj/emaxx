@@ -1632,47 +1632,22 @@ define_dispatch!(
 
 /// The `setcar' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_setcar(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let name = "setcar";
-    need_args(name, args, 2)?;
-    let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(args[0].kind(), Kind::Cons(_)) {
-        args[0].set_car(args[1])?;
-    } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-        view.set_car(args[1])?;
-    } else {
-        return Err(wrong_type_argument("consp", args[0]));
-    }
-    for owner in owners {
-        sync_runtime_keymap_from_public_view(interp, owner)?;
-    }
-    // A cons may be the live plist cell of a symbol.  Conservatively
-    // invalidate macro metadata caches for arbitrary cons mutation;
-    // GNU exposes no detached copy at `symbol-plist'.
-    interp.note_definition_changed();
+    need_args("setcar", args, 2)?;
+    args[0].set_car(args[1])?;
     Ok(args[1])
 }
 
 /// The `setcdr' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_setcdr(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let name = "setcdr";
-    need_args(name, args, 2)?;
-    let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(args[0].kind(), Kind::Cons(_)) {
-        args[0].set_cdr(args[1])?;
-    } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
-        return Err(wrong_type_argument("consp", args[0]));
-    }
-    for owner in owners {
-        sync_runtime_keymap_from_public_view(interp, owner)?;
-    }
-    interp.note_definition_changed();
+    need_args("setcdr", args, 2)?;
+    args[0].set_cdr(args[1])?;
     Ok(args[1])
 }
