@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source47-debug-libtest",
+    "value_less_buffers_and_markers_follow_names_liveness_and_renames",
+    "value_less_selected_upstream_ordered_cases_match_emacs",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-input-0mcjex4q/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-input-0mcjex4q/emaxx/target/input-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "358c187bd0099959a6f4e7a44fe35574415ff187cf54918a9ea80b9620f7f819"
+}

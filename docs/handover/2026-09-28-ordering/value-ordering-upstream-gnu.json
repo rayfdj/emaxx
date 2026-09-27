@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/nbmhqa186/projects/emacs/test/src/fns-tests.el",
+    "--eval",
+    "(ert-run-tests-batch-and-exit \"^fns-value<-ordered$\")"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-input-0mcjex4q/emaxx",
+  "elapsed_seconds": 0.295728584,
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "Running 1 tests (2026-09-28 05:19:41+0800, selector \u2018\"^fns-value<-ordered$\"\u2019)\n   passed  1/1  fns-value<-ordered (0.000366 sec)\n\nRan 1 tests, 1 results as expected, 0 unexpected (2026-09-28 05:19:41+0800, 0.000497 sec)\n\n",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "08b3bc729e3c810544b25c6544e8fe952531daab8e5d0d0e62c21e8ed5e68897",
+  "evidence_limit": "source-matched local GNU; not the pinned Darwin executable"
+}

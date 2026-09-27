@@ -1038,15 +1038,19 @@ pub(crate) fn compare_symbol_values(
     }
 }
 
-pub(crate) fn compare_buffer_ids(interp: &Interpreter, left_id: u64, right_id: u64) -> ValueOrder {
-    match (
-        interp.has_buffer_id(left_id),
-        interp.has_buffer_id(right_id),
-    ) {
-        (true, true) => order_from_ordering(left_id.cmp(&right_id)),
+fn compare_buffer_objects(
+    left: crate::lisp::types::BufferRef,
+    right: crate::lisp::types::BufferRef,
+) -> ValueOrder {
+    // fns.c:value_cmp(PVEC_BUFFER) compares current names, with killed
+    // buffers (nil names) before live ones. Allocation IDs are not order.
+    let left = left.borrow();
+    let right = right.borrow();
+    match (left.last_name.is_none(), right.last_name.is_none()) {
+        (true, true) => compare_plain_symbol_names(&left.name, &right.name),
         (false, true) => ValueOrder::Less,
         (true, false) => ValueOrder::Greater,
-        (false, false) => ValueOrder::Unordered,
+        (false, false) => ValueOrder::Equal,
     }
 }
 
@@ -1195,9 +1199,7 @@ pub(crate) fn value_ordering(
 
     if matches!(left.kind(), Kind::Buffer(_)) || matches!(right.kind(), Kind::Buffer(_)) {
         return match (left.kind(), right.kind()) {
-            (Kind::Buffer(left), Kind::Buffer(right)) => {
-                Ok(compare_buffer_ids(interp, left.id, right.id))
-            }
+            (Kind::Buffer(left), Kind::Buffer(right)) => Ok(compare_buffer_objects(left, right)),
             _ => Err(type_mismatch_signal(left, right)),
         };
     }
@@ -1205,23 +1207,19 @@ pub(crate) fn value_ordering(
     if matches!(left.kind(), Kind::Marker(_)) || matches!(right.kind(), Kind::Marker(_)) {
         return match (left.kind(), right.kind()) {
             (Kind::Marker(left_id), Kind::Marker(right_id)) => {
-                let Some(left_buffer) = interp.marker_buffer_id(left_id) else {
-                    return Ok(ValueOrder::Unordered);
+                let (left_buffer, right_buffer) = match (left_id.buffer(), right_id.buffer()) {
+                    (Some(left), Some(right)) => (left, right),
+                    (None, Some(_)) => return Ok(ValueOrder::Less),
+                    (Some(_), None) => return Ok(ValueOrder::Greater),
+                    (None, None) => return Ok(ValueOrder::Equal),
                 };
-                let Some(right_buffer) = interp.marker_buffer_id(right_id) else {
-                    return Ok(ValueOrder::Unordered);
-                };
-                let buffer_order = compare_buffer_ids(interp, left_buffer, right_buffer);
+                let buffer_order = compare_buffer_objects(left_buffer, right_buffer);
                 if buffer_order != ValueOrder::Equal {
                     return Ok(buffer_order);
                 }
-                let Some(left_pos) = interp.marker_position(left_id) else {
-                    return Ok(ValueOrder::Unordered);
-                };
-                let Some(right_pos) = interp.marker_position(right_id) else {
-                    return Ok(ValueOrder::Unordered);
-                };
-                Ok(order_from_ordering(left_pos.cmp(&right_pos)))
+                Ok(order_from_ordering(
+                    left_id.last_position().cmp(&right_id.last_position()),
+                ))
             }
             _ => Err(type_mismatch_signal(left, right)),
         };

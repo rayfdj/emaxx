@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python3",
+    "tools/serial_grouped_gate.py",
+    "--scope",
+    "full",
+    "--artifact-root",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source36"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation"
+  },
+  "commit": "f69e1f0dade9ddceff294f465be663ae6618be9f",
+  "source_manifest": "source36-manifest.json",
+  "permissions": "outside sandbox for the unchanged local-network and process tests",
+  "qualification": "Full gate on source36. Existing selectors, inventory, image/template flags, timeouts and comparison strictness unchanged."
+}
