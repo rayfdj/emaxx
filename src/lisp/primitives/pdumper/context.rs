@@ -1572,6 +1572,7 @@ impl DumpContext {
                 BUFFER_MARK_MARKER,
                 BUFFER_SYNTAX_TABLE,
                 BUFFER_CASE_TABLE,
+                BUFFER_TEXT_CONVERSION_STYLE,
             ] {
                 self.field_lv(
                     start,
@@ -1615,6 +1616,10 @@ impl DumpContext {
             (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
             (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
             (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
+            (
+                parts.text_conversion_style_is_local,
+                BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE,
+            ),
             (
                 parts.visited_file_modtime.is_some(),
                 BUFFER_FLAG_HAS_MODTIME,
@@ -1700,6 +1705,11 @@ impl DumpContext {
             (
                 BUFFER_CASE_TABLE as usize,
                 case_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_TEXT_CONVERSION_STYLE as usize,
+                parts.text_conversion_style,
                 WEIGHT_STRONG,
             ),
         ];
@@ -2404,7 +2414,8 @@ pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
 pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
 pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
 /// The variable part: the local bindings, the markers, the undo entries.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 25;
+pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 25;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 26;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;
@@ -2415,6 +2426,7 @@ pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
 pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
 /// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
 pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
+pub(crate) const BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE: u64 = 256;
 /// An absent position.
 pub(crate) const NO_POSITION: u64 = u64::MAX;
 // The kinds of an undo entry.

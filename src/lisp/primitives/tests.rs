@@ -26133,3 +26133,130 @@ fn reader_printer_bindings_match_gnu() {
         "reader-printer-bindings",
     );
 }
+
+#[test]
+fn text_conversion_variable_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-variable-state.el"),
+        include_str!("../../../tests/fixtures/text-conversion-variable-state.expected"),
+        "text-conversion-variable-state",
+    );
+}
+
+#[test]
+fn text_conversion_detached_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-detached-state.el"),
+        include_str!("../../../tests/fixtures/text-conversion-detached-state.expected"),
+        "text-conversion-detached-state",
+    );
+}
+
+#[test]
+fn text_conversion_void_default_let_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-void-default-let.el"),
+        include_str!("../../../tests/fixtures/text-conversion-void-default-let.expected"),
+        "text-conversion-void-default-let",
+    );
+}
+
+#[test]
+fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let current = interp.current_buffer_id();
+    let (other, _) = interp.create_buffer("text-style-other-359");
+    let default = Value::list([Value::Integer(367)]);
+    interp.set_global_binding("text-conversion-style", default);
+    let written = Value::vector([Value::Integer(373)]);
+    interp.buffer.borrow_mut().text_conversion_style = written;
+    assert_eq!(
+        interp
+            .symbol_value_cell("text-conversion-style")
+            .expect("C field"),
+        written
+    );
+    assert!(!interp.buffer.borrow().text_conversion_style_is_local);
+    assert!(
+        interp
+            .buffer_local_cells(current)
+            .iter()
+            .all(|(name, _)| name != "text-conversion-style")
+    );
+    assert_eq!(interp.default_value("text-conversion-style"), Some(default));
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style,
+        default
+    );
+
+    let restore = interp
+        .bind_special_dynamic("text-conversion-style", Value::Integer(379), &mut env)
+        .expect("bind native default");
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style,
+        Value::Integer(379)
+    );
+    interp
+        .restore_special_dynamic(restore, &mut env)
+        .expect("restore C value as default");
+    assert_eq!(interp.default_value("text-conversion-style"), Some(written));
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style
+            .word(),
+        written.word()
+    );
+    call(
+        &mut interp,
+        "makunbound",
+        &[Value::symbol("text-conversion-style")],
+        &mut env,
+    )
+    .expect("disconnect symbol");
+    assert!(interp.symbol_value_cell("text-conversion-style").is_err());
+    let replacement = Value::cons(Value::Integer(383), Value::Nil);
+    interp.buffer.borrow_mut().text_conversion_style = replacement;
+    interp.set_variable("text-conversion-style", Value::Integer(389), &mut env);
+    assert_eq!(
+        interp.forwarded_c_value("text-conversion-style", &env),
+        Some(replacement)
+    );
+    assert_eq!(
+        interp
+            .symbol_value_cell("text-conversion-style")
+            .expect("plain symbol"),
+        Value::Integer(389)
+    );
+    assert_eq!(
+        interp.native_text_conversion_style_default().word(),
+        written.word()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn text_conversion_native_store_matches_gnu_without_localizing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-native-store.el"),
+        "(((stored nil [native-307] (default-293) nil nil nil) (bound (temporary-311) (temporary-311)) (restored [native-307] [native-307]) (default-propagated (replaced-313)) (arbitrary nil 317 t) (detached nil nil (text-conversion-style native-331)) (independent (plain-337) (plain-337) (text-conversion-style . [native-347]))) ((set nil) (set nil) (set nil) (makunbound nil) (set nil)))",
+        "text-conversion native field writes, let, watchers and detachment",
+    );
+}
+
+#[test]
+fn text_conversion_alias_and_indirect_buffer_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-buffer-aliases.el"),
+        include_str!("../../../tests/fixtures/text-conversion-buffer-aliases.expected"),
+        "native text-conversion aliases and indirect buffer fields",
+    );
+}

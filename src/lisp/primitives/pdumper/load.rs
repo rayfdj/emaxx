@@ -1269,6 +1269,8 @@ impl Loader<'_> {
                 .map(|(position, code)| (position + 1, code))
                 .collect(),
             inhibit_hooks: flags & BUFFER_FLAG_INHIBIT_HOOKS != 0,
+            text_conversion_style: self.value_at(offset + 8 * BUFFER_TEXT_CONVERSION_STYLE)?,
+            text_conversion_style_is_local: flags & BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE != 0,
             multibyte,
         });
         let Kind::Buffer(object) = self.objects[&offset].kind() else {

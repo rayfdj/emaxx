@@ -1,0 +1,15 @@
+(let (states)
+  (set-default 'text-conversion-style '(default-263))
+  (with-temp-buffer
+    (let ((text-conversion-style '(temporary-269)))
+      (makunbound 'text-conversion-style)
+      (push (list 'void (boundp 'text-conversion-style)
+                  (default-boundp 'text-conversion-style)
+                  (local-variable-p 'text-conversion-style)
+                  (assq 'text-conversion-style (buffer-local-variables))) states))
+    (push (list 'restored text-conversion-style
+                (default-value 'text-conversion-style)
+                (local-variable-p 'text-conversion-style)
+                (local-variable-if-set-p 'text-conversion-style)
+                (assq 'text-conversion-style (buffer-local-variables))) states))
+  (nreverse states))

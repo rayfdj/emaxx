@@ -371,10 +371,10 @@ impl Interpreter {
         // of making unrelated dynamic per-buffer bindings leak at lookup.
         let inherited_directory = self.lookup_var("default-directory", &Env::new());
         let id = self.alloc_buffer_id();
-        self.inactive_buffers.push((
-            id,
-            crate::lisp::types::BufferRef::new(id, crate::buffer::Buffer::new(name)),
-        ));
+        let mut buffer = crate::buffer::Buffer::new(name);
+        buffer.text_conversion_style = self.native_text_conversion_style_default();
+        self.inactive_buffers
+            .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
         if let Some(directory) = inherited_directory {
             self.set_buffer_local_value(id, "default-directory", directory);

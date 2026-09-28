@@ -1443,7 +1443,9 @@ define_dispatch!(
                 let buffer_id = interp.current_buffer_id();
                 let kill_permanent = args.first().is_some_and(Value::is_truthy);
                 run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
-                let locals = interp.buffer_local_variables(buffer_id);
+                // buffer.c resets native fields directly; only the alist
+                // cells participate in watchers and permanent-local props.
+                let locals = interp.buffer_local_cells(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
                     let preserve = !kill_permanent
@@ -1458,7 +1460,7 @@ define_dispatch!(
                         env,
                     )?;
                     if preserve {
-                        permanent.push((name.clone(), *value));
+                        permanent.push((*name, *value));
                         continue;
                     }
                     interp.mark_buffer_local_special_binding_killed(buffer_id, name);

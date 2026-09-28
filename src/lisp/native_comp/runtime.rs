@@ -8641,11 +8641,12 @@ mod tests {
     #[test]
     fn killed_buffer_releases_editing_roots_before_its_object_is_reclaimed() {
         #[inline(never)]
-        fn make_buffer(interpreter: &mut Interpreter) -> (u64, [usize; 3]) {
+        fn make_buffer(interpreter: &mut Interpreter) -> (u64, [usize; 4]) {
             let (id, _) = interpreter.create_buffer("retained-dead-buffer");
             let buffer = interpreter.buffer_object(id).expect("created buffer");
             let property = Value::cons(Value::Integer(37), Value::Nil);
             let undo = Value::cons(Value::Integer(81), Value::Nil);
+            let style = Value::cons(Value::Integer(283), Value::Nil);
             {
                 let mut state = buffer.borrow_mut();
                 *state = crate::buffer::Buffer::from_text(
@@ -8655,17 +8656,18 @@ mod tests {
                 state.file = Some("/tmp/retained-dead-buffer.el".into());
                 state.put_text_property(1, 2, "retained-property", property);
                 state.set_undo_list_view(undo);
+                state.text_conversion_style = style;
             }
             let value = Value::Buffer(buffer);
             interpreter.set_global_binding("retained-dead-buffer", value);
             (
                 id,
-                [value.word(), property.word(), undo.word()].map(|word| word ^ HIDE),
+                [value.word(), property.word(), undo.word(), style.word()].map(|word| word ^ HIDE),
             )
         }
 
         #[inline(never)]
-        fn check_roots(hidden: [usize; 3], buffer_live: bool, editing_live: bool) {
+        fn check_roots(hidden: [usize; 4], buffer_live: bool, editing_live: bool) {
             let address = (hidden[0] ^ HIDE) & !TAG_MASK;
             let allocated = matches!(
                 unsafe { crate::lisp::alloc::mem_find(address) },
@@ -8695,6 +8697,8 @@ mod tests {
             assert!(state.undo_entries().is_empty());
             assert!(state.undo_list_value().is_nil());
             assert!(state.full_property_spans().is_empty());
+            assert!(state.text_conversion_style.is_nil());
+            assert!(!state.text_conversion_style_is_local);
             assert_eq!(state.file.as_deref(), Some("/tmp/retained-dead-buffer.el"));
         }
 

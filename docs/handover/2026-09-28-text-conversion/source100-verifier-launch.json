@@ -1,0 +1,5 @@
+{
+  "EMAXX_GC_VERIFY": "1",
+  "CARGO_BUILD_JOBS": "1",
+  "scope": "Native text-conversion buffer field, forwarding, image/GC and unchanged Linux failing test; macOS build cannot execute cfg Linux primitive."
+}

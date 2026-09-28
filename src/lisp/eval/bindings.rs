@@ -122,6 +122,10 @@ impl Interpreter {
         resolved: &str,
         resolved_symbol: Option<&SymbolName>,
     ) -> Option<Value> {
+        if self.has_native_text_conversion_style(resolved) {
+            let value = self.buffer.borrow().text_conversion_style;
+            return (!matches!(value.kind(), Kind::Unbound)).then_some(value);
+        }
         if resolved == "buffer-undo-list" {
             return Some(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer.borrow(),
@@ -243,6 +247,9 @@ impl Interpreter {
     /// the Lisp symbol. Direct evaluator fields may subsequently change
     /// independently of that symbol (for example process_quit_flag).
     pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+        if name == "text-conversion-style" {
+            return Some(self.buffer.borrow().text_conversion_style);
+        }
         if let Some(value) = self.forwarded_eval_cell_value(name) {
             return Some(value);
         }
@@ -1101,11 +1108,7 @@ impl Interpreter {
             *existing = Self::stored_value(value);
             return Ok(());
         }
-        let buffer_id = match self.assignment_scope_symbol(resolved) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        };
-        self.notify_variable_watchers_symbol(resolved, value, "set", buffer_id, env)?;
+        self.notify_assignment_symbol(resolved, value, env)?;
         self.set_symbol_value_cell_resolved(resolved, value);
         Ok(())
     }

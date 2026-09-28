@@ -31,6 +31,81 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 }
 
 #[test]
+fn text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images() {
+    fn check(first: Value, second: Value, original_graph: Value) {
+        let Kind::Buffer(first_buffer) = first.kind() else {
+            panic!("first buffer")
+        };
+        let Kind::Buffer(second_buffer) = second.kind() else {
+            panic!("second buffer")
+        };
+        let first_state = first_buffer.borrow();
+        let second_state = second_buffer.borrow();
+        assert!(!first_state.text_conversion_style_is_local);
+        assert!(second_state.text_conversion_style_is_local);
+        let graph = first_state.text_conversion_style;
+        assert_eq!(graph.word(), second_state.text_conversion_style.word());
+        assert_ne!(graph.word(), original_graph.word());
+        let Kind::Vector(slots) = graph.kind() else {
+            panic!("shared graph")
+        };
+        assert_eq!(slots.get(0).expect("buffer cycle").word(), first.word());
+        assert_eq!(
+            slots.get(1).expect("payload"),
+            Value::list([Value::Integer(353)])
+        );
+    }
+
+    let mut source = Interpreter::new();
+    let (first_id, _) = source.create_buffer("style-no-local-277");
+    let (second_id, _) = source.create_buffer("style-local-281");
+    let first = source.buffer_value(first_id).expect("first buffer");
+    let second = source.buffer_value(second_id).expect("second buffer");
+    let graph = Value::vector([first, Value::list([Value::Integer(353)])]);
+    source
+        .get_buffer_by_id_mut(first_id)
+        .expect("C store")
+        .text_conversion_style = graph;
+    source.set_buffer_local_value(second_id, "text-conversion-style", graph);
+    for id in [first_id, second_id] {
+        assert!(
+            source
+                .buffer_local_cells(id)
+                .iter()
+                .all(|(name, _)| name != "text-conversion-style"),
+            "the native field has no duplicate local payload; unrelated locals remain"
+        );
+    }
+    let clone = source.deep_clone_image();
+    check(
+        clone.buffer_value(first_id).expect("cloned first"),
+        clone.buffer_value(second_id).expect("cloned second"),
+        graph,
+    );
+
+    let bytes = dump(
+        &mut source,
+        vec![(RootSlot::LoadPath, Value::vector([first, second]))],
+    );
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("restore native buffer fields");
+    let restored = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("buffer roots")
+        .1;
+    let Kind::Vector(slots) = restored.kind() else {
+        panic!("root vector")
+    };
+    check(
+        slots.get(0).expect("restored first"),
+        slots.get(1).expect("restored second"),
+        graph,
+    );
+}
+
+#[test]
 fn positioned_symbols_are_rejected_as_in_gnu_dump_vectorlike() {
     let interpreter = Interpreter::new();
     let object = Value::positioned_symbol(Value::symbol("undumpable-position"), Value::Integer(19));

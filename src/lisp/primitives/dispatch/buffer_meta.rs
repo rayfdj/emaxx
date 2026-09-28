@@ -506,7 +506,9 @@ define_dispatch!(
                     )
                 };
                 if let Some(object) = interp.buffer_object(new_id) {
-                    object.replace_state(crate::buffer::Buffer::from_text(&new_name, &text));
+                    let mut state = crate::buffer::Buffer::from_text(&new_name, &text);
+                    state.text_conversion_style = interp.native_text_conversion_style_default();
+                    object.replace_state(state);
                     let mut buffer = object.borrow_mut();
                     // GNU indirect buffers share their base buffer's text,
                     // but never visit its file themselves.  In particular,
@@ -644,11 +646,15 @@ define_dispatch!(
                 // buffer's local value must not leak through (erc-open's
                 // prior-session detection reads `erc--target').  Fbuffer_local_value
                 // signals void-variable with VARIABLE as given.
-                let value = match interp.buffer_local_binding(buffer_id, &symbol) {
-                    Some(local) => local,
-                    None => interp
-                        .default_value(&symbol)
-                        .or_else(|| interp.symbol_value_cell(&symbol).ok()),
+                let value = if interp.has_native_text_conversion_style(&symbol) {
+                    interp.buffer_local_value(buffer_id, &symbol)
+                } else {
+                    match interp.buffer_local_binding(buffer_id, &symbol) {
+                        Some(local) => local,
+                        None => interp
+                            .default_value(&symbol)
+                            .or_else(|| interp.symbol_value_cell(&symbol).ok()),
+                    }
                 };
                 value.ok_or_else(|| {
                     LispError::SignalValue(Value::list([Value::symbol("void-variable"), args[0]]))
@@ -681,9 +687,26 @@ define_dispatch!(
                 ));
                 Ok(Value::list(vars))
             }
+            #[cfg(target_os = "linux")]
+            "set-text-conversion-style" => {
+                need_arg_range(name, args, 1, 2)?;
+                // textconv.c:Fset_text_conversion_style first uses bset,
+                // without localization or watchers. This terminal backend
+                // has no text_interface, so GNU returns nil at that point.
+                interp.buffer.borrow_mut().text_conversion_style = args[0];
+                Ok(Value::Nil)
+            }
             "kill-local-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // data.c:Fkill_local_variable's BUFFER_OBJFWD branch
+                // resets the field and flag before its alist watcher path.
+                if interp.has_native_text_conversion_style(&symbol) {
+                    interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                    // The forwarded branch returns VARIABLE as supplied,
+                    // including an alias, before the alist branch rewrites it.
+                    return Ok(args[0]);
+                }
                 interp.notify_variable_watchers(
                     &symbol,
                     Value::Nil,
@@ -710,6 +733,11 @@ define_dispatch!(
                     ])));
                 }
                 let buffer_id = interp.current_buffer_id();
+                if interp.has_native_text_conversion_style(&symbol) {
+                    // BUFFER_OBJFWD has a field already: only set its flag.
+                    interp.buffer.borrow_mut().text_conversion_style_is_local = true;
+                    return Ok(args[0]);
+                }
                 // A native always-local slot (buffer-file-name, mode-name,
                 // default-directory, ...) is already local by construction
                 // (a buffer_local_flags index of -1 returns at once).
