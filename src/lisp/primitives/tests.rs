@@ -3341,12 +3341,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let result = interp
         .eval(&form, &mut env)
         .expect("the dump returns or signals");
-    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
-        .expect("print the context result");
-    assert_eq!(
-        string_like(&printed).expect("printed string").text,
-        "(nil zz-pure (zz-post-gc) (\"ZZ=1\") t)"
-    );
     let bytes = std::fs::read(&path).expect("the completed image");
     let _ = std::fs::remove_file(&path);
     assert_eq!(&bytes[..DUMP_MAGIC.len()], &DUMP_MAGIC);
@@ -3363,7 +3357,10 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let dumped_symbol_count = interp.known_symbol_names().len();
     // Every root group of the loadup state prints the same from the
     // restored interpreter (the timer list's due times are relative); taken
-    // before the programs below, which update lexical cells.
+    // before the programs below, which update lexical cells. Capture these
+    // before printing even the context result: print.c:print_prepare binds
+    // print-escape-nonascii for prin1-to-string's buffer, advancing the
+    // writer's binding counter after the image has already been written.
     let mut source_groups = Vec::new();
     for (slot, value) in interp.dump_root_groups() {
         let text = call(
@@ -3375,6 +3372,12 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         .expect("print the source group");
         source_groups.push((slot, string_like(&text).expect("printed").text));
     }
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print the context result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        "(nil zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+    );
     let programs = [
         "(list (featurep 'subr-x) (featurep 'cl-lib) (fboundp 'when-let) (macrop 'when))",
         "(list (length load-path) (symbol-value 'emacs-version) (default-value 'fill-column))",
@@ -8100,27 +8103,24 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     )
     .expect("process-send-region should succeed");
 
-    // Process output is asynchronous.  Wait explicitly, as Lisp callers
-    // must, before asserting on its buffer.  The long deadline does not slow
-    // the normal case (accept returns on delivery), but avoids mistaking CPU
-    // starvation or endpoint scanning in the full parallel suite for a
-    // process semantic failure.
-    let current_contents = interp
-        .get_buffer_by_id(buffer_id)
-        .expect("process buffer")
-        .buffer_substring(
-            1,
-            interp
-                .get_buffer_by_id(buffer_id)
-                .expect("process buffer")
-                .point_max(),
-        )
-        .expect("process output");
-    if current_contents != "secret\nsecond\nregion\n" {
+    // process.c:Faccept_process_output returns after any output, which can
+    // be only a prefix of the three writes. Keep the same overall deadline
+    // while waiting for all bytes; a successful first read is not completion.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let buffer = interp.get_buffer_by_id(buffer_id).expect("process buffer");
+        let current_contents = buffer
+            .buffer_substring(1, buffer.point_max())
+            .expect("process output");
+        drop(buffer);
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if current_contents == "secret\nsecond\nregion\n" || remaining.is_zero() {
+            break;
+        }
         call(
             &mut interp,
             "accept-process-output",
-            &[process, Value::Integer(60)],
+            &[process, Value::float(remaining.as_secs_f64())],
             &mut env,
         )
         .expect("accept-process-output should receive the echo");
