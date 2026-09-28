@@ -1,0 +1,10 @@
+usage: diagnose_rust_gate.py [-h] --filter FILTER --output OUTPUT [--plain]
+
+Replay a selected Rust gate inventory, optionally under GDB; not a full gate.
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --filter FILTER
+  --output OUTPUT
+  --plain          execute the recorded test binary directly, without a
+                   debugger

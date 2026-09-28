@@ -1,0 +1,21 @@
+{
+  "command": [
+    "gcc",
+    "-std=gnu23",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/src",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/lib",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c",
+    "-o",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout-v2"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.208097833,
+  "compiler_version": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.6.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin\n",
+  "input_sha256": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c": "34a2696d48814e14b4aa85965e5b7e374323330899db5b85dd07a28dca2c63e7",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/Makefile": "9e1baaa688e6c62c4f007dfea394dc383789549c62c7901dfc28f659d7809c69"
+  },
+  "qualification": "Use actual configured GNU C compiler and C23 mode. Earlier C17 probe compilation failed and is preserved."
+}

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "gcc",
+    "-std=gnu23",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/src",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/lib",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-flags.c",
+    "-o",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-flags"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx",
+  "exit_code": 0,
+  "source_sha256": "5e2e761a0928b23cbe0a61fca090a2caad619375559b1bafecdcaff614f24dc7"
+}

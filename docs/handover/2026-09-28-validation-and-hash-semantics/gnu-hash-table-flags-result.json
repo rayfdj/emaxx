@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-flags"
+  ],
+  "exit_code": 0,
+  "binary_sha256": "2f2c57a581f18d9a92ca7734cfa5bcb61ed76b2cef846dc18b53d6a01c9178f7",
+  "layout": {
+    "vec_payload_words": 8,
+    "flag_byte_offset": 61,
+    "combined_flags": 113,
+    "test_descriptor_size": 40,
+    "test_name_offset": 32
+  }
+}

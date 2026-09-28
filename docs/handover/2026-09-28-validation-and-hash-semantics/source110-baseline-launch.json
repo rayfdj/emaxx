@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+    "110",
+    "native_hash_tables_expose_the_authoritative_gnu_entry_array",
+    "--static"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "environment_override": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "purpose": "New GNU native layout/store regression against unchanged production. Expected pre-migration failure; not validated implementation."
+}

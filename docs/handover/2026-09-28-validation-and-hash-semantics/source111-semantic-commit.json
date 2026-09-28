@@ -1,0 +1,19 @@
+{
+  "commit": "b00d25449f9784b81718d4e377e62ce320f64923",
+  "origin_commit": "013dd37d754659dc72427fe26afbe283681bea7a",
+  "source111_change_files_match": true,
+  "change_files": [
+    "src/lisp/json.rs",
+    "src/lisp/primitives/hash_insert.rs",
+    "src/lisp/primitives/dispatch/misc_keymaps.rs",
+    "src/lisp/primitives/tests.rs",
+    "tests/fixtures/hash-captured-functions.el",
+    "tests/fixtures/hash-captured-symbol-functions.el",
+    "tests/fixtures/hash-copy-stored-codes.el",
+    "tests/fixtures/hash-captured-functions.expected",
+    "tests/fixtures/hash-copy-stored-codes.expected",
+    "tests/fixtures/hash-captured-symbol-functions.expected"
+  ],
+  "native_authority_probe": "Preserved as an unchanged unpublished draft in the hash worktree and source110/source111 receipts. Both63-test runs fail1nativeheaderprobe and pass62 controls. This commit makes no native-layout completion claim.",
+  "ordinary": "Freshsource111 executable/image,3exactsame-inputGNUcomparisonsPASS;productionchangefiles identical."
+}

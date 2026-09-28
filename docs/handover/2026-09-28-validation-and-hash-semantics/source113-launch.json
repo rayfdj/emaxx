@@ -1,0 +1,29 @@
+{
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+    "113",
+    "bytecode",
+    "handler_bind",
+    "handler_case",
+    "condition_case",
+    "catch",
+    "throw",
+    "unwind",
+    "wrong_number",
+    "arity",
+    "backtrace",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "dead_thread_results_are_rooted_only_through_reachable_thread_objects",
+    "--static"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Independent VM/evaluator boxed-error candidate. Original tests unchanged. Removing payload copying is not yet proven to repair Linux retention."
+}

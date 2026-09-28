@@ -1,5 +1,15 @@
 # Resume the compact runtime goal here
 
+**Newest results:** source 109 completes the entire macOS gate: 2,890 library
+passes, two existing ignores, 60 binary passes and 39 integration passes,
+including unchanged GNU native artifact identity. Linux completes with 2,174
+passes and one suspended-bytecode weak-key reclamation failure; its later
+groups and Cargo stages remain unexecuted. The [hash semantics continuation](docs/runtime-representation-hash-checkpoint.md)
+repairs copying of mutated keys and capture of custom test functions. Its
+three ordinary GNU comparisons pass, while the separately preserved native
+hash-layout probe still fails. Read that continuation after the complete goal
+and combined-source checkpoint. The full goal remains open.
+
 **Latest continuation:** read the
 [combined records, GC repair and profiling checkpoint](docs/runtime-representation-integration-checkpoint.md)
 after the complete goal. Inline records are combined with the function-cell and
@@ -60,6 +70,7 @@ Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
 2. [Latest combined-source continuation and profiling limits](docs/runtime-representation-integration-checkpoint.md).
+   Then read the [completed validation and hash semantics continuation](docs/runtime-representation-hash-checkpoint.md).
 3. [Inline generic records and preserved failures](docs/runtime-representation-record-checkpoint.md).
 4. [Text-conversion repair and Linux continuation](docs/runtime-representation-text-conversion-checkpoint.md).
 5. [Function-cell payload consolidation and selected validation](docs/runtime-representation-function-cell-checkpoint.md).

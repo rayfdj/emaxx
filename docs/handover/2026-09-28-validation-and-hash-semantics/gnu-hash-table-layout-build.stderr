@@ -1,0 +1,69 @@
+In file included from /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c:1:
+In file included from /private/tmp/emaxx-runtime-gnu-20260928/src/config.h:3478:
+/private/tmp/emaxx-runtime-gnu-20260928/src/conf_post.h:61:9: error: unknown type name 'bool'
+   61 | typedef bool bool_bf;
+      |         ^
+In file included from /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c:4:
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:245:26: error: unknown type name 'bool'
+  245 | DEFINE_GDB_SYMBOL_BEGIN (bool, USE_LSB_TAG)
+      |                          ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:434:5: warning: 'true' is not defined, evaluates to 0 [-Wundef-true]
+  434 | #if DEFINE_KEY_OPS_AS_MACROS
+      |     ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:428:36: note: expanded from macro 'DEFINE_KEY_OPS_AS_MACROS'
+  428 | #  define DEFINE_KEY_OPS_AS_MACROS true
+      |                                    ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:594:56: error: use of undeclared identifier 'false'
+  594 | enum CHECK_LISP_OBJECT_TYPE { CHECK_LISP_OBJECT_TYPE = false };
+      |                                                        ^~~~~
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:628:8: error: unknown type name 'bool'
+  628 | extern bool initialized;
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:633:3: error: unknown type name 'bool'
+  633 |   bool will_dump_ : 1;
+      |   ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:634:3: error: unknown type name 'bool'
+  634 |   bool will_bootstrap_ : 1;
+      |   ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:638:3: error: unknown type name 'bool'
+  638 |   bool will_dump_with_pdumper_ : 1;
+      |   ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:641:3: error: unknown type name 'bool'
+  641 |   bool dumped_with_pdumper_ : 1;
+      |   ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:653:8: error: unknown type name 'bool'
+  653 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:663:8: error: unknown type name 'bool'
+  663 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:673:8: error: unknown type name 'bool'
+  673 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:683:8: error: unknown type name 'bool'
+  683 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:693:8: error: unknown type name 'bool'
+  693 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:699:10: error: use of undeclared identifier 'false'
+  699 |   return false;
+      |          ^~~~~
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:703:8: error: unknown type name 'bool'
+  703 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:709:10: error: use of undeclared identifier 'false'
+  709 |   return false;
+      |          ^~~~~
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:716:8: error: unknown type name 'bool'
+  716 | INLINE bool
+      |        ^
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:722:10: error: use of undeclared identifier 'true'
+  722 |   return true;
+      |          ^~~~
+/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h:772:2: error: parameter 'TAGGEDP' was not declared, defaults to 'int'; ISO C99 and later do not support implicit int [-Wimplicit-int]
+  772 | (TAGGEDP) (Lisp_Object a, enum Lisp_Type tag)
+      |  ^
+  773 | {
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+1 warning and 20 errors generated.

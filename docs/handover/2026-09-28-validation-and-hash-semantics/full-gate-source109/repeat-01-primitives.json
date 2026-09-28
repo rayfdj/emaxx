@@ -1,0 +1,17 @@
+{
+  "group": "primitives",
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "lisp::primitives::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 561,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 398.4132675420001,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-primitives.log"
+}

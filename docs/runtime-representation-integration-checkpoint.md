@@ -1,5 +1,10 @@
 # Combined records, eager expansion and regexp profiling — 28 September 2026
 
+The [subsequent hash and validation continuation](runtime-representation-hash-checkpoint.md)
+records source 109's completed macOS full pass, its remaining Linux failure,
+the source-111 hash semantic repairs and separate unfinished drafts. The
+source-108 failures below remain preserved historical results.
+
 The [complete goal](runtime-representation-goal.md) remains incomplete. This
 continuation combines the inline generic records, function cells and
 text-conversion buffer field, repairs a release-only collection failure in

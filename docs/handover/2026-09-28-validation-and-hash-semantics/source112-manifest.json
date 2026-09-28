@@ -1,0 +1,9 @@
+{
+  "base": "f3842fb56d5b65f9b8df9b13abfab92cdcc25768",
+  "worktree": "/Users/nbmhqa186/projects/emaxx",
+  "files": {
+    "tools/diagnose_rust_gate.py": "d6f41dc97a2ef77840dcf845b4010148ccf732f1a5ccfc07e4989e25ce94d229",
+    ".github/workflows/frozen-run.yml": "d2728852b0713061f96aee3a3be83085acd27fd769f325e9d67fa1bb8073a091"
+  },
+  "scope": "Diagnostic tooling only. Default full Rust gate unchanged; new plain diagnostic preserves profile, executable, inventory and strict result checks. No Rust production changes."
+}
