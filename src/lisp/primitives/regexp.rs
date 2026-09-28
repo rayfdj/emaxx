@@ -1560,6 +1560,22 @@ struct CaseTableSignature {
     up: crate::lisp::eval::CharTableChainSignature,
 }
 
+impl CaseTableSignature {
+    fn matches_current(&self, interp: &Interpreter) -> bool {
+        let down = interp.initialized_current_case_table_id();
+        let up = down.and_then(|down| {
+            match interp
+                .char_table_extra_slot(down, 0)
+                .map(|value| value.kind())
+            {
+                Some(Kind::CharTable(up)) => Some(up),
+                _ => None,
+            }
+        });
+        self.down.matches(down) && self.up.matches(up)
+    }
+}
+
 fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
     let down = interp.initialized_current_case_table_id();
     let up = down.and_then(
@@ -1569,8 +1585,8 @@ fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
         },
     );
     CaseTableSignature {
-        down: down.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
-        up: up.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
+        down: down.map_or_else(Default::default, |id| interp.char_table_chain_signature(id)),
+        up: up.map_or_else(Default::default, |id| interp.char_table_chain_signature(id)),
     }
 }
 
@@ -3952,16 +3968,19 @@ fn front_regex_lookup(
                     || key.syntax_classes_hash == syntax_classes_fingerprint(interp))
                 && (!depends_on_tables || (key.category_table_id == category_table_id))
                 && (!entry.depends_on_category_table
-                    || key.category_contents
-                        == category_table_id.map_or_else(Vec::new, |table| {
-                            interp.char_table_chain_signature(table)
-                        }))
+                    || key.category_contents.matches(category_table_id))
                 && (!case_fold
-                    || key.case_contents.as_ref() == Some(&current_case_table_signature(interp)))
-                && key.case_classes
-                    == entry
-                        .case_classes
-                        .then(|| current_case_table_signature(interp))
+                    || key
+                        .case_contents
+                        .as_ref()
+                        .is_some_and(|saved| saved.matches_current(interp)))
+                && if entry.case_classes {
+                    key.case_classes
+                        .as_ref()
+                        .is_some_and(|saved| saved.matches_current(interp))
+                } else {
+                    key.case_classes.is_none()
+                }
         })?;
         if position != 0 {
             let entry = cache.remove(position);
@@ -4036,10 +4055,11 @@ fn compile_elisp_regex_text_with_case_fold(
         // The backend embeds table contents in compiled classes. Check the
         // canonical words so native stores and mutable leaf edits invalidate it.
         category_contents: if depends_on_category_table {
-            category_table_id
-                .map_or_else(Vec::new, |table| interp.char_table_chain_signature(table))
+            category_table_id.map_or_else(Default::default, |table| {
+                interp.char_table_chain_signature(table)
+            })
         } else {
-            Vec::new()
+            Default::default()
         },
         case_contents: case_fold.then(|| current_case_table_signature(interp)),
         case_classes: facts

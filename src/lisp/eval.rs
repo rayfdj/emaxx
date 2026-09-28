@@ -22,7 +22,9 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
+mod char_table_snapshot;
 pub(crate) use bindings::dynamic_library_suffix_values;
+pub(crate) use char_table_snapshot::CharTableChainSignature;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -1167,10 +1169,6 @@ pub struct CharTableEntry {
     pub end: u32,
     pub value: Value,
 }
-
-/// Exact words and mutable leaf data read by a derived regexp cache.
-/// Native stores bypass Rust mutation APIs; a generation is not sufficient.
-pub(crate) type CharTableChainSignature = Vec<usize>;
 
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {

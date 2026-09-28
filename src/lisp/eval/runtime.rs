@@ -1961,63 +1961,27 @@ impl Interpreter {
         &self,
         table: CharTableRef,
     ) -> CharTableChainSignature {
-        let mut signature = Vec::new();
-        let mut pending = vec![Value::CharTable(table)];
-        let mut seen = HashSet::new();
-        while let Some(value) = pending.pop() {
-            signature.push(value.word());
-            // Only an object whose contents we visit can form a cycle or
-            // repeat a mutable payload. Keep every scalar in the signature,
-            // without hashing the many integer mappings in a case table.
-            match value.kind() {
-                Kind::CharTable(table) if seen.insert(value.word()) => {
-                    pending.extend(table.slots());
-                }
-                Kind::SubCharTable(table) if seen.insert(value.word()) => {
-                    signature.extend([table.depth(), table.min_char() as usize]);
-                    pending.extend(table.slots());
-                }
-                Kind::Cons(cell) if seen.insert(value.word()) => {
-                    pending.extend([cell.car.get(), cell.cdr.get()]);
-                }
-                Kind::Vector(vector) if seen.insert(value.word()) => pending.extend(vector.slots()),
-                Kind::Record(record) if seen.insert(value.word()) => {
-                    pending.extend(record.slots.iter().copied());
-                }
-                Kind::LispRecord(record) if seen.insert(value.word()) => {
-                    pending.extend(record.slots())
-                }
-                Kind::StringObject(string) if seen.insert(value.word()) => {
-                    let string = string.borrow();
-                    signature.push(string.text.len());
-                    signature.extend(string.text.bytes().map(usize::from));
-                }
-                _ => {}
-            }
-        }
-        signature
+        CharTableChainSignature::capture(table)
     }
 
     pub(crate) fn cached_regexp_syntax_classes(
         &self,
         table_id: CharTableRef,
     ) -> Option<[String; 16]> {
-        let chain = self.char_table_chain_signature(table_id);
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain == chain)
+            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.rendered.clone())
     }
 
     /// The hash of the table's sixteen class renderings as cached: what a
     /// syntax-dependent pattern's translation reads from the table.
     pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: CharTableRef) -> Option<u64> {
-        let chain = self.char_table_chain_signature(table_id);
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain == chain)
+            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.rendered_hash)
     }
 
@@ -2025,11 +1989,10 @@ impl Interpreter {
         &self,
         table_id: CharTableRef,
     ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
-        let chain = self.char_table_chain_signature(table_id);
         self.syntax_segment_cache
             .borrow()
             .as_ref()
-            .filter(|cache| cache.table_id == table_id && cache.chain == chain)
+            .filter(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.segments.clone())
     }
 

@@ -26402,3 +26402,12 @@ fn text_conversion_alias_and_indirect_buffer_state_matches_gnu() {
         "native text-conversion aliases and indirect buffer fields",
     );
 }
+
+#[test]
+fn regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.el"),
+        include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.expected"),
+        "regexp table snapshots across shared leaves, replaced edges and collection",
+    );
+}
