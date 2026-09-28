@@ -1,0 +1,14 @@
+[
+  {
+    "fixture": "builtin-function-cell-authority",
+    "matches": true
+  },
+  {
+    "fixture": "builtin-nil-function-cell",
+    "matches": true
+  },
+  {
+    "fixture": "builtin-special-form-funcall",
+    "matches": true
+  }
+]

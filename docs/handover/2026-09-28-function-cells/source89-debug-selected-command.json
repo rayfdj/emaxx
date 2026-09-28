@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-libtest",
+    "function",
+    "lisp::eval::symbol_cells",
+    "lisp::types::",
+    "lisp::runtime::tests",
+    "lisp::native_comp::runtime::tests",
+    "lisp::primitives::pdumper::tests",
+    "anti_cheat::tests::interpreter_",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-symbol-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "ae8448ef45d0243e5b717c79d606523bb01e3ba0a8a3e3a7fa760e7b68edf751"
+}

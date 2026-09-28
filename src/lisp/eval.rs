@@ -4293,7 +4293,7 @@ impl Interpreter {
                 mark(argument);
             }
         }
-        for (_, function) in &self.functions {
+        for function in self.globals.function_values() {
             mark(function);
         }
         mark(&self.alternative_font_family_alist);
@@ -4734,12 +4734,6 @@ impl Interpreter {
                 for argument in &mut coding.type_args {
                     *argument = c.copy(argument);
                 }
-            }
-            for (_, function) in &mut clone.functions {
-                *function = c.copy(function);
-            }
-            for function in clone.functions_index.values_mut() {
-                *function = c.copy(function);
             }
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
@@ -5391,15 +5385,6 @@ pub struct InterpreterState {
     indirect_buffers: Vec<(u64, u64)>,
     /// Prevent recursive before/after-change hook re-entry.
     change_hooks_running: usize,
-    /// User-defined functions in the function namespace.
-    functions: Vec<(String, Value)>,
-    /// Last-wins index over `functions` so the hot function-lookup path is
-    /// O(1); every mutation of `functions` keeps this in sync.
-    functions_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
-    /// The position in `functions` of each name's entry (one entry per
-    /// name), so a redefinition replaces it in place: finding it by a scan
-    /// and shifting the tail cost a load of org.el a tenth of its time.
-    functions_position: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -6133,9 +6118,6 @@ impl Interpreter {
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
-            functions: Vec::new(),
-            functions_index: HashMap::default(),
-            functions_position: HashMap::default(),
             network_connect_counter: 0,
             function_binding_generation: 0,
             provided_features: STARTUP_FEATURES
@@ -7819,3 +7801,6 @@ fn initial_default_file_modes() -> i64 {
         0o755
     }
 }
+
+#[cfg(test)]
+mod function_cell_tests;

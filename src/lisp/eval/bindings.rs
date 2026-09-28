@@ -732,9 +732,9 @@ impl Interpreter {
             .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
-    /// Whether NAME has a user-level function definition (defun/fset).
-    pub(crate) fn function_index_has(&self, name: &str) -> bool {
-        self.functions_index.contains_key(name)
+    /// Whether SYMBOL has a user-level function definition (defun/fset).
+    pub(crate) fn has_lisp_function_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_function_definition(symbol)
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
@@ -866,7 +866,7 @@ impl Interpreter {
         let key = super::KnownSymbolsKey {
             globals: self.globals.bound_len(),
             variable_aliases: self.variable_aliases.len(),
-            functions: self.functions.len(),
+            functions: self.globals.function_definitions_len(),
             symbol_properties: self.symbol_properties.len(),
             interned_symbols: self.interned_symbols.len(),
             uninterned_standard: self.uninterned_standard_symbol_names.len(),
@@ -911,8 +911,8 @@ impl Interpreter {
                 for (name, _) in &self.variable_aliases[old.variable_aliases..] {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
                 }
-                for (name, _) in &self.functions[old.functions..] {
-                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                for (symbol, _) in self.globals.function_definitions().skip(old.functions) {
+                    admit(*symbol);
                 }
                 for (name, _) in &self.symbol_properties[old.symbol_properties..] {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
@@ -960,9 +960,9 @@ impl Interpreter {
                     .map(|(name, _)| Source::Name(name.as_str())),
             )
             .chain(
-                self.functions
-                    .iter()
-                    .map(|(name, _)| Source::Name(name.as_str())),
+                self.globals
+                    .function_definitions()
+                    .map(|(symbol, _)| Source::Symbol(symbol)),
             )
             .chain(
                 self.symbol_properties
@@ -1005,7 +1005,7 @@ impl Interpreter {
             || self.interned_symbol_names.contains(name)
             || self.globals.is_bound_name(name)
             || self.globals.alias_by_name(name).is_some()
-            || self.functions_index.contains_key(name)
+            || self.globals.function_definition_by_name(name).is_some()
             || self.symbol_property_index(name).is_some()
     }
 
@@ -1219,82 +1219,20 @@ impl Interpreter {
         handled.is_ok()
     }
 
-    // GNU keeps macro-ness in the function cell: fsetting a plain function
-    // over a macro name (or voiding the cell) erases the macro definition.
-    // The macro table is positional (cl-macrolet drains index ranges), so
-    // entries are renamed out of resolution instead of removed.
-    pub fn push_function_binding(&mut self, name: &str, function: Value) {
-        self.globals
-            .set_function(&SymbolName::intern_str(name), Some(function));
-        self.functions_index.insert(name.to_string(), function);
-        let position = self.functions.len();
-        self.functions_position.insert(name.to_string(), position);
-        self.functions.push((name.to_string(), function));
-        self.note_function_binding_changed();
-    }
-
-    /// Recompute `functions_position' for the entries at and after INDEX
-    /// once an entry was removed there.
-    fn reposition_function_bindings_from(&mut self, index: usize) {
-        let state = &mut **self;
-        for (position, (name, _)) in state.functions.iter().enumerate().skip(index) {
-            state.functions_position.insert(name.clone(), position);
-        }
-    }
-
-    /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
-    /// or in-place mutation of `functions`.
-    pub(crate) fn reindex_function_binding(&mut self, name: &str) {
-        match self.functions.iter().rev().find(|(fname, _)| fname == name) {
-            Some((_, value)) => {
-                let value = *value;
-                self.globals
-                    .set_function(&SymbolName::intern_str(name), Some(value));
-                self.functions_index.insert(name.to_string(), value);
-            }
-            None => {
-                self.globals
-                    .set_function(&SymbolName::intern_str(name), None);
-                self.functions_index.remove(name);
-            }
-        }
-        self.note_function_binding_changed();
-    }
-
     pub fn remove_all_function_bindings(&mut self, name: &str) {
-        if let Some(index) = self.functions_position.remove(name) {
-            self.functions.remove(index);
-            self.note_obarray_removal();
-            self.reposition_function_bindings_from(index);
-        }
-        self.globals
-            .set_function(&SymbolName::intern_str(name), None);
-        self.functions_index.remove(name);
-        self.note_function_binding_changed();
+        self.set_function_binding(name, None);
     }
 
+    /// GNU keeps macro-ness and callable identity in the same function
+    /// cell. Rebinding changes that payload once; enumeration stores ids.
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
-        match function {
-            Some(function) => {
-                if let Some(&index) = self.functions_position.get(name) {
-                    self.functions[index].1 = function;
-                    self.globals
-                        .set_function(&SymbolName::intern_str(name), Some(function));
-                    self.functions_index.insert(name.to_string(), function);
-                    self.note_function_binding_changed();
-                } else {
-                    self.push_function_binding(name, function);
-                }
-            }
-            None => {
-                if let Some(index) = self.functions_position.remove(name) {
-                    self.functions.remove(index);
-                    self.note_obarray_removal();
-                    self.reposition_function_bindings_from(index);
-                }
-                self.reindex_function_binding(name);
-            }
+        let symbol = SymbolName::intern_str(name);
+        let was_defined = self.globals.has_function_definition(&symbol);
+        self.globals.set_function_definition(&symbol, function);
+        if was_defined && !self.globals.has_function_definition(&symbol) {
+            self.note_obarray_removal();
         }
+        self.note_function_binding_changed();
     }
 
     /// data.c:Ffset's native-comp hook followed by the actual function-cell
@@ -1358,7 +1296,7 @@ impl Interpreter {
         {
             return false;
         }
-        let Some(definition) = self.functions_index.get(name).cloned() else {
+        let Some(definition) = self.globals.function_definition_by_name(name).copied() else {
             return false;
         };
         if !self
@@ -1379,7 +1317,7 @@ impl Interpreter {
             return;
         }
         for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.functions_index.get(&name) == Some(&definition) {
+            if self.globals.function_definition_by_name(&name) == Some(&definition) {
                 self.set_function_binding(&name, None);
             }
         }
@@ -1399,12 +1337,7 @@ impl Interpreter {
                 ])));
             }
             seen.push(current.clone());
-            let Some((_, value)) = self
-                .functions
-                .iter()
-                .rev()
-                .find(|(function_name, _)| function_name == &current)
-            else {
+            let Some(value) = self.globals.function_by_name(&current) else {
                 return Ok(());
             };
             let Kind::Symbol(next) = value.kind() else {

@@ -1,0 +1,1322 @@
+{
+  "evidence_files": {
+    "callable-reader-consumption-before.el": {
+      "raw_bytes": 559,
+      "raw_sha256": "b096f1703e9e6d043489c6a4611597e1b4b9e422be6add1bb0b09a6081f65a90",
+      "sha256": "b096f1703e9e6d043489c6a4611597e1b4b9e422be6add1bb0b09a6081f65a90",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/callable-reader-consumption-before.el"
+    },
+    "package-function-cell-evidence.py": {
+      "raw_bytes": 3722,
+      "raw_sha256": "5970631f490fac4f416d51bfefd30a9faa1978874928672393a2ebcbafef604a",
+      "sha256": "5970631f490fac4f416d51bfefd30a9faa1978874928672393a2ebcbafef604a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-function-cell-evidence.py"
+    },
+    "positioned-reader-streams-before.el": {
+      "raw_bytes": 1107,
+      "raw_sha256": "860b9d7ecac98dc65aea041b49b7aa4b80d6e6f78fd02209218779d4f2581037",
+      "sha256": "860b9d7ecac98dc65aea041b49b7aa4b80d6e6f78fd02209218779d4f2581037",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/positioned-reader-streams-before.el"
+    },
+    "positioned-reader-streams-v2.el": {
+      "raw_bytes": 1110,
+      "raw_sha256": "14fc553e5a85e176f4c19078ed7874d19d056c7a59c94b37b69477d2b68855ae",
+      "sha256": "14fc553e5a85e176f4c19078ed7874d19d056c7a59c94b37b69477d2b68855ae",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/positioned-reader-streams-v2.el"
+    },
+    "probe-function-cell-ordinary-before.py": {
+      "raw_bytes": 2098,
+      "raw_sha256": "5f1997bc341167d63cc7fd23303831a5469076841f2687997eb46689f6af21b1",
+      "sha256": "5f1997bc341167d63cc7fd23303831a5469076841f2687997eb46689f6af21b1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-function-cell-ordinary-before.py"
+    },
+    "reader-printer-destinations.el": {
+      "raw_bytes": 1601,
+      "raw_sha256": "a0705518634f2c8080d7cc9814108f18a363d6cbd29f6d005e07e535102b3140",
+      "sha256": "a0705518634f2c8080d7cc9814108f18a363d6cbd29f6d005e07e535102b3140",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/reader-printer-destinations.el"
+    },
+    "source87-function-before-builtin-function-cell-authority-emaxx.json": {
+      "raw_bytes": 1507,
+      "raw_sha256": "4dc299076654b7976fcd6ee7d6592e1e7844c37eb17d6e2c5d64ed50e1a3024b",
+      "sha256": "4dc299076654b7976fcd6ee7d6592e1e7844c37eb17d6e2c5d64ed50e1a3024b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-emaxx.json"
+    },
+    "source87-function-before-builtin-function-cell-authority-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-emaxx.stderr"
+    },
+    "source87-function-before-builtin-function-cell-authority-emaxx.stdout.gz": {
+      "raw_bytes": 94,
+      "raw_sha256": "80490fd16d2934cd8a4d0c43993acff13444928925766aa4c2e8337357bc960d",
+      "sha256": "8694cb0319222bc957283c927004c28903eabed02fdbefca72d6b43949f9720a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-emaxx.stdout"
+    },
+    "source87-function-before-builtin-function-cell-authority-gnu.json": {
+      "raw_bytes": 1453,
+      "raw_sha256": "6618ec7531ec4c26d3f65dba395035b4150953ac5c916bf05ccd08fb4f505641",
+      "sha256": "6618ec7531ec4c26d3f65dba395035b4150953ac5c916bf05ccd08fb4f505641",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-gnu.json"
+    },
+    "source87-function-before-builtin-function-cell-authority-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-gnu.stderr"
+    },
+    "source87-function-before-builtin-function-cell-authority-gnu.stdout.gz": {
+      "raw_bytes": 94,
+      "raw_sha256": "80490fd16d2934cd8a4d0c43993acff13444928925766aa4c2e8337357bc960d",
+      "sha256": "8694cb0319222bc957283c927004c28903eabed02fdbefca72d6b43949f9720a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-function-cell-authority-gnu.stdout"
+    },
+    "source87-function-before-builtin-nil-function-cell-emaxx.json": {
+      "raw_bytes": 1480,
+      "raw_sha256": "411a75868550fd0292c3bff42ff4106d21b4a6200acc9aab27f2ccbe5a86fbf7",
+      "sha256": "411a75868550fd0292c3bff42ff4106d21b4a6200acc9aab27f2ccbe5a86fbf7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-emaxx.json"
+    },
+    "source87-function-before-builtin-nil-function-cell-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-emaxx.stderr"
+    },
+    "source87-function-before-builtin-nil-function-cell-emaxx.stdout.gz": {
+      "raw_bytes": 166,
+      "raw_sha256": "8bf1c1d8b6f5a816ce7993eddd9e563b3c83dbe129b8c85f770d7dee2f275ad6",
+      "sha256": "8f73df2d204d7d2e88ec4820ab0afbc0238c3c0f612ff77eacb62b3907e3bda6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-emaxx.stdout"
+    },
+    "source87-function-before-builtin-nil-function-cell-gnu.json": {
+      "raw_bytes": 1434,
+      "raw_sha256": "998c509f0f2672a93a578ec1370a343a5677df7e7db14e856d68a4254a554fd9",
+      "sha256": "998c509f0f2672a93a578ec1370a343a5677df7e7db14e856d68a4254a554fd9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-gnu.json"
+    },
+    "source87-function-before-builtin-nil-function-cell-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-gnu.stderr"
+    },
+    "source87-function-before-builtin-nil-function-cell-gnu.stdout.gz": {
+      "raw_bytes": 166,
+      "raw_sha256": "8bf1c1d8b6f5a816ce7993eddd9e563b3c83dbe129b8c85f770d7dee2f275ad6",
+      "sha256": "8f73df2d204d7d2e88ec4820ab0afbc0238c3c0f612ff77eacb62b3907e3bda6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-nil-function-cell-gnu.stdout"
+    },
+    "source87-function-before-builtin-special-form-funcall-emaxx.json": {
+      "raw_bytes": 1149,
+      "raw_sha256": "a45ec5b53b19687f51a2b68a6276c761f528e1cad6577bc74bc5452997dafc7c",
+      "sha256": "a45ec5b53b19687f51a2b68a6276c761f528e1cad6577bc74bc5452997dafc7c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-emaxx.json"
+    },
+    "source87-function-before-builtin-special-form-funcall-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-emaxx.stderr"
+    },
+    "source87-function-before-builtin-special-form-funcall-emaxx.stdout.gz": {
+      "raw_bytes": 86,
+      "raw_sha256": "34482db9a70484c65b66275d50f631ec46195a7eebe7d27b9b3f6ff1ffc8b01e",
+      "sha256": "1be3866f3fd88d2d9661374039d8828b030256acaae31ecb8e6f7cede30c268c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-emaxx.stdout"
+    },
+    "source87-function-before-builtin-special-form-funcall-gnu.json": {
+      "raw_bytes": 1098,
+      "raw_sha256": "ba7f62755aaf7034a6e87e7d61097d3f3f6ebf4d517fe6b66cdfb49fa8d50257",
+      "sha256": "ba7f62755aaf7034a6e87e7d61097d3f3f6ebf4d517fe6b66cdfb49fa8d50257",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-gnu.json"
+    },
+    "source87-function-before-builtin-special-form-funcall-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-gnu.stderr"
+    },
+    "source87-function-before-builtin-special-form-funcall-gnu.stdout.gz": {
+      "raw_bytes": 86,
+      "raw_sha256": "34482db9a70484c65b66275d50f631ec46195a7eebe7d27b9b3f6ff1ffc8b01e",
+      "sha256": "1be3866f3fd88d2d9661374039d8828b030256acaae31ecb8e6f7cede30c268c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-builtin-special-form-funcall-gnu.stdout"
+    },
+    "source87-function-before-comparisons.json": {
+      "raw_bytes": 231,
+      "raw_sha256": "880c6547c6dff4f888aa719d06df5e3bf58f979f6f0e3af0bdfbc03cf861834a",
+      "sha256": "880c6547c6dff4f888aa719d06df5e3bf58f979f6f0e3af0bdfbc03cf861834a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-function-before-comparisons.json"
+    },
+    "source88-base.json": {
+      "raw_bytes": 206,
+      "raw_sha256": "df65f6b480c373f1b085e05b4621cf9d30e6bdce7dee34c193ea32c375761e0e",
+      "sha256": "df65f6b480c373f1b085e05b4621cf9d30e6bdce7dee34c193ea32c375761e0e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-base.json"
+    },
+    "source88-debug-build-command.json": {
+      "raw_bytes": 527,
+      "raw_sha256": "bfba6c16f7f3ba79bfa16b190f600c289ddf623ad6b3b66325e3bdcb750e2c79",
+      "sha256": "bfba6c16f7f3ba79bfa16b190f600c289ddf623ad6b3b66325e3bdcb750e2c79",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-build-command.json"
+    },
+    "source88-debug-build-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "00b8af32b3dc3948887a6c7e5ba2a4617b94d4810c54c466264e7162f7afa709",
+      "sha256": "00b8af32b3dc3948887a6c7e5ba2a4617b94d4810c54c466264e7162f7afa709",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-build-result.json"
+    },
+    "source88-debug-build.log.gz": {
+      "raw_bytes": 176911,
+      "raw_sha256": "17e049d4fccb09809781fb9bdd7b3d9cc13a9b279a6c0dc6e15989b9f649bd87",
+      "sha256": "4de7a24d40e2567ae5d60b3e0696f708bab07e86949c17990117ace3debfb73d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-build.log"
+    },
+    "source88-debug-selected-command.json": {
+      "raw_bytes": 656,
+      "raw_sha256": "0860d787210e76cdda91ea9cfb49ad8e636dca0bbdf15c8598687fa3aac4a5f8",
+      "sha256": "0860d787210e76cdda91ea9cfb49ad8e636dca0bbdf15c8598687fa3aac4a5f8",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-selected-command.json"
+    },
+    "source88-debug-selected-result.json": {
+      "raw_bytes": 91,
+      "raw_sha256": "6a6f4b070237648d21230db81999f8794c008e53ff18a089445b4085c0bb979f",
+      "sha256": "6a6f4b070237648d21230db81999f8794c008e53ff18a089445b4085c0bb979f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-selected-result.json"
+    },
+    "source88-debug-selected.log.gz": {
+      "raw_bytes": 1158,
+      "raw_sha256": "ba6d96456c77e246e4c73479acaa817fa541c16ebd905aef7f6e52b73c786117",
+      "sha256": "a1bd24f5c5ef4075eb8f6e54f8a8f6f04cadc13047bba921404fefd9e4f0a587",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-selected.log"
+    },
+    "source88-function-cell-layout.json": {
+      "raw_bytes": 565,
+      "raw_sha256": "0494e78dbd06f8da201b6b372296b52ce83b3678d6f3fd31e90fa58670f2f3da",
+      "sha256": "0494e78dbd06f8da201b6b372296b52ce83b3678d6f3fd31e90fa58670f2f3da",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-function-cell-layout.json"
+    },
+    "source88-function-cell-layout.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-function-cell-layout.stderr"
+    },
+    "source88-function-cell-layout.stdout.gz": {
+      "raw_bytes": 932,
+      "raw_sha256": "c1770e46377163534aada208ec5f7b642285b67104ce3a6cea4cfba48b9ef8c7",
+      "sha256": "42aef890d80532e7aac4c5f335279db02f68318e5d0bf1697841feb1f661df5e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-function-cell-layout.stdout"
+    },
+    "source88-function_cell_tests.rs": {
+      "raw_bytes": 2103,
+      "raw_sha256": "df51d292e1864c5e434550b20c628e44e7dd90efce13e829980838229b8dbe9c",
+      "sha256": "df51d292e1864c5e434550b20c628e44e7dd90efce13e829980838229b8dbe9c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-function_cell_tests.rs"
+    },
+    "source88-manifest.json": {
+      "raw_bytes": 34405,
+      "raw_sha256": "ec463064a543efb8e6dd323508ff4efdf76f03057a49f8c3940416fd067b72f5",
+      "sha256": "ec463064a543efb8e6dd323508ff4efdf76f03057a49f8c3940416fd067b72f5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-manifest.json"
+    },
+    "source88-verifier-launch.json": {
+      "raw_bytes": 473,
+      "raw_sha256": "f76350c5171de9bf49ed795982e2f126466aadbe6721293590581ad0e8210e08",
+      "sha256": "f76350c5171de9bf49ed795982e2f126466aadbe6721293590581ad0e8210e08",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-verifier-launch.json"
+    },
+    "source88.patch.gz": {
+      "raw_bytes": 257,
+      "raw_sha256": "2b6c616108e52fc30487cab8eb2df8b4068a4e6c051f90b8f2a0607cd056d550",
+      "sha256": "8d2d439bdef5b4d3331ef270aa9eb8d57ad791bc0f96697c7ac0348583af42fb",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88.patch"
+    },
+    "source89-base.json": {
+      "raw_bytes": 206,
+      "raw_sha256": "df65f6b480c373f1b085e05b4621cf9d30e6bdce7dee34c193ea32c375761e0e",
+      "sha256": "df65f6b480c373f1b085e05b4621cf9d30e6bdce7dee34c193ea32c375761e0e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-base.json"
+    },
+    "source89-check-command.json": {
+      "raw_bytes": 472,
+      "raw_sha256": "fa633f0408339b2c68b524486b3d243abcf237e910fa027b0eb06d42d9a4286d",
+      "sha256": "fa633f0408339b2c68b524486b3d243abcf237e910fa027b0eb06d42d9a4286d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-check-command.json"
+    },
+    "source89-check-result.json": {
+      "raw_bytes": 90,
+      "raw_sha256": "c0588bc9c71f2dbe74e1dc1bb6d903ac381ee3e47e2a7b44d49de37ef2740c68",
+      "sha256": "c0588bc9c71f2dbe74e1dc1bb6d903ac381ee3e47e2a7b44d49de37ef2740c68",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-check-result.json"
+    },
+    "source89-check.log.gz": {
+      "raw_bytes": 152,
+      "raw_sha256": "a3e85711a4bd1446b8d9df9b169e6f41198084b115737e812d4bb3d29fc48c22",
+      "sha256": "431e135fc15802606d757390005b793bc1ffa5da472b33731e8159065a3f8534",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-check.log"
+    },
+    "source89-clippy-command.json": {
+      "raw_bytes": 509,
+      "raw_sha256": "45ea044bf1a25cd0ce48cf9bd5342cbfbd92763fc67aab5eac4dc9187e20c93f",
+      "sha256": "45ea044bf1a25cd0ce48cf9bd5342cbfbd92763fc67aab5eac4dc9187e20c93f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-clippy-command.json"
+    },
+    "source89-clippy-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "d8c3fef3136a0e6842d123764c00145fc8f65118a109a5739269c16735c08802",
+      "sha256": "d8c3fef3136a0e6842d123764c00145fc8f65118a109a5739269c16735c08802",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-clippy-result.json"
+    },
+    "source89-clippy.log.gz": {
+      "raw_bytes": 152,
+      "raw_sha256": "7a9eee33b33d2da268b4b961f8ca0831b54128a75640d7a33af7d9bb0ea0c9ab",
+      "sha256": "e612aced326f1c8300d37ec430100a3e97a6357b515f4bc7c4ad73e18b8e5f63",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-clippy.log"
+    },
+    "source89-debug-build-command.json": {
+      "raw_bytes": 527,
+      "raw_sha256": "bfba6c16f7f3ba79bfa16b190f600c289ddf623ad6b3b66325e3bdcb750e2c79",
+      "sha256": "bfba6c16f7f3ba79bfa16b190f600c289ddf623ad6b3b66325e3bdcb750e2c79",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-build-command.json"
+    },
+    "source89-debug-build-result.json": {
+      "raw_bytes": 84,
+      "raw_sha256": "93f5c19f83c02969e640212c4bc1ed238a221a1e7a8601c235251add23f5a5b7",
+      "sha256": "93f5c19f83c02969e640212c4bc1ed238a221a1e7a8601c235251add23f5a5b7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-build-result.json"
+    },
+    "source89-debug-build.log.gz": {
+      "raw_bytes": 176911,
+      "raw_sha256": "51656767f4e42cec759b379b9e52cac05d44cc6fb08580b913b694dbbdfb76d2",
+      "sha256": "3fabc7802b87d8767af62fee562f1fd5718a5aff545d5137af52539ecf04c09c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-build.log"
+    },
+    "source89-debug-selected-command.json": {
+      "raw_bytes": 972,
+      "raw_sha256": "2570eea4bf55b54faa3ecf2afd2b2c012d5fa4940500be5588f5bfdc353ecd55",
+      "sha256": "2570eea4bf55b54faa3ecf2afd2b2c012d5fa4940500be5588f5bfdc353ecd55",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-selected-command.json"
+    },
+    "source89-debug-selected-result.json": {
+      "raw_bytes": 84,
+      "raw_sha256": "f6cc291ee714afdc5ab0a48b4ff6af1482236dbc647e3499670b4082c2271333",
+      "sha256": "f6cc291ee714afdc5ab0a48b4ff6af1482236dbc647e3499670b4082c2271333",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-selected-result.json"
+    },
+    "source89-debug-selected.log.gz": {
+      "raw_bytes": 35359,
+      "raw_sha256": "55efcc11168828a7ce5bbf6133aecb34a2164863f8773bb8e84c4636b6b4ba4e",
+      "sha256": "6f8c1e4f5e91c25c0b36069150e5ffad52e1253e6d123825d94c709159d9599c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-selected.log"
+    },
+    "source89-debug-verifier-launch.json": {
+      "raw_bytes": 688,
+      "raw_sha256": "fe5581f80e4a1c56be5ae1f4dcdaba5ac8fc91b8ed463f60dc402fdcec443951",
+      "sha256": "fe5581f80e4a1c56be5ae1f4dcdaba5ac8fc91b8ed463f60dc402fdcec443951",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-debug-verifier-launch.json"
+    },
+    "source89-diff-check-command.json": {
+      "raw_bytes": 425,
+      "raw_sha256": "0d41870ffe71c1ea1a24e3bf30894b7f481bd73e0377a4ce1d008139bff7b3be",
+      "sha256": "0d41870ffe71c1ea1a24e3bf30894b7f481bd73e0377a4ce1d008139bff7b3be",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-diff-check-command.json"
+    },
+    "source89-diff-check-result.json": {
+      "raw_bytes": 91,
+      "raw_sha256": "2a230b834f173a826204d0bdbe766fc84209a3fec1fc60233c9faffc6fa15069",
+      "sha256": "2a230b834f173a826204d0bdbe766fc84209a3fec1fc60233c9faffc6fa15069",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-diff-check-result.json"
+    },
+    "source89-diff-check.log.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-diff-check.log"
+    },
+    "source89-fmt-command.json": {
+      "raw_bytes": 449,
+      "raw_sha256": "0300d11b5a08f0372bb957ca1c291356568aed63d42b78449b121a03943c9038",
+      "sha256": "0300d11b5a08f0372bb957ca1c291356568aed63d42b78449b121a03943c9038",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-fmt-command.json"
+    },
+    "source89-fmt-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "351847df8324888bf680a49b2b3e251164e8328c7b809f77fef35b1f481b1695",
+      "sha256": "351847df8324888bf680a49b2b3e251164e8328c7b809f77fef35b1f481b1695",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-fmt-result.json"
+    },
+    "source89-fmt.log.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-fmt.log"
+    },
+    "source89-function-cell-layout.json": {
+      "raw_bytes": 535,
+      "raw_sha256": "03f1e6d731b681f910228155dba90ef723d623482744444fe6e23de0304774b4",
+      "sha256": "03f1e6d731b681f910228155dba90ef723d623482744444fe6e23de0304774b4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-function-cell-layout.json"
+    },
+    "source89-function-cell-layout.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-function-cell-layout.stderr"
+    },
+    "source89-function-cell-layout.stdout.gz": {
+      "raw_bytes": 1010,
+      "raw_sha256": "a746c7912762db87c99f8ce55637c4f63d2463787f21250ffdf9a41d7bf50630",
+      "sha256": "dd4d58c153d2f9f4d5912371ef216d5d08c32793a9c48dd6fe98e40da0e0a5af",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-function-cell-layout.stdout"
+    },
+    "source89-function_cell_tests.rs": {
+      "raw_bytes": 2103,
+      "raw_sha256": "df51d292e1864c5e434550b20c628e44e7dd90efce13e829980838229b8dbe9c",
+      "sha256": "df51d292e1864c5e434550b20c628e44e7dd90efce13e829980838229b8dbe9c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-function_cell_tests.rs"
+    },
+    "source89-manifest.json": {
+      "raw_bytes": 34405,
+      "raw_sha256": "b7d7c7acb42912a6c306ea8820357f0ac4870a82a80c5c3919ad5d4c3bc61526",
+      "sha256": "b7d7c7acb42912a6c306ea8820357f0ac4870a82a80c5c3919ad5d4c3bc61526",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-manifest.json"
+    },
+    "source89-ordinary-artifacts.json": {
+      "raw_bytes": 328,
+      "raw_sha256": "b8ed73ac1423b7d317e3033e073095490d0f3b96d5e3b13de1976238bf315edc",
+      "sha256": "b8ed73ac1423b7d317e3033e073095490d0f3b96d5e3b13de1976238bf315edc",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-artifacts.json"
+    },
+    "source89-ordinary-build-command.json": {
+      "raw_bytes": 566,
+      "raw_sha256": "699892e1208ea9edce6173d89537c27283c85e5c5fb25dce077c18e2af52441a",
+      "sha256": "699892e1208ea9edce6173d89537c27283c85e5c5fb25dce077c18e2af52441a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-build-command.json"
+    },
+    "source89-ordinary-build-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "a6dee62c87faae1fdd0dea765c1838065b3c4daf016efe2c506fd7c32cead38b",
+      "sha256": "a6dee62c87faae1fdd0dea765c1838065b3c4daf016efe2c506fd7c32cead38b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-build-result.json"
+    },
+    "source89-ordinary-build.log.gz": {
+      "raw_bytes": 142,
+      "raw_sha256": "df70ce4ed226078828e8e622146a7e660fc483bef18baa72bcaf460e8d56e6a3",
+      "sha256": "d280ca81fac12a87d32b3b3f7126121830c9c1d91c94521bb9519cd0af49d84a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-build.log"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-emaxx.json": {
+      "raw_bytes": 1773,
+      "raw_sha256": "10455fd1cd34661d0c77e87cc324cbaa121c868804c0b2b04ac199804bce80bf",
+      "sha256": "10455fd1cd34661d0c77e87cc324cbaa121c868804c0b2b04ac199804bce80bf",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-emaxx.json"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-emaxx.stderr"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-emaxx.stdout.gz": {
+      "raw_bytes": 94,
+      "raw_sha256": "80490fd16d2934cd8a4d0c43993acff13444928925766aa4c2e8337357bc960d",
+      "sha256": "8694cb0319222bc957283c927004c28903eabed02fdbefca72d6b43949f9720a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-emaxx.stdout"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-gnu.json": {
+      "raw_bytes": 1722,
+      "raw_sha256": "04b65c076d31472522c42b68bbe50b10625c3de54fc1e71d11a3c15f2c56bc67",
+      "sha256": "04b65c076d31472522c42b68bbe50b10625c3de54fc1e71d11a3c15f2c56bc67",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-gnu.json"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-gnu.stderr"
+    },
+    "source89-ordinary-function-builtin-function-cell-authority-gnu.stdout.gz": {
+      "raw_bytes": 94,
+      "raw_sha256": "80490fd16d2934cd8a4d0c43993acff13444928925766aa4c2e8337357bc960d",
+      "sha256": "8694cb0319222bc957283c927004c28903eabed02fdbefca72d6b43949f9720a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-function-cell-authority-gnu.stdout"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-emaxx.json": {
+      "raw_bytes": 1889,
+      "raw_sha256": "38ec592cd015273765c4d3f9fa65b33aaa681475d85d67f610465dc395fdf6ef",
+      "sha256": "38ec592cd015273765c4d3f9fa65b33aaa681475d85d67f610465dc395fdf6ef",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-emaxx.json"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-emaxx.stderr"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-emaxx.stdout.gz": {
+      "raw_bytes": 166,
+      "raw_sha256": "8bf1c1d8b6f5a816ce7993eddd9e563b3c83dbe129b8c85f770d7dee2f275ad6",
+      "sha256": "8f73df2d204d7d2e88ec4820ab0afbc0238c3c0f612ff77eacb62b3907e3bda6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-emaxx.stdout"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-gnu.json": {
+      "raw_bytes": 1837,
+      "raw_sha256": "61d5376b20918c17f7537f4814ec21126a6cb1726a7728f37f48655850ac91c5",
+      "sha256": "61d5376b20918c17f7537f4814ec21126a6cb1726a7728f37f48655850ac91c5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-gnu.json"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-gnu.stderr"
+    },
+    "source89-ordinary-function-builtin-nil-function-cell-gnu.stdout.gz": {
+      "raw_bytes": 166,
+      "raw_sha256": "8bf1c1d8b6f5a816ce7993eddd9e563b3c83dbe129b8c85f770d7dee2f275ad6",
+      "sha256": "8f73df2d204d7d2e88ec4820ab0afbc0238c3c0f612ff77eacb62b3907e3bda6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-nil-function-cell-gnu.stdout"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-emaxx.json": {
+      "raw_bytes": 1392,
+      "raw_sha256": "aadeeb1c9bde340a268e380183803ff27246cce7060c011df563d84828bb1d97",
+      "sha256": "aadeeb1c9bde340a268e380183803ff27246cce7060c011df563d84828bb1d97",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-emaxx.json"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-emaxx.stderr"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-emaxx.stdout.gz": {
+      "raw_bytes": 86,
+      "raw_sha256": "34482db9a70484c65b66275d50f631ec46195a7eebe7d27b9b3f6ff1ffc8b01e",
+      "sha256": "1be3866f3fd88d2d9661374039d8828b030256acaae31ecb8e6f7cede30c268c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-emaxx.stdout"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-gnu.json": {
+      "raw_bytes": 1341,
+      "raw_sha256": "454d3fef1119333f5c207cd47451971fcb67a778e26874b7d148019fdf2f3a50",
+      "sha256": "454d3fef1119333f5c207cd47451971fcb67a778e26874b7d148019fdf2f3a50",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-gnu.json"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-gnu.stderr"
+    },
+    "source89-ordinary-function-builtin-special-form-funcall-gnu.stdout.gz": {
+      "raw_bytes": 86,
+      "raw_sha256": "34482db9a70484c65b66275d50f631ec46195a7eebe7d27b9b3f6ff1ffc8b01e",
+      "sha256": "1be3866f3fd88d2d9661374039d8828b030256acaae31ecb8e6f7cede30c268c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-builtin-special-form-funcall-gnu.stdout"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-emaxx.json": {
+      "raw_bytes": 1602,
+      "raw_sha256": "ae902860e4218613768b57717a653e2021b9f64978e4d831b7ca1f55d519d5fb",
+      "sha256": "ae902860e4218613768b57717a653e2021b9f64978e4d831b7ca1f55d519d5fb",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-emaxx.json"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-emaxx.stderr"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-emaxx.stdout.gz": {
+      "raw_bytes": 33,
+      "raw_sha256": "a79893e4e505a91ef007e556966f17769f4bd75d32dab57da2a98bc5e8aa8df8",
+      "sha256": "f5ecff93d3caec572ba24eb5a0f7da308a2dce1b9f4a6af11a744648d1559bd0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-emaxx.stdout"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-gnu.json": {
+      "raw_bytes": 1550,
+      "raw_sha256": "b9edf2b18f66229769ee120643353f9d8e3ddaf0c07fb5966089dcf95803bfb2",
+      "sha256": "b9edf2b18f66229769ee120643353f9d8e3ddaf0c07fb5966089dcf95803bfb2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-gnu.json"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-gnu.stderr"
+    },
+    "source89-ordinary-function-callable-reader-consumption-before-gnu.stdout.gz": {
+      "raw_bytes": 33,
+      "raw_sha256": "a79893e4e505a91ef007e556966f17769f4bd75d32dab57da2a98bc5e8aa8df8",
+      "sha256": "f5ecff93d3caec572ba24eb5a0f7da308a2dce1b9f4a6af11a744648d1559bd0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-callable-reader-consumption-before-gnu.stdout"
+    },
+    "source89-ordinary-function-comparisons.json": {
+      "raw_bytes": 2597,
+      "raw_sha256": "50129986cfe1dd72116a800cfa07dca471545950d789e4d576adb090fe4f7635",
+      "sha256": "50129986cfe1dd72116a800cfa07dca471545950d789e4d576adb090fe4f7635",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-comparisons.json"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-emaxx.json": {
+      "raw_bytes": 2313,
+      "raw_sha256": "a93963227abfc7f0c63cbcb4eff877f43830682de0ca0794ce7783ce6f5cf762",
+      "sha256": "a93963227abfc7f0c63cbcb4eff877f43830682de0ca0794ce7783ce6f5cf762",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-emaxx.json"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-emaxx.stderr"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-emaxx.stdout.gz": {
+      "raw_bytes": 103,
+      "raw_sha256": "d11949984553a5240f2717012510e6445769447be89e9c8ae6d7ceff4d2f28a0",
+      "sha256": "7883249eebb87677a7a4bf66a765a9e042d632a7018531a542a13645d0851ea7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-emaxx.stdout"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-gnu.json": {
+      "raw_bytes": 2261,
+      "raw_sha256": "ba8bb3d64a5e9f9af8bf2345858de57fe447517be887a5b77827da5eab1e7750",
+      "sha256": "ba8bb3d64a5e9f9af8bf2345858de57fe447517be887a5b77827da5eab1e7750",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-gnu.json"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-gnu.stderr"
+    },
+    "source89-ordinary-function-positioned-reader-streams-before-gnu.stdout.gz": {
+      "raw_bytes": 103,
+      "raw_sha256": "d11949984553a5240f2717012510e6445769447be89e9c8ae6d7ceff4d2f28a0",
+      "sha256": "7883249eebb87677a7a4bf66a765a9e042d632a7018531a542a13645d0851ea7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-before-gnu.stdout"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-emaxx.json": {
+      "raw_bytes": 2321,
+      "raw_sha256": "7e8366287cd00972943ed3f48a96e465ecdac750aadf8edb7590a40d7fb46a20",
+      "sha256": "7e8366287cd00972943ed3f48a96e465ecdac750aadf8edb7590a40d7fb46a20",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-emaxx.json"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-emaxx.stderr"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-emaxx.stdout.gz": {
+      "raw_bytes": 106,
+      "raw_sha256": "f7ac6606eb24a0a9d5b09f69034568ce409bdf44728d10751bbe5ab6da998d55",
+      "sha256": "8089da9d23c67047520985bac8c169ed2a5302351805ce31f4ed8a1e72678b5c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-emaxx.stdout"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-gnu.json": {
+      "raw_bytes": 2269,
+      "raw_sha256": "dcf6d63f693f603f72f7bb6c5dc2cb4c0846b1011c814c8520ff02c883385f76",
+      "sha256": "dcf6d63f693f603f72f7bb6c5dc2cb4c0846b1011c814c8520ff02c883385f76",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-gnu.json"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-gnu.stderr"
+    },
+    "source89-ordinary-function-positioned-reader-streams-v2-gnu.stdout.gz": {
+      "raw_bytes": 106,
+      "raw_sha256": "f7ac6606eb24a0a9d5b09f69034568ce409bdf44728d10751bbe5ab6da998d55",
+      "sha256": "8089da9d23c67047520985bac8c169ed2a5302351805ce31f4ed8a1e72678b5c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-positioned-reader-streams-v2-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-byte-printing-emaxx.json": {
+      "raw_bytes": 7323,
+      "raw_sha256": "a1c5c8c3cb8cf23e624cd19d0492eb01710612f401799dfe43ead11df824c1c0",
+      "sha256": "a1c5c8c3cb8cf23e624cd19d0492eb01710612f401799dfe43ead11df824c1c0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-emaxx.json"
+    },
+    "source89-ordinary-function-reader-byte-printing-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-byte-printing-emaxx.stdout.gz": {
+      "raw_bytes": 2681,
+      "raw_sha256": "9234d1a3e601b106ca429dc9f69909461d0d84d10c14d6b2aca3d32a9c5948c0",
+      "sha256": "eb3b6212328644e9e7ae0558ffda22c13b427bb617b0aa1f7f0def429779db10",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-byte-printing-gnu.json": {
+      "raw_bytes": 7271,
+      "raw_sha256": "4c91659707898db8743b80bd0a7a94f58cefbb221c1387a6c46a83325ce37f54",
+      "sha256": "4c91659707898db8743b80bd0a7a94f58cefbb221c1387a6c46a83325ce37f54",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-gnu.json"
+    },
+    "source89-ordinary-function-reader-byte-printing-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-byte-printing-gnu.stdout.gz": {
+      "raw_bytes": 2681,
+      "raw_sha256": "9234d1a3e601b106ca429dc9f69909461d0d84d10c14d6b2aca3d32a9c5948c0",
+      "sha256": "eb3b6212328644e9e7ae0558ffda22c13b427bb617b0aa1f7f0def429779db10",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-byte-printing-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-consumption-emaxx.json": {
+      "raw_bytes": 1580,
+      "raw_sha256": "8303ac4dbcc61444bdaa4c5ba60c618aa55c0eb9b1b30731f923376fc3052dc7",
+      "sha256": "8303ac4dbcc61444bdaa4c5ba60c618aa55c0eb9b1b30731f923376fc3052dc7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-consumption-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-consumption-emaxx.stdout.gz": {
+      "raw_bytes": 33,
+      "raw_sha256": "a79893e4e505a91ef007e556966f17769f4bd75d32dab57da2a98bc5e8aa8df8",
+      "sha256": "f5ecff93d3caec572ba24eb5a0f7da308a2dce1b9f4a6af11a744648d1559bd0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-consumption-gnu.json": {
+      "raw_bytes": 1538,
+      "raw_sha256": "0642b629d2e1105c281867680096de689562b3a8df48914c2c1a8016deded6b1",
+      "sha256": "0642b629d2e1105c281867680096de689562b3a8df48914c2c1a8016deded6b1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-consumption-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-consumption-gnu.stdout.gz": {
+      "raw_bytes": 33,
+      "raw_sha256": "a79893e4e505a91ef007e556966f17769f4bd75d32dab57da2a98bc5e8aa8df8",
+      "sha256": "f5ecff93d3caec572ba24eb5a0f7da308a2dce1b9f4a6af11a744648d1559bd0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-consumption-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-dots-emaxx.json": {
+      "raw_bytes": 11615,
+      "raw_sha256": "2be054875109da61aec0c5dfa407814332904c918b77f4fd44bbc14df76f0941",
+      "sha256": "2be054875109da61aec0c5dfa407814332904c918b77f4fd44bbc14df76f0941",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-dots-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-dots-emaxx.stdout.gz": {
+      "raw_bytes": 4789,
+      "raw_sha256": "de2c5360910f906f5f42d8201016ed87308cc7d5ba6e3579e77d693638adf4ae",
+      "sha256": "3a08abd7b17ca9e6c9989882ee9550dd6271616f1e7d1e960d8bb15e27e2e32e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-dots-gnu.json": {
+      "raw_bytes": 11564,
+      "raw_sha256": "85dcee352764be7e369339e31247a3d8e4a62ac27c5f4482f05f25832f544b4e",
+      "sha256": "85dcee352764be7e369339e31247a3d8e4a62ac27c5f4482f05f25832f544b4e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-dots-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-dots-gnu.stdout.gz": {
+      "raw_bytes": 4789,
+      "raw_sha256": "de2c5360910f906f5f42d8201016ed87308cc7d5ba6e3579e77d693638adf4ae",
+      "sha256": "3a08abd7b17ca9e6c9989882ee9550dd6271616f1e7d1e960d8bb15e27e2e32e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-dots-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-encoding-emaxx.json": {
+      "raw_bytes": 2334,
+      "raw_sha256": "efafa24863cb305659ca3014b006b791242ffab7bbee6c0b0df808f54fbedc35",
+      "sha256": "efafa24863cb305659ca3014b006b791242ffab7bbee6c0b0df808f54fbedc35",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-encoding-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-encoding-emaxx.stdout.gz": {
+      "raw_bytes": 369,
+      "raw_sha256": "69244c2ae0dacc9138ce143a906da1fe9685333d880c036999c4c474b5eb449e",
+      "sha256": "fe38f39ac826e2ed61e0996177697831c78cc83402cc75aeddfba949eb0c1ca3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-encoding-gnu.json": {
+      "raw_bytes": 2282,
+      "raw_sha256": "8f521050a7a87e93da6391f9ee3875e6646e36c7b05c039f58574bbf9df3b29e",
+      "sha256": "8f521050a7a87e93da6391f9ee3875e6646e36c7b05c039f58574bbf9df3b29e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-encoding-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-encoding-gnu.stdout.gz": {
+      "raw_bytes": 369,
+      "raw_sha256": "69244c2ae0dacc9138ce143a906da1fe9685333d880c036999c4c474b5eb449e",
+      "sha256": "fe38f39ac826e2ed61e0996177697831c78cc83402cc75aeddfba949eb0c1ca3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-encoding-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-errors-emaxx.json": {
+      "raw_bytes": 2343,
+      "raw_sha256": "961a7c2b2202077c72b1db3b162d20f8fbb2a82c886cc45806c6acec0331d366",
+      "sha256": "961a7c2b2202077c72b1db3b162d20f8fbb2a82c886cc45806c6acec0331d366",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-errors-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-errors-emaxx.stdout.gz": {
+      "raw_bytes": 237,
+      "raw_sha256": "f8cd394af88ebd0e905e81ae832867fb98305bb44bebd7f1d6b7316c65956e15",
+      "sha256": "869ec0324530db6edb54613eb8c841a262329a6db80feef42d71c1af2e8045f2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-errors-gnu.json": {
+      "raw_bytes": 2292,
+      "raw_sha256": "27dff06bfa3821b1349f4191baa1e65a39c08a02181e569d71a3590c7e37a106",
+      "sha256": "27dff06bfa3821b1349f4191baa1e65a39c08a02181e569d71a3590c7e37a106",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-errors-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-errors-gnu.stdout.gz": {
+      "raw_bytes": 237,
+      "raw_sha256": "f8cd394af88ebd0e905e81ae832867fb98305bb44bebd7f1d6b7316c65956e15",
+      "sha256": "869ec0324530db6edb54613eb8c841a262329a6db80feef42d71c1af2e8045f2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-errors-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-emaxx.json": {
+      "raw_bytes": 3709,
+      "raw_sha256": "a8bfcfd55154358591a9afeff17bc442a610ae0334c8ba91116880ed4579c350",
+      "sha256": "a8bfcfd55154358591a9afeff17bc442a610ae0334c8ba91116880ed4579c350",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-emaxx.stdout.gz": {
+      "raw_bytes": 349,
+      "raw_sha256": "5bab74e106387b1fd519584eaad9247fda9ccef3d9b8641b4ce8ce3a6035ef95",
+      "sha256": "e43db6f298bc63edfd21811e21d5feae9aa0ef44fc7368f0bcda98a73bf71a0f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-gnu.json": {
+      "raw_bytes": 3650,
+      "raw_sha256": "0cc419f1075dbcec90d86e06549a4d2657a86073a81c2fd237826303c7916586",
+      "sha256": "0cc419f1075dbcec90d86e06549a4d2657a86073a81c2fd237826303c7916586",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-execution-modes-gnu.stdout.gz": {
+      "raw_bytes": 349,
+      "raw_sha256": "5bab74e106387b1fd519584eaad9247fda9ccef3d9b8641b4ce8ce3a6035ef95",
+      "sha256": "e43db6f298bc63edfd21811e21d5feae9aa0ef44fc7368f0bcda98a73bf71a0f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-execution-modes-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-gc-emaxx.json": {
+      "raw_bytes": 2005,
+      "raw_sha256": "aa5aca844bfe1b94a65432c072b6eb427501bcb4975bb87617180f915e2a120d",
+      "sha256": "aa5aca844bfe1b94a65432c072b6eb427501bcb4975bb87617180f915e2a120d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-gc-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-gc-emaxx.stdout.gz": {
+      "raw_bytes": 99,
+      "raw_sha256": "289dda3f1e1abbb50d4a007276707692d55296519e3df2000b9c45e92d81ad38",
+      "sha256": "46d3eaa67b5d6e0d3232be588a28a2342f9cb9226465f61a5c7cb5cb62007bc0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-gc-gnu.json": {
+      "raw_bytes": 1954,
+      "raw_sha256": "8ecee135d4044f3022b1575127650935ab191cce1e558e0f7ddaaf8c6cbd9caf",
+      "sha256": "8ecee135d4044f3022b1575127650935ab191cce1e558e0f7ddaaf8c6cbd9caf",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-gc-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-gc-gnu.stdout.gz": {
+      "raw_bytes": 99,
+      "raw_sha256": "289dda3f1e1abbb50d4a007276707692d55296519e3df2000b9c45e92d81ad38",
+      "sha256": "46d3eaa67b5d6e0d3232be588a28a2342f9cb9226465f61a5c7cb5cb62007bc0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-gc-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-emaxx.json": {
+      "raw_bytes": 1738,
+      "raw_sha256": "9aeb047753ce4503b9e36de17aa30f0d98d3657cb1b98891a978dfbf50251009",
+      "sha256": "9aeb047753ce4503b9e36de17aa30f0d98d3657cb1b98891a978dfbf50251009",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-emaxx.stdout.gz": {
+      "raw_bytes": 5,
+      "raw_sha256": "8c6bfd9dcee856a3627ff45bdc97b83d9541954c3cca8fd182aadfdb003e763d",
+      "sha256": "a747af0e79794963f6c6763905e55d8d815a1d3a42320cc0afea5545c3607947",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-gnu.json": {
+      "raw_bytes": 1686,
+      "raw_sha256": "9fca0c983b7d40e46da6d4971e7f74c83978b46ff68bdb7322c8ed8856d73b12",
+      "sha256": "9fca0c983b7d40e46da6d4971e7f74c83978b46ff68bdb7322c8ed8856d73b12",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-lifetime-gnu.stdout.gz": {
+      "raw_bytes": 5,
+      "raw_sha256": "8c6bfd9dcee856a3627ff45bdc97b83d9541954c3cca8fd182aadfdb003e763d",
+      "sha256": "a747af0e79794963f6c6763905e55d8d815a1d3a42320cc0afea5545c3607947",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-lifetime-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-obarray-emaxx.json": {
+      "raw_bytes": 2203,
+      "raw_sha256": "becbf518ee497b245a77994c2a4af8c31b1b51963c181918dcd2698211748ba2",
+      "sha256": "becbf518ee497b245a77994c2a4af8c31b1b51963c181918dcd2698211748ba2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-obarray-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-obarray-emaxx.stdout.gz": {
+      "raw_bytes": 61,
+      "raw_sha256": "82d9d56c123189c94326873e389bb20a93c6f4a1eb24cbf29a03d03b05145119",
+      "sha256": "2cb7aa7d42e68b62f2987dab5b9af6d588be81fed2774112373e096c6ece0816",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-obarray-gnu.json": {
+      "raw_bytes": 2152,
+      "raw_sha256": "d3f994f31b2d31e0cf1760a9d0c9928da7cac4127e19c75b5643ce535d9a82a5",
+      "sha256": "d3f994f31b2d31e0cf1760a9d0c9928da7cac4127e19c75b5643ce535d9a82a5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-obarray-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-obarray-gnu.stdout.gz": {
+      "raw_bytes": 61,
+      "raw_sha256": "82d9d56c123189c94326873e389bb20a93c6f4a1eb24cbf29a03d03b05145119",
+      "sha256": "2cb7aa7d42e68b62f2987dab5b9af6d588be81fed2774112373e096c6ece0816",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-obarray-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-emaxx.json": {
+      "raw_bytes": 2338,
+      "raw_sha256": "f53b8befa8d941dddc4481679b98c7b6f83be9a8deea6f350e124c543116e814",
+      "sha256": "f53b8befa8d941dddc4481679b98c7b6f83be9a8deea6f350e124c543116e814",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-emaxx.stdout.gz": {
+      "raw_bytes": 187,
+      "raw_sha256": "18f5189441e640bfae8b03211a9c4924e6f8439962bc452b7e9faab4ecc783eb",
+      "sha256": "d7c37194b86d0e19ca3e24968bab05e016ab7af8015eb307418d9d97c4a549ae",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-gnu.json": {
+      "raw_bytes": 2287,
+      "raw_sha256": "c4d3dde00f6303d4d2343aa7eac3df6c34435affe36de0251cf5d48d562878c7",
+      "sha256": "c4d3dde00f6303d4d2343aa7eac3df6c34435affe36de0251cf5d48d562878c7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-redefinition-gnu.stdout.gz": {
+      "raw_bytes": 187,
+      "raw_sha256": "18f5189441e640bfae8b03211a9c4924e6f8439962bc452b7e9faab4ecc783eb",
+      "sha256": "d7c37194b86d0e19ca3e24968bab05e016ab7af8015eb307418d9d97c4a549ae",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-redefinition-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-streams-emaxx.json": {
+      "raw_bytes": 3541,
+      "raw_sha256": "48ba2ba926129f63e70a9dafeba45bca359586bd59f878ec3dc0ca0252c13b76",
+      "sha256": "48ba2ba926129f63e70a9dafeba45bca359586bd59f878ec3dc0ca0252c13b76",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-streams-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-streams-emaxx.stdout.gz": {
+      "raw_bytes": 785,
+      "raw_sha256": "6d8b1daec2ef6b85a8b1cf7c99016ac0e3253944a22d996189569a51029008de",
+      "sha256": "838b72638cf37a997f1eda898ade795582894510f362689a9835d7292e3da347",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-streams-gnu.json": {
+      "raw_bytes": 3489,
+      "raw_sha256": "b2f6655607f102ede7d57b44ddb6c564b1adae47d263980ae536689c26b85a97",
+      "sha256": "b2f6655607f102ede7d57b44ddb6c564b1adae47d263980ae536689c26b85a97",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-streams-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-streams-gnu.stdout.gz": {
+      "raw_bytes": 785,
+      "raw_sha256": "6d8b1daec2ef6b85a8b1cf7c99016ac0e3253944a22d996189569a51029008de",
+      "sha256": "838b72638cf37a997f1eda898ade795582894510f362689a9835d7292e3da347",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-streams-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-callable-syntax-emaxx.json": {
+      "raw_bytes": 7863,
+      "raw_sha256": "afc9a7cb2d943951fde64f66932ef09cd57c949295524c82440df1e33712dda7",
+      "sha256": "afc9a7cb2d943951fde64f66932ef09cd57c949295524c82440df1e33712dda7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-emaxx.json"
+    },
+    "source89-ordinary-function-reader-callable-syntax-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-callable-syntax-emaxx.stdout.gz": {
+      "raw_bytes": 2925,
+      "raw_sha256": "9c91a76f0e1decf6b6f9b91c28804cb626771f1b7155fb39440b7c24cb569f2b",
+      "sha256": "2571116351dc0e9fcee3c52509c02a5c2b583b9c0a88fca816761e886461cae3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-callable-syntax-gnu.json": {
+      "raw_bytes": 7811,
+      "raw_sha256": "6605f7484624637d382a0ae04b02b6ada2f15e195466f3d10ce98ee6e6fca1c4",
+      "sha256": "6605f7484624637d382a0ae04b02b6ada2f15e195466f3d10ce98ee6e6fca1c4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-gnu.json"
+    },
+    "source89-ordinary-function-reader-callable-syntax-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-callable-syntax-gnu.stdout.gz": {
+      "raw_bytes": 2925,
+      "raw_sha256": "9c91a76f0e1decf6b6f9b91c28804cb626771f1b7155fb39440b7c24cb569f2b",
+      "sha256": "2571116351dc0e9fcee3c52509c02a5c2b583b9c0a88fca816761e886461cae3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-callable-syntax-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-printer-bindings-emaxx.json": {
+      "raw_bytes": 2274,
+      "raw_sha256": "cf1ba78e8e66f84cdbf09dfc7e1a0603c03004c3dfacd7d0fecabb559c5b3ad1",
+      "sha256": "cf1ba78e8e66f84cdbf09dfc7e1a0603c03004c3dfacd7d0fecabb559c5b3ad1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-emaxx.json"
+    },
+    "source89-ordinary-function-reader-printer-bindings-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-printer-bindings-emaxx.stdout.gz": {
+      "raw_bytes": 163,
+      "raw_sha256": "f799daebfe3fa452ae19d977a1aaed2ffeff754523ac9d42c9d4dee84d85ba7d",
+      "sha256": "1cd8f052302f0bb73d714cc6745abcbd062606df492012e069026829ecf8566b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-printer-bindings-gnu.json": {
+      "raw_bytes": 2222,
+      "raw_sha256": "37cc12a5ac5c85a4348886926606637bcb5121c5fe79caa8f9d2c1937f1899f7",
+      "sha256": "37cc12a5ac5c85a4348886926606637bcb5121c5fe79caa8f9d2c1937f1899f7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-gnu.json"
+    },
+    "source89-ordinary-function-reader-printer-bindings-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-printer-bindings-gnu.stdout.gz": {
+      "raw_bytes": 163,
+      "raw_sha256": "f799daebfe3fa452ae19d977a1aaed2ffeff754523ac9d42c9d4dee84d85ba7d",
+      "sha256": "1cd8f052302f0bb73d714cc6745abcbd062606df492012e069026829ecf8566b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-bindings-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-printer-destinations-emaxx.json": {
+      "raw_bytes": 3067,
+      "raw_sha256": "7279ab53d5004a6d8778f3f617b71f96813f0a7ea3410e25da815d4c452c900c",
+      "sha256": "7279ab53d5004a6d8778f3f617b71f96813f0a7ea3410e25da815d4c452c900c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-emaxx.json"
+    },
+    "source89-ordinary-function-reader-printer-destinations-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-printer-destinations-emaxx.stdout.gz": {
+      "raw_bytes": 237,
+      "raw_sha256": "23d25a8ea73dffb9daf6c416d045caf41f82f74a71d8e7b077c7bcfd6a170f43",
+      "sha256": "55bdef6e385eb9d61541e528368fcfa99fc0a910dc2987baf1deeabe02f70229",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-printer-destinations-gnu.json": {
+      "raw_bytes": 3016,
+      "raw_sha256": "96bebb08f555a57afb9618b2adb325a6525a029e5be40231de5e42fdb69167e1",
+      "sha256": "96bebb08f555a57afb9618b2adb325a6525a029e5be40231de5e42fdb69167e1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-gnu.json"
+    },
+    "source89-ordinary-function-reader-printer-destinations-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-printer-destinations-gnu.stdout.gz": {
+      "raw_bytes": 237,
+      "raw_sha256": "23d25a8ea73dffb9daf6c416d045caf41f82f74a71d8e7b077c7bcfd6a170f43",
+      "sha256": "55bdef6e385eb9d61541e528368fcfa99fc0a910dc2987baf1deeabe02f70229",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-printer-destinations-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-emaxx.json": {
+      "raw_bytes": 2497,
+      "raw_sha256": "aff095bde83c14523622f36eafb675b12ba7db83c9b0f83745dd2f555574bb15",
+      "sha256": "aff095bde83c14523622f36eafb675b12ba7db83c9b0f83745dd2f555574bb15",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-emaxx.json"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-emaxx.stdout.gz": {
+      "raw_bytes": 321,
+      "raw_sha256": "a70d559f95c5bcd8ef3744bd77dc82db6f63dcea5b04aac2fa746c95028a1bfb",
+      "sha256": "0e44cb2d2a7514747e2f0e88c8abf8ead6247f2a1a979d41c698cea9fc135872",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-gnu.json": {
+      "raw_bytes": 2446,
+      "raw_sha256": "10c8959bf4ca027061906c56645348b53fa6058675951eea16a155cb588a6404",
+      "sha256": "10c8959bf4ca027061906c56645348b53fa6058675951eea16a155cb588a6404",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-gnu.json"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-stream-entrypoints-gnu.stdout.gz": {
+      "raw_bytes": 321,
+      "raw_sha256": "a70d559f95c5bcd8ef3744bd77dc82db6f63dcea5b04aac2fa746c95028a1bfb",
+      "sha256": "0e44cb2d2a7514747e2f0e88c8abf8ead6247f2a1a979d41c698cea9fc135872",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-entrypoints-gnu.stdout"
+    },
+    "source89-ordinary-function-reader-stream-positions-emaxx.json": {
+      "raw_bytes": 2311,
+      "raw_sha256": "42964fd47d761b84ecadc9d15ae03a573760a81322b0f8df3b5dbe69b38d55c6",
+      "sha256": "42964fd47d761b84ecadc9d15ae03a573760a81322b0f8df3b5dbe69b38d55c6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-emaxx.json"
+    },
+    "source89-ordinary-function-reader-stream-positions-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-emaxx.stderr"
+    },
+    "source89-ordinary-function-reader-stream-positions-emaxx.stdout.gz": {
+      "raw_bytes": 106,
+      "raw_sha256": "f7ac6606eb24a0a9d5b09f69034568ce409bdf44728d10751bbe5ab6da998d55",
+      "sha256": "8089da9d23c67047520985bac8c169ed2a5302351805ce31f4ed8a1e72678b5c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-emaxx.stdout"
+    },
+    "source89-ordinary-function-reader-stream-positions-gnu.json": {
+      "raw_bytes": 2259,
+      "raw_sha256": "a91296e943b74125e17512d5101665e0c8018bd9f51c14c7a4e8eef10f0dd197",
+      "sha256": "a91296e943b74125e17512d5101665e0c8018bd9f51c14c7a4e8eef10f0dd197",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-gnu.json"
+    },
+    "source89-ordinary-function-reader-stream-positions-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-gnu.stderr"
+    },
+    "source89-ordinary-function-reader-stream-positions-gnu.stdout.gz": {
+      "raw_bytes": 106,
+      "raw_sha256": "f7ac6606eb24a0a9d5b09f69034568ce409bdf44728d10751bbe5ab6da998d55",
+      "sha256": "8089da9d23c67047520985bac8c169ed2a5302351805ce31f4ed8a1e72678b5c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-function-reader-stream-positions-gnu.stdout"
+    },
+    "source89-ordinary-image-command.json": {
+      "raw_bytes": 521,
+      "raw_sha256": "482c625f0855e8af61c2c0e945414e14f4f6250ac3f88ad1111b7888e2044f11",
+      "sha256": "482c625f0855e8af61c2c0e945414e14f4f6250ac3f88ad1111b7888e2044f11",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-image-command.json"
+    },
+    "source89-ordinary-image-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "b049516247e95f61d10048513ef1133aef85320c54e08be982d324d5bdfab152",
+      "sha256": "b049516247e95f61d10048513ef1133aef85320c54e08be982d324d5bdfab152",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-image-result.json"
+    },
+    "source89-ordinary-image.log.gz": {
+      "raw_bytes": 3774,
+      "raw_sha256": "23620bafa554c99d54b661e0d26a66ae3654fb31ed2203fee4c10fd8a42a9faf",
+      "sha256": "651f53ff902e82e84bb2046ddce7f8e2131827d1eb3c0fb10f95b261b41095d8",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-image.log"
+    },
+    "source89-ordinary-launch.json": {
+      "raw_bytes": 638,
+      "raw_sha256": "cf6f6c6bf3f42e9fa6824eba731b559027306a44c42c10dad02bd6425e803eab",
+      "sha256": "cf6f6c6bf3f42e9fa6824eba731b559027306a44c42c10dad02bd6425e803eab",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-ordinary-launch.json"
+    },
+    "source89-release-build-command.json": {
+      "raw_bytes": 544,
+      "raw_sha256": "8add09159aae2bbe31caef6c32b2ae29855053577b1c4e87e7bd95d08affcb04",
+      "sha256": "8add09159aae2bbe31caef6c32b2ae29855053577b1c4e87e7bd95d08affcb04",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-build-command.json"
+    },
+    "source89-release-build-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "078df62b051c77013dc658d3b847dc823e5f9dcd6370c3275171b59d90d912c0",
+      "sha256": "078df62b051c77013dc658d3b847dc823e5f9dcd6370c3275171b59d90d912c0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-build-result.json"
+    },
+    "source89-release-build.log.gz": {
+      "raw_bytes": 185644,
+      "raw_sha256": "855312e2fed7c00aa05909c51a61c971d32440297f9969a7608a9141f107cc87",
+      "sha256": "8196f0a21217fe709f3c7c884f7383613263f80ae07e9720ddefc59335baa425",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-build.log"
+    },
+    "source89-release-inventory-comparison.json": {
+      "raw_bytes": 534194,
+      "raw_sha256": "d84c7bb1bd791fa29a53d8d8495192c610de012a13a6c7ef25388ea5f9e6e68d",
+      "sha256": "d84c7bb1bd791fa29a53d8d8495192c610de012a13a6c7ef25388ea5f9e6e68d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-inventory-comparison.json"
+    },
+    "source89-release-selected-command.json": {
+      "raw_bytes": 1010,
+      "raw_sha256": "92cd405dda79f4eb4d7ef64725db9f7783a47adfab581c1f27d47550414279d1",
+      "sha256": "92cd405dda79f4eb4d7ef64725db9f7783a47adfab581c1f27d47550414279d1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-selected-command.json"
+    },
+    "source89-release-selected-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "6b7998baa19a656a7faee7cf37a9adf4668824ee53708f8edfa0cb592560391c",
+      "sha256": "6b7998baa19a656a7faee7cf37a9adf4668824ee53708f8edfa0cb592560391c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-selected-result.json"
+    },
+    "source89-release-selected.log.gz": {
+      "raw_bytes": 45258,
+      "raw_sha256": "22d428101b43cce26ddf01d2f0cb7e91ae54861b7df59a10c74d80174af30cc3",
+      "sha256": "2425053363c62a10fdf633ba467e0c9088ff870901ac3c64369fade986ccb557",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-selected.log"
+    },
+    "source89-release-verifier-launch.json": {
+      "raw_bytes": 725,
+      "raw_sha256": "a7889cc70970d220ada9a02e9480b82c4914cf2670eb9950e77927f1facc06b1",
+      "sha256": "a7889cc70970d220ada9a02e9480b82c4914cf2670eb9950e77927f1facc06b1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89-release-verifier-launch.json"
+    },
+    "source89.patch.gz": {
+      "raw_bytes": 23197,
+      "raw_sha256": "3dd8ac62a3880ecfa57768fdf91216b7ef852865ed6bd7a10827050e15b835e8",
+      "sha256": "74c413d72b69fd726c86f602d994c16d3f4773c2a60b9e4908665e7ea45b7fd2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source89.patch"
+    },
+    "validate-frame-snapshot.py": {
+      "raw_bytes": 4273,
+      "raw_sha256": "29a3b62dbe1100c62a208e85a9b3bcb51fbd43688fb772edc80af8c16ec1f7e4",
+      "sha256": "29a3b62dbe1100c62a208e85a9b3bcb51fbd43688fb772edc80af8c16ec1f7e4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py"
+    },
+    "validate-function-ordinary.py": {
+      "raw_bytes": 3743,
+      "raw_sha256": "6921ace43fe7369078796b392f5b8923f5a98eea9df13fe91c3ad9b13b947f42",
+      "sha256": "6921ace43fe7369078796b392f5b8923f5a98eea9df13fe91c3ad9b13b947f42",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-function-ordinary.py"
+    }
+  },
+  "format_version": 1,
+  "goal_complete": false,
+  "qualification": "Remove two duplicate function payload tables and the string-keyed position map. Reads, static roots, cycle validation and image copying use the existing per-interpreter symbol function cell. Two direct-cell structural controls fail before repair and remain unchanged. Ordered ids still adapt the existing obarray enumeration; full allocated-symbol cell authority is not complete. Debug/release/static/ordinary results required here. No full/frozen/performance certification; local GNU source matched only.",
+  "software_snapshot": 89,
+  "source_snapshots": {
+    "source88": {
+      "base_commit": "9f000b24bbe61c4c6142d629a33f861c828559e6",
+      "patch": "source88.patch.gz",
+      "software_manifest": "source88-manifest.json",
+      "untracked_file_sources": {
+        "src/lisp/eval/function_cell_tests.rs": "source88-function_cell_tests.rs"
+      }
+    },
+    "source89": {
+      "base_commit": "9f000b24bbe61c4c6142d629a33f861c828559e6",
+      "patch": "source89.patch.gz",
+      "software_manifest": "source89-manifest.json",
+      "untracked_file_sources": {
+        "src/lisp/eval/function_cell_tests.rs": "source89-function_cell_tests.rs"
+      }
+    }
+  }
+}

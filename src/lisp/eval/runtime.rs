@@ -2789,7 +2789,7 @@ impl Interpreter {
     // Whether NAME has an interpreted (Lisp-defined) function binding,
     // as opposed to only a native dispatch arm.
     pub(crate) fn has_lisp_function(&self, name: &str) -> bool {
-        self.functions_index.contains_key(name)
+        self.globals.function_definition_by_name(name).is_some()
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {

@@ -1,0 +1,22 @@
+{
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py",
+    "89",
+    "function",
+    "lisp::eval::symbol_cells",
+    "lisp::types::",
+    "lisp::runtime::tests",
+    "lisp::native_comp::runtime::tests",
+    "lisp::primitives::pdumper::tests",
+    "anti_cheat::tests::interpreter_",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "--static"
+  ],
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  }
+}

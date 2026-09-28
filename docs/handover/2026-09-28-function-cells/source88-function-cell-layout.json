@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/usr/bin/lldb",
+    "--batch",
+    "-o",
+    "target create /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source88-debug-libtest",
+    "-o",
+    "image lookup -t emaxx::lisp::eval::symbol_cells::SymbolCell"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 2.876318958,
+  "binary_sha256": "1fdd926d4645c9ff330cab7e82921751342b6a997a4306b3afe3146e33f32659",
+  "binary_unchanged": true,
+  "qualification": "Read-only DWARF type lookup; no program launch. Exact immutable debug binary tied to source88, not current worktree."
+}

@@ -1386,14 +1386,6 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             "alloc.c marks a live finalizer's function only through the reached object; an unreached one is doomed and then rooted",
         ),
         (
-            "functions_index",
-            "an index over `functions', which is marked",
-        ),
-        (
-            "functions_position",
-            "the positions of `functions' entries, no Lisp object",
-        ),
-        (
             "dispatched_signal",
             "identity memo of the last dispatched signal; thread.c marks handler->val only while its handler runs",
         ),

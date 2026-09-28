@@ -126,10 +126,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "written per symbol (dump_symbol's watchers)",
     ),
     (
-        "functions",
-        "written per symbol (dump_symbol's function cell)",
-    ),
-    (
         "buffer_locals",
         "written per buffer (dump_buffer's local_var_alist)",
     ),
@@ -264,14 +260,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
     ("regexp_syntax_class_cache", "a cache"),
-    (
-        "functions_position",
-        "an index over functions, rebuilt as they are installed",
-    ),
-    (
-        "functions_index",
-        "the last-wins lookup index over functions; install_function_cell uses set_function_binding to rebuild it from each restored symbol function cell, or removes a voided binding",
-    ),
     ("syntax_segment_cache", "a cache"),
     ("equal_hash_tables", "thawed from the hash list"),
     (

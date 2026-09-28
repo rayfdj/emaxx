@@ -1,0 +1,14 @@
+{
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py",
+    "88",
+    "lisp::eval::function_cell_tests"
+  ],
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "qualification": "Baseline adds only two architectural regression controls to9f000b24; no production repair yet."
+}

@@ -3,7 +3,7 @@
 //! GNU keeps a variable's value, its redirect (`SYMBOL_VARALIAS',
 //! `SYMBOL_LOCALIZED') and `declared_special' in the `Lisp_Symbol' object
 //! and reads them through the object, never through its name.  Emaxx's
-//! symbol objects are shared by every interpreter on a thread (the test
+//! symbol objects are shared by every interpreter in the process (the test
 //! image template is cloned), so the cells live in the interpreter, indexed
 //! by the symbol's dense id: one bounds-checked index per read instead of
 //! three name-keyed hash probes.  Name-keyed callers reach the same cell
@@ -17,6 +17,7 @@
 use super::super::types::{SymbolName, UNINTERNED_SYMBOL_ID_BIT, Value};
 use crate::lisp::primitives::FnvBuildHasher;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 /// data.c: `SYMBOL_LOCALIZED' -- the value cell can forward through a
 /// buffer-local binding.
@@ -46,9 +47,12 @@ struct SymbolCell {
     symbol: Option<SymbolName>,
     value: Option<Value>,
     /// lisp.h's `u.s.function': the function cell, read by id as
-    /// eval_sub reads `XSYMBOL (fun)->u.s.function' (the name-keyed
-    /// function index is written alongside; see `set_function').
+    /// eval_sub reads `XSYMBOL (fun)->u.s.function'. Lookup, tracing and
+    /// image copying all read this one payload.
     function: Option<Value>,
+    /// One-based position in `function_order' for a Lisp-installed
+    /// definition. Static defsubr installation has no such entry.
+    function_position: Option<NonZeroU32>,
     /// `SYMBOL_VARALIAS': the alias target.
     alias: Option<SymbolName>,
     flags: u8,
@@ -81,6 +85,11 @@ pub(crate) struct SymbolCells {
     /// the cell's recorded position.
     order: Vec<u32>,
     bound: usize,
+    /// Enumeration metadata only: Lisp-installed functions keep the
+    /// previous first-definition order without copying names or values.
+    /// Remove this adapter when the obarray owns enumeration directly.
+    function_order: Vec<u32>,
+    defined_functions: usize,
     /// Number of cells with a redirect, so alias-free interpreters skip
     /// resolution entirely.
     aliases: usize,
@@ -257,6 +266,11 @@ impl SymbolCells {
             .and_then(|cell| cell.function.as_ref())
     }
 
+    pub(crate) fn function_by_name(&self, name: &str) -> Option<&Value> {
+        let id = SymbolName::id_of(name)?;
+        self.cell(id)?.function.as_ref()
+    }
+
     /// Write (or void) the symbol's function cell.
     pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
         match function.filter(|value| !value.is_nil()) {
@@ -264,9 +278,92 @@ impl SymbolCells {
             None => {
                 if let Some(cell) = self.existing_cell_mut(symbol.id()) {
                     cell.function = None;
+                    if cell.function_position.take().is_some() {
+                        self.defined_functions -= 1;
+                    }
                 }
             }
         }
+    }
+
+    /// A Lisp definition uses the same cell as defsubr. The only extra
+    /// state records enumeration order, not another function payload.
+    pub(crate) fn set_function_definition(&mut self, symbol: &SymbolName, function: Option<Value>) {
+        self.set_function(symbol, function);
+        let next = self.function_order.len() + 1;
+        let Some(cell) = self.existing_cell_mut(symbol.id()) else {
+            return;
+        };
+        if cell.function.is_some() && cell.function_position.is_none() {
+            cell.function_position =
+                NonZeroU32::new(u32::try_from(next).expect("function order index"));
+            self.function_order.push(symbol.id());
+            self.defined_functions += 1;
+            self.compact_function_order_if_sparse();
+        }
+    }
+
+    pub(crate) fn has_function_definition(&self, symbol: &SymbolName) -> bool {
+        self.cell(symbol.id())
+            .is_some_and(|cell| cell.function_position.is_some())
+    }
+
+    pub(crate) fn function_definition_by_name(&self, name: &str) -> Option<&Value> {
+        let cell = self.cell(SymbolName::id_of(name)?)?;
+        cell.function_position?;
+        cell.function.as_ref()
+    }
+
+    pub(crate) fn function_definitions_len(&self) -> usize {
+        self.defined_functions
+    }
+
+    pub(crate) fn function_definitions(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
+        self.function_order
+            .iter()
+            .enumerate()
+            .filter_map(move |(position, id)| {
+                let cell = self.cell(*id)?;
+                if cell.function_position?.get() as usize != position + 1 {
+                    return None;
+                }
+                Some((cell.symbol.as_ref()?, cell.function.as_ref()?))
+            })
+    }
+
+    fn compact_function_order_if_sparse(&mut self) {
+        if self.function_order.len() < 1024
+            || self.function_order.len() < self.defined_functions * 2
+        {
+            return;
+        }
+        let mut order = Vec::with_capacity(self.defined_functions);
+        for (position, id) in std::mem::take(&mut self.function_order)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(cell) = self.existing_cell_mut(id) else {
+                continue;
+            };
+            if cell
+                .function_position
+                .is_some_and(|slot| slot.get() as usize == position + 1)
+            {
+                cell.function_position =
+                    NonZeroU32::new(u32::try_from(order.len() + 1).expect("function order index"));
+                order.push(id);
+            }
+        }
+        self.function_order = order;
+    }
+
+    /// Trace all actual function cells, including direct defsubr/image
+    /// stores that do not participate in Lisp-definition enumeration.
+    pub(crate) fn function_values(&self) -> impl Iterator<Item = &Value> {
+        self.cells
+            .iter()
+            .chain(self.uninterned.values())
+            .filter_map(|cell| cell.function.as_ref())
     }
 
     /// Every function cell, for the image copier.
@@ -433,6 +530,61 @@ mod tests {
             .iter()
             .map(|(name, _)| name.as_str().to_owned())
             .collect()
+    }
+
+    #[test]
+    fn function_enumeration_survives_redefinition_voiding_and_compaction() {
+        let mut cells = SymbolCells::default();
+        let symbols = [
+            "function-order-first",
+            "function-order-second",
+            "function-order-third",
+        ]
+        .map(SymbolName::intern_str);
+        let direct = SymbolName::intern_str("function-order-direct");
+        cells.set_function(&direct, Some(Value::Integer(71)));
+        assert_eq!(cells.function_definitions_len(), 0);
+        assert_eq!(
+            cells.function_by_name(direct.as_str()),
+            Some(&Value::Integer(71))
+        );
+        for (index, symbol) in symbols.iter().enumerate() {
+            cells.set_function_definition(symbol, Some(Value::Integer(index as i64)));
+        }
+        cells.set_function_definition(&symbols[0], Some(Value::Integer(17)));
+        cells.set_function_definition(&symbols[1], Some(Value::Nil));
+        assert!(!cells.has_function_definition(&symbols[1]));
+        assert!(cells.function_by_name(symbols[1].as_str()).is_none());
+        cells.set_function_definition(&symbols[1], Some(Value::Integer(43)));
+        let transient = SymbolName::intern_str("function-order-transient");
+        for index in 0..3000 {
+            cells.set_function_definition(&transient, Some(Value::Integer(index)));
+            cells.set_function_definition(&transient, None);
+        }
+        assert_eq!(cells.function_definitions_len(), 3);
+        assert!(cells.function_order.len() <= 1024);
+        assert_eq!(
+            cells
+                .function_definitions()
+                .map(|(symbol, value)| (*symbol, *value))
+                .collect::<Vec<_>>(),
+            vec![
+                (symbols[0], Value::Integer(17)),
+                (symbols[2], Value::Integer(2)),
+                (symbols[1], Value::Integer(43))
+            ]
+        );
+        // A direct void store also retires an enumeration entry. Repeating
+        // it must not decrement the live count or revive an older slot.
+        cells.set_function(&symbols[0], None);
+        cells.set_function(&symbols[0], None);
+        assert_eq!(cells.function_definitions_len(), 2);
+        assert_eq!(cells.function_values().count(), 3);
+        assert!(
+            cells
+                .function_definition_by_name(symbols[0].as_str())
+                .is_none()
+        );
     }
 
     #[test]
