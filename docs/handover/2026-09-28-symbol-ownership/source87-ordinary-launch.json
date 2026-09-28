@@ -1,0 +1,19 @@
+{
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "build_and_image_command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py",
+    "87",
+    "--ordinary"
+  ],
+  "build_and_image_environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "next_command_on_success": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-symbol-ordinary.py",
+    "87"
+  ],
+  "comparison_environment": "No additional overrides; exact editor commands are recorded per process."
+}
