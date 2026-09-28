@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(one) (two)\"))\n          (source (lambda (&optional char)\n                    (if char (push char chars) (pop chars))))\n          (first (funcall reader source))\n          (remaining (length chars))\n          (second (condition-case error (funcall reader source)\n                    (error (car error)))))\n     (list (symbol-name (bare-symbol (car first))) remaining\n           (if (consp second)\n               (symbol-name (bare-symbol (car second))) second))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.699751666,
+  "stdout_hex": "2828226f6e6522203020656e642d6f662d66696c65292028226f6e6522203020656e642d6f662d66696c652929",
+  "stderr_hex": "",
+  "artifact": {
+    "binary": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+    "image": "28f5a21137d4f18d93d761308d1eeca548676cc87643d0b4b2d035574a33d22e"
+  },
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Source-matched ordinary reader diagnostics. Failed comparisons remain failed. GNU is not the pinned Darwin executable. No frozen or performance claim."
+}

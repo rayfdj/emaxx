@@ -1317,21 +1317,6 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             width: 2,
         });
     let source_groups = interp.dump_root_groups();
-    let source_printed = source_groups
-        .iter()
-        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
-        .collect::<Vec<_>>();
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
-    );
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
-    );
-
     let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, &interp, RootSource::Interpreter) {
         Ok(summary) => summary,
@@ -1347,6 +1332,24 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     };
     assert!(summary.hot_bytes > 0);
     let bytes = ctx.buffer().to_vec();
+    // Capture the image before presentation. GNU print_prepare temporarily
+    // binds escape flags, so prin1-to-string advances this interpreter's
+    // binding IDs even though it restores the variables afterwards. The
+    // remembered scalar values must come from the same pre-print snapshot.
+    let source_printed = source_groups
+        .iter()
+        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
+        .collect::<Vec<_>>();
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
+    );
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
+    );
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     for (slot, _) in &source_groups {

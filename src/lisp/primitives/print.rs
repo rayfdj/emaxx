@@ -2,7 +2,12 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -> String {
+pub(crate) fn render_prin1_string(
+    interp: &Interpreter,
+    text: &str,
+    multibyte: bool,
+    env: &Env,
+) -> String {
     let escape_multibyte = interp
         .lookup_var("print-escape-multibyte", env)
         .is_some_and(|value| value.is_truthy());
@@ -20,10 +25,18 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
     let escape_control = interp
         .lookup_var("print-escape-control-characters", env)
         .is_some_and(|value| value.is_truthy());
+    let escape_nonascii = interp
+        .lookup_var("print-escape-nonascii", env)
+        .is_some_and(|value| value.is_truthy());
     let mut rendered = String::with_capacity(text.len() + 2);
     rendered.push('"');
     let mut chars = text.chars().peekable();
+    let mut need_nonhex = false;
     while let Some(ch) = chars.next() {
+        if need_nonhex && ch.is_ascii_hexdigit() {
+            rendered.push_str("\\ ");
+        }
+        need_nonhex = false;
         match ch {
             '"' => rendered.push_str("\\\""),
             '\\' => rendered.push_str("\\\\"),
@@ -46,19 +59,17 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
                     rendered.push(char::from(b'0' + digit as u8));
                 }
             }
-            // GNU print.c octal-escapes raw 8-bit bytes (`\300') whenever
-            // they cannot be emitted as characters: always in multibyte
-            // strings, and under `print-escape-nonascii' (auto-bound by
-            // string output in multibyte contexts) in unibyte strings.
-            // Emaxx represents such bytes as placeholder scalars, which
-            // must never leak into printed syntax.
-            ch if case::is_raw_byte_regex_char(ch) => {
+            // print.c:print_object distinguishes raw bytes in multibyte
+            // strings from unibyte bytes. The latter remain BYTE8 chars
+            // unless the actual destination requests octal escapes.
+            ch if case::is_raw_byte_regex_char(ch) && (multibyte || escape_nonascii) => {
                 let byte = case::raw_byte_from_regex_char(ch)
                     .expect("raw byte placeholder maps back to its byte");
                 rendered.push_str(&format!("\\{byte:03o}"));
             }
-            ch if escape_multibyte && !ch.is_ascii() => {
+            ch if multibyte && escape_multibyte && !ch.is_ascii() => {
                 rendered.push_str(&format!("\\x{:04x}", ch as u32));
+                need_nonhex = true;
             }
             ch => rendered.push(ch),
         }
@@ -91,6 +102,37 @@ pub(crate) struct PrintOptions {
     length: Option<usize>,
     level: Option<usize>,
     quoted: bool,
+    /// print_string sends unibyte character codes to function streams,
+    /// while buffer/stdout output preserves their byte8 representation.
+    output_is_function: bool,
+}
+
+fn render_princ_string(
+    interp: &Interpreter,
+    text: &str,
+    multibyte: bool,
+    env: &Env,
+    output_is_function: bool,
+) -> String {
+    let escape_nonascii = !output_is_function
+        && interp
+            .lookup_var("print-escape-nonascii", env)
+            .is_some_and(|value| value.is_truthy());
+    let mut rendered = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            if escape_nonascii {
+                rendered.push_str(&format!("\\{byte:03o}"));
+            } else if output_is_function && !multibyte {
+                rendered.push(char::from(byte));
+            } else {
+                rendered.push(ch);
+            }
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered
 }
 
 #[derive(Clone)]
@@ -192,6 +234,7 @@ pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
         quoted: interp
             .lookup_var("print-quoted", env)
             .is_some_and(|value| value.is_truthy()),
+        output_is_function: false,
     }
 }
 
@@ -1062,18 +1105,38 @@ pub(crate) fn render_prin1_body(
             };
             Ok(rendered.unwrap_or_else(|| value.to_string()))
         }
-        Kind::String(text) if !context.options.escape => Ok(text.to_string()),
-        Kind::String(text) => Ok(render_prin1_string(interp, &text, env)),
-        Kind::StringObject(state) if !context.options.escape => Ok(state.borrow().text.clone()),
+        Kind::String(text) if !context.options.escape => Ok(render_princ_string(
+            interp,
+            &text,
+            string_argument_multibyte(value),
+            env,
+            context.options.output_is_function,
+        )),
+        Kind::String(text) => Ok(render_prin1_string(
+            interp,
+            &text,
+            string_argument_multibyte(value),
+            env,
+        )),
+        Kind::StringObject(state) if !context.options.escape => {
+            let state = state.borrow();
+            Ok(render_princ_string(
+                interp,
+                &state.text,
+                state.multibyte,
+                env,
+                context.options.output_is_function,
+            ))
+        }
         Kind::StringObject(state) => {
             let (text, props, multibyte) = {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone(), state.multibyte)
             };
             if props.is_empty() {
-                return Ok(render_prin1_string(interp, &text, env));
+                return Ok(render_prin1_string(interp, &text, multibyte, env));
             }
-            let mut rendered = vec![render_prin1_string(interp, &text, env)];
+            let mut rendered = vec![render_prin1_string(interp, &text, multibyte, env)];
             let mut field_values = Vec::new();
             let keep_charset = charset_text_properties_print(interp, env, &text, multibyte, &props);
             for span in props {
@@ -1108,7 +1171,7 @@ pub(crate) fn render_prin1_body(
                 )?);
             }
             if rendered.len() == 1 {
-                return Ok(render_prin1_string(interp, &text, env));
+                return Ok(render_prin1_string(interp, &text, multibyte, env));
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
@@ -1410,7 +1473,49 @@ pub(crate) fn render_prin1(
     value: &Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    let options = print_options(interp, env);
+    with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
+        render_printer_object(interp, value, env, true, false)
+    })
+}
+
+/// print.c:print_prepare binds the escape flag required by a buffer's
+/// encoding. Function and stdout streams do not impose either flag.
+pub(crate) fn with_printer_buffer_escape<T>(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    multibyte: Option<bool>,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let Some(multibyte) = multibyte else {
+        return body(interp, env);
+    };
+    let name = if multibyte {
+        "print-escape-nonascii"
+    } else {
+        "print-escape-multibyte"
+    };
+    if interp
+        .lookup_var(name, env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return body(interp, env);
+    }
+    let restore = interp.bind_special_dynamic(name, Value::T, env)?;
+    let result = body(interp, env);
+    let restored = interp.restore_special_dynamic(restore, env);
+    restored.and(result)
+}
+
+pub(crate) fn render_printer_object(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+    escape: bool,
+    output_is_function: bool,
+) -> Result<String, LispError> {
+    let mut options = print_options(interp, env);
+    options.escape = escape;
+    options.output_is_function = output_is_function;
     prepare_print_numbering(interp, env, options);
     let mut context = PrintContext::new(interp, value, env, options)?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
@@ -1425,13 +1530,7 @@ pub(crate) fn render_princ_object(
     value: &Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    let mut options = print_options(interp, env);
-    options.escape = false;
-    prepare_print_numbering(interp, env, options);
-    let mut context = PrintContext::new(interp, value, env, options)?;
-    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
-    finish_print_number_table(interp, env, &context)?;
-    Ok(rendered)
+    render_printer_object(interp, value, env, false, false)
 }
 
 pub(crate) fn render_prin1_ephemeral(
@@ -1556,7 +1655,9 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let result = read_one_positioned_form(interp, env, &text, start as i64);
+            // lread.c:read_internal_start uses an absolute base only for
+            // BUFFERP. Marker streams count from zero for each read.
+            let result = read_one_positioned_form(interp, env, &text, 0);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
                 Err(LispErrorKind::EndOfInput) => text.chars().count(),
@@ -1565,22 +1666,13 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::BuiltinFunc(_) | Kind::Lambda(_) => {
-            // A function stream yields characters with no stable source
-            // text, so GNU has no positions to attach either.
-            let value = read_from_callable_source(interp, source, env)?;
-            interp.intern_symbols_in_value(&value);
-            Ok(value)
-        }
-        Kind::Symbol(symbol) if interp.lookup_function(&symbol, env).is_ok() => {
-            let value = read_from_callable_source(interp, source, env)?;
-            interp.intern_symbols_in_value(&value);
-            Ok(value)
-        }
-        _ => {
+        Kind::String(_) | Kind::StringObject(_) => {
             let text = reader_string_source_text(source)?;
             read_one_positioned_form(interp, env, &text, 0).map(|(value, _)| value)
         }
+        // lread.c:readchar calls the remaining stream objects, including
+        // bytecode closures, through the ordinary function dispatcher.
+        _ => read_callable_source(interp, source, env, true),
     }
 }
 
@@ -1677,32 +1769,89 @@ pub(crate) fn read_from_callable_source(
     source: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let callable = resolve_callable(interp, source, env)?;
-    let original_name = source.as_symbol().ok();
-    let mut text = String::new();
-    loop {
-        let next = interp.call_function_value(callable, original_name, &[], env)?;
-        let Some(code) = (match next.kind() {
-            Kind::Integer(code) => Some(code),
-            Kind::Nil => None,
-            other => {
-                return Err(LispError::WrongTypeArgument(
-                    "integerp".into(),
-                    other.value(),
-                ));
-            }
-        }) else {
-            break;
-        };
-        if code < 0 {
-            break;
-        }
-        let Some(ch) = char::from_u32(code as u32) else {
-            return Err(LispError::Signal("Invalid character".into()));
-        };
-        text.push(ch);
+    read_callable_source(interp, source, env, false)
+}
+
+struct CallableReader<'a> {
+    interp: &'a mut Interpreter,
+    source: Value,
+    env: &'a mut Env,
+}
+
+impl CallableReader<'_> {
+    fn call(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        // GNU call0/call1 resolve a symbol stream on every invocation. The
+        // callback can redefine that function, including during unread.
+        let callable = resolve_callable(self.interp, &self.source, self.env)?;
+        self.interp
+            .call_function_value(callable, self.source.as_symbol().ok(), args, self.env)
     }
-    read_one_form_in_env(interp, &text, env).map(|(value, _)| value)
+}
+
+impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
+    fn read_character(&mut self) -> Result<Option<i64>, LispError> {
+        match self.call(&[])?.kind() {
+            Kind::Nil => Ok(None),
+            Kind::Integer(code) if code < 0 => Ok(None),
+            Kind::Integer(code) => Ok(Some(code)),
+            other => Err(LispError::WrongTypeArgument(
+                "integerp".into(),
+                other.value(),
+            )),
+        }
+    }
+
+    fn unread_character(&mut self, character: i64) -> Result<(), LispError> {
+        self.call(&[Value::Integer(character)]).map(|_| ())
+    }
+
+    fn intern_symbol(&mut self, name: &str, shorthand: bool) -> Result<Value, LispError> {
+        let name = if shorthand {
+            let shorthands = read_symbol_shorthands_in_env(self.interp, self.env)?;
+            crate::lisp::reader::apply_symbol_shorthands_to_token(name.to_owned(), &shorthands)
+        } else {
+            name.to_owned()
+        };
+        let obarray = self
+            .interp
+            .lookup_var("obarray", self.env)
+            .unwrap_or(Value::Nil);
+        intern_in_obarray(self.interp, &obarray, &name)
+    }
+}
+
+fn read_callable_source(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+    locate_symbols: bool,
+) -> Result<Value, LispError> {
+    let (value, unescaped, needs_materialization) = {
+        let mut stream = CallableReader {
+            interp,
+            source: *source,
+            env,
+        };
+        let mut reader = crate::lisp::reader::Reader::from_stream(&mut stream, locate_symbols);
+        let value = reader.read()?;
+        reader.finish_stream()?;
+        let unescaped = reader
+            .unescaped_character_literals()
+            .map(Value::Integer)
+            .collect::<Vec<_>>();
+        (value, unescaped, reader.emitted_reader_forms())
+    };
+    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
+    interp.set_variable(
+        "lread--unescaped-character-literals",
+        Value::list(unescaped),
+        env,
+    );
+    if needs_materialization {
+        interp.materialize_read_object_literals(value, env)
+    } else {
+        Ok(value)
+    }
 }
 
 pub(crate) fn read_from_lisp_source(
@@ -2058,14 +2207,11 @@ fn read_from_lisp_source_raw(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::BuiltinFunc(_) | Kind::Lambda(_) => read_from_callable_source(interp, source, env),
-        Kind::Symbol(symbol) if interp.lookup_function(&symbol, env).is_ok() => {
-            read_from_callable_source(interp, source, env)
-        }
-        _ => {
+        Kind::String(_) | Kind::StringObject(_) => {
             let s = reader_string_source_text(source)?;
             read_one_form_in_env(interp, &s, env).map(|(value, _)| value)
         }
+        _ => read_from_callable_source(interp, source, env),
     }
 }
 

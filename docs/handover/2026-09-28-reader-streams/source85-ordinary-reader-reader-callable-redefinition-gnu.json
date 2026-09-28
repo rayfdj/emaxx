@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let ((characters (string-to-list \"delta omega\"))\n         (events nil)\n         (calls 0)\n         (name (make-symbol \"changing-stream\")))\n     (unwind-protect\n         (progn\n           (fset name\n                 (lambda (&optional character)\n                   (push 'first events)\n                   (setq calls (1+ calls))\n                   (when (= calls 2)\n                     (fset name\n                           (lambda (&optional returned)\n                             (push 'replacement events)\n                             (if returned (push returned characters)\n                               (pop characters)))))\n                   (if character (push character characters)\n                     (pop characters))))\n           (let ((form (funcall reader name)))\n             (list (symbol-name (bare-symbol form))\n                   (concat characters) (nreverse events))))\n       (fmakunbound name))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-redefinition.el",
+  "input_sha256": "93bfed92aa637763e492e0629c239d0854b461e471a0a06166af5bca81bc05b6",
+  "exit_code": 0,
+  "elapsed_seconds": 0.191213666000003,
+  "stdout_hex": "28282264656c7461222022206f6d6567612220286669727374206669727374207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74292920282264656c7461222022206f6d6567612220286669727374206669727374207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74207265706c6163656d656e74292929",
+  "stderr_hex": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. GNU executable differs from the pinned Darwin oracle. No frozen or performance claim."
+}

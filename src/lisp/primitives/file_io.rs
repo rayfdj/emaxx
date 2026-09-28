@@ -822,7 +822,110 @@ pub(crate) fn append_external_debugging_output(
     }
 }
 
+pub(crate) fn print_object_to_stream(
+    interp: &mut Interpreter,
+    value: &Value,
+    stream: Option<Value>,
+    env: &mut Env,
+    escape: bool,
+    newlines: bool,
+) -> Result<Value, LispError> {
+    with_printer_destination(interp, stream.as_ref(), env, |interp, env| {
+        let multibyte = match stream.map(|value| value.kind()) {
+            None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
+                Some(interp.buffer.borrow().is_multibyte())
+            }
+            _ => None,
+        };
+        let output_is_function =
+            multibyte.is_none() && stream.is_some_and(|value| !matches!(value.kind(), Kind::T));
+        with_printer_buffer_escape(interp, env, multibyte, |interp, env| {
+            let rendered = render_printer_object(interp, value, env, escape, output_is_function)?;
+            let rendered = if newlines {
+                format!("\n{rendered}\n")
+            } else {
+                rendered
+            };
+            write_prepared_printer_output(interp, &rendered, stream.as_ref(), env)?;
+            if (newlines || native_print_updates_batch_last_char(interp, value, env, escape))
+                && let Some(last) = rendered.chars().last()
+            {
+                record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+            }
+            Ok(*value)
+        })
+    })
+}
+
+/// print.c:print_prepare selects the output buffer before rendering, and
+/// print_finish moves a marker and restores point after successful insertion.
+/// The original current buffer is restored on either normal or error return.
+fn with_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let (buffer_id, marker_position) = match stream.map(|value| value.kind()) {
+        Some(Kind::Buffer(buffer)) => (buffer.id, None),
+        Some(Kind::Marker(marker)) => {
+            let buffer = marker
+                .buffer()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let position = marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let state = buffer.borrow();
+            if !(state.point_min()..=state.point_max()).contains(&position) {
+                return Err(LispError::Signal(
+                    "Marker is outside the accessible part of the buffer".into(),
+                ));
+            }
+            (buffer.id, Some((marker, position, state.point())))
+        }
+        _ => return body(interp, env),
+    };
+    let saved_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(buffer_id)?;
+    if let Some((_, position, _)) = marker_position {
+        interp.buffer.borrow_mut().goto_char(position);
+    }
+    let result = body(interp, env).and_then(|value| {
+        if let Some((marker, start, old_point)) = marker_position {
+            let end = interp.buffer.borrow().point();
+            interp.set_marker(marker, Some(end), Some(buffer_id))?;
+            let restored_point = if old_point >= start {
+                old_point.saturating_add(end).saturating_sub(start)
+            } else {
+                old_point
+            };
+            interp.buffer.borrow_mut().goto_char(restored_point);
+        }
+        Ok(value)
+    });
+    let restored = if interp.has_buffer_id(saved_buffer) {
+        interp.set_current_buffer_id(saved_buffer)
+    } else {
+        Ok(())
+    };
+    match (result, restored) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
 pub(crate) fn write_printer_output(
+    interp: &mut Interpreter,
+    text: &str,
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    with_printer_destination(interp, stream, env, |interp, env| {
+        write_prepared_printer_output(interp, text, stream, env)
+    })
+}
+
+fn write_prepared_printer_output(
     interp: &mut Interpreter,
     text: &str,
     stream: Option<&Value>,
@@ -841,7 +944,21 @@ pub(crate) fn write_printer_output(
             {
                 // print.c printchar/strout: stdio's buffered stdout, and
                 // `noninteractive_need_newline' for the next `message'.
-                crate::lisp::primitives::batch_stdout::write(text.as_bytes())
+                // print.c:printchar writes CHAR_STRING bytes, including
+                // Emacs's two-byte encoding for BYTE8 characters.
+                let bytes = if text.chars().any(is_raw_byte_regex_char) {
+                    let mut bytes = Vec::with_capacity(text.len());
+                    for character in text.chars() {
+                        push_emacs_multibyte_char(
+                            &mut bytes,
+                            string_character_code(true, character) as u32,
+                        )?;
+                    }
+                    std::borrow::Cow::Owned(bytes)
+                } else {
+                    std::borrow::Cow::Borrowed(text.as_bytes())
+                };
+                crate::lisp::primitives::batch_stdout::write(&bytes)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 interp.batch_stdout_need_newline = true;
             } else {
@@ -851,72 +968,24 @@ pub(crate) fn write_printer_output(
             }
             Ok(())
         }
-        None | Some(Kind::Nil) => {
-            interp.append_message_capture(text, false, env);
-            interp.buffer.borrow_mut().insert(text);
-            Ok(())
-        }
-        Some(Kind::Buffer(_)) => {
-            let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
-            if buffer_id == interp.current_buffer_id() {
-                interp.insert_current_buffer(text);
-            } else {
-                let pos = {
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {buffer_id}"))
-                    })?;
-                    buffer.point()
-                };
-                let nchars = text.chars().count();
-                let mut buffer = interp
-                    .get_buffer_by_id_mut(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                buffer.insert(text);
-                drop(buffer);
-                interp.adjust_markers_for_insert(buffer_id, pos, nchars, false);
-            }
-            Ok(())
-        }
-        Some(Kind::Marker(id)) => {
-            let (buffer_id, position) = {
-                let marker = id;
-                let buffer_id = marker
-                    .buffer()
-                    .map(|buffer| buffer.id)
-                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-                let position = marker
-                    .position()
-                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-                (buffer_id, position)
-            };
-            let new_position = {
-                let mut buffer = interp
-                    .get_buffer_by_id_mut(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                let saved_point = buffer.point();
-                buffer.goto_char(position);
-                buffer.insert(text);
-                let new_position = buffer.point();
-                buffer.goto_char(saved_point);
-                new_position
-            };
-            interp.set_marker(id, Some(new_position), Some(buffer_id))?;
-            Ok(())
+        None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
+            insert_text_with_hooks(interp, text, &[], &[], false, false, env)
         }
         Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
             append_external_debugging_output(interp, text)
         }
-        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Lambda(_)) => {
+        Some(_) => {
             let function = *stream.expect("matched Some");
             for ch in text.chars() {
-                call_function_value(interp, &function, &[Value::Integer(ch as i64)], env)?;
+                call_function_value(
+                    interp,
+                    &function,
+                    &[Value::Integer(string_character_code(true, ch))],
+                    env,
+                )?;
             }
             Ok(())
         }
-        Some(other) => Err(LispError::TypeError(
-            "output-stream".into(),
-            other.value().type_name(),
-        )),
     }
 }
 

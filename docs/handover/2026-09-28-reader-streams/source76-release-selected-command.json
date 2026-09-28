@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source76-release-libtest",
+    "reader",
+    "lisp::bytecode",
+    "lisp::native_comp::runtime::tests",
+    "lisp::primitives::pdumper::tests",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-stream-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "47f3040217cd08d9e19ad3e5a51265ff94146f6cd05ffa5cdd6ddffd24977155"
+}

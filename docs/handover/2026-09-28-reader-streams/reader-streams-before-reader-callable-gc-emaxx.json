@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(#:one [#:two \\\"text\\\"] #s(kind #:three) #1=(#:cycle . #1#)) tail\"))\n          (count 0)\n          (source (lambda (&optional character)\n                    (if character (push character chars)\n                      (setq count (1+ count))\n                      (when (= (% count 7) 0) (garbage-collect))\n                      (pop chars))))\n          (form (funcall reader source))\n          (cycle (nth 3 form)))\n     (list (length form)\n           (symbol-name (bare-symbol (car form)))\n           (symbol-name (bare-symbol (aref (nth 1 form) 0)))\n           (aref (nth 1 form) 1)\n           (symbol-name (aref (nth 2 form) 1))\n           (symbol-name (bare-symbol (car cycle)))\n           (eq cycle (cdr cycle))\n           (concat chars))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 2.382458166,
+  "input_sha256": "edd4a756f4717146ecb2fb8842a09a2cf880efc5959821db1c8cc5a5eebd99a0",
+  "binary_sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+  "stdout_hex": "28283420226f6e6522202274776f2220227465787422202274687265652220226379636c652220742022222920283420226f6e6522202274776f2220227465787422202274687265652220226379636c652220742022222929",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source72. GNU source-matched diagnostics only, not pinned or frozen."
+}

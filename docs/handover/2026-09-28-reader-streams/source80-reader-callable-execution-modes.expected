@@ -1,0 +1,1 @@
+(((t nil nil) (("first" "second" "payload" " (#:next)" "next" t) ("first" "second" "payload" " (#:next)" "next" t))) ((nil t nil) (("first" "second" "payload" " (#:next)" "next" t) ("first" "second" "payload" " (#:next)" "next" t))) ((nil nil t) (("first" "second" "payload" " (#:next)" "next" t) ("first" "second" "payload" " (#:next)" "next" t))))

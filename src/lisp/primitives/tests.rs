@@ -25998,3 +25998,138 @@ fn registered_subrs_never_request_function_cell_overrides() {
         );
     }
 }
+
+#[test]
+fn reader_callable_streams_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-streams.el"),
+        include_str!("../../../tests/fixtures/reader-callable-streams.expected"),
+        "reader-callable-streams",
+    );
+}
+
+#[test]
+fn reader_callable_encoding_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-encoding.el"),
+        include_str!("../../../tests/fixtures/reader-callable-encoding.expected"),
+        "reader-callable-encoding",
+    );
+}
+
+#[test]
+fn reader_callable_gc_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-gc.el"),
+        include_str!("../../../tests/fixtures/reader-callable-gc.expected"),
+        "reader-callable-gc",
+    );
+}
+
+#[test]
+fn reader_callable_obarray_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-obarray.el"),
+        include_str!("../../../tests/fixtures/reader-callable-obarray.expected"),
+        "reader-callable-obarray",
+    );
+}
+
+#[test]
+fn reader_callable_errors_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-errors.el"),
+        include_str!("../../../tests/fixtures/reader-callable-errors.expected"),
+        "reader-callable-errors",
+    );
+}
+
+#[test]
+fn reader_callable_syntax_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-syntax.el"),
+        include_str!("../../../tests/fixtures/reader-callable-syntax.expected"),
+        "reader-callable-syntax",
+    );
+}
+
+#[test]
+fn reader_callable_redefinition_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-redefinition.el"),
+        include_str!("../../../tests/fixtures/reader-callable-redefinition.expected"),
+        "reader-callable-redefinition",
+    );
+}
+
+#[test]
+fn reader_callable_execution_modes_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-execution-modes.el"),
+        include_str!("../../../tests/fixtures/reader-callable-execution-modes.expected"),
+        "reader-callable-execution-modes",
+    );
+}
+
+#[test]
+fn reader_stream_positions_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-stream-positions.el"),
+        include_str!("../../../tests/fixtures/reader-stream-positions.expected"),
+        "reader-stream-positions",
+    );
+}
+
+#[test]
+fn reader_callable_consumption_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-consumption.el"),
+        include_str!("../../../tests/fixtures/reader-callable-consumption.expected"),
+        "reader-callable-consumption",
+    );
+}
+
+#[test]
+fn reader_callable_lifetime_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-lifetime.el"),
+        include_str!("../../../tests/fixtures/reader-callable-lifetime.expected"),
+        "reader-callable-lifetime",
+    );
+}
+
+#[test]
+fn reader_callable_dots_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-dots.el"),
+        include_str!("../../../tests/fixtures/reader-callable-dots.expected"),
+        "reader-callable-dots",
+    );
+}
+
+#[test]
+fn reader_stream_entrypoints_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-stream-entrypoints.el"),
+        include_str!("../../../tests/fixtures/reader-stream-entrypoints.expected"),
+        "reader-stream-entrypoints",
+    );
+}
+
+#[test]
+fn reader_byte_printing_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-byte-printing.el"),
+        include_str!("../../../tests/fixtures/reader-byte-printing.expected"),
+        "reader-byte-printing",
+    );
+}
+
+#[test]
+fn reader_printer_bindings_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-printer-bindings.el"),
+        include_str!("../../../tests/fixtures/reader-printer-bindings.expected"),
+        "reader-printer-bindings",
+    );
+}

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source80-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((results nil))\n  (dolist (destination '(buffer marker))\n    (dolist (fail '(nil t))\n      (let ((source (current-buffer))\n            (target (generate-new-buffer \" *printer-destination*\")))\n        (unwind-protect\n            (let ((marker nil) (seen nil)\n                  (print-escape-nonascii nil) (print-escape-multibyte nil))\n              (with-current-buffer target\n                (insert \"abc\")\n                (goto-char 3)\n                (setq marker (copy-marker 2))\n                (add-hook 'before-change-functions\n                          (lambda (start end)\n                            (push (list (eq (current-buffer) target) start end\n                                        print-escape-nonascii print-escape-multibyte)\n                                  seen)\n                            (when fail (error \"printer-hook\"))) nil t))\n              (let ((outcome (condition-case err\n                                 (progn (prin1 (unibyte-string 177)\n                                               (if (eq destination 'buffer) target marker))\n                                        'ok)\n                               (error (car err)))))\n                (push (list destination fail outcome (eq source (current-buffer))\n                            (nreverse seen) (marker-position marker)\n                            (with-current-buffer target\n                              (list (point) (buffer-string)))\n                            print-escape-nonascii print-escape-multibyte)\n                      results)))\n          (kill-buffer target)))))\n  (nreverse results))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 1.518432333,
+  "input_sha256": "a0705518634f2c8080d7cc9814108f18a363d6cbd29f6d005e07e535102b3140",
+  "binary_sha256": "3741a45537b9b1f58e2d1863752773b00d172fca7f3121888f1a3a197a2aa02f",
+  "stdout_hex": "2828627566666572206e696c206f6b2074206e696c2032202839202261625c225c5c3236315c22632229206e696c206e696c2920286275666665722074206f6b2074206e696c2032202839202261625c225c5c3236315c22632229206e696c206e696c2920286d61726b6572206e696c206f6b2074206e696c20382028332022615c225c5c3236315c2262632229206e696c206e696c2920286d61726b65722074206f6b2074206e696c20382028332022615c225c5c3236315c2262632229206e696c206e696c2929",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source80. GNU source-matched diagnostics only, not pinned or frozen."
+}

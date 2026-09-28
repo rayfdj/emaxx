@@ -1,0 +1,38 @@
+[
+  {
+    "command": [
+      "rustc",
+      "--edition",
+      "2024",
+      "-O",
+      "tools/generate_native_subrs.rs",
+      "-o",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/native-subrs-audit"
+    ],
+    "cwd": "/Users/nbmhqa186/projects/emaxx",
+    "exit_code": 0,
+    "elapsed_seconds": 1.371614583
+  },
+  {
+    "command": [
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/native-subrs-audit",
+      "/Users/nbmhqa186/projects/emacs/src",
+      "/Users/nbmhqa186/projects/emacs/src/emacs",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-local-native-subrs.rs"
+    ],
+    "cwd": "/Users/nbmhqa186/projects/emaxx",
+    "exit_code": 0,
+    "elapsed_seconds": 21.468217542
+  },
+  {
+    "command": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-local-native-subrs.rs"
+    ],
+    "cwd": "/Users/nbmhqa186/projects/emaxx",
+    "exit_code": 0,
+    "elapsed_seconds": 0.24602708299999776
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let ((table (make-hash-table :test 'eq :weakness 'key)))\n     (funcall\n      (lambda ()\n        (let* ((characters (string-to-list \"(#:temporary [#:nested])\"))\n               (stream (lambda (&optional character)\n                         (if character (push character characters)\n                           (pop characters))))\n               (form (funcall reader stream)))\n          (puthash form t table)\n          (puthash (car form) t table)\n          (puthash (aref (nth 1 form) 0) t table)\n          (garbage-collect)\n          (unless (= (hash-table-count table) 3)\n            (error \"Reader result was reclaimed while live\")))))\n     (garbage-collect)\n     (hash-table-count table)))\n '(read read-positioning-symbols))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.21052316699999998,
+  "input_sha256": "066eee11b24d720e76b16bc78364a6f63ce5c39cfbe1fcee38a3e13b9b9bd50a",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "stdout_hex": "2830203029",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source72. GNU source-matched diagnostics only, not pinned or frozen."
+}

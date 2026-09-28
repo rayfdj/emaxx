@@ -1,0 +1,14 @@
+{
+  "command": [
+    "gh",
+    "run",
+    "view",
+    "36359209336",
+    "--repo",
+    "rayfdj/emaxx",
+    "--log"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 3.960320583,
+  "stderr": ""
+}

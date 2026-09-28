@@ -1,12 +1,15 @@
 # Resume the compact runtime goal here
 
-**Development continuation:** positioned symbols now use one authoritative GNU
-layout, and the reader creates that allocation directly. Conses retain their
-shared 16-byte payload. Read the
-[latest positioned-symbol continuation](docs/runtime-representation-positioned-symbol-checkpoint.md)
-for selected validation, the failed source-65 full gate, three still-failing
-stream-reader comparisons, and remaining requirements. Frame, ordering, input,
-char-table and keymap repairs are integrated too.
+**Development continuation:** the callable reader now consumes bounded input,
+creates authoritative positioned symbols, preserves callback/encoding semantics
+and fixes marker-relative positions. Printer byte output and buffer hooks are
+repaired too. Read the
+[latest reader continuation](docs/runtime-representation-reader-checkpoint.md)
+for 359 selected release passes, 19 ordinary exact comparisons, preserved prior
+failures and remaining requirements. The earlier full gate failed at native
+artifact identity after its library and binary stages passed. Its local GNU
+ABI configuration differs from the committed target. The approved older Linux
+run also failed. Neither result is complete final-source validation.
 Do not reapply the old patch on this branch. The full goal remains incomplete.
 
 **Active goal:** implement one compact, authoritative Lisp object representation
@@ -18,15 +21,16 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
-2. [Authoritative positioned symbols and current failures](docs/runtime-representation-positioned-symbol-checkpoint.md).
-3. [Authoritative cons payload and failed full gate](docs/runtime-representation-cons-checkpoint.md).
-4. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
-5. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
-6. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
-7. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
-8. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
-9. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
-10. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
+2. [Bounded reader, printing repair and completed gate failures](docs/runtime-representation-reader-checkpoint.md).
+3. [Authoritative positioned symbols and current failures](docs/runtime-representation-positioned-symbol-checkpoint.md).
+4. [Authoritative cons payload and failed full gate](docs/runtime-representation-cons-checkpoint.md).
+5. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
+6. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
+7. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
+8. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
+9. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
+10. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
+11. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
 
 The original main checkpoint packaged its unfinished work as
 [char-table-wip.patch](docs/handover/2026-09-27/char-table-wip.patch). That patch is

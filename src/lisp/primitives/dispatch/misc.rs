@@ -402,18 +402,29 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Reader ──
-            "read" => {
-                need_args(name, args, 1)?;
-                read_from_lisp_source(interp, &args[0], env)
-            }
-            "read-positioning-symbols" => {
+            "read" | "read-positioning-symbols" => {
                 need_arg_range(name, args, 0, 1)?;
                 let source = args
                     .first()
+                    .filter(|source| !source.is_nil())
                     .cloned()
                     .or_else(|| interp.lookup_var("standard-input", env))
                     .unwrap_or(Value::Nil);
-                read_positioning_symbols_from_lisp_source(interp, &source, env)
+                // lread.c:Fread and Fread_positioning_symbols share these
+                // defaults and resolve read-minibuffer through its cell.
+                if matches!(source.kind(), Kind::T) || source.as_symbol().ok() == Some("read-char")
+                {
+                    call_named_function(
+                        interp,
+                        "read-minibuffer",
+                        &[Value::string("Lisp expression: ")],
+                        env,
+                    )
+                } else if name == "read-positioning-symbols" {
+                    read_positioning_symbols_from_lisp_source(interp, &source, env)
+                } else {
+                    read_from_lisp_source(interp, &source, env)
+                }
             }
             "read-from-string" => {
                 if args.is_empty() || args.len() > 3 {

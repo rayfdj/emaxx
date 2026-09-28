@@ -2799,49 +2799,37 @@ define_dispatch!(
             }
             "prin1" => {
                 need_arg_range(name, args, 1, 3)?;
-                let rendered = if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
-                    render_prin1(interp, &args[0], env)?
+                if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
+                    let stream = printer_stream_value(interp, env, args.get(1));
+                    print_object_to_stream(interp, &args[0], stream, env, true, false)
                 } else {
                     let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                    let rendered = render_prin1(interp, &args[0], &mut print_env)?;
-                    sync_print_number_table(env, args.get(2), &print_env);
                     let stream = printer_stream_value(interp, &print_env, args.get(1));
-                    write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                    return Ok(args[0]);
-                };
-                let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                if native_print_updates_batch_last_char(interp, &args[0], env, true)
-                    && let Some(last) = rendered.chars().last()
-                {
-                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                    let result = print_object_to_stream(
+                        interp,
+                        &args[0],
+                        stream,
+                        &mut print_env,
+                        true,
+                        false,
+                    );
+                    sync_print_number_table(env, args.get(2), &print_env);
+                    result
                 }
-                Ok(args[0])
             }
             "princ" => {
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let rendered =
-                    crate::lisp::primitives::print::render_princ_object(interp, &args[0], env)?;
                 let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                if native_print_updates_batch_last_char(interp, &args[0], env, false)
-                    && let Some(last) = rendered.chars().last()
-                {
-                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
-                }
-                Ok(args[0])
+                print_object_to_stream(interp, &args[0], stream, env, false, false)
             }
             "print" => {
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let rendered = format!("\n{}\n", render_prin1(interp, &args[0], env)?);
                 let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
-                Ok(args[0])
+                print_object_to_stream(interp, &args[0], stream, env, true, true)
             }
             "terpri" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2880,10 +2868,11 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 // NOESCAPE non-nil prints like `princ' (no quoting).
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
-                    return Ok(Value::String(
-                        crate::lisp::primitives::print::render_princ_object(interp, &args[0], env)?
-                            .into(),
-                    ));
+                    let rendered =
+                        with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
+                            render_princ_object(interp, &args[0], env)
+                        })?;
+                    return Ok(Value::String(rendered.into()));
                 }
                 if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
                     return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));

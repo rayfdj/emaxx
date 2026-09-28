@@ -1,0 +1,8 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source80-release-libtest",
+    "--list"
+  ],
+  "exit_code": 0,
+  "binary_sha256": "285a46b7838ec03a870697ec35cc65dafe0174338ce40739c8627495a52311cd"
+}

@@ -1,0 +1,87 @@
+{
+  "commit": "803e4326a16b7bfe13bb0b757ee85c8b02ac3998",
+  "evidence_files": {
+    "char-table-linux-complete-result.json": {
+      "raw_bytes": 2037,
+      "raw_sha256": "6284bd68ee150ec33be33482dce6ec7628d9dce2c6acea51290d353afdb21592",
+      "sha256": "6284bd68ee150ec33be33482dce6ec7628d9dce2c6acea51290d353afdb21592"
+    },
+    "char-table-linux-complete.log.gz": {
+      "raw_bytes": 725109,
+      "raw_sha256": "6e6aa8311dab8ddc45eda17d954cb53d696acd8cdd6e901310d2306c0c74579c",
+      "sha256": "bfb9e80ee5aa21e56527ea0a5f29e8e8febc64e141ca30c9145fe78db5cd3d49"
+    },
+    "char-table-linux-log-download.json": {
+      "raw_bytes": 189,
+      "raw_sha256": "77438e2e82d9dc71c016311598ff38acb195150d8f4b8d18a10129c60e8a6ac8",
+      "sha256": "77438e2e82d9dc71c016311598ff38acb195150d8f4b8d18a10129c60e8a6ac8"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/metadata/ci-bwrap.apparmor": {
+      "raw_bytes": 335,
+      "raw_sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/metadata/oracle.txt.gz": {
+      "raw_bytes": 449,
+      "raw_sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+      "sha256": "42b89efca943a8a65437df1ebbba45046199d065d2a9de3ac4b54869282cd833"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/build.log.gz": {
+      "raw_bytes": 174792,
+      "raw_sha256": "062f3e974af987a3af829165a3dfefde4fc5f69ca7d8ae87a7ae549749cc6625",
+      "sha256": "0f82eb39056436c9e5dd816d4c90ed07c3927265727eb002c24ca48fff603704"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/ignored-inventory.txt.gz": {
+      "raw_bytes": 71,
+      "raw_sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+      "sha256": "4e2a08ad969b5ccbc0e4bf966691b1334ce4742fb8a52e3cb8afa8f57d10de00"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/inventory.txt.gz": {
+      "raw_bytes": 246869,
+      "raw_sha256": "7fb99b82a5a60d212a064879de9e79e426a88f2e9fc4f295898d960c95729aa1",
+      "sha256": "4cb718eb0285f7d9d794bb218c42e0f2547ad9d58a5ba35bc19c20ab1a1e73f6"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_01.json": {
+      "raw_bytes": 453,
+      "raw_sha256": "881ef8285a9ff350e4042620514030a61a7d98271c4c0524cbe07494cc55a206",
+      "sha256": "881ef8285a9ff350e4042620514030a61a7d98271c4c0524cbe07494cc55a206"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_01.log.gz": {
+      "raw_bytes": 36487,
+      "raw_sha256": "48276902f03b02fb21e311f87c0f45589aa844081e7749b9e5786aab4f1a440e",
+      "sha256": "f6ed166e0d4032813d698623e011baa1eed296f45a1302b1f13f24f0b2e2a181"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_02.json": {
+      "raw_bytes": 454,
+      "raw_sha256": "dd638cce3a674c47e1f207d5d7ab01682ec323010e9974b156d78f65b3e70068",
+      "sha256": "dd638cce3a674c47e1f207d5d7ab01682ec323010e9974b156d78f65b3e70068"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_02.log.gz": {
+      "raw_bytes": 66532,
+      "raw_sha256": "3742952f7b8f4d0372f084104327ae45e82acade6fbf6649642c05615478b334",
+      "sha256": "2b00e920d0a1b5a5a28524d4a4de72aa076ad8484a621c00ac16e676d53d9e81"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_03.json": {
+      "raw_bytes": 460,
+      "raw_sha256": "4673d32fd7f8643a774461f1eca600f3c09ff184f327b74acbd2b4e6951e5246",
+      "sha256": "4673d32fd7f8643a774461f1eca600f3c09ff184f327b74acbd2b4e6951e5246"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/repeat-01-eval_03.log.gz": {
+      "raw_bytes": 34113,
+      "raw_sha256": "e7a00449a545c52d500f11dcc7d75170d711f3fb70c1d16d3ccef0d3c2a08231",
+      "sha256": "1a6308258c47d05d032fa34e9d0fd153dfc383261c7a15bbb57ddd3f9a57d033"
+    },
+    "linux-803e4326-artifacts/ordinary-linux-803e4326a16b7bfe13bb0b757ee85c8b02ac3998/rust/summary.json": {
+      "raw_bytes": 1953,
+      "raw_sha256": "512d92f5adde9a4226539ef0ffe78245c5740595684104a87af63234bffcf384",
+      "sha256": "512d92f5adde9a4226539ef0ffe78245c5740595684104a87af63234bffcf384"
+    }
+  },
+  "failed": 2,
+  "format_version": 1,
+  "ignored": 0,
+  "passed": 998,
+  "qualification": "First three library groups only. Remaining library groups and Cargo bin/integration/doc stages did not execute. GNU oracle source/configuration and Linux Rust executable identity are in the raw artifact. Does not validate later local checkpoints or frozen/performance requirements.",
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36359209336",
+  "status": "FAILED"
+}

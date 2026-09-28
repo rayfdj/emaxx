@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let ((characters (string-to-list \"delta omega\"))\n         (events nil)\n         (calls 0)\n         (name (make-symbol \"changing-stream\")))\n     (unwind-protect\n         (progn\n           (fset name\n                 (lambda (&optional character)\n                   (push 'first events)\n                   (setq calls (1+ calls))\n                   (when (= calls 2)\n                     (fset name\n                           (lambda (&optional returned)\n                             (push 'replacement events)\n                             (if returned (push returned characters)\n                               (pop characters)))))\n                   (if character (push character characters)\n                     (pop characters))))\n           (let ((form (funcall reader name)))\n             (list (symbol-name (bare-symbol form))\n                   (concat characters) (nreverse events))))\n       (fmakunbound name))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.9190555420000002,
+  "input_sha256": "93bfed92aa637763e492e0629c239d0854b461e471a0a06166af5bca81bc05b6",
+  "binary_sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+  "stdout_hex": "28282264656c74612220222220286669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374292920282264656c74612220222220286669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374206669727374292929",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source72. GNU source-matched diagnostics only, not pinned or frozen."
+}

@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source65-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(one) (two)\"))\n          (source (lambda (&optional char)\n                    (if char (push char chars) (pop chars))))\n          (first (funcall reader source))\n          (remaining (length chars))\n          (second (condition-case error (funcall reader source)\n                    (error (car error)))))\n     (list (symbol-name (bare-symbol (car first))) remaining\n           (if (consp second)\n               (symbol-name (bare-symbol (car second))) second))))\n '(read read-positioning-symbols)))"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.850974416,
+  "stdout": "((\"one\" 0 end-of-file) (\"one\" 0 end-of-file))",
+  "stderr": "",
+  "binary_sha256": "66737f4709695e254325af713a1c1f8be1c784b03b5d36b1bfc4517deab48e6f",
+  "image_sha256": "65de500d674d5c2af40d9accb0cd0fa4ad9a71b2ba9336e53283999b52724c56",
+  "qualification": "Source65 ordinary/source-matched diagnostic; not frozen or performance certification. Probes the pre-existing callable stream adapter, which drains the complete source."
+}

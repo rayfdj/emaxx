@@ -8,8 +8,8 @@ audit checks and field lifecycle documentation. Its release selection fails:
 292 pass and one root-inventory check fails. Source 72 corrects that inventory
 and passes all 25 selected release audit/image controls and strict static
 checks. A fresh ordinary executable/image passes eight identical-input GNU
-comparisons; three additional stream-reader comparisons still fail. A complete
-gate on this source is still required. No performance result is claimed. The
+comparisons; three additional stream-reader comparisons still fail. The complete gate on this source has failed at native artifact identity
+after its library and binary stages passed. No performance result is claimed. The
 [portable evidence manifest](handover/2026-09-28-positioned-symbols/manifest.json)
 retains the source snapshots, commands, raw results and unsuccessful attempts.
 
@@ -136,6 +136,32 @@ executable SHA-256 is `f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913
 the image SHA-256 is `28f5a21137d4f18d93d761308d1eeca548676cc87643d0b4b2d035574a33d22e`.
 These are local provenance, not artifacts to reuse on another host.
 
+## Completed source-72 full gate
+
+The unchanged full gate finishes **failed** after 4,883.32 seconds. All ten
+library groups pass: 2,848 passes, zero failures and the two existing opt-in
+terminal ignores. The complete library inventory is 2,850. Binary targets
+pass all 60 tests. Integration targets pass 20 CLI, six CLI parity and three
+ERT tests, then `native_comp_identity` fails on its first unchanged fixture,
+`comp-test-45603.el`. Both artifacts contain 34,536 bytes; the first difference
+is at byte 792. Native-thread, package-lifecycle, runtime-ownership and
+documentation stages do not execute after Cargo stops. The
+[failed full-gate receipts](handover/2026-09-28-positioned-full-gate/manifest.json)
+retain every stage log, command, inventory, source identity and both original
+native artifacts. The source manifest stays unchanged throughout the run.
+
+The two artifacts differ in 88 bytes: the eight ASCII bytes of `comp-abi-hash`,
+the Mach-O UUID and two signature hashes. Local GNU reports `adba4e3f`;
+Emaxx reports `d6eeb69b`. Regenerating the complete native ABI table from the
+actual GNU source and executable gives exactly the committed table except for
+`NATIVE_ABI_SYSTEM_CONFIGURATION`: local GNU says
+`aarch64-apple-darwin25.5.0`, the committed ABI says
+`aarch64-apple-darwin25.6.0`. All 1,445 subroutine entries and configure options
+match. This identifies a local oracle configuration mismatch; it does not
+turn the failed identity check into a pass. Neither oracle pins nor artifact
+comparison bytes are changed. Final validation still requires the matching
+oracle and the complete final-source gate.
+
 ## Known reader gaps and remaining goal
 
 Additional source-65 before-probes expose unresolved reader behavior outside
@@ -172,5 +198,13 @@ from the pinned Darwin binary. They are diagnostics, not frozen certification.
 The user approved publishing commit `803e4326a16b7bfe13bb0b757ee85c8b02ac3998`;
 it is pushed to `runtime-char-tables`, and the existing
 [Linux full Rust gate](https://github.com/rayfdj/emaxx/actions/runs/36359209336)
-is running on that earlier char-table commit. Its result does not certify this
-later cons/positioned-symbol source.
+finishes **failed** on that earlier char-table commit: 998 tests pass and two
+fail in the first three library groups. The remaining groups and Cargo stages
+do not execute. The keymap lookup passes a modified key code beyond the char
+range; the later keymap checkpoint already adds the missing range guard.
+The other failure is a still-undispatched Linux `set-text-conversion-style`
+primitive. It remains to implement with its real buffer/terminal semantics.
+Formatting, Clippy, build and GNU native-ABI verification pass. The
+[raw Linux failure evidence](handover/2026-09-28-linux-char-tables/manifest.json)
+is retained. This result does not certify the later cons/positioned-symbol
+source; a final-source Linux run is still required.
