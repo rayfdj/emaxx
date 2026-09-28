@@ -472,17 +472,15 @@ static INTERNED_SYMBOL_NAMES: ProcessTable<
     HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
 > = ProcessTable::new();
 
-thread_local! {
-    /// Live uninterned states by their private internal text.  Two
-    /// `SymbolName's with equal internal text compare equal, so a text
-    /// that names a live uninterned symbol must resolve to that very
-    /// state: otherwise a name-keyed caller (`set' through `&str') and the
-    /// symbol object would disagree about which cell they address.
-    /// The live uninterned symbols by their key text (identity by text
-    /// is the pre-representation deviation the ledger records); the
-    /// sweep removes a freed cell's entry, so an entry is always live.
-    static UNINTERNED_SYMBOL_BOOK: RefCell<HashMap<String, SymbolName>> = RefCell::new(HashMap::new());
-}
+/// Live uninterned states by their private internal text. Name-keyed
+/// callers must resolve a live key to the existing symbol allocation.
+/// This weak table belongs to the process-wide heap, just like the interned
+/// table above. A later serialized host entry can run on another OS thread;
+/// its sweep must retire entries made by every previous thread.
+/// Access uses the existing runtime ownership boundary, without a second
+/// lock on lookup/allocation. Entries are not GC roots and are removed by
+/// sweep_symbol_cells before the corresponding allocation is released.
+static UNINTERNED_SYMBOL_BOOK: ProcessTable<HashMap<String, SymbolName>> = ProcessTable::new();
 
 /// Symbol ids are process-wide: the same internal text carries the same id
 /// on every thread, so an interpreter built on one thread (the test image
@@ -3833,3 +3831,6 @@ mod tests {
         assert_eq!(original.to_bits(), distinct.to_bits());
     }
 }
+
+#[cfg(test)]
+mod ownership_tests;
