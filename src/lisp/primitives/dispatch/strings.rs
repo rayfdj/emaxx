@@ -118,17 +118,23 @@ define_dispatch!(
             }
             "record" => {
                 need_args(name, args, 1)?;
-                Ok(interp.create_record_with_type(args[0], args[1..].to_vec()))
+                check_record_data_slots(args.len() - 1)?;
+                Ok(Value::LispRecord(crate::lisp::types::LispRecordRef::new(
+                    args[0],
+                    &args[1..],
+                )))
             }
             "make-record" => {
                 need_args(name, args, 3)?;
-                let length = args[1].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
-                Ok(interp.create_record_with_type(
-                    args[0],
-                    std::iter::repeat_n(args[2], length as usize).collect(),
+                // alloc.c:Fmake_record uses CHECK_FIXNAT (wholenump),
+                // before either checking the record limit or allocating.
+                let length = match args[1].kind() {
+                    Kind::Integer(length) if length >= 0 => length as usize,
+                    _ => return Err(LispError::WrongTypeArgument("wholenump".into(), args[1])),
+                };
+                check_record_data_slots(length)?;
+                Ok(Value::LispRecord(
+                    crate::lisp::types::LispRecordRef::filled(args[0], length, args[2]),
                 ))
             }
             "make-finalizer" => {

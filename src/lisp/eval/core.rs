@@ -382,7 +382,7 @@ impl Interpreter {
 
             // lread.c constructs every nested object before eval_sub.
             // A vector is self-evaluating and keeps its reader identity.
-            Kind::Vector(_) => Ok(*expr),
+            Kind::Vector(_) | Kind::LispRecord(_) => Ok(*expr),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct

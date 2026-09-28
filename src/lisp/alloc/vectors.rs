@@ -20,6 +20,8 @@
 
 pub(crate) mod char_tables;
 pub use char_tables::{CharTableRef, SubCharTableRef};
+pub(crate) mod generic_records;
+pub use generic_records::LispRecordRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
@@ -232,7 +234,10 @@ impl VectorHeader {
             let bytes = HEADER_SIZE + (traced + rest) * WORD_SIZE;
             if matches!(
                 self.tag(),
-                VectorTag::CharTable | VectorTag::SubCharTable | VectorTag::SymbolWithPos
+                VectorTag::CharTable
+                    | VectorTag::SubCharTable
+                    | VectorTag::SymbolWithPos
+                    | VectorTag::Record
             ) {
                 vroundup(bytes)
             } else {
@@ -887,8 +892,11 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTOR_SLOTS, (*header).nbytes() / WORD_SIZE);
             }
             VectorTag::Record => {
-                let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
-                let slots = record.gnu_vector_slots();
+                let slots = if generic_records::record_has_inline_slots(header) {
+                    (*header).nbytes() / WORD_SIZE
+                } else {
+                    (&*payload(header).cast::<crate::lisp::eval::RecordState>()).gnu_vector_slots()
+                };
                 if slots != 0 {
                     raise(&LIVE_RECORDS, 1);
                     raise(&LIVE_RECORD_SLOTS, slots);
@@ -952,6 +960,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
+            VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
             VectorTag::Record => {
                 let record = body.cast::<crate::lisp::eval::RecordState>();
                 // The interpreter that owns the id purges its side tables
@@ -1026,8 +1035,12 @@ impl SweepStats {
                     self.vector_slots += (*header).nbytes() / WORD_SIZE;
                 }
                 VectorTag::Record => {
-                    let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
-                    let slots = record.gnu_vector_slots();
+                    let slots = if generic_records::record_has_inline_slots(header) {
+                        (*header).nbytes() / WORD_SIZE
+                    } else {
+                        (&*payload(header).cast::<crate::lisp::eval::RecordState>())
+                            .gnu_vector_slots()
+                    };
                     if slots != 0 {
                         self.records += 1;
                         self.record_slots += slots;
@@ -1288,6 +1301,9 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
+            VectorTag::Record if generic_records::record_has_inline_slots(header) => {
+                Value::LispRecord(LispRecordRef::from_raw(header))
+            }
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
             VectorTag::Subr => unreachable!("static subrs do not live in vector allocations"),
             VectorTag::Free => unreachable!("a free vector is not a value"),

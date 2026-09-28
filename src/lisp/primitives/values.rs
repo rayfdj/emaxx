@@ -213,39 +213,30 @@ pub(crate) fn keymap_record_equals_list(
 
 pub(crate) fn record_equals_record_literal_form(
     interp: &Interpreter,
-    record_id: u64,
+    record: crate::lisp::types::LispRecordRef,
     form: &Value,
     seen: &mut HashSet<(usize, usize)>,
     env: Option<&Env>,
 ) -> bool {
-    let Some(record) = interp.find_record(record_id) else {
-        return false;
-    };
-    if record.kind != crate::lisp::eval::RecordKind::Record {
-        return false;
-    }
     let Some(items) = record_literal_items(form) else {
         return false;
     };
     if let Some((car, _)) = form.cons_cells() {
-        let pair = (record_id as usize, car.cell_id());
+        let pair = (record.identity(), car.cell_id());
         if !seen.insert(pair) {
             return true;
         }
     }
 
-    let expected_fields = std::iter::once(record.type_tag)
-        .chain(record.slots.iter().cloned())
-        .collect::<Vec<_>>();
     let actual_fields = &items[1..];
 
-    expected_fields.len() == actual_fields.len()
-        && expected_fields
-            .iter()
+    record.len() == actual_fields.len()
+        && record
+            .slots()
             .zip(actual_fields.iter())
             .all(|(left, right)| {
                 let right_value = record_literal_slot_data(right);
-                values_equal_recursive_with_env(interp, left, &right_value, seen, env)
+                values_equal_recursive_with_env(interp, &left, &right_value, seen, env)
             })
 }
 
@@ -428,11 +419,19 @@ fn values_equal_recursive_with_env(
                         values_equal_recursive_with_env(interp, left, right, seen, env)
                     })
         }
-        (Kind::Record(left_id), _) if record_literal_items(right).is_some() => {
-            record_equals_record_literal_form(interp, left_id.id, right, seen, env)
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
+            left.ptr_eq(&right)
+                || (left.len() == right.len()
+                    && (!seen.insert((left.identity(), right.identity()))
+                        || left.slots().zip(right.slots()).all(|(a, b)| {
+                            values_equal_recursive_with_env(interp, &a, &b, seen, env)
+                        })))
         }
-        (_, Kind::Record(right_id)) if record_literal_items(left).is_some() => {
-            record_equals_record_literal_form(interp, right_id.id, left, seen, env)
+        (Kind::LispRecord(record), _) if record_literal_items(right).is_some() => {
+            record_equals_record_literal_form(interp, record, right, seen, env)
+        }
+        (_, Kind::LispRecord(record)) if record_literal_items(left).is_some() => {
+            record_equals_record_literal_form(interp, record, left, seen, env)
         }
         (Kind::Cons(_), Kind::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
@@ -499,6 +498,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         // eql on non-numbers is eq; identity must be reflexive here too.
         (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
         _ => false,
@@ -573,6 +573,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
         // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
         // forever when an opaque form is never eq to itself.
@@ -684,15 +685,13 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
             Ok(bool_vector_values(interp, &item.value())?.len() as i64)
         }
         Kind::Lambda(lambda) => Ok(lambda.public_len() as i64),
+        Kind::LispRecord(record) => Ok(record.len() as i64),
         Kind::Cons(_) => Ok(value.to_vec()?.len() as i64),
         Kind::Record(id) => {
             let record = interp.find_record(id).ok_or_else(|| {
                 LispError::TypeError("record".into(), format!("record<{}>", id.id))
             })?;
             match record.kind {
-                // GNU records carry their type tag in public slot zero;
-                // Emaxx stores that tag separately from `slots'.
-                crate::lisp::eval::RecordKind::Record => Ok((record.slots.len() + 1) as i64),
                 // GNU Lisp_Closure slots already start at CLOSURE_ARGLIST and
                 // have no public type-tag slot (lisp.h, enum Lisp_Closure).
                 crate::lisp::eval::RecordKind::Closure => Ok(record.slots.len() as i64),
@@ -823,6 +822,14 @@ pub(crate) fn values_equal_including_properties_recursive(
         }
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
+            left.ptr_eq(&right)
+                || (left.len() == right.len()
+                    && (!seen.insert((left.identity(), right.identity()))
+                        || left.slots().zip(right.slots()).all(|(a, b)| {
+                            values_equal_including_properties_recursive(interp, &a, &b, seen, env)
+                        })))
+        }
         (Kind::Record(left_id), Kind::Record(right_id)) => {
             if left_id.ptr_eq(&right_id) {
                 return true;
@@ -1070,6 +1077,34 @@ pub(crate) fn compare_record_values(
     seen_lists: &mut HashSet<(usize, usize)>,
 ) -> Result<Option<ValueOrder>, LispError> {
     match (left.kind(), right.kind()) {
+        (Kind::LispRecord(a), Kind::LispRecord(b)) => {
+            if a.ptr_eq(&b) {
+                return Ok(Some(ValueOrder::Equal));
+            }
+            if !seen_lists.insert((a.identity(), b.identity())) {
+                return Err(LispError::Signal(
+                    "Maximum depth exceeded in comparison".into(),
+                ));
+            }
+            let result = (|| {
+                for (x, y) in a.slots().zip(b.slots()) {
+                    match value_ordering(interp, &x, &y, env, seen_lists)? {
+                        ValueOrder::Less => return Ok(Some(ValueOrder::Less)),
+                        ValueOrder::Greater => return Ok(Some(ValueOrder::Greater)),
+                        ValueOrder::Equal | ValueOrder::Unordered => {}
+                    }
+                }
+                Ok(Some(order_from_ordering(a.len().cmp(&b.len()))))
+            })();
+            seen_lists.remove(&(a.identity(), b.identity()));
+            return result;
+        }
+        (Kind::LispRecord(_), _) | (_, Kind::LispRecord(_)) => {
+            return Err(type_mismatch_signal(left, right));
+        }
+        _ => {}
+    }
+    match (left.kind(), right.kind()) {
         (Kind::Record(_), _) | (_, Kind::Record(_)) => {}
         _ => return Ok(None),
     }
@@ -1116,7 +1151,7 @@ pub(crate) fn compare_record_values(
                 _ => ValueOrder::Unordered,
             },
         )),
-        crate::lisp::eval::RecordKind::Record | crate::lisp::eval::RecordKind::Keymap => {
+        crate::lisp::eval::RecordKind::Keymap => {
             match value_ordering(
                 interp,
                 &left_record.type_tag,
@@ -1596,6 +1631,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
         }
         match value.kind() {
             Kind::Record(_)
+            | Kind::LispRecord(_)
             | Kind::Buffer(_)
             | Kind::Marker(_)
             | Kind::Overlay(_)
@@ -1830,6 +1866,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 21);
             hash_mix(state, object.identity() as u64);
         }
+        Kind::LispRecord(record) => {
+            hash_mix(state, 45);
+            hash_mix(state, record.identity() as u64);
+        }
         Kind::Record(id) => {
             hash_mix(state, 12);
             hash_mix(state, id.id);
@@ -2059,6 +2099,20 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, 51);
             hash_mix(state, object.identity() as u64);
         }
+        Kind::LispRecord(record) => {
+            hash_mix(state, 45);
+            hash_mix(state, record.len() as u64);
+            for field in record.slots().take(SXHASH_MAX_LEN) {
+                hash_value_equal_at(
+                    interp,
+                    state,
+                    &field,
+                    include_properties,
+                    depth + 1,
+                    remove_symbol_positions,
+                );
+            }
+        }
         Kind::Record(id) => {
             hash_record_equal(
                 interp,
@@ -2165,8 +2219,7 @@ pub(crate) fn hash_record_equal(
             );
             hash_mix(state, id);
         }
-        crate::lisp::eval::RecordKind::Record
-        | crate::lisp::eval::RecordKind::Closure
+        crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Keymap => {
             hash_value_equal_at(
@@ -4999,14 +5052,10 @@ pub(crate) fn locale_uses_utf8() -> bool {
 /// `default_to_grave_quoting_style' (doc.c:653), whose first test is the
 /// locale flag above.
 ///
-/// UNIMPLEMENTED (audit finding 95): that function has a SECOND test -- if
-/// the flag is set, it reads `standard-display-table' and answers grave when
-/// U+2018 is displayed as a one-element vector holding ?`.  That is a plain
-/// Lisp-variable read, not a terminal capability, so it is observable even in
-/// batch, and it is the path a non-batch GNU session actually uses (startup.el
-/// :1466 forces the flag to t there).  Emaxx always answers from the flag
-/// alone, so it says curve where GNU would say grave once that display table
-/// is installed.
+/// If the flag is set, the second test reads `standard-display-table' and
+/// answers grave when U+2018 displays as a one-element vector holding ?`.
+/// This plain Lisp-variable read is observable in batch as well as in the
+/// interactive startup path that forces the locale flag to t.
 pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
     // doc.c reads the C variable Vtext_quoting_style itself, which a
     // `makunbound' of the symbol leaves untouched.
@@ -5047,4 +5096,17 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
         }
         _ => "curve",
     }
+}
+
+/// alloc.c:allocate_record counts the type field in PSEUDOVECTOR_SIZE_MASK.
+/// Check before creating either the Lisp allocation or a temporary slot vector.
+pub(crate) fn check_record_data_slots(data_slots: usize) -> Result<(), LispError> {
+    let max = crate::lisp::alloc::vectors::generic_records::MAX_RECORD_SLOTS;
+    if data_slots >= max {
+        return Err(LispError::Signal(format!(
+            "Attempt to allocate a record of {} slots; max is {max}",
+            data_slots.saturating_add(1)
+        )));
+    }
+    Ok(())
 }

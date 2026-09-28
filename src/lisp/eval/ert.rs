@@ -27,29 +27,28 @@ impl Interpreter {
     // this way (bypassing `ert-deftest'), so mirror the definition into the
     // native test registry too.
     pub(crate) fn ert_set_test(&mut self, name: &str, test: &Value) -> Result<Value, LispError> {
-        let Kind::Record(record_id) = test.kind() else {
+        let Kind::LispRecord(record) = test.kind() else {
             return Err(LispError::TypeError("ert-test".into(), test.type_name()));
         };
-        let slots = self
-            .find_record(record_id)
-            .filter(|record| record.has_symbol_type("ert-test"))
-            .map(|record| record.slots.clone())
-            .ok_or_else(|| LispError::TypeError("ert-test".into(), test.type_name()))?;
-        let body = slots.get(2).cloned().unwrap_or(Value::Nil);
-        let expected_result = slots
-            .get(4)
+        if record.type_tag() != Value::symbol("ert-test") {
+            return Err(LispError::TypeError("ert-test".into(), test.type_name()));
+        }
+        // The type occupies slot zero in the authoritative Lisp record.
+        let body = record.get(3).unwrap_or(Value::Nil);
+        let expected_result = record
+            .get(5)
             .and_then(|value| value.as_symbol().ok().map(str::to_string))
             .unwrap_or_else(|| ":passed".to_string());
-        let tags = slots
-            .get(5)
+        let tags = record
+            .get(6)
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
             .filter_map(|tag| tag.as_symbol().ok().map(str::to_string))
             .collect::<Vec<_>>();
-        let source_file = slots
-            .get(6)
-            .and_then(|value| primitives::string_like(value).map(|text| text.text))
+        let source_file = record
+            .get(7)
+            .and_then(|value| primitives::string_like(&value).map(|text| text.text))
             .or_else(|| self.current_load_file.clone());
         self.put_symbol_property(name, "ert--test", *test);
         self.ert_tests.retain(|existing| existing.name != name);
@@ -65,16 +64,13 @@ impl Interpreter {
 
     #[cfg(test)]
     fn set_ert_test_most_recent_result(&mut self, test: &Value, result: Value) {
-        let Kind::Record(record_id) = test.kind() else {
+        let Kind::LispRecord(record) = test.kind() else {
             return;
         };
-        let Some(record) = self.find_record_mut(record_id) else {
-            return;
-        };
-        debug_assert!(record.has_symbol_type("ert-test"));
-        debug_assert!(record.slots.len() > 3);
-        if record.has_symbol_type("ert-test") && record.slots.len() > 3 {
-            record.slots[3] = result;
+        debug_assert_eq!(record.type_tag(), Value::symbol("ert-test"));
+        debug_assert!(record.len() > 4);
+        if record.type_tag() == Value::symbol("ert-test") {
+            record.set(4, result);
         }
     }
 

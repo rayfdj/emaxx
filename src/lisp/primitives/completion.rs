@@ -368,6 +368,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
@@ -378,6 +379,7 @@ pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
         Kind::Vector(vector) => Some((4, vector.identity())),
         Kind::StringObject(state) => Some((1, state.identity())),
         Kind::Record(id) => Some((2, id.identity())),
+        Kind::LispRecord(record) => Some((4, record.identity())),
         Kind::CharTable(id) => Some((3, id.identity())),
         Kind::SubCharTable(id) => Some((5, id.identity())),
         _ => None,
@@ -443,6 +445,15 @@ pub(crate) fn substitute_object_recurse(
                     *prop_value =
                         substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
                 }
+            }
+            Ok(*subtree)
+        }
+        Kind::LispRecord(record) => {
+            for index in 0..record.len() {
+                let current = record.get(index).expect("in-range record field");
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                record.set(index, updated);
             }
             Ok(*subtree)
         }

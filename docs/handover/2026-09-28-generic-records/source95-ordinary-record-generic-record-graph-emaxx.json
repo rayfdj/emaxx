@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source95-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let* ((print-circle t)\n       (shared (vector 'payload-29 (cons 11 13)))\n       (descriptor (record 'record-descriptor-7 'public-class-29))\n       (object (record descriptor shared shared))\n       (copy (copy-sequence object))\n       (self (make-record 'self-31 2 nil))\n       (other (make-record 'self-31 2 nil))\n       (table (make-hash-table :test 'equal))\n       result)\n  (puthash object 'found-47 table)\n  (setq result\n        (list (recordp object) (arrayp object) (vectorp object)\n              (length object) (type-of object) (cl-type-of object)\n              (eq object copy) (equal object copy)\n              (eq (aref object 1) (aref copy 2)) (gethash copy table)))\n  (aset copy 0 'renamed-53)\n  (aset descriptor 1 'retyped-59)\n  (setq result (append result (list (type-of object) (type-of copy))))\n  (aset self 1 self)\n  (aset self 2 (vector self))\n  (aset other 1 other)\n  (aset other 2 (vector other))\n  (setq result (append result (list (equal self other)\n                                   (equal-including-properties self other)\n                                   (prin1-to-string self))))\n  (let* ((decoded (read (prin1-to-string self)))\n         (snapshot (copy-sequence self)))\n    (setq result (append result\n                        (list (eq decoded (aref decoded 1))\n                              (eq decoded (aref (aref decoded 2) 0))\n                              (eq self (aref snapshot 1))))))\n  (aset other 2 [different-61])\n  (setq result (append result (list (equal self other))))\n  (garbage-collect)\n  (append result (list (eq self (aref self 1)) (aref (aref object 1) 0))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/generic-record-graph.el",
+  "input_sha256": "bdc6ed2af9f1e478f595be3df7eb67b367b7aad5eefef498d9cab9b5a3342798",
+  "exit_code": 0,
+  "elapsed_seconds": 1.1918589170000047,
+  "stdout_hex": "2874206e696c206e696c2033207075626c69632d636c6173732d3239207075626c69632d636c6173732d3239206e696c2074207420666f756e642d343720726574797065642d35392072656e616d65642d353320742074202223313d23732873656c662d333120233123205b2331235d2922207420742074206e696c2074207061796c6f61642d323929",
+  "stderr_hex": "",
+  "binary_sha256": "3200a673c1fc897002f2f4c2407e674eb3443206da2b43222cade382392d18b6",
+  "image_sha256": "d42465387d6ad79e3a07a251aa5f979091902af8979d150f32690ea454751f1a",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

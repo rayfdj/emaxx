@@ -1,0 +1,54 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-nw",
+    "-Q",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el"
+  ],
+  "environment_overrides": {
+    "EMAXX_RECORD_PROBE_REPORT": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback-gnu-before.report"
+  },
+  "working_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "identities": {
+    "/Users/nbmhqa186/projects/emacs/src/emacs": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "/Users/nbmhqa186/projects/emacs/src/emacs.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el": "299e1ffaa6014b814fd004bdea5b7fb8e13f5692b6cdaa3177a250ccd23a0a82",
+    "/Users/nbmhqa186/projects/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty.py": "6dd8e7166acccc7bfdb89a72f4b8503c038239d8ec3b0767447e732f6afe9d6f"
+  },
+  "inputs_unchanged": true,
+  "wait_status": null,
+  "exit_code": null,
+  "elapsed_seconds": 0.35898175000000004,
+  "error": "RuntimeError(\"editor did not display startup target 'record-purecopy-ready'; visible screen: ['emacs: Could not open file: /dev/tty']\")",
+  "report_exists": false,
+  "report_hex": null,
+  "screen": [
+    "emacs: Could not open file: /dev/tty",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ],
+  "qualification": "Focused ordinary TTY diagnostic with unchanged Lisp input; no full terminal or pinned-oracle claim."
+}

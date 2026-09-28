@@ -47,6 +47,7 @@ pub(crate) enum ObjectKey {
     Frame(usize),
     Terminal(usize),
     Record(u64),
+    LispRecord(usize),
     Finalizer(usize),
     ReaderForm(usize),
 }
@@ -85,6 +86,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Frame(id) => ObjectKey::Frame(id.identity()),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
+        Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
@@ -108,7 +110,6 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
-        RecordKind::Record => 1,
         RecordKind::BoolVector => 2,
         RecordKind::Closure => 3,
         RecordKind::Font => 4,
@@ -135,7 +136,7 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
-        1 => RecordKind::Record,
+        // Former generic record code 1 used a detached host payload.
         2 => RecordKind::BoolVector,
         3 => RecordKind::Closure,
         4 => RecordKind::Font,
@@ -542,6 +543,7 @@ impl DumpContext {
             Kind::StringObject(_) => DumpType::StringObject,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
+            Kind::LispRecord(_) => DumpType::LispRecord,
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
@@ -1049,6 +1051,7 @@ impl DumpContext {
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
+            Kind::LispRecord(record) => (self.dump_lisp_record(record)?, DumpType::LispRecord),
             Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
@@ -1231,6 +1234,21 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
+    /// pdumper.c:dump_vectorlike_generic writes every inline record field,
+    /// including a descriptor in slot zero, through normal relocations.
+    fn dump_lisp_record(
+        &mut self,
+        record: crate::lisp::types::LispRecordRef,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = vec![0; record.len() + 1];
+        words[0] = record.len() as u64;
+        for (index, field) in record.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 1, &field, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
     /// dump_float: the IEEE word, in the cold section.
     fn dump_float(&mut self, value: f64) -> Result<u32, DumpError> {
         assert!(self.header.cold_start != 0);
@@ -1285,7 +1303,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Record | RecordKind::Closure | RecordKind::Font | RecordKind::Keymap => {
+            RecordKind::Closure | RecordKind::Font | RecordKind::Keymap => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }

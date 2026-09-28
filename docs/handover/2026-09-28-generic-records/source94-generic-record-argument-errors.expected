@@ -1,0 +1,1 @@
+((1 slot-count-107) (2 slot-count-107) (wrong-type-argument wholenump -1) (wrong-type-argument wholenump 1.0) (wrong-type-argument wholenump nil) (wrong-type-argument wholenump slot-count-109) (error "Attempt to allocate a record of 2305843009213693952 slots; max is 4095") (wrong-type-argument wholenump 2305843009213693952) (wrong-type-argument wholenump 9223372036854775808))

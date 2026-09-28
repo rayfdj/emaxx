@@ -26133,3 +26133,118 @@ fn reader_printer_bindings_match_gnu() {
         "reader-printer-bindings",
     );
 }
+
+#[test]
+fn generic_record_size_limits_include_the_type_slot() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-size-boundary.el"),
+        include_str!("../../../tests/fixtures/generic-record-size-boundary.expected"),
+        "generic-record-size-boundary",
+    );
+}
+
+#[test]
+fn generic_record_sharing_cycles_and_copying_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-graph.el"),
+        include_str!("../../../tests/fixtures/generic-record-graph.expected"),
+        "generic-record-graph",
+    );
+}
+
+#[test]
+fn generic_record_constructors_reader_and_purecopy_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-construction.el"),
+        include_str!("../../../tests/fixtures/generic-record-construction.expected"),
+        "generic-record-construction",
+    );
+}
+
+#[test]
+fn generic_record_argument_errors_match_gnu_without_large_allocation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-argument-errors.el"),
+        include_str!("../../../tests/fixtures/generic-record-argument-errors.expected"),
+        "generic-record-argument-errors",
+    );
+}
+
+#[test]
+fn generic_record_purecopy_message_preserves_coding_and_log_state() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-purecopy-message.el"),
+        include_str!("../../../tests/fixtures/generic-record-purecopy-message.expected"),
+        "generic-record-purecopy-message",
+    );
+}
+
+#[test]
+fn generic_record_property_values_preserve_eq_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-text-properties.el"),
+        include_str!("../../../tests/fixtures/generic-record-text-properties.expected"),
+        "generic-record-text-properties",
+    );
+}
+
+fn assert_purecopy_callback_contract(program: &str, expected: &str) {
+    // Expected bytes come from the same input in a real GNU -nw command.
+    // message_with_string's interactive callbacks require live window metrics.
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
+    let mut env = Env::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read purecopy callback fixture");
+    assert_eq!(forms.len(), 1);
+    // The raw reader precedes lread's obarray and literal materialization
+    // steps. Enter through the same symbols as the loaded Lisp runtime.
+    let form = interp
+        .intern_read_symbols_in_value(forms[0], &env)
+        .expect("intern purecopy fixture symbols");
+    let form = interp
+        .materialize_read_object_literals(form, &mut env)
+        .expect("materialize purecopy fixture literals");
+    let previous_metrics = interactive_window_metrics();
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 1,
+    }));
+    let result = interp.eval(&form, &mut env).map(|value| value.to_string());
+    set_interactive_window_metrics(previous_metrics);
+    assert_eq!(result.expect("purecopy callback fixture"), expected);
+}
+
+#[test]
+fn purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-five-kinds-gc.el"),
+        include_str!("../../../tests/fixtures/purecopy-five-kinds-gc.expected"),
+    );
+}
+
+#[test]
+fn purecopy_callbacks_preserve_vector_and_record_source_snapshots() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-sequence-snapshot.el"),
+        include_str!("../../../tests/fixtures/purecopy-sequence-snapshot.expected"),
+    );
+}
+
+#[test]
+fn purecopy_callbacks_observe_current_purify_flag() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-callback-purify-flag.el"),
+        include_str!("../../../tests/fixtures/purecopy-callback-purify-flag.expected"),
+    );
+}
+
+#[test]
+fn message_callback_bindings_are_special_before_and_after_disconnection() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/message-callback-special-bindings.el"),
+        include_str!("../../../tests/fixtures/message-callback-special-bindings.expected"),
+        "C message callback special bindings",
+    );
+}

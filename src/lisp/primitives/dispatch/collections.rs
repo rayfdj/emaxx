@@ -712,14 +712,16 @@ define_dispatch!(
                 let readable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Record
-                        | crate::lisp::eval::RecordKind::Closure
+                    crate::lisp::eval::RecordKind::Closure
                         | crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0].kind(), Kind::Lambda(_) | Kind::CharTable(_))
+                    && !matches!(
+                        args[0].kind(),
+                        Kind::Lambda(_) | Kind::CharTable(_) | Kind::LispRecord(_)
+                    )
                     && !readable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
@@ -753,6 +755,9 @@ define_dispatch!(
                         let key = raw_idx as u32;
                         Ok(id.get(key))
                     }
+                    Kind::LispRecord(record) => record
+                        .get(idx)
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::Record(id) => {
                         let record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
@@ -775,15 +780,7 @@ define_dispatch!(
                                 .cloned()
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
-                        if idx == 0 {
-                            Ok(record.type_tag)
-                        } else {
-                            record
-                                .slots
-                                .get(idx - 1)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
-                        }
+                        unreachable!("array check admitted only closure and bool-vector adapters")
                     }
                     _ => {
                         if is_vector_value(&args[0]) {
@@ -803,12 +800,11 @@ define_dispatch!(
                 let writable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Record
-                        | crate::lisp::eval::RecordKind::BoolVector
+                    crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0].kind(), Kind::CharTable(_))
+                    && !matches!(args[0].kind(), Kind::CharTable(_) | Kind::LispRecord(_))
                     && !writable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
@@ -841,21 +837,10 @@ define_dispatch!(
                         aset_string_value(&args[0], idx, &args[2])?;
                         Ok(args[2])
                     }
-                    Kind::Record(id) => {
-                        // GNU records are asettable; index 0 is the type tag
-                        // (eieio's `make-instance' downgrades the class-object
-                        // tag to the class symbol this way).
-                        if idx == 0 {
-                            interp.retag_record(id.id, args[2])?;
-                            return Ok(args[2]);
-                        }
-                        let record = interp
-                            .find_record_mut(id)
-                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]))?;
-                        let Some(slot) = record.slots.get_mut(idx - 1) else {
+                    Kind::LispRecord(record) => {
+                        if !record.set(idx, args[2]) {
                             return Err(args_out_of_range(&args[0], &args[1]));
-                        };
-                        *slot = args[2];
+                        }
                         Ok(args[2])
                     }
                     _ => Err(LispError::WrongTypeArgument("arrayp".into(), args[0])),

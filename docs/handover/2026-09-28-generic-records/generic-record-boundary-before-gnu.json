@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (slots)\n   (condition-case err\n       (let ((record (make-record 'record-boundary-kind slots 'record-boundary-fill)))\n         (list slots (recordp record) (length record) (aref record 0)\n               (and (> slots 0) (aref record slots))))\n     (error (list slots err))))\n '(0 1 9 257 4094 4095 8192))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.25583125,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "input_sha256": "69910b7ae5f728fc985a3000fccf4f0c1f6067678dfde267891650346d15f533",
+  "unchanged": true,
+  "qualification": "Immutable Emaxx source87 before generic record migration. GNU source matched only; not pinned/frozen."
+}

@@ -1,5 +1,5 @@
 use crate::file_system as fs;
-use crate::lisp::types::{CharTableRef, RecordRef, SubCharTableRef};
+use crate::lisp::types::{CharTableRef, LispRecordRef, RecordRef, SubCharTableRef};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -1195,7 +1195,6 @@ pub(crate) struct SyntaxSegmentCache {
 /// names happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
-    Record,
     BoolVector,
     Closure,
     Font,
@@ -1223,9 +1222,6 @@ pub(crate) enum RecordKind {
 impl RecordKind {
     fn gnu_vector_slots(self, logical_slots: usize) -> usize {
         match self {
-            // alloc.c:allocate_record stores the type as the first payload
-            // word; vector accounting also includes the one-word header.
-            Self::Record => logical_slots.saturating_add(2),
             // Both interpreted and byte-code closures are ordinary vectors
             // retagged PVEC_CLOSURE.
             Self::Closure => logical_slots.saturating_add(1),
@@ -1317,8 +1313,8 @@ pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
     }
 }
 
-/// alloc.c's PVEC_RECORD (and the pseudovector kinds kept as records):
-/// the object in a vector block, reached through `RecordRef'.  The id
+/// Temporary host pseudovector storage, reached through `RecordRef'.
+/// Generic Lisp records use `LispRecordRef` and have no host state. The id
 /// is the name the owning interpreter's side tables know it by (the
 /// hash-table states, the type index, the caches), until those live in
 /// the object as C's do; the owner tells whose id space it is.
@@ -1327,9 +1323,8 @@ pub struct RecordState {
     pub id: u64,
     /// The interpreter whose id space `id' is in (`record_owner').
     pub(crate) owner: u32,
-    /// GNU stores the record type in slot zero and permits either a symbol or
-    /// an arbitrary type descriptor there.  Keep the Lisp object itself as
-    /// the single source of truth; host pseudovectors use symbol tags.
+    /// The host pseudovector's symbol tag. Generic type descriptors are
+    /// stored in the inline Lisp record allocation instead.
     pub type_tag: Value,
     pub slots: Vec<Value>,
     pub(crate) kind: RecordKind,
@@ -3082,6 +3077,19 @@ impl ImageGraphCopier {
                 }
                 copied
             }
+            Kind::LispRecord(record) => {
+                let key = record.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let object = LispRecordRef::filled(Value::Nil, record.len() - 1, Value::Nil);
+                let copied = Value::LispRecord(object);
+                self.vectors.insert(key, copied);
+                for (index, field) in record.slots().enumerate() {
+                    object.set(index, self.copy(&field));
+                }
+                copied
+            }
             Kind::Record(record) => {
                 // The clone's own record cell under the same id, in its
                 // id space; the slots copied after the cell is on record
@@ -3357,6 +3365,7 @@ impl LispReachability {
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
+            Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
@@ -3441,6 +3450,7 @@ impl LispReachability {
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
+            Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
@@ -3537,8 +3547,13 @@ impl LispReachability {
                     self.enqueue(value);
                 }
             }
+            Kind::LispRecord(record) => {
+                for field in record.slots() {
+                    self.enqueue(&field);
+                }
+            }
             Kind::Record(record) => {
-                // alloc.c's mark_vectorlike: the slots in place.
+                // The remaining host pseudovector adapter owns its slots.
                 let record: &RecordState = &record;
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
@@ -5311,11 +5326,9 @@ pub struct InterpreterState {
     records: Vec<Option<RecordRef>>,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
-    /// Live record IDs grouped by their current type tag.  Records remain in
-    /// dense ID order for identity lookup; this derived index avoids scanning
-    /// every byte-code function, hash table, and EIEIO object when a caller
-    /// needs one runtime class (notably windows during buffer teardown).
-    /// `create_record` and `retag_record` are the only mutation points.
+    /// Host pseudovector IDs grouped by their fixed type tags, principally
+    /// for window enumeration during buffer teardown. Generic Lisp records
+    /// do not enter this registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
     /// Record mark bits from the most recent real reachability pass.  Dense
     /// host storage keeps IDs stable, but dead records must not contribute to

@@ -1549,6 +1549,7 @@ define_dispatch!(
                     Kind::SubCharTable(_) => "sub-char-table",
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",
+                    Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
                     Kind::Record(id) => {
                         let record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))

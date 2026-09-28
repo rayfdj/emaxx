@@ -7619,17 +7619,21 @@ fn load_file_strict_preserves_original_load_errors() {
 fn generic_record_reader_forms_evaluate_to_literal_records() {
     let mut interp = Interpreter::new();
     let value = eval_str_with(&mut interp, "#s(#s(a b) c)");
-    let Kind::Record(id) = value.kind() else {
+    let Kind::LispRecord(record) = value.kind() else {
         panic!("expected a record literal");
     };
-    let record = interp.find_record(id).expect("record state");
-    let Kind::Record(type_id) = record.type_tag.kind() else {
+    let Kind::LispRecord(descriptor) = record.type_tag().kind() else {
         panic!("GNU preserves the nested record as the exact type descriptor");
     };
-    assert_eq!(record.slots, vec![Value::Symbol("c".into())]);
-    let descriptor = interp.find_record(type_id).expect("type descriptor record");
-    assert_eq!(descriptor.type_tag, Value::symbol("a"));
-    assert_eq!(descriptor.slots, vec![Value::symbol("b")]);
+    assert_eq!(
+        record.slots().skip(1).collect::<Vec<_>>(),
+        vec![Value::Symbol("c".into())]
+    );
+    assert_eq!(descriptor.type_tag(), Value::symbol("a"));
+    assert_eq!(
+        descriptor.slots().skip(1).collect::<Vec<_>>(),
+        vec![Value::symbol("b")]
+    );
 }
 
 #[test]

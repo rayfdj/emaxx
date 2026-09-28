@@ -1268,7 +1268,7 @@ pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStrin
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
-pub use crate::lisp::alloc::vectors::SymbolWithPosRef;
+pub use crate::lisp::alloc::vectors::{LispRecordRef, SymbolWithPosRef};
 
 /// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
 /// write these same two Lisp words. Allocator metadata is in the containing
@@ -1674,6 +1674,8 @@ pub enum Kind {
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
     Record(RecordRef),
+    /// GNU PVEC_RECORD with its type and data slots inline.
+    LispRecord(LispRecordRef),
     /// GNU PVEC_FINALIZER: the object containing its callback and list links.
     Finalizer(crate::lisp::alloc::FinalizerRef),
     /// Typed reader state awaiting Interpreter-owned object allocation.
@@ -1783,6 +1785,10 @@ impl Value {
     #[inline]
     pub fn Terminal(terminal: TerminalRef) -> Value {
         Value::from_bits(terminal.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn LispRecord(record: LispRecordRef) -> Value {
+        Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Record(record: RecordRef) -> Value {
@@ -1918,7 +1924,13 @@ impl Value {
                             Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Record => {
-                            Kind::Record(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            if crate::lisp::alloc::vectors::generic_records::record_has_inline_slots(
+                                header,
+                            ) {
+                                Kind::LispRecord(LispRecordRef::from_raw(header))
+                            } else {
+                                Kind::Record(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            }
                         }
                         // SAFETY: a value names no free vector (the
                         // collector's contract); C reads the header's
@@ -2000,6 +2012,7 @@ impl Kind {
             Kind::Terminal(v) => Value::Terminal(v),
             Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
+            Kind::LispRecord(v) => Value::LispRecord(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
             Kind::ReaderForm(v) => Value::ReaderForm(v),
         }
@@ -2626,6 +2639,7 @@ impl Value {
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
+            Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
@@ -2759,6 +2773,7 @@ fn values_equal_recursive(
         (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
         (Kind::SymbolWithPos(a), Kind::SymbolWithPos(b)) => a.ptr_eq(&b),
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
+        (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
         (Kind::Unbound, Kind::Unbound) => true,
@@ -2868,6 +2883,7 @@ fn format_value(
             write!(f, "#<symbol {} at {}>", object.symbol(), object.position())
         }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
+        Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),
         Kind::ReaderForm(_) => write!(f, "#<reader-form>"),

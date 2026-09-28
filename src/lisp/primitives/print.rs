@@ -265,6 +265,7 @@ pub(crate) fn print_ref_key(
             &cell,
         ))),
         Kind::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
+        Kind::LispRecord(record) => Some(PrintRefKey::Vector(record.identity())),
         Kind::CharTable(table) => Some(PrintRefKey::Vector(table.identity())),
         Kind::SubCharTable(table) => Some(PrintRefKey::Vector(table.identity())),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
@@ -469,6 +470,7 @@ fn walk_print_graph(
                     }
                 }
             }
+            Kind::LispRecord(record) => pending.extend(record.slots().rev()),
             Kind::CharTable(table) => pending.extend(table.slots().rev()),
             Kind::SubCharTable(table) => pending.extend(table.slots().rev()),
             Kind::Lambda(lambda) => {
@@ -1309,6 +1311,23 @@ pub(crate) fn render_prin1_body(
             let rendered_symbol =
                 render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
             Ok(format!("#<symbol {rendered_symbol} at {position}>"))
+        }
+        Kind::LispRecord(record) => {
+            let mut fields = Vec::new();
+            for (index, field) in record.slots().enumerate() {
+                if context.options.length.is_some_and(|limit| index >= limit) {
+                    fields.push("...".into());
+                    break;
+                }
+                fields.push(render_prin1_with_context(
+                    interp,
+                    &field,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
+            }
+            Ok(format!("#s({})", fields.join(" ")))
         }
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {

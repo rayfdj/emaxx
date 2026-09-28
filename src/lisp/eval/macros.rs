@@ -138,8 +138,11 @@ impl CircularReadMaterializer<'_> {
             _ => return Ok(None),
         };
         let ordinary_record = closure_kind.is_none();
-        if ordinary_record && slots.is_empty() {
-            return Err(LispError::ReadError("empty record literal".into()));
+        if ordinary_record {
+            if slots.is_empty() {
+                return Err(LispError::ReadError("empty record literal".into()));
+            }
+            crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
         }
 
         // lread.c installs the finished object's address in the #N= table
@@ -196,13 +199,15 @@ impl CircularReadMaterializer<'_> {
             }
             return Ok(Some(placeholder));
         }
-        let Kind::Record(record_id) = placeholder.kind() else {
-            unreachable!("record placeholder allocation returns a record")
-        };
-        if ordinary_record {
-            let type_tag = resolved.remove(0);
-            self.interpreter.retag_record(record_id.id, type_tag)?;
+        if let Kind::LispRecord(record) = placeholder.kind() {
+            for (index, value) in resolved.into_iter().enumerate() {
+                record.set(index, value);
+            }
+            return Ok(Some(placeholder));
         }
+        let Kind::Record(record_id) = placeholder.kind() else {
+            unreachable!("byte-code placeholder allocation returns a host record")
+        };
         self.interpreter
             .find_record_mut(record_id)
             .expect("new reader record must remain allocated")
@@ -512,7 +517,8 @@ impl Interpreter {
                     let Some(kind) = materialized.first() else {
                         return Err(LispError::ReadError("empty record literal".into()));
                     };
-                    self.create_record_with_type(*kind, materialized[1..].to_vec())
+                    crate::lisp::primitives::check_record_data_slots(materialized.len() - 1)?;
+                    Value::LispRecord(LispRecordRef::new(*kind, &materialized[1..]))
                 }
             };
             active_reader_forms.remove(&identity);

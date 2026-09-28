@@ -1,0 +1,13 @@
+{
+  "source": 92,
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "session_id": 58430,
+  "filters": [
+    "record"
+  ],
+  "scope": "debug selected record controls, not full validation"
+}

@@ -2164,7 +2164,7 @@ define_dispatch!(
                 // Emaxx's native runner index only when it is an actual ERT
                 // record; ordinary user properties remain ordinary `put'.
                 if property_name.as_deref() == Some("ert--test")
-                    && matches!(args[2].kind(), Kind::Record(_))
+                    && matches!(args[2].kind(), Kind::LispRecord(_))
                 {
                     return interp.ert_set_test(&symbol, &args[2]);
                 }

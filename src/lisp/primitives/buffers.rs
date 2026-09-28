@@ -780,25 +780,20 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::Frame(_) => "frame",
         Kind::Terminal(_) => "terminal",
         Kind::SymbolWithPos(_) => "symbol-with-pos",
+        Kind::LispRecord(record) => {
+            let type_tag = record.type_tag();
+            if let Kind::LispRecord(descriptor) = type_tag.kind()
+                && let Some(name) = descriptor.get(1)
+            {
+                return Ok(name);
+            }
+            return Ok(type_tag);
+        }
         Kind::Record(id) => {
             let Some(record) = interp.find_record(id) else {
                 return Ok(Value::symbol("record"));
             };
             let type_name = match record.kind {
-                // GNU data.c's PVEC_RECORD branch returns the exact type tag.
-                // When that tag is itself a record with at least one public
-                // slot, it is a type descriptor and slot one names the type.
-                crate::lisp::eval::RecordKind::Record => {
-                    let type_tag = record.type_tag;
-                    if let Kind::Record(type_id) = type_tag.kind()
-                        && let Some(type_record) = interp.find_record(type_id)
-                        && type_record.kind == crate::lisp::eval::RecordKind::Record
-                        && let Some(type_name) = type_record.slots.first()
-                    {
-                        return Ok(*type_name);
-                    }
-                    return Ok(type_tag);
-                }
                 crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
                 crate::lisp::eval::RecordKind::Closure => "byte-code-function",
                 crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {

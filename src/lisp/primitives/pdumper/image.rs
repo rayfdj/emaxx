@@ -225,6 +225,8 @@ pub(crate) enum DumpType {
     Closure = 11,
     CharTable = 16,
     SubCharTable = 28,
+    /// GNU generic record: inline type and data fields, with no host id.
+    LispRecord = 29,
     /// A record or pseudovector kept as its slots (`Value::Record').
     Record = 17,
     /// A bool-vector: bits in the cold section.
@@ -268,6 +270,7 @@ impl DumpType {
             11 => Self::Closure,
             16 => Self::CharTable,
             28 => Self::SubCharTable,
+            29 => Self::LispRecord,
             17 => Self::Record,
             18 => Self::BoolVector,
             19 => Self::BuiltinSymbolCells,

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source95-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((original (symbol-function 'identity)))\n  (unwind-protect\n      (progn\n        (fset 'identity nil)\n        (defalias 'function-cell-delta 'identity)\n        (prin1\n         (list (fboundp 'identity) (symbol-function 'identity)\n               (fboundp 'function-cell-delta)\n               (symbol-function 'function-cell-delta)\n               (condition-case err (funcall 'identity 1) (error err))\n               (condition-case err (funcall 'function-cell-delta 2) (error err))\n               (funcall original 3))))\n    (fset 'identity original)\n    (fmakunbound 'function-cell-delta)))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/builtin-nil-function-cell.el",
+  "input_sha256": "61b89dd709c890ee2e72aa4af7a2bd65a654a6bd645fb319d30fbb465d070f77",
+  "exit_code": 0,
+  "elapsed_seconds": 24.288329583000007,
+  "stdout_hex": "286e696c206e696c2074206964656e746974792028766f69642d66756e6374696f6e206964656e74697479292028766f69642d66756e6374696f6e2066756e6374696f6e2d63656c6c2d64656c746129203329286e696c206e696c2074206964656e746974792028766f69642d66756e6374696f6e206964656e74697479292028766f69642d66756e6374696f6e2066756e6374696f6e2d63656c6c2d64656c746129203329",
+  "stderr_hex": "",
+  "binary_sha256": "3200a673c1fc897002f2f4c2407e674eb3443206da2b43222cade382392d18b6",
+  "image_sha256": "d42465387d6ad79e3a07a251aa5f979091902af8979d150f32690ea454751f1a",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}
