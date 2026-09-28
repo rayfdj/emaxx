@@ -1,0 +1,48 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-debug-libtest",
+  "binary_sha256": "ea91de57a32c829ee663b717b630b744f331cf85d84b7e01775b68ddb3a6a983",
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "commands": [
+    {
+      "argv": [
+        "/usr/bin/lldb",
+        "--batch",
+        "--source",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-root-frames.lldb"
+      ],
+      "raw_log": "source82-root-frames-lldb.log",
+      "log_sha256": "b6870d3b8a20d0e3c670b2d59ad84ea32e1144d2c9d70a8a86a21f63a2108eef"
+    },
+    {
+      "argv": [
+        "/usr/bin/lldb",
+        "--batch",
+        "--source",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-root-frames.lldb"
+      ],
+      "raw_log": "source82-root-frames-lldb-unsandboxed.log",
+      "log_sha256": "2fb185bea9e89de8c3f8dcbf4c30789d667683e527ad1446686c2aa31bfdfb17"
+    },
+    {
+      "argv": [
+        "/usr/bin/lldb",
+        "--batch",
+        "--source",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-root-frames-v2.lldb"
+      ],
+      "raw_log": "source82-root-frames-lldb-v2.log",
+      "log_sha256": "330dd5f33efea3d31473da7ad5e6e2c198bfb32aa8c1a3747f93426bf909db03"
+    },
+    {
+      "argv": [
+        "/usr/bin/lldb",
+        "--batch",
+        "--source",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-root-owners.lldb"
+      ],
+      "raw_log": "source82-root-owners-lldb.log",
+      "log_sha256": "21eaaa6a45bd60f16cb788649bd456b609c3f6f3298eb9dae52dfaf92de20850"
+    }
+  ],
+  "qualification": "Temporary source82 tracing snapshot only. First sandbox launch failed; first unsandboxed callback stopped on optimized-out variables. v2 and owner callbacks auto-continue, and the unchanged original contract fails with cached fixture image. No mutations by debugger."
+}

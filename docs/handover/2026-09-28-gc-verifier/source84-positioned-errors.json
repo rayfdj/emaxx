@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source84-debug-libtest",
+    "positioned",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images",
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "removed_environment_variables": [
+    "EMAXX_GC_TRACE_ROOTS"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 267.49611770900003,
+  "source_unchanged": true,
+  "binary_sha256": "e884163a19aa8ce87d2f85a778ec8a7b9d8f45d88db7646d5471b445d4a9ccc9",
+  "binary_unchanged": true,
+  "qualification": "All existing positioned-symbol controls selected by the positioned substring, including exact void-variable object identity. Same immutable debug executable with GC verifier enabled; no assertions changed."
+}

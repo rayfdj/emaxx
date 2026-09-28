@@ -1,0 +1,7 @@
+target create /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-debug-libtest
+settings set target.env-vars RUST_MIN_STACK=134217728 RUST_TEST_THREADS=1 EMAXX_FIXTURE_IMAGE_DIR=/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images EMAXX_GC_TRACE_ROOTS=1 EMAXX_RECLAMATION_CONTRACT_CHILD=lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments
+breakpoint set --file eval.rs --line 4025
+command script import /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gc_lldb_frames.py
+breakpoint command add 1 -F gc_lldb_frames.capture
+run --exact lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments --test-threads=1 --nocapture
+quit

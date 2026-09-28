@@ -1,0 +1,20 @@
+{
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py",
+    "84",
+    "marked_cons_edges_to_positioned_symbols_are_checked",
+    "lisp::native_comp::runtime::tests",
+    "lisp::types::tests",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "positioned",
+    "--release"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "outer_environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "note": "Wrapper stage receipts record its own overrides; these two outer variables are inherited by every stage."
+}

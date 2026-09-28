@@ -1,0 +1,25 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source84-debug-libtest",
+    "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images",
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "removed_environment_variables": [
+    "EMAXX_GC_TRACE_ROOTS"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 17.851935166,
+  "source_unchanged": true,
+  "binary_sha256": "e884163a19aa8ce87d2f85a778ec8a7b9d8f45d88db7646d5471b445d4a9ccc9",
+  "binary_unchanged": true,
+  "qualification": "Original parent spawns original exact child; cached fixture image retained from selected run. No source/selector/assertion/image alteration."
+}

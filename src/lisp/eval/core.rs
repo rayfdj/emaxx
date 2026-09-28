@@ -407,13 +407,18 @@ impl Interpreter {
                 if name == "nil" {
                     return Ok(Value::Nil);
                 }
-                match self.lookup(name, env).map_err(LispError::into_kind) {
-                    Ok(value) => Ok(value),
-                    Err(LispErrorKind::Void(_)) => Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("void-variable".into()),
-                        *expr,
-                    ]))),
-                    Err(error) => Err(LispError::from(error)),
+                // Inspect the boxed error in place. Moving its large enum
+                // through this inlined evaluator reserves inactive stack
+                // payload words that can conservatively retain dead objects.
+                // Non-void errors keep their existing allocation and identity.
+                match self.lookup(name, env) {
+                    Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("void-variable".into()),
+                            *expr,
+                        ])))
+                    }
+                    result => result,
                 }
             }
 
