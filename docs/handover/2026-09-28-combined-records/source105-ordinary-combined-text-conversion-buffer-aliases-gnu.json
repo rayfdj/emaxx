@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let (states)\n  (set-default 'text-conversion-style '(default-419))\n  (defvaralias 'text-style-alias-421 'text-conversion-style)\n  (with-temp-buffer\n    (push (list 'make (eq (make-local-variable 'text-style-alias-421)\n                         'text-style-alias-421)\n                (local-variable-p 'text-style-alias-421)) states)\n    (setq text-style-alias-421 [alias-local-431])\n    (let ((cloned (make-indirect-buffer (current-buffer) \"style-clone-433\" t))\n          (fresh (make-indirect-buffer (current-buffer) \"style-fresh-439\" nil)))\n      (unwind-protect\n          (push (list 'indirect\n                      (buffer-local-value 'text-conversion-style cloned)\n                      (local-variable-p 'text-conversion-style cloned)\n                      (buffer-local-value 'text-conversion-style fresh)\n                      (local-variable-p 'text-conversion-style fresh)) states)\n        (kill-buffer cloned)\n        (kill-buffer fresh)))\n    (push (list 'kill (eq (kill-local-variable 'text-style-alias-421)\n                         'text-style-alias-421)\n                (local-variable-p 'text-conversion-style)\n                text-style-alias-421) states))\n  (nreverse states))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-audit-followup/emaxx/tests/fixtures/text-conversion-buffer-aliases.el",
+  "input_sha256": "aabe440ce2ee93756d25e3b1c46a4212f3dfe788f41133a4a83a896a7998e08b",
+  "exit_code": 0,
+  "elapsed_seconds": 0.2386438330000118,
+  "stdout_hex": "28286d616b6520742074292028696e646972656374205b616c6961732d6c6f63616c2d3433315d2074202864656661756c742d34313929206e696c2920286b696c6c2074206e696c202864656661756c742d343139292929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

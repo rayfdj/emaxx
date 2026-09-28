@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((old (obarray-make))\n          (new (obarray-make))\n          (obarray old)\n          (read-symbol-shorthands nil)\n          (characters (string-to-list \"aa bb\"))\n          (changed nil)\n          (stream (lambda (&optional character)\n                    (if character\n                        (progn\n                          (unless changed\n                            (setq changed t obarray new\n                                  read-symbol-shorthands '((\"aa\" . \"renamed-\"))))\n                          (push character characters))\n                      (pop characters))))\n          (one (funcall reader stream))\n          (two (funcall reader stream)))\n     (list (symbol-name (bare-symbol one))\n           (symbol-name (bare-symbol two))\n           (eq (bare-symbol one) (intern \"renamed-\" new))\n           (null (intern-soft \"aa\" old))\n           (null (intern-soft \"renamed-\" old))\n           (and (symbol-with-pos-p one) (symbol-with-pos-pos one))\n           (and (symbol-with-pos-p two) (symbol-with-pos-pos two)))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-obarray.el",
+  "input_sha256": "5b67c333697e6ae3c96312c48971f416cb97649f45a08573dbd86e9ed3c4e259",
+  "exit_code": 0,
+  "elapsed_seconds": 0.37057108399999983,
+  "stdout_hex": "28282272656e616d65642d222022626222207420742074206e696c206e696c2920282272656e616d65642d222022626222207420742074203020312929",
+  "stderr_hex": "",
+  "binary_sha256": "e54fdd555878f11beba7a8da2b204bd465dc4266f6788f90134bd27c643e727b",
+  "image_sha256": "ff51d636174e3fbf74799f4f13d82786e6ab1c395ec4147b9193121f5d559163",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

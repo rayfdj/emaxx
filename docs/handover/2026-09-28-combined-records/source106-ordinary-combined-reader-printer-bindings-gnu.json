@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((results nil))\n  (dolist (multibyte '(nil t))\n    (dolist (fail '(nil t))\n      (with-temp-buffer\n        (set-buffer-multibyte multibyte)\n        (let ((print-escape-nonascii nil)\n              (print-escape-multibyte nil)\n              (observed nil))\n          (add-hook 'before-change-functions\n                    (lambda (_start _end)\n                      (push (list print-escape-nonascii print-escape-multibyte)\n                            observed)\n                      (when fail (error \"printer hook\")))\n                    nil t)\n          (let ((outcome (condition-case err\n                             (progn (prin1 (unibyte-string 177) (current-buffer)) 'ok)\n                           (error (car err)))))\n            (push (list multibyte fail outcome (nreverse observed)\n                        print-escape-nonascii print-escape-multibyte\n                        (string-to-list (buffer-string)))\n                  results))))))\n  (nreverse results))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-printer-bindings.el",
+  "input_sha256": "61e9fdd0243feb62b92ec537e3e5257d6ddedaa6b915e38054c88ce53f08e34d",
+  "exit_code": 0,
+  "elapsed_seconds": 0.22733195799999706,
+  "stdout_hex": "28286e696c206e696c206f6b2028286e696c20742929206e696c206e696c2028333420313737203334292920286e696c2074206572726f722028286e696c20742929206e696c206e696c206e696c29202874206e696c206f6b20282874206e696c2929206e696c206e696c2028333420393220353020353420343920333429292028742074206572726f7220282874206e696c2929206e696c206e696c206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

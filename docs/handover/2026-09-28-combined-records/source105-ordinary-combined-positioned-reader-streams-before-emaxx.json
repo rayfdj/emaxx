@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((symbols-with-pos-enabled nil)\n      (describe (lambda (form)\n                  (mapcar (lambda (object)\n                            (if (symbol-with-pos-p object)\n                                (list (symbol-name (bare-symbol object))\n                                      (symbol-with-pos-pos object))\n                              object)) form))))\n  (list (funcall describe (read-positioning-symbols \"(\u03b1 t nil)\"))\n        (with-temp-buffer\n          (insert \"skip (\u03b1 t nil)\")\n          (goto-char 6)\n          (let ((form (read-positioning-symbols (current-buffer))))\n            (list (funcall describe form) (point))))\n        (with-temp-buffer\n          (insert \"skip (\u03b1 t nil)\")\n          (let* ((marker (copy-marker 6))\n                 (form (read-positioning-symbols marker)))\n            (list (funcall describe form) (marker-position marker))))\n        (let ((chars (string-to-list \"(\u03b1 t nil)\")))\n          (funcall describe\n                   (read-positioning-symbols\n                    (lambda (&optional char)\n                      (if char (push char chars) (pop chars))))))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "input_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/positioned-reader-streams-before.el",
+  "input_sha256": "860b9d7ecac98dc65aea041b49b7aa4b80d6e6f78fd02209218779d4f2581037",
+  "exit_code": 0,
+  "elapsed_seconds": 1.564962625,
+  "stdout_hex": "28282822ceb1222031292028227422203329206e696c292028282822ceb1222037292028227422203929206e696c29203135292028282822ceb1222031292028227422203329206e696c292031352920282822c0b1222031292028227422203329206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "8d49763b6f3953d957240afd09dde9b7a1ab2ffb71e4c1ba22fad15a606d8eb8",
+  "image_sha256": "a4287f680a677ef7728e61d4496aa0dbbdbcf39a98e318eefbb06b671997ed33",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

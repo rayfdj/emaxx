@@ -1,0 +1,7 @@
+{
+  "matches": true,
+  "source_unchanged": true,
+  "gnu_receipt": "source108-eager-progn-gc-gnu-result.json",
+  "emaxx_receipt": "source108-eager-progn-gc-emaxx-result.json",
+  "qualification": "Same ordinary load input and exact stdout/stderr; no normalized graph fields or expected-error allowance. Both fresh processes exit0. Prior105/106crashes and107Rustformatterfailure remain failed."
+}

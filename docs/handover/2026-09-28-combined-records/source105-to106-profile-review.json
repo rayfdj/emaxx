@@ -1,0 +1,489 @@
+{
+  "qualification": "Whole-process samples include startup, preparation and body. Both sets ran concurrently with validation. These are diagnostics and do not certify a speedup or the locked 3% criterion. One pilot observation per runner/case; allocation counters unavailable, unchanged GNU pin unavailable.",
+  "sources": {
+    "105": [
+      {
+        "case": "bytecode-calls",
+        "sample_sha256": "0c291a6fd1914998d841cf75936b121c6eae6784ff4347ac98f3e1729180fdc5",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source105-core-profiles/round-00/bytecode-calls/emaxx/sample.txt",
+        "total_seconds": 6.3105462920000015,
+        "startup_seconds": 1.1656529903411865,
+        "exit": 0,
+        "char_signature_self": 247,
+        "scalar_hash_self": 993,
+        "top_self": [
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1314
+          },
+          {
+            "function": "_RNvXs3_NtNtCsgtPOCBgevO_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1061
+          },
+          {
+            "function": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneRjECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 993
+          },
+          {
+            "function": "_RINvMs6_NtCs9nAj5kJTqSU_9hashbrown3rawINtB6_8RawTableTjuEE14reserve_rehashNCINvNtB8_3map11make_hasherjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE0ECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 261
+          },
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 247
+          },
+          {
+            "function": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp8bytecode2vm8run_fast  (in emaxx)",
+            "samples": 223
+          },
+          {
+            "function": "_RNCNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp8bytecode2vm10run_frames0B9_  (in emaxx)",
+            "samples": 172
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 126
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 69
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 42
+          },
+          {
+            "function": "_RNvMs1j_NtNtCs7EC8a9YJ0WO_5emaxx4lisp5typesNtB6_5Value7Integer  (in emaxx)",
+            "samples": 20
+          },
+          {
+            "function": "<deduplicated_symbol>  (in dyld)",
+            "samples": 18
+          }
+        ]
+      },
+      {
+        "case": "interpreted-calls",
+        "sample_sha256": "361df27db618aef360c6a1246b0581c25685b8f392f8d727be017339e2f168f6",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source105-core-profiles/round-00/interpreted-calls/emaxx/sample.txt",
+        "total_seconds": 7.010136332999998,
+        "startup_seconds": 1.2080740928649902,
+        "exit": 0,
+        "char_signature_self": 246,
+        "scalar_hash_self": 993,
+        "top_self": [
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1402
+          },
+          {
+            "function": "_RNvXs3_NtNtCsgtPOCBgevO_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1067
+          },
+          {
+            "function": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneRjECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 993
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 309
+          },
+          {
+            "function": "_RINvMs6_NtCs9nAj5kJTqSU_9hashbrown3rawINtB6_8RawTableTjuEE14reserve_rehashNCINvNtB8_3map11make_hasherjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE0ECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 263
+          },
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 246
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 132
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 107
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 76
+          },
+          {
+            "function": "_RNvNtNtCs7EC8a9YJ0WO_5emaxx4lisp5alloc8mem_find  (in emaxx)",
+            "samples": 75
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 57
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter4eval  (in emaxx)",
+            "samples": 43
+          }
+        ]
+      },
+      {
+        "case": "interpreted-lexical",
+        "sample_sha256": "b613f30757dbdd50679f0613ab24605564ed9d6ef76e01a70b8c71183300ca89",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source105-core-profiles/round-00/interpreted-lexical/emaxx/sample.txt",
+        "total_seconds": 6.523183208,
+        "startup_seconds": 1.104276180267334,
+        "exit": 0,
+        "char_signature_self": 247,
+        "scalar_hash_self": 1050,
+        "top_self": [
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1287
+          },
+          {
+            "function": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneRjECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1050
+          },
+          {
+            "function": "_RNvXs3_NtNtCsgtPOCBgevO_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 984
+          },
+          {
+            "function": "_RINvMs6_NtCs9nAj5kJTqSU_9hashbrown3rawINtB6_8RawTableTjuEE14reserve_rehashNCINvNtB8_3map11make_hasherjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE0ECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 315
+          },
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 247
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 161
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 110
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 70
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter4eval  (in emaxx)",
+            "samples": 61
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 60
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 51
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 47
+          }
+        ]
+      },
+      {
+        "case": "native-to-interpreted",
+        "sample_sha256": "d4efc76de7e851d92d34a4dcb4606be6f54fdd3cf3d562045fc139dfb44025a2",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source105-core-profiles/round-00/native-to-interpreted/emaxx/sample.txt",
+        "total_seconds": 7.326320833999997,
+        "startup_seconds": 1.1829569339752197,
+        "exit": 0,
+        "char_signature_self": 233,
+        "scalar_hash_self": 1025,
+        "top_self": [
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1325
+          },
+          {
+            "function": "_RNvXs3_NtNtCsgtPOCBgevO_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1127
+          },
+          {
+            "function": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneRjECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 1025
+          },
+          {
+            "function": "__fcntl  (in dyld)",
+            "samples": 363
+          },
+          {
+            "function": "_RINvMs6_NtCs9nAj5kJTqSU_9hashbrown3rawINtB6_8RawTableTjuEE14reserve_rehashNCINvNtB8_3map11make_hasherjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE0ECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 270
+          },
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 233
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 168
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 126
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 68
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 63
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 58
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 52
+          }
+        ]
+      }
+    ],
+    "106": [
+      {
+        "case": "bytecode-calls",
+        "sample_sha256": "b4b68239fc2fc305562ab60ca9ea139d3bc7e1d85db18a91d4afdc5089db05ef",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source106-core-profiles/round-00/bytecode-calls/emaxx/sample.txt",
+        "total_seconds": 1.6777066660000006,
+        "startup_seconds": 0.4592890739440918,
+        "exit": 0,
+        "char_signature_self": 404,
+        "scalar_hash_self": 21,
+        "top_self": [
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 404
+          },
+          {
+            "function": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp8bytecode2vm8run_fast  (in emaxx)",
+            "samples": 185
+          },
+          {
+            "function": "_RNCNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp8bytecode2vm10run_frames0B9_  (in emaxx)",
+            "samples": 140
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 111
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 66
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 44
+          },
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 38
+          },
+          {
+            "function": "lsl::Allocator::AllocationMetadata::pool(bool) const  (in dyld)",
+            "samples": 22
+          },
+          {
+            "function": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneRjECs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 21
+          },
+          {
+            "function": "<deduplicated_symbol>  (in dyld)",
+            "samples": 20
+          },
+          {
+            "function": "emaxx_native_gc_collect  (in emaxx)",
+            "samples": 15
+          },
+          {
+            "function": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp8bytecode2vm11leave_frame  (in emaxx)",
+            "samples": 12
+          }
+        ]
+      },
+      {
+        "case": "interpreted-calls",
+        "sample_sha256": "b357ccf7fbf1915125e84df9ef19ad592a10679f20f5d1f5da4fb8149ec84ea9",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source106-core-profiles/round-00/interpreted-calls/emaxx/sample.txt",
+        "total_seconds": 2.2670523330000005,
+        "startup_seconds": 0.44877195358276367,
+        "exit": 0,
+        "char_signature_self": 398,
+        "scalar_hash_self": 22,
+        "top_self": [
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 398
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 317
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 104
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 98
+          },
+          {
+            "function": "_RNvNtNtCs7EC8a9YJ0WO_5emaxx4lisp5alloc8mem_find  (in emaxx)",
+            "samples": 70
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 58
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter4eval  (in emaxx)",
+            "samples": 41
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 41
+          },
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 41
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 36
+          },
+          {
+            "function": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp5alloc7vectors25live_small_vector_holding  (in emaxx)",
+            "samples": 29
+          },
+          {
+            "function": "<deduplicated_symbol>  (in dyld)",
+            "samples": 23
+          }
+        ]
+      },
+      {
+        "case": "interpreted-lexical",
+        "sample_sha256": "fd7ee2ed9b3a29ef18c4c38794210a6de2f3f2c2fb133953f460592ffc2d5902",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source106-core-profiles/round-00/interpreted-lexical/emaxx/sample.txt",
+        "total_seconds": 1.866501334,
+        "startup_seconds": 0.45141100883483887,
+        "exit": 0,
+        "char_signature_self": 421,
+        "scalar_hash_self": 20,
+        "top_self": [
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 421
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 152
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 97
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter4eval  (in emaxx)",
+            "samples": 58
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 51
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 46
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 35
+          },
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 34
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 34
+          },
+          {
+            "function": "_RNvNtNtCs7EC8a9YJ0WO_5emaxx4lisp5alloc8mem_find  (in emaxx)",
+            "samples": 32
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter16eval_list_length  (in emaxx)",
+            "samples": 28
+          },
+          {
+            "function": "<deduplicated_symbol>  (in dyld)",
+            "samples": 26
+          }
+        ]
+      },
+      {
+        "case": "native-to-interpreted",
+        "sample_sha256": "692985ed73600ae4b7f00fd2b76b58f82af6e551f1413b1b718405c26e78e69a",
+        "sample_file": "target/runtime-goal/resume-2026-09-28/source106-core-profiles/round-00/native-to-interpreted/emaxx/sample.txt",
+        "total_seconds": 2.442930833,
+        "startup_seconds": 0.4671800136566162,
+        "exit": 0,
+        "char_signature_self": 416,
+        "scalar_hash_self": 19,
+        "top_self": [
+          {
+            "function": "_RNvMs2_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval7runtimeNtB7_11Interpreter26char_table_chain_signature  (in emaxx)",
+            "samples": 416
+          },
+          {
+            "function": "__fcntl  (in dyld)",
+            "samples": 348
+          },
+          {
+            "function": "_RNvMsv_NtNtCs7EC8a9YJ0WO_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)",
+            "samples": 152
+          },
+          {
+            "function": "mach_msg2_trap  (in dyld)",
+            "samples": 110
+          },
+          {
+            "function": "_platform_memmove  (in libsystem_platform.dylib)",
+            "samples": 69
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)",
+            "samples": 47
+          },
+          {
+            "function": "_RNvNtNtCs7EC8a9YJ0WO_5emaxx4lisp5alloc8mem_find  (in emaxx)",
+            "samples": 46
+          },
+          {
+            "function": "_RNvMsd_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)",
+            "samples": 45
+          },
+          {
+            "function": "_RNvMs1_NtCs9nAj5kJTqSU_9hashbrown3mapINtB5_7HashMapjuNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateE6insertCs7EC8a9YJ0WO_5emaxx  (in emaxx)",
+            "samples": 37
+          },
+          {
+            "function": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter4eval  (in emaxx)",
+            "samples": 35
+          },
+          {
+            "function": "_platform_memcmp  (in libsystem_platform.dylib)",
+            "samples": 35
+          },
+          {
+            "function": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtime11invoke_subr  (in emaxx)",
+            "samples": 26
+          }
+        ]
+      }
+    ]
+  }
+}

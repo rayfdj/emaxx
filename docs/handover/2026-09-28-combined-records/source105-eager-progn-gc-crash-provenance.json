@@ -1,0 +1,156 @@
+{
+  "original": "/Users/nbmhqa186/Library/Logs/DiagnosticReports/emaxx-2026-09-28-172652.ips",
+  "sha256": "1aa33cb1ee669cc1d530d917f6906b842affeaf91d86f88504bc57b70a844e50",
+  "exception": {
+    "codes": "0x0000000000000001, 0x0000032f45000000",
+    "rawCodes": [
+      1,
+      3501555974144
+    ],
+    "type": "EXC_BAD_ACCESS",
+    "signal": "SIGSEGV",
+    "subtype": "KERN_INVALID_ADDRESS at 0x0000032f45000000"
+  },
+  "top_frames": [
+    {
+      "imageOffset": 253988,
+      "symbol": "_RNvXs3_NtNtCsgtPOCBgevO_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCs7EC8a9YJ0WO_5emaxx",
+      "symbolLocation": 320,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 468240,
+      "symbol": "_RINvYNtNtNtCsa9BKTri5B3M_3std4hash6random11RandomStateNtNtCsgtPOCBgevO_4core4hash11BuildHasher8hash_oneReECs7EC8a9YJ0WO_5emaxx",
+      "symbolLocation": 76,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 466640,
+      "symbol": "_RNvMsu_NtNtCs7EC8a9YJ0WO_5emaxx4lisp5typesNtB5_10SymbolName15live_uninterned",
+      "symbolLocation": 84,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 1813472,
+      "symbol": "_RNvMNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval8bindingsNtB4_11Interpreter23macro_position_function",
+      "symbolLocation": 52,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 1993492,
+      "symbol": "_RNvNvNtNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp10primitives8dispatch4misc17LIFTED_PRIMITIVESsO_6lifted",
+      "symbolLocation": 688,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 591596,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtime11invoke_subr",
+      "symbolLocation": 3536,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 560756,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp22generated_native_subrs16native_subr_0911",
+      "symbolLocation": 32,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 601928,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtime21invoke_native_funcall",
+      "symbolLocation": 2568,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 590544,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtime11invoke_subr",
+      "symbolLocation": 2484,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 560196,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp22generated_native_subrs16native_subr_0899",
+      "symbolLocation": 24,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 31688,
+      "symbol": "F696e7465726e616c2d6d6163726f657870616e642d666f722d6c6f6164_internal_macroexpand_for_load_0",
+      "symbolLocation": 1176,
+      "imageIndex": 4,
+      "image_path": "/private/tmp/*/macroexp-2c3e1495-4fd39378.eln"
+    },
+    {
+      "imageOffset": 3016,
+      "symbol": "native_call_trampoline",
+      "symbolLocation": 52,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 2163632,
+      "symbol": "_RNvMs9_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp11native_comp7runtimeNtB5_13NativeRuntime6invoke",
+      "symbolLocation": 876,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 508128,
+      "symbol": "_RINvMs_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval9variablesNtB7_11Interpreter24with_backtrace_argumentsINtNtCsgtPOCBgevO_4core6result6ResultNtNtB9_5types5ValueNtB2a_9LispErrorENCNvMs0_NtB7_4coreBP_25call_function_value_inners5_0EBb_",
+      "symbolLocation": 2000,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 477344,
+      "symbol": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter25call_function_value_inner",
+      "symbolLocation": 5464,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 442228,
+      "symbol": "_RNvMs0_NtNtNtCs7EC8a9YJ0WO_5emaxx4lisp4eval4coreNtB7_11Interpreter19call_function_value",
+      "symbolLocation": 224,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 2226272,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp10primitives7loading34call_internal_macroexpand_for_load",
+      "symbolLocation": 776,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 2224116,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp10primitives7loading23eager_expand_eval_inner",
+      "symbolLocation": 44,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 2224408,
+      "symbol": "_RNvNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp10primitives7loading23eager_expand_eval_inner",
+      "symbolLocation": 336,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    },
+    {
+      "imageOffset": 3752864,
+      "symbol": "_RNvNvNtNtNtNtCs7EC8a9YJ0WO_5emaxx4lisp10primitives8dispatch5lists17LIFTED_PRIMITIVESst_6lifted",
+      "symbolLocation": 4992,
+      "imageIndex": 0,
+      "image_path": "/private/tmp/*/emaxx"
+    }
+  ]
+}

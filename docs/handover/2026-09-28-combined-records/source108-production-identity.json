@@ -1,0 +1,6 @@
+{
+  "same_all_other_source_files": true,
+  "copied_fixture_ready": true,
+  "reason_for_initial_prelaunch_check_failure": "The immutable untracked fixture copy had not yet been written. The source manifest and patch already matched; v2 snapshot creation scans tracked paths before copying additions. Subsequent stages only read unchanged source.",
+  "copied_fixture_matches": true
+}

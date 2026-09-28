@@ -1,0 +1,54 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-nw",
+    "-Q",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-purify-flag-tty.el"
+  ],
+  "environment_overrides": {
+    "EMAXX_RECORD_PROBE_REPORT": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-purecopy-callback-purify-flag.report"
+  },
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "identities": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "c26fc9277b9653c0e8e8cff07fafa170510cb1fb42a6acc1847bb0b548f79915",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "7b2db386c3cb13c05fade056562f32059ad4a1d7eb442805cd03bb58ca455a78",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-purify-flag-tty.el": "a8d4311ac35900c4745fe770cb28c8d85096314f5f12788f1babfd9efd16a878",
+    "/Users/nbmhqa186/projects/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py": "cedabf7aa250b8d6c185cb8f2fda7d04b70db23282b0d46e9140296c3d59ab37"
+  },
+  "inputs_unchanged": true,
+  "wait_status": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 4.2072765,
+  "error": null,
+  "report_exists": true,
+  "report_hex": "2828656e61626c65203120742074203020332074206e696c29202864697361626c6520312074206e696c20302030206e696c206e696c29202873776170203120742074203020332074206e696c2929",
+  "screen": [
+    "File Edit Options Buffers Tools Help",
+    "record-purecopy-ready",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "-UUU:---  F1  *record-purecopy-ready*   All   L1     (Fundamental) -------------",
+    "For information about GNU Emacs and the GNU system, type C-h C-a."
+  ],
+  "qualification": "Focused ordinary TTY diagnostic with unchanged Lisp input; no full terminal or pinned-oracle claim."
+}

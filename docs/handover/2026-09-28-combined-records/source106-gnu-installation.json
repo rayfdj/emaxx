@@ -1,0 +1,5 @@
+{
+  "old_target": "/Users/nbmhqa186/projects/emacs",
+  "new_target": "/private/tmp/emaxx-runtime-gnu-20260928",
+  "reason": "Reuse the matching native ABI candidate for the table-walk optimization; all prior source103 runs have completed."
+}

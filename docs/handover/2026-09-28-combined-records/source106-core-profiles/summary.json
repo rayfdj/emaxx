@@ -1,0 +1,142 @@
+{
+  "cases": [
+    {
+      "case_id": "interpreted-lexical",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.21681785583496094
+          ],
+          "median": 0.21681785583496094
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.7315380573272705
+          ],
+          "median": 0.7315380573272705
+        }
+      },
+      "paired_ratios": [
+        3.373975148449527
+      ],
+      "median_ratio": 3.373975148449527,
+      "ratio_interval": [
+        3.373975148449527,
+        3.373975148449527
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "interpreted-calls",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.26585912704467773
+          ],
+          "median": 0.26585912704467773
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.12978196144104
+          ],
+          "median": 1.12978196144104
+        }
+      },
+      "paired_ratios": [
+        4.24955115891575
+      ],
+      "median_ratio": 4.24955115891575,
+      "ratio_interval": [
+        4.24955115891575,
+        4.24955115891575
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "bytecode-calls",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.14212417602539062
+          ],
+          "median": 0.14212417602539062
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.4811418056488037
+          ],
+          "median": 0.4811418056488037
+        }
+      },
+      "paired_ratios": [
+        3.385362146710685
+      ],
+      "median_ratio": 3.385362146710685,
+      "ratio_interval": [
+        3.385362146710685,
+        3.385362146710685
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "native-to-interpreted",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.2456808090209961
+          ],
+          "median": 0.2456808090209961
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.8726089000701904
+          ],
+          "median": 0.8726089000701904
+        }
+      },
+      "paired_ratios": [
+        3.5517991964753604
+      ],
+      "median_ratio": 3.5517991964753604,
+      "ratio_interval": [
+        3.5517991964753604,
+        3.5517991964753604
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    }
+  ],
+  "complete_inventory": true,
+  "geometric_mean_ratio": 3.623553016993545,
+  "criterion_satisfied": false,
+  "action": "pilot",
+  "certification_eligible": false,
+  "inputs_unchanged": true
+}

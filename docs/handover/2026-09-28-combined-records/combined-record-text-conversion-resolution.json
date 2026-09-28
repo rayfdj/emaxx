@@ -1,0 +1,8 @@
+{
+  "parents": [
+    "e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca",
+    "fd5e86f9843e41adbbd91e9d27d0470890ea08df"
+  ],
+  "file": "src/lisp/primitives/tests.rs",
+  "resolution": "Preserved auto-merged prefix, appended each complete added test block from both parents unchanged. No test or assertion removed."
+}

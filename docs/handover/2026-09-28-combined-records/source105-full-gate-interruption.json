@@ -1,0 +1,14 @@
+{
+  "action": "SIGTERM only the obsolete source105 eval_03 process group launched by this task",
+  "process": "37140 33257 37140 /private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff lisp::eval::tests::eval_03:: --test-threads 1",
+  "epoch": 1790588526.745229,
+  "reason": "Source105 already has a preserved release SIGSEGV and ordinary reproducible SIGSEGV. Source108 fixes that lifetime bug and passes focused release and ordinary comparisons; replace obsolete source105 full validation with current source108 full validation.",
+  "completed_groups": {
+    "eval_01": 385,
+    "eval_02": 295
+  },
+  "partial_group": "eval_03 has no completed libtest summary and is interrupted, not passed",
+  "unexecuted": "Later groups and all Cargo integration/bin/doc stages; do not count them as passes.",
+  "source_manifest": "source105-manifest.json",
+  "qualification": "Deliberate supersession, not a timeout change or a passing full gate. Preserve original logs and strict gate outcome."
+}

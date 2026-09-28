@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (slots)\n   (condition-case err\n       (let ((record (make-record 'record-boundary-kind slots 'record-boundary-fill)))\n         (list slots (recordp record) (length record) (aref record 0)\n               (and (> slots 0) (aref record slots))))\n     (error (list slots err))))\n '(0 1 9 257 4094 4095 8192))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/generic-record-size-boundary.el",
+  "input_sha256": "69910b7ae5f728fc985a3000fccf4f0c1f6067678dfde267891650346d15f533",
+  "exit_code": 0,
+  "elapsed_seconds": 0.3024616669999993,
+  "stdout_hex": "28283020742031207265636f72642d626f756e646172792d6b696e64206e696c2920283120742032207265636f72642d626f756e646172792d6b696e64207265636f72642d626f756e646172792d66696c6c292028392074203130207265636f72642d626f756e646172792d6b696e64207265636f72642d626f756e646172792d66696c6c292028323537207420323538207265636f72642d626f756e646172792d6b696e64207265636f72642d626f756e646172792d66696c6c2920283430393420742034303935207265636f72642d626f756e646172792d6b696e64207265636f72642d626f756e646172792d66696c6c2920283430393520286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203430393620736c6f74733b206d6178206973203430393522292920283831393220286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203831393320736c6f74733b206d6178206973203430393522292929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

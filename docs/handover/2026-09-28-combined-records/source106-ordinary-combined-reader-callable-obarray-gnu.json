@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((old (obarray-make))\n          (new (obarray-make))\n          (obarray old)\n          (read-symbol-shorthands nil)\n          (characters (string-to-list \"aa bb\"))\n          (changed nil)\n          (stream (lambda (&optional character)\n                    (if character\n                        (progn\n                          (unless changed\n                            (setq changed t obarray new\n                                  read-symbol-shorthands '((\"aa\" . \"renamed-\"))))\n                          (push character characters))\n                      (pop characters))))\n          (one (funcall reader stream))\n          (two (funcall reader stream)))\n     (list (symbol-name (bare-symbol one))\n           (symbol-name (bare-symbol two))\n           (eq (bare-symbol one) (intern \"renamed-\" new))\n           (null (intern-soft \"aa\" old))\n           (null (intern-soft \"renamed-\" old))\n           (and (symbol-with-pos-p one) (symbol-with-pos-pos one))\n           (and (symbol-with-pos-p two) (symbol-with-pos-pos two)))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-obarray.el",
+  "input_sha256": "5b67c333697e6ae3c96312c48971f416cb97649f45a08573dbd86e9ed3c4e259",
+  "exit_code": 0,
+  "elapsed_seconds": 0.23539291700000042,
+  "stdout_hex": "28282272656e616d65642d222022626222207420742074206e696c206e696c2920282272656e616d65642d222022626222207420742074203020312929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

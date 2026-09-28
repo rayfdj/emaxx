@@ -1,0 +1,13 @@
+{
+  "source": 105,
+  "commit": "1ed63a559bef9304cadf29afce4f4345d4020150",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "driver": "validate-frame-snapshot-v2.py",
+  "qualification": "Combined-source selected validation; v2 fails a stage if source identity changes. No full or frozen claim."
+}

@@ -1,0 +1,7 @@
+{
+  "source": 108,
+  "driver": "launch-source108.py",
+  "underlying_driver": "validate-frame-snapshot-v2.py",
+  "parent_snapshot": 107,
+  "change": "Only the newly added test now uses the Lisp printer; complete expected GNU graph remains unchanged. Production source identical to107. All107failed Rust receipts retained; ordinary107minimal crash reproducer matches GNU exactly."
+}

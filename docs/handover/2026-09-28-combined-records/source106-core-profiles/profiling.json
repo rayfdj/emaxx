@@ -1,0 +1,14 @@
+{
+  "kind": "diagnostic_profile",
+  "command": [
+    "target/runtime-goal/resume-2026-09-28/profile-source106-core-runtime-pilot.py"
+  ],
+  "source_commit": "1ed63a559bef9304cadf29afce4f4345d4020150",
+  "source_manifest": "source106-manifest.json",
+  "source_patch": "source106.patch",
+  "inputs": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/profile-source106-core-runtime-pilot.py": "1867f86d244c8b40db97c06565c79a48749d87eaf302a7ddcb2d2bb92b8d5909",
+    "/usr/bin/sample": "952a8f78c674e59dd3a0674f389380f94d1678669511dbcbbbeed55d96023853"
+  },
+  "qualification": "Four locked workload inputs through the unchanged normal CLI and Lisp helper. Existing pilot mode uses one observation per process, no warmup; it is not the required full timing suite. Stack sampling includes startup, preparation and body. Builds/tests run concurrently; sampled elapsed times cannot establish performance. Missing allocation counters remain unavailable, never zero."
+}
