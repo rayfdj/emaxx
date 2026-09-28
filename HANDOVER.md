@@ -13,9 +13,12 @@ run also failed. Neither result is complete final-source validation.
 The integrated [GC continuation](docs/runtime-representation-gc-checkpoint.md)
 adds migrated-kind verifier coverage and removes inactive error payload storage
 that retained a dead thread key. Its separate checkpoint passes 186 debug and
-209 release controls plus cached-image and positioned-error checks. The combined
-source still needs validation; a further uninterned-symbol ownership repair is
-under investigation in an isolated worktree.
+209 release controls plus cached-image and positioned-error checks. The combined source plus the [weak symbol ownership repair](docs/runtime-representation-symbol-ownership-checkpoint.md)
+passes 189 selected debug and 389 release tests, three public-runtime integration
+tests, all strict static checks and nineteen ordinary exact comparisons. The weak
+uninterned-symbol book now follows its process-wide heap across serialized host
+entries. Full final-source validation remains required; function-cell duplicate
+payload removal is the next architectural step.
 Do not reapply the old patch on this branch. The full goal remains incomplete.
 
 **Active goal:** implement one compact, authoritative Lisp object representation
@@ -27,17 +30,18 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
-2. [Bounded reader, printing repair and completed gate failures](docs/runtime-representation-reader-checkpoint.md).
-3. [Cons-edge checker, evaluator stack repair and saved-image evidence](docs/runtime-representation-gc-checkpoint.md).
-4. [Authoritative positioned symbols and current failures](docs/runtime-representation-positioned-symbol-checkpoint.md).
-5. [Authoritative cons payload and failed full gate](docs/runtime-representation-cons-checkpoint.md).
-6. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
-7. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
-8. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
-9. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
-10. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
-11. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
-12. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
+2. [Host-thread symbol ownership and combined-source validation](docs/runtime-representation-symbol-ownership-checkpoint.md).
+3. [Bounded reader, printing repair and completed gate failures](docs/runtime-representation-reader-checkpoint.md).
+4. [Cons-edge checker, evaluator stack repair and saved-image evidence](docs/runtime-representation-gc-checkpoint.md).
+5. [Authoritative positioned symbols and current failures](docs/runtime-representation-positioned-symbol-checkpoint.md).
+6. [Authoritative cons payload and failed full gate](docs/runtime-representation-cons-checkpoint.md).
+7. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
+8. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
+9. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
+10. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
+11. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
+12. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
+13. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
 
 The original main checkpoint packaged its unfinished work as
 [char-table-wip.patch](docs/handover/2026-09-27/char-table-wip.patch). That patch is
