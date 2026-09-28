@@ -1,0 +1,8 @@
+{
+  "outer_environment_overrides": {
+    "EMAXX_GC_TRACE_ROOTS": "1",
+    "EMAXX_RECLAMATION_CONTRACT_CHILD": "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "qualification": "Temporary diagnostic, not production validation; same unchanged child contract including GNU control."
+}

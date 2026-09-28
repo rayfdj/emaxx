@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source77-debug-libtest",
+    "--exact",
+    "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images",
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "environment_unset": [],
+  "binary_sha256": "aae15e9402b25dae86eeb99b56e3dd035ff339ef8c7a737aa1543a392bc519ab",
+  "exit_code": 0,
+  "elapsed_seconds": 164.36095866600002
+}

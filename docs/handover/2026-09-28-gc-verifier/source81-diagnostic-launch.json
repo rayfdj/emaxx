@@ -1,0 +1,12 @@
+{
+  "outer_environment_overrides": {
+    "EMAXX_GC_TRACE_ROOTS": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "qualification": "Temporary diagnostic instrumentation; not a production validation or performance result. Logs which root categories first mark cons keys in weak tables. No keys are explicitly marked by diagnostic code. Instrumentation must be removed before final validation.",
+  "prior_controls": {
+    "source79_verifier_on": "FAIL",
+    "source79_verifier_off": "FAIL",
+    "source77_verifier_on": "PASS"
+  }
+}

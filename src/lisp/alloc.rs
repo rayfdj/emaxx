@@ -1809,18 +1809,16 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     num_used
 }
 
-/// `EMAXX_GC_VERIFY': the two whole-heap checks around every sweep
-/// (GC_CHECK_MARKED_OBJECTS' spirit; a walk of every block twice per
-/// collection, so opt-in).
+/// `EMAXX_GC_VERIFY': scan cons blocks around every sweep. Before sweeping,
+/// check cons-to-cons and cons-to-vectorlike mark edges; afterwards, check
+/// cons-to-cons allocation edges. Other heap fields are not verified here.
 fn verify_heap_enabled() -> bool {
     static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *VERIFY.get_or_init(|| std::env::var_os("EMAXX_GC_VERIFY").is_some())
 }
 
-/// Before the sweep, in a checked build: every cell a marked cell names is
-/// marked too, or the mark phase reached the first without tracing it (or
-/// its field was written after the marking, from a reference the phase
-/// could not see).  The report names both cells and their words.
+/// Before the sweep, with the optional verifier enabled: each cons or
+/// supported vectorlike named by a marked cons must also be marked.
 fn verify_marking(epoch: u32) {
     for start in all_blocks() {
         for index in 0..CELLS_PER_BLOCK {
@@ -1870,9 +1868,19 @@ fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool>
         Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
         Kind::ReaderForm(form) => Some(form.mark_bit().is_marked(epoch)),
         Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
+        Kind::CharTable(table) => Some(table.mark_bit().is_marked(epoch)),
+        Kind::SubCharTable(table) => Some(table.mark_bit().is_marked(epoch)),
+        Kind::Frame(frame) => Some(frame.mark_bit().is_marked(epoch)),
+        Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked(epoch)),
+        Kind::Record(record) => Some(record.mark_bit().is_marked(epoch)),
+        Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked(epoch)),
+        Kind::SymbolWithPos(positioned) => Some(positioned.mark_bit().is_marked(epoch)),
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod verifier_tests;
 
 /// A word of a cell, for the reports: its kind, a symbol's name, an
 /// integer, a cons's address.
