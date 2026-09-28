@@ -16,10 +16,59 @@ import time
 import serial_grouped_gate
 
 
+def execute(command: list[str], environment: dict[str, str], log: Path) -> dict:
+    """Keep the original process timeout and raw output for each separate run."""
+    gate = serial_grouped_gate.gate
+    started = time.monotonic()
+    with log.open("wb") as stream:
+        process = subprocess.Popen(
+            command, cwd=gate.PROJECT_ROOT, env=environment,
+            stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        timed_out = False
+        try:
+            process.wait(timeout=gate.DEFAULT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+    text = log.read_text(errors="replace")
+    return dict(
+        command=command, exit_code=process.returncode, timed_out=timed_out,
+        elapsed_seconds=time.monotonic() - started,
+        executed_tests=re.findall(r"^test (\S+) \.\.\.", text, re.MULTILINE),
+    )
+
+
+def validate_execution(record: dict, text: str, selected: list[str],
+                       all_tests: list[str], ignored: list[str]) -> None:
+    gate = serial_grouped_gate.gate
+    if record["timed_out"] or record["exit_code"]:
+        raise gate.GateError(
+            f"diagnostic exited with {record['exit_code']}; timed_out={record['timed_out']}"
+        )
+    result = gate.parse_test_result(text)
+    record["result"] = result
+    gate.validate_test_result(result, len(selected), len(all_tests), len(ignored))
+    if sorted(record["executed_tests"]) != selected:
+        raise gate.GateError("executed test names differ from the selected inventory")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--filter", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--prelude-filter",
+        help="run this original inventory first in a separate process sharing the fixture image",
+    )
     parser.add_argument(
         "--plain", action="store_true",
         help="execute the recorded test binary directly, without a debugger",
@@ -27,6 +76,8 @@ def main() -> int:
     arguments = parser.parse_args()
     if not arguments.filter.strip():
         parser.error("--filter must select an explicit nonempty test inventory")
+    if arguments.prelude_filter is not None and not arguments.prelude_filter.strip():
+        parser.error("--prelude-filter must select an explicit nonempty test inventory")
 
     gate = serial_grouped_gate.gate
     output = arguments.output.resolve()
@@ -40,6 +91,7 @@ def main() -> int:
         ),
         "git": gate.git_state(),
         "filter": arguments.filter,
+        "prelude_filter": arguments.prelude_filter,
         "timeout_seconds": gate.DEFAULT_TIMEOUT_SECONDS,
         "environment": {
             key: environment.get(key)
@@ -50,6 +102,10 @@ def main() -> int:
             )
         },
         "status": "building",
+        "fixture_images_before": [
+            {"path": str(path), "sha256": gate.sha256_file(path), "bytes": path.stat().st_size}
+            for path in sorted(Path(environment["EMAXX_FIXTURE_IMAGE_DIR"]).glob("*.pdmp"))
+        ],
     }
 
     def save() -> None:
@@ -86,6 +142,26 @@ def main() -> int:
         ignored = inventory("ignored-inventory", [arguments.filter, "--ignored"], allow_empty=True)
         assert set(ignored) <= set(selected) <= set(all_tests)
         summary.update(expected_tests=selected, ignored_tests=ignored, total_tests=len(all_tests))
+        if arguments.prelude_filter:
+            selection = [arguments.prelude_filter]
+            prelude_selected = inventory("prelude-inventory", selection)
+            prelude_ignored = inventory(
+                "prelude-ignored-inventory", [*selection, "--ignored"], allow_empty=True,
+            )
+            assert set(prelude_ignored) <= set(prelude_selected) <= set(all_tests)
+            prelude_command = [str(binary), *selection, "--test-threads", "1"]
+            summary.update(status="running prelude", prelude={
+                "command": prelude_command, "expected_tests": prelude_selected,
+                "ignored_tests": prelude_ignored,
+            })
+            save()
+            prelude_log = output / "prelude.log"
+            summary["prelude"].update(execute(prelude_command, environment, prelude_log))
+            save()
+            validate_execution(summary["prelude"], prelude_log.read_text(errors="replace"),
+                               prelude_selected, all_tests, prelude_ignored)
+            summary["prelude"]["status"] = "passed"
+            save()
         test_command = [str(binary), arguments.filter, "--test-threads", "1"]
         command = test_command if arguments.plain else [
             "gdb", "--batch", "--return-child-result",
@@ -98,42 +174,10 @@ def main() -> int:
         ]
         summary.update(status="running", command=command, test_command=test_command)
         save()
-        started = time.monotonic()
         log = output / ("replay.log" if arguments.plain else "backtrace.log")
-        with log.open("wb") as stream:
-            process = subprocess.Popen(
-                command, cwd=gate.PROJECT_ROOT, env=environment,
-                stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
-            )
-            timed_out = False
-            try:
-                process.wait(timeout=gate.DEFAULT_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-        text = log.read_text(errors="replace")
-        executed = re.findall(r"^test (\S+) \.\.\.", text, re.MULTILINE)
-        summary.update(
-            exit_code=process.returncode, timed_out=timed_out,
-            elapsed_seconds=time.monotonic() - started, executed_tests=executed,
-            source_after=gate.git_state(),
-        )
+        summary.update(execute(command, environment, log), source_after=gate.git_state())
         save()
-        if timed_out or process.returncode:
-            raise gate.GateError(f"diagnostic exited with {process.returncode}; timed_out={timed_out}")
-        result = gate.parse_test_result(text)
-        summary["result"] = result
-        gate.validate_test_result(result, len(selected), len(all_tests), len(ignored))
-        if sorted(executed) != selected:
-            raise gate.GateError("executed test names differ from the selected inventory")
+        validate_execution(summary, log.read_text(errors="replace"), selected, all_tests, ignored)
         if summary["source_after"] != summary["git"]:
             raise gate.GateError("source state changed during the diagnostic")
         summary["status"] = "selected diagnostic passed"
@@ -142,7 +186,27 @@ def main() -> int:
         summary.update(status="failed", error=repr(error))
         raise
     finally:
-        save()
+        # These are inputs to subsequent processes, not merely a speed cache.
+        # Keep the actual image for the startup-history diagnosis even on failure.
+        try:
+            fixture_images = Path(environment["EMAXX_FIXTURE_IMAGE_DIR"])
+            summary["fixture_images"] = []
+            for source in sorted(fixture_images.glob("*.pdmp")):
+                target = output / "fixture-images" / source.name
+                target.parent.mkdir(exist_ok=True)
+                shutil.copy2(source, target)
+                digest = gate.sha256_file(source)
+                if gate.sha256_file(target) != digest:
+                    raise gate.GateError("saved fixture image differs from the executed input")
+                summary["fixture_images"].append({
+                    "source": str(source), "artifact": str(target.relative_to(output)),
+                    "sha256": digest, "bytes": source.stat().st_size,
+                })
+        except BaseException as error:
+            summary.update(status="failed", image_preservation_error=repr(error))
+            raise
+        finally:
+            save()
 
 
 if __name__ == "__main__":
