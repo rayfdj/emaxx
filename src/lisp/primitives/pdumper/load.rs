@@ -433,6 +433,17 @@ impl Loader<'_> {
                     self.objects
                         .insert(offset, Value::vector(vec![Value::Nil; size]));
                 }
+                DumpType::LispRecord => {
+                    let size = self.reader.word(offset)? as usize;
+                    if !(1..=crate::lisp::alloc::vectors::generic_records::MAX_RECORD_SLOTS)
+                        .contains(&size)
+                    {
+                        return Err(LoadError::Error(format!("invalid record size at {offset}")));
+                    }
+                    let record =
+                        crate::lisp::types::LispRecordRef::filled(Value::Nil, size - 1, Value::Nil);
+                    self.objects.insert(offset, Value::LispRecord(record));
+                }
                 DumpType::Record | DumpType::Obarray | DumpType::HashTable => {
                     let id = self.reader.word(offset)?;
                     let kind_code = self.reader.word(offset + 8)? as u32;
@@ -598,6 +609,15 @@ impl Loader<'_> {
                     for index in 0..size {
                         let value = self.value_at(offset + 8 * (index as u32 + 1))?;
                         vector.set(index, value);
+                    }
+                }
+                DumpType::LispRecord => {
+                    let Kind::LispRecord(record) = self.objects[&offset].kind() else {
+                        unreachable!("record placeholder installed in phase 2")
+                    };
+                    for index in 0..record.len() {
+                        let field = self.value_at(offset + 8 * (index as u32 + 1))?;
+                        record.set(index, field);
                     }
                 }
                 DumpType::Record | DumpType::Obarray | DumpType::HashTable => {

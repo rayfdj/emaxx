@@ -1,0 +1,38 @@
+(defun record-purecopy-probe-149 ()
+  (interactive)
+  (let ((report (getenv "EMAXX_RECORD_PROBE_REPORT"))
+        (callbacks 0)
+        (source (make-vector 130 nil))
+        copied)
+    (condition-case err
+        (progn
+          (dotimes (index 129)
+            (aset source index (make-string (+ 30 (% index 41)) (+ 65 (% index 26)))))
+          (aset source 129 (propertize "collect-probe-149" 'face 'bold))
+          (let ((purify-flag t)
+                (message-log-max nil)
+                (inhibit-message nil)
+                (clear-message-function nil)
+                (set-message-function
+                 (lambda (_message)
+                   (setq callbacks (1+ callbacks))
+                   (garbage-collect)
+                   nil)))
+            (setq copied (purecopy source)))
+          (let ((distinct t))
+            (dotimes (index 130)
+              (when (eq (aref source index) (aref copied index))
+                (setq distinct nil)))
+            (with-temp-file report
+              (prin1 (list callbacks (length copied)
+                           (equal source copied) (not (eq source copied)) distinct
+                           (text-properties-at 0 (aref copied 129)))
+                     (current-buffer))))
+          (kill-emacs 0))
+      (error
+       (with-temp-file report (prin1 err (current-buffer)))
+       (kill-emacs 2)))))
+(global-set-key (kbd "C-c r") 'record-purecopy-probe-149)
+(switch-to-buffer "*record-purecopy-ready*")
+(insert "record-purecopy-ready")
+(set-buffer-modified-p nil)

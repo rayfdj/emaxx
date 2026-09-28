@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(#:one [#:two \\\"text\\\"] #s(kind #:three) #1=(#:cycle . #1#)) tail\"))\n          (count 0)\n          (source (lambda (&optional character)\n                    (if character (push character chars)\n                      (setq count (1+ count))\n                      (when (= (% count 7) 0) (garbage-collect))\n                      (pop chars))))\n          (form (funcall reader source))\n          (cycle (nth 3 form)))\n     (list (length form)\n           (symbol-name (bare-symbol (car form)))\n           (symbol-name (bare-symbol (aref (nth 1 form) 0)))\n           (aref (nth 1 form) 1)\n           (symbol-name (aref (nth 2 form) 1))\n           (symbol-name (bare-symbol (car cycle)))\n           (eq cycle (cdr cycle))\n           (concat chars))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-gc.el",
+  "input_sha256": "edd4a756f4717146ecb2fb8842a09a2cf880efc5959821db1c8cc5a5eebd99a0",
+  "exit_code": 0,
+  "elapsed_seconds": 0.48452587500000277,
+  "stdout_hex": "28283420226f6e6522202274776f2220227465787422202274687265652220226379636c652220742022207461696c222920283420226f6e6522202274776f2220227465787422202274687265652220226379636c652220742022207461696c222929",
+  "stderr_hex": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

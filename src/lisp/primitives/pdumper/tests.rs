@@ -210,6 +210,15 @@ fn graph_matches(
             }
             Ok(())
         }
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
+            if left.len() != right.len() {
+                return Err("record length differs".into());
+            }
+            for (left, right) in left.slots().zip(right.slots()) {
+                graph_matches(&left, &right, seen)?;
+            }
+            Ok(())
+        }
         (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::Record(_), Kind::Record(_)) => Ok(()),
         (Kind::Cons(_), Kind::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
@@ -744,17 +753,22 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(set, vec![0, 65, 69]);
 
     // The record's slots, with the shared list being the same object.
-    let Kind::Record(record_id) = slots[3].kind() else {
+    let Kind::LispRecord(record) = slots[3].kind() else {
         panic!("record")
     };
-    let record = target.find_record(record_id).expect("installed record");
-    assert_eq!(record.type_tag, Value::symbol("zz-rec"));
-    assert_eq!(record.slots[0], Value::Integer(1));
+    assert_eq!(record.type_tag(), Value::symbol("zz-rec"));
+    assert_eq!(record.get(1), Some(Value::Integer(1)));
     assert_eq!(
-        string_like(&record.slots[1]).map(|s| s.text),
+        record
+            .get(2)
+            .and_then(|value| string_like(&value))
+            .map(|s| s.text),
         Some("two".to_owned())
     );
-    assert_eq!(object_key(&record.slots[2]), object_key(&slots[0]));
+    assert_eq!(
+        object_key(&record.get(3).expect("shared field")),
+        object_key(&slots[0])
+    );
 
     // The main thread is the restoring process's own.  (The standard
     // obarray reaches every symbol's value, hash tables included: it joins
@@ -1703,4 +1717,59 @@ fn image_nilled_frames_preserve_address_identity_and_shared_references() {
         1,
         "nilled objects are not live frame roots"
     );
+}
+
+#[test]
+fn inline_record_type_and_data_cycles_survive_clone_and_dump() {
+    use crate::lisp::types::LispRecordRef;
+    let mut source = Interpreter::new();
+    let record = LispRecordRef::filled(Value::Nil, 3, Value::Nil);
+    let object = Value::LispRecord(record);
+    let descriptor = LispRecordRef::new(
+        Value::symbol("record-descriptor"),
+        &[Value::symbol("cycle-type"), object],
+    );
+    let shared = Value::vector([object, Value::LispRecord(descriptor)]);
+    record.set(0, Value::LispRecord(descriptor));
+    record.set(1, object);
+    record.set(2, shared);
+    record.set(3, shared);
+    let root = Value::vector([object, shared, Value::LispRecord(descriptor)]);
+    source.set_variable(
+        "inline-record-graph",
+        root,
+        &mut crate::lisp::types::Env::new(),
+    );
+    let clone = source.deep_clone_image();
+    let cloned = clone
+        .symbol_value_cell("inline-record-graph")
+        .expect("cloned root");
+    graph_matches(&root, &cloned, &mut HashMap::new())
+        .expect("clone preserves every record field and identity relation");
+    assert_ne!(root.word(), cloned.word());
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, root)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("record graph loads");
+    let restored = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("restored graph")
+        .1;
+    graph_matches(&root, &restored, &mut HashMap::new())
+        .expect("type descriptors, cycles and shared fields relocate");
+    let Kind::Vector(vector) = restored.kind() else {
+        panic!("root vector")
+    };
+    let Kind::LispRecord(record) = vector.get(0).expect("record field").kind() else {
+        panic!("inline record")
+    };
+    let words = record.identity() as *const usize;
+    assert_eq!(unsafe { words.add(1).read() }, record.type_tag().word());
+    assert_eq!(
+        unsafe { words.add(2).read() },
+        Value::LispRecord(record).word()
+    );
+    record.set(3, Value::Integer(101));
+    assert_eq!(unsafe { words.add(4).read() }, Value::Integer(101).word());
 }

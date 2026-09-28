@@ -1,0 +1,14 @@
+[
+  {
+    "fixture": "generic-record-graph",
+    "matches": true,
+    "gnu_exit": 0,
+    "emaxx_exit": 0
+  },
+  {
+    "fixture": "generic-record-construction",
+    "matches": false,
+    "gnu_exit": 0,
+    "emaxx_exit": 0
+  }
+]

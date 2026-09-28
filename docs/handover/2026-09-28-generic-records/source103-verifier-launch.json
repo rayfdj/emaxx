@@ -1,0 +1,1 @@
+{"EMAXX_GC_VERIFY":"1","CARGO_BUILD_JOBS":"1","scope":"Add missing xdisp set-message-function C default and declared-special initialization. All diagnostic tracing removed; unchanged callback fixture assertions."}

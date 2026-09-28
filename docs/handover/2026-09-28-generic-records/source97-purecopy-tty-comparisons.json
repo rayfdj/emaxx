@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "input": "purecopy-five-kinds-gc",
+      "gnu_receipt": "purecopy-five-kinds-gc-gnu.json",
+      "emaxx_receipt": "source97-purecopy-five-kinds-gc.json",
+      "matches": true
+    },
+    {
+      "input": "purecopy-sequence-snapshot",
+      "gnu_receipt": "purecopy-sequence-snapshot-gnu.json",
+      "emaxx_receipt": "source97-purecopy-sequence-snapshot.json",
+      "matches": true
+    },
+    {
+      "input": "purecopy-callback-purify-flag",
+      "gnu_receipt": "purecopy-callback-purify-flag-gnu.json",
+      "emaxx_receipt": "source97-purecopy-callback-purify-flag.json",
+      "matches": true
+    },
+    {
+      "input": "record-purecopy-callback",
+      "gnu_receipt": "record-purecopy-callback-gnu-tty2.json",
+      "emaxx_receipt": "source97-record-purecopy-callback.json",
+      "matches": true
+    }
+  ],
+  "all_match": true,
+  "qualification": "Exact report bytes. Terminal startup screens are not compared here; all raw TTY bytes are retained. Expanded GNU crash remains separate, not a pass."
+}

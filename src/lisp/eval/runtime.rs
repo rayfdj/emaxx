@@ -1978,6 +1978,7 @@ impl Interpreter {
                 Kind::Cons(cell) => pending.extend([cell.car.get(), cell.cdr.get()]),
                 Kind::Vector(vector) => pending.extend(vector.slots()),
                 Kind::Record(record) => pending.extend(record.slots.iter().copied()),
+                Kind::LispRecord(record) => pending.extend(record.slots()),
                 Kind::StringObject(string) => {
                     let string = string.borrow();
                     signature.push(string.text.len());
@@ -2167,7 +2168,7 @@ impl Interpreter {
     }
 
     pub fn create_record_with_type(&mut self, type_tag: Value, slots: Vec<Value>) -> Value {
-        self.create_record_with_kind(type_tag, slots, RecordKind::Record)
+        Value::LispRecord(LispRecordRef::new(type_tag, &slots))
     }
 
     pub(crate) fn create_pseudovector(
@@ -2180,7 +2181,6 @@ impl Interpreter {
             slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
             slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
         }
-        debug_assert_ne!(kind, RecordKind::Record);
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
 
@@ -2540,48 +2540,6 @@ impl Interpreter {
             }
         }
         Ok(copy)
-    }
-
-    // `aset' on a record's type slot stores the Lisp object verbatim.  GNU
-    // permits both symbols and arbitrary type descriptors here.
-    pub(crate) fn retag_record(&mut self, id: u64, type_tag: Value) -> Result<(), LispError> {
-        let Some((record_kind, previous_type_name)) = self
-            .find_record(id)
-            .map(|record| (record.kind, record.symbol_type_name().map(str::to_owned)))
-        else {
-            return Err(LispError::TypeError(
-                "record".into(),
-                format!("record<{id}>"),
-            ));
-        };
-        if record_kind != RecordKind::Record {
-            return Err(LispError::TypeError(
-                "record".into(),
-                format!("record<{id}>"),
-            ));
-        }
-        if let Some(previous_type_name) = previous_type_name {
-            let remove_previous_type = self
-                .record_ids_by_type_index
-                .get_mut(&previous_type_name)
-                .is_some_and(|ids| {
-                    ids.remove(&id);
-                    ids.is_empty()
-                });
-            if remove_previous_type {
-                self.record_ids_by_type_index.remove(&previous_type_name);
-            }
-        }
-        if let Ok(type_name) = type_tag.as_symbol() {
-            self.record_ids_by_type_index
-                .entry(type_name.to_string())
-                .or_default()
-                .insert(id);
-        }
-        self.find_record_mut(id)
-            .expect("record identity was validated before retagging")
-            .type_tag = type_tag;
-        Ok(())
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
@@ -3066,40 +3024,42 @@ mod runtime_index_tests {
     #[test]
     fn record_type_index_tracks_creation_and_retagging() {
         let mut interp = Interpreter::new();
-        let Kind::Record(first_id) = interp.create_record("before", Vec::new()).kind() else {
-            unreachable!("create_record must return a record")
+        // The old index included every generic record. It now belongs only
+        // to host pseudovectors; real type-slot changes are direct stores.
+        let before_records = interp.records.len();
+        let Kind::LispRecord(first) = interp.create_record("before", Vec::new()).kind() else {
+            unreachable!("inline record")
         };
-        let Kind::Record(second_id) = interp.create_record("before", Vec::new()).kind() else {
-            unreachable!("create_record must return a record")
+        let Kind::LispRecord(second) = interp.create_record("before", Vec::new()).kind() else {
+            unreachable!("inline record")
         };
-
-        assert_eq!(
-            interp.record_ids_by_type("before"),
-            vec![first_id.id, second_id.id]
-        );
-        interp
-            .retag_record(first_id.id, Value::symbol("after"))
-            .expect("record must remain live");
-        assert_eq!(interp.record_ids_by_type("before"), vec![second_id.id]);
-        assert_eq!(interp.record_ids_by_type("after"), vec![first_id.id]);
-
-        interp
-            .retag_record(second_id.id, Value::symbol("after"))
-            .expect("record must remain live");
+        assert!(!first.ptr_eq(&second));
+        assert_eq!(first.type_tag(), Value::symbol("before"));
+        assert_eq!(second.type_tag(), Value::symbol("before"));
         assert!(interp.record_ids_by_type("before").is_empty());
-        assert_eq!(
-            interp.record_ids_by_type("after"),
-            vec![first_id.id, second_id.id]
-        );
-
+        first.set(0, Value::symbol("after"));
+        assert_eq!(first.type_tag(), Value::symbol("after"));
+        assert_eq!(second.type_tag(), Value::symbol("before"));
+        second.set(0, Value::symbol("after"));
+        assert_eq!(second.type_tag(), first.type_tag());
+        assert!(interp.record_ids_by_type("after").is_empty());
         let descriptor = interp.create_record("descriptor", vec![Value::symbol("public-type")]);
-        interp
-            .retag_record(first_id.id, descriptor)
-            .expect("record must accept an arbitrary Lisp type descriptor");
-        assert_eq!(interp.record_ids_by_type("after"), vec![second_id.id]);
+        first.set(0, descriptor);
+        assert_eq!(first.type_tag(), descriptor);
         assert_eq!(
-            interp.find_record(first_id).map(|record| &record.type_tag),
-            Some(&descriptor)
+            interp.records.len(),
+            before_records,
+            "generic records allocate no host ids"
+        );
+        let Kind::Record(host) = interp
+            .create_pseudovector(super::RecordKind::Window, "index-host-window", Vec::new())
+            .kind()
+        else {
+            unreachable!("host window")
+        };
+        assert_eq!(
+            interp.record_ids_by_type("index-host-window"),
+            vec![host.id]
         );
     }
 

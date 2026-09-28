@@ -453,7 +453,9 @@ impl Interpreter {
             "values" => Some(Value::Nil),
             // xdisp.c:syms_of_xdisp initializes the C callback slot to nil;
             // unchanged minibuffer.el installs its Lisp function later.
-            "clear-message-function" => Some(Value::Nil),
+            // xdisp.c owns both C slots before simple.el installs the
+            // interactive callback. They are special even in a lexical let.
+            "clear-message-function" | "set-message-function" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
             "load-suffixes" => Some(Value::list(
                 dynamic_library_suffix_values()
@@ -1377,6 +1379,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "case-symbols-as-words",
     "char-code-property-alist",
     "clear-message-function",
+    "set-message-function",
     "coding-system-for-read",
     "coding-system-for-write",
     "command-error-function",

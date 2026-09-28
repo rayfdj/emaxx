@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((print-circle t))\n  (list\n   (mapcar\n    (lambda (count)\n      (let* ((fields (make-list count 79))\n             (object (apply #'record 'arity-73 fields)))\n        (list count (length object) (aref object 0)\n              (if (> count 0) (aref object count) 'empty))))\n    '(0 1 17 259 4094))\n   (mapcar\n    (lambda (count)\n      (condition-case err\n          (length (apply #'record 'too-many-83 (make-list count nil)))\n        (error err)))\n    '(4095 4096))\n   (mapcar\n    (lambda (count)\n      (condition-case err\n          (length (read (concat \"#s(read-type-89\" (apply #'concat (make-list count \" nil\")) \")\")))\n        (error err)))\n    '(0 1 257 4094 4095))\n   (let* ((original (record 'pure-97 (propertize \"text\" 'face 'bold)))\n          (copy (let ((purify-flag t)) (purecopy original))))\n     (list (eq original copy) (equal original copy)\n           (equal-including-properties original copy)\n           (text-properties-at 0 (aref copy 1))))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "source_snapshot": 87,
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/generic-record-construction.el",
+  "exit_code": 0,
+  "elapsed_seconds": 0.21384987499999997,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "input_sha256": "b2c9149ad754178e93f1b9510d18eed56bf35ba96e0f0e556b0425ddbd56de6b",
+  "artifacts_and_input_unchanged": true,
+  "qualification": "Immutable pre-migration source87. Local GNU is source matched, not the frozen Darwin oracle."
+}

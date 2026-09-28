@@ -1,0 +1,21 @@
+{
+  "before": "91",
+  "after": "103",
+  "before_count": 2870,
+  "after_count": 2882,
+  "removed": [],
+  "added": [
+    "lisp::eval::image_install::tests::restored_process_replaces_the_dump_builders_quoting_locale",
+    "lisp::native_comp::runtime::record_layout_tests::generic_record_census_includes_header_and_physical_rounding",
+    "lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump",
+    "lisp::primitives::tests::generic_record_argument_errors_match_gnu_without_large_allocation",
+    "lisp::primitives::tests::generic_record_constructors_reader_and_purecopy_match_gnu",
+    "lisp::primitives::tests::generic_record_property_values_preserve_eq_boundaries",
+    "lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state",
+    "lisp::primitives::tests::generic_record_sharing_cycles_and_copying_match_gnu",
+    "lisp::primitives::tests::message_callback_bindings_are_special_before_and_after_disconnection",
+    "lisp::primitives::tests::purecopy_callbacks_observe_current_purify_flag",
+    "lisp::primitives::tests::purecopy_callbacks_preserve_vector_and_record_source_snapshots",
+    "lisp::primitives::tests::purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds"
+  ]
+}

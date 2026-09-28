@@ -1,0 +1,25 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source95-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list internal--text-quoting-flag\n      (text-quoting-style)\n      (default-boundp 'internal--text-quoting-flag)\n      (special-variable-p 'internal--text-quoting-flag)\n      (format-message \"Quote `locale-179' here\")\n      (let ((purify-flag t))\n        (purecopy (propertize \"locale-181\" 'face 'bold))))\n)"
+  ],
+  "environment_overrides": {
+    "LC_ALL": "en_US.UTF-8"
+  },
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "input_identities": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source95-ordinary-emaxx": "3200a673c1fc897002f2f4c2407e674eb3443206da2b43222cade382392d18b6",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source95-ordinary-emaxx.pdmp": "d42465387d6ad79e3a07a251aa5f979091902af8979d150f32690ea454751f1a",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/dump-locale-quoting.el": "0532a0abf91595e23ffb9e925263944fe4e12d4ec957777ea09e09431f29ea72",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-dump-locale.py": "a8434d22b2ac607fa7b0259fb8ed4c281fd202eaf1a0444c9c053e9420027dc5"
+  },
+  "inputs_unchanged": true,
+  "exit_code": 0,
+  "elapsed_seconds": 0.6808489579999999,
+  "stdout_hex": "286e696c20677261766520742074202251756f746520606c6f63616c652d3137392720686572652220226c6f63616c652d3138312229",
+  "stderr_hex": "44726f7070696e6720746578742d70726f70657274696573207768696c65206d616b696e6720737472696e6720606c6f63616c652d3138312720707572650a",
+  "qualification": "Ordinary image locale restoration diagnostic, identical input and per-process locale. Local GNU source matched, not the frozen executable."
+}

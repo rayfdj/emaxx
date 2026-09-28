@@ -1,0 +1,7 @@
+{
+  "gnu_report": "record-purecopy-callback-gnu-tty2.report",
+  "emaxx_report": "source95-record-purecopy-callback.report",
+  "both_exit_zero": true,
+  "matches": false,
+  "difference": "After exactly one GC callback, vector copy equals source in GNU (t), but not Emaxx (nil); both retain length130, distinct copy and fields, and stripped properties."
+}

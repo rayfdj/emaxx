@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source103-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list\n (mapcar (lambda (name) (list name (boundp name) (special-variable-p name)))\n         '(set-message-function clear-message-function))\n (eval '(let ((set-message-function 'set-callback-397)\n              (clear-message-function 'clear-callback-401))\n          (list set-message-function (symbol-value 'set-message-function)\n                clear-message-function (symbol-value 'clear-message-function)))\n       t)\n (progn\n   (makunbound 'set-message-function)\n   (list (boundp 'set-message-function)\n         (special-variable-p 'set-message-function)\n         (eval '(let ((set-message-function 'detached-callback-409))\n                  (list set-message-function (symbol-value 'set-message-function)))\n               t)\n         (boundp 'set-message-function))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/message-callback-special-bindings.el",
+  "input_sha256": "3354844200fa2ccabcd9f922eb3c8de744c82ec6a3151901cceb2a8f1da91a28",
+  "exit_code": 0,
+  "elapsed_seconds": 1.149705415999989,
+  "stdout_hex": "2828287365742d6d6573736167652d66756e6374696f6e20742074292028636c6561722d6d6573736167652d66756e6374696f6e20742074292920287365742d63616c6c6261636b2d333937207365742d63616c6c6261636b2d33393720636c6561722d63616c6c6261636b2d34303120636c6561722d63616c6c6261636b2d3430312920286e696c2074202864657461636865642d63616c6c6261636b2d3430392064657461636865642d63616c6c6261636b2d34303929206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "5bfaba6eff45e2e6e3dc3322ef98f6ad1549e855a5428eeccb905f622268d06d",
+  "image_sha256": "4a1f262ea695250f2ea64820d38e111b2efeb2b6197e6a1c7031bb91ab911135",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

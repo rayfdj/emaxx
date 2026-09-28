@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((message-log-max t)\n      (messages-buffer-name \"*record-message-probe*\")\n      (text-quoting-style 'straight)\n      (inhibit-message t)\n      (last-coding-system-used 'record-coding-sentinel)\n      (coding-system-for-write 'utf-8))\n  (let* ((purify-flag t)\n         (copy (purecopy (record 'message-record (propertize \"text-103\" 'face 'bold)))))\n    (list (aref copy 1)\n          (get-buffer messages-buffer-name)\n          last-coding-system-used)))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/generic-record-purecopy-message.el",
+  "input_sha256": "513dd5878fc54bdfb38dd1864404323e0c344aef168984f76f331112a67e397a",
+  "exit_code": 0,
+  "elapsed_seconds": 0.304639624999993,
+  "stdout_hex": "2822746578742d31303322206e696c207265636f72642d636f64696e672d73656e74696e656c29",
+  "stderr_hex": "44726f7070696e6720746578742d70726f70657274696573207768696c65206d616b696e6720737472696e672027746578742d3130332720707572650a",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

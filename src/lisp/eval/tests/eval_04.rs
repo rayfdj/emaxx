@@ -3746,8 +3746,8 @@ fn backquote_preserves_record_literal_dotted_pair_tails() {
     let mut interp = gnu_early_lisp_interpreter();
     let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);
     let (left, right) = value.cons_values().expect("dotted pair");
-    assert!(matches!(left.kind(), Kind::Record(_)));
-    assert!(matches!(right.kind(), Kind::Record(_)));
+    assert!(matches!(left.kind(), Kind::LispRecord(_)));
+    assert!(matches!(right.kind(), Kind::LispRecord(_)));
 }
 
 #[test]
@@ -3759,8 +3759,8 @@ fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
     );
     let pair = value.car().expect("backquoted list element");
     let (left, right) = pair.cons_values().expect("dotted record pair");
-    assert!(matches!(left.kind(), Kind::Record(_)));
-    assert!(matches!(right.kind(), Kind::Record(_)));
+    assert!(matches!(left.kind(), Kind::LispRecord(_)));
+    assert!(matches!(right.kind(), Kind::LispRecord(_)));
 }
 
 #[test]
@@ -3769,18 +3769,22 @@ fn backquote_materializes_record_literals() {
     let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
     let items = value.to_vec().expect("backquoted list");
     assert_eq!(items.len(), 2);
-    let Kind::Record(inner_id) = items[0].kind() else {
+    let Kind::LispRecord(inner) = items[0].kind() else {
         panic!("expected inner record");
     };
-    let inner = interp.find_record(inner_id).expect("inner record");
-    assert_eq!(inner.type_tag, Value::symbol("a"));
-    assert_eq!(inner.slots, vec![Value::Symbol("b".into())]);
-    let Kind::Record(outer_id) = items[1].kind() else {
+    assert_eq!(inner.type_tag(), Value::symbol("a"));
+    assert_eq!(
+        inner.slots().skip(1).collect::<Vec<_>>(),
+        vec![Value::Symbol("b".into())]
+    );
+    let Kind::LispRecord(outer) = items[1].kind() else {
         panic!("expected outer record");
     };
-    let outer = interp.find_record(outer_id).expect("outer record");
-    assert!(matches!(outer.type_tag.kind(), Kind::Record(_)));
-    assert_eq!(outer.slots, vec![Value::symbol("e")]);
+    assert!(matches!(outer.type_tag().kind(), Kind::LispRecord(_)));
+    assert_eq!(
+        outer.slots().skip(1).collect::<Vec<_>>(),
+        vec![Value::symbol("e")]
+    );
 }
 
 #[test]

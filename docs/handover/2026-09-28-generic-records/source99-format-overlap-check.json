@@ -1,0 +1,4 @@
+{
+  "source_matches_snapshot": false,
+  "note": "cargo fmt invocation yielded a tool session; validation was launched before polling its completion. This receipt checks snapshot identity after formatter completion; production validation independently checks unchanged sources at every stage."
+}

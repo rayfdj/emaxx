@@ -774,9 +774,7 @@ define_dispatch!(
             "recordp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0].kind(), Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record|
-                            record.kind == crate::lisp::eval::RecordKind::Record))
+                    if matches!(args[0].kind(), Kind::LispRecord(_))
                         || record_literal_items(&args[0]).is_some()
                     {
                         Value::T

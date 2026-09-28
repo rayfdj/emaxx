@@ -1,0 +1,23 @@
+{
+  "results": [
+    {
+      "input": "purecopy-five-kinds-gc",
+      "gnu_exit": 0,
+      "emaxx_exit": -11,
+      "matches": false
+    },
+    {
+      "input": "purecopy-sequence-snapshot",
+      "gnu_exit": 0,
+      "emaxx_exit": 0,
+      "matches": false
+    },
+    {
+      "input": "purecopy-callback-purify-flag",
+      "gnu_exit": 0,
+      "emaxx_exit": 0,
+      "matches": false
+    }
+  ],
+  "all_match": false
+}

@@ -1,0 +1,5 @@
+{
+  "EMAXX_GC_VERIFY": "1",
+  "CARGO_BUILD_JOBS": "1",
+  "scope": "Unchanged production97/98; fixture helper reader interning/materialization correction only."
+}

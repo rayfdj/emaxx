@@ -1,0 +1,147 @@
+{
+  "expected_inventory": [
+    "positioned-reader-streams-before",
+    "positioned-reader-streams-v2",
+    "callable-reader-consumption-before",
+    "reader-printer-destinations",
+    "reader-callable-consumption",
+    "reader-callable-dots",
+    "reader-callable-encoding",
+    "reader-callable-errors",
+    "reader-callable-execution-modes",
+    "reader-callable-gc",
+    "reader-callable-lifetime",
+    "reader-callable-obarray",
+    "reader-callable-redefinition",
+    "reader-callable-streams",
+    "reader-callable-syntax",
+    "reader-stream-entrypoints",
+    "reader-stream-positions",
+    "reader-byte-printing",
+    "reader-printer-bindings",
+    "builtin-function-cell-authority",
+    "builtin-nil-function-cell",
+    "builtin-special-form-funcall",
+    "generic-record-size-boundary",
+    "generic-record-graph",
+    "generic-record-construction",
+    "generic-record-argument-errors",
+    "generic-record-purecopy-message",
+    "generic-record-text-properties"
+  ],
+  "results": [
+    {
+      "fixture": "positioned-reader-streams-before",
+      "matches": true
+    },
+    {
+      "fixture": "positioned-reader-streams-v2",
+      "matches": true
+    },
+    {
+      "fixture": "callable-reader-consumption-before",
+      "matches": true
+    },
+    {
+      "fixture": "reader-printer-destinations",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-consumption",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-dots",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-encoding",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-errors",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-execution-modes",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-gc",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-lifetime",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-obarray",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-redefinition",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-streams",
+      "matches": true
+    },
+    {
+      "fixture": "reader-callable-syntax",
+      "matches": true
+    },
+    {
+      "fixture": "reader-stream-entrypoints",
+      "matches": true
+    },
+    {
+      "fixture": "reader-stream-positions",
+      "matches": true
+    },
+    {
+      "fixture": "reader-byte-printing",
+      "matches": true
+    },
+    {
+      "fixture": "reader-printer-bindings",
+      "matches": true
+    },
+    {
+      "fixture": "builtin-function-cell-authority",
+      "matches": true
+    },
+    {
+      "fixture": "builtin-nil-function-cell",
+      "matches": true
+    },
+    {
+      "fixture": "builtin-special-form-funcall",
+      "matches": true
+    },
+    {
+      "fixture": "generic-record-size-boundary",
+      "matches": true
+    },
+    {
+      "fixture": "generic-record-graph",
+      "matches": true
+    },
+    {
+      "fixture": "generic-record-construction",
+      "matches": false
+    },
+    {
+      "fixture": "generic-record-argument-errors",
+      "matches": true
+    },
+    {
+      "fixture": "generic-record-purecopy-message",
+      "matches": true
+    },
+    {
+      "fixture": "generic-record-text-properties",
+      "matches": true
+    }
+  ],
+  "all_match": false
+}

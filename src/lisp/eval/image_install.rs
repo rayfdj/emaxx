@@ -114,6 +114,16 @@ impl Interpreter {
     /// a load the image's dump-time values have replaced them, and this
     /// is the second application GNU makes in an initialized process.
     pub(crate) fn init_after_pdump_load(&mut self) -> Result<(), LispError> {
+        // emacs.c:main computes this after load_pdump, from this process's
+        // locale rather than the locale under which the image was built.
+        self.set_global_binding(
+            "internal--text-quoting-flag",
+            if primitives::values::locale_uses_utf8() {
+                Value::T
+            } else {
+                Value::Nil
+            },
+        );
         // callproc.c:set_initial_environment fills both lists from
         // environ (Fdump_emacs_portable dumped `process-environment' as
         // nil for exactly this).
@@ -362,6 +372,32 @@ pub(crate) fn editfns_identity() -> [(&'static str, Value); 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_process_replaces_the_dump_builders_quoting_locale() {
+        let mut interpreter = Interpreter::new();
+        let utf8 = primitives::values::locale_uses_utf8();
+        // Simulate a dump from the opposite locale. The ordinary process
+        // control also loads a real C-locale image under C and en_US.UTF-8.
+        interpreter.set_global_binding(
+            "internal--text-quoting-flag",
+            if utf8 { Value::Nil } else { Value::T },
+        );
+        interpreter
+            .init_after_pdump_load()
+            .expect("initialize the restored process");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("internal--text-quoting-flag")
+                .expect("restored quoting flag"),
+            if utf8 { Value::T } else { Value::Nil },
+        );
+        assert_eq!(
+            primitives::call(&mut interpreter, "text-quoting-style", &[], &mut Env::new(),)
+                .expect("process quoting style"),
+            Value::symbol(if utf8 { "curve" } else { "grave" }),
+        );
+    }
 
     #[test]
     fn restored_process_replaces_build_paths_and_preserves_other_buffers() {

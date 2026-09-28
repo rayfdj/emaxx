@@ -2909,6 +2909,7 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         (Kind::Unbound, Kind::Unbound) => true,
         _ => false,
     }

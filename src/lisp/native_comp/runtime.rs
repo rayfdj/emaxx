@@ -11439,14 +11439,33 @@ mod tests {
         let mut second_interpreter = Interpreter::new();
         let first_record = first_interpreter.create_record("shared-record", vec![Value::Nil]);
         let second_record = second_interpreter.create_record("shared-record", vec![Value::Nil]);
-        let (Kind::Record(first_id), Kind::Record(second_id)) =
+        // Generic records have address identity and no owner/id prefix.
+        let (Kind::LispRecord(first), Kind::LispRecord(second)) =
             (first_record.kind(), second_record.kind())
         else {
-            panic!("record objects")
+            panic!("inline records")
+        };
+        assert!(!first.ptr_eq(&second));
+        assert_ne!(first_record.word(), second_record.word());
+        // Retain the overlapping-id control for the remaining host adapter.
+        let first_host = first_interpreter.create_pseudovector(
+            crate::lisp::eval::RecordKind::Mutex,
+            "owner-control",
+            vec![Value::Nil],
+        );
+        let second_host = second_interpreter.create_pseudovector(
+            crate::lisp::eval::RecordKind::Mutex,
+            "owner-control",
+            vec![Value::Nil],
+        );
+        let (Kind::Record(first_id), Kind::Record(second_id)) =
+            (first_host.kind(), second_host.kind())
+        else {
+            panic!("host pseudovectors")
         };
         assert_eq!(first_id.id, second_id.id, "exercise overlapping id spaces");
         assert_ne!(first_id.owner, second_id.owner);
-        assert_ne!(first_record.word(), second_record.word());
+        assert_ne!(first_host.word(), second_host.word());
         let integer = Value::Integer(i64::MAX);
         let another_integer = Value::Integer(i64::MAX);
         assert_ne!(integer.word(), another_integer.word());
@@ -11457,7 +11476,15 @@ mod tests {
         ));
         let mut first = NativeHeap::new();
         let mut second = NativeHeap::new();
-        for value in [first_record, second_record, integer, another_integer, form] {
+        for value in [
+            first_record,
+            second_record,
+            first_host,
+            second_host,
+            integer,
+            another_integer,
+            form,
+        ] {
             let word = first.encode(&value).expect("canonical vectorlike word");
             assert_eq!(word, value.word());
             assert_eq!(second.encode(&value).expect("same object word"), word);
@@ -11483,10 +11510,10 @@ mod tests {
                     slots: vec![record, integer],
                 },
             ));
-            let Kind::Record(id) = record.kind() else {
+            let Kind::LispRecord(id) = record.kind() else {
                 panic!("record")
             };
-            interpreter.find_record_mut(id).expect("live record").slots[0] = reader;
+            assert!(id.set(1, reader));
             let dead_integer = Value::Integer(i64::MIN);
             let dead_record = interpreter.create_record("native-dead-record", vec![dead_integer]);
             let dead_reader = Value::ReaderForm(crate::lisp::types::ReaderFormRef::allocate(
@@ -11525,10 +11552,10 @@ mod tests {
             };
             assert_eq!(slots[0].word(), record.word());
             assert_eq!(slots[1].word(), integer.word());
-            let Kind::Record(id) = record.kind() else {
+            let Kind::LispRecord(id) = record.kind() else {
                 panic!("retained record")
             };
-            assert_eq!(id.slots[0].word(), reader.word());
+            assert_eq!(id.get(1).expect("data field").word(), reader.word());
             // alloc.c:allocate_vectorlike reuses swept vector addresses.
             // Check reclamation before allocating a comparison bignum at
             // what may be one of those addresses.
@@ -11902,16 +11929,21 @@ mod tests {
         fn make_records(
             interpreter: &mut Interpreter,
             heap: &mut NativeHeap,
-        ) -> (usize, usize, u64) {
+        ) -> (usize, usize, usize) {
             let record = interpreter.create_record("native-gc-record", vec![Value::Integer(7)]);
             let other = interpreter.create_record("native-gc-record", vec![Value::Integer(8)]);
             let word = heap
                 .encode(&record)
                 .expect("encode record reachable only through native storage");
-            let (Kind::Record(record), Kind::Record(other)) = (record.kind(), other.kind()) else {
+            let (Kind::LispRecord(record), Kind::LispRecord(other)) = (record.kind(), other.kind())
+            else {
                 unreachable!("records")
             };
-            (word ^ HIDE, record.identity() ^ HIDE, other.id)
+            (
+                word ^ HIDE,
+                record.identity() ^ HIDE,
+                Value::LispRecord(other).word() ^ HIDE,
+            )
         }
         // A canonical native word is itself a conservative Lisp root.
         // Keep it only in this separate live-collection frame; the caller
@@ -11927,7 +11959,7 @@ mod tests {
         ) {
             let word = hidden_word ^ HIDE;
             heap.collect(stack_marker, &[word], interpreter, environment);
-            let Kind::Record(decoded) = heap
+            let Kind::LispRecord(decoded) = heap
                 .decode(word)
                 .expect("published native root remains live")
                 .kind()
@@ -11940,7 +11972,8 @@ mod tests {
         fn check_reclaimed(heap: &mut NativeHeap, hidden_word: usize) {
             assert!(heap.decode(hidden_word ^ HIDE).is_err());
         }
-        let (hidden_word, hidden_identity, other_id) = make_records(&mut interpreter, &mut heap);
+        let (hidden_word, hidden_identity, hidden_other) =
+            make_records(&mut interpreter, &mut heap);
         crate::lisp::alloc::clobber_stack();
         collect_live_record(
             &mut heap,
@@ -11952,8 +11985,8 @@ mod tests {
         );
 
         assert!(
-            interpreter.record_ref(other_id).is_none(),
-            "the record nothing reaches is swept and leaves the registry"
+            heap.decode(hidden_other ^ HIDE).is_err(),
+            "the unreachable inline record is swept without a registry"
         );
         assert_eq!(
             interpreter.live_object_census().vectors,
@@ -12081,3 +12114,6 @@ mod tests {
         assert_eq!(values.last(), Some(&Value::Integer(0)));
     }
 }
+
+#[cfg(test)]
+mod record_layout_tests;

@@ -1,0 +1,9 @@
+{
+  "EMAXX_GC_VERIFY": "1",
+  "CARGO_BUILD_JOBS": "1",
+  "sessions": {
+    "source97_debug_static": 58484,
+    "source97_ordinary": 65637
+  },
+  "software_frozen": true
+}

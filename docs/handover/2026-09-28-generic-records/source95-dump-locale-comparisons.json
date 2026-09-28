@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "locale": "C",
+      "matches": true
+    },
+    {
+      "locale": "en_US.UTF-8",
+      "matches": false
+    }
+  ],
+  "all_match": false
+}

@@ -205,6 +205,97 @@ fn redisplay_safe_call(
     result
 }
 
+/// xdisp.c:message_with_string with logging enabled. Unlike Fmessage, its
+/// batch path ignores inhibit-message and neither logs nor calls Lisp message
+/// advice. Encoding is the locale or explicit write coding, without recording
+/// last-coding-system-used.
+pub(crate) fn message_with_string(
+    interp: &mut Interpreter,
+    format: &str,
+    argument: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let batch = interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|v| v.is_truthy());
+    if !batch && interactive_window_metrics().is_none() {
+        return Ok(());
+    }
+    let message = super::call(
+        interp,
+        "format-message",
+        &[Value::string(format), argument],
+        env,
+    )?;
+    if batch {
+        let coding = interp
+            .forwarded_c_value("coding-system-for-write", &Env::new())
+            .filter(|value| !value.is_nil())
+            .or_else(|| interp.forwarded_c_value("locale-coding-system", &Env::new()))
+            .unwrap_or(Value::Nil);
+        let encoded = if coding.is_nil() {
+            message
+        } else {
+            encode_coding_value_recording(
+                interp,
+                &message,
+                Some(coding.as_symbol()?),
+                false,
+                false,
+                env,
+            )?
+        };
+        let bytes = crate::lisp::primitives::text::internal_string_bytes(
+            &string_like(&encoded).expect("formatted and encoded message"),
+        )?;
+        let mut stderr = std::io::stderr().lock();
+        if interp.batch_stdout_need_newline {
+            interp.batch_stdout_need_newline = false;
+            stderr
+                .write_all(b"\n")
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+        }
+        stderr
+            .write_all(&bytes)
+            .and_then(|_| stderr.write_all(b"\n"))
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        return Ok(());
+    }
+    // The interactive message3 path can run redisplay callbacks. Keep the
+    // formatted object rooted across those calls using the existing stack roots.
+    interp.with_lisp_stack_roots(&message, |interp| {
+        clear_message(interp, env, true, true)?;
+        log_message_text(interp, &string_text(&message)?, env);
+        if interp
+            .forwarded_c_value("inhibit-message", &Env::new())
+            .is_some_and(|value| value.is_truthy())
+        {
+            return Ok(());
+        }
+        let mut displayed = message;
+        if let Some(function) = interp
+            .forwarded_c_value("set-message-function", &Env::new())
+            .filter(|value| function_value_p(interp, value, env))
+            && !interp.garbage_collection_is_inhibited()
+        {
+            let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+            // A binding watcher can change the C function cell.
+            let function = interp
+                .forwarded_c_value("set-message-function", &Env::new())
+                .unwrap_or(function);
+            let result = redisplay_safe_call(interp, function, &[message], env);
+            interp.restore_special_dynamic(restore, env)?;
+            let result = result?;
+            if result.is_string() {
+                displayed = result;
+            } else if result.is_truthy() {
+                return Ok(());
+            }
+        }
+        set_echo_area_message_value(displayed)
+    })
+}
+
 // Shared existing message-log sink. This is deliberately separate from
 // message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
 // Full message_dolog duplicate coalescing and marker restoration remain

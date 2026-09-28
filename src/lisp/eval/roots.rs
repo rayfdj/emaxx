@@ -58,9 +58,11 @@ impl TraceLispRoots for [Value] {
     }
 }
 
-impl TraceLispRoots for Vec<Value> {
+impl<T: TraceLispRoots> TraceLispRoots for Vec<T> {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
-        self.as_slice().trace_lisp_roots(marker);
+        for value in self {
+            value.trace_lisp_roots(marker);
+        }
     }
 }
 

@@ -1,0 +1,39 @@
+{
+  "results": [
+    {
+      "input": "purecopy-five-kinds-gc",
+      "gnu_receipt": "purecopy-five-kinds-gc-gnu.json",
+      "emaxx_receipt": "source103-purecopy-five-kinds-gc.json",
+      "same_input": true,
+      "receipts_valid": true,
+      "matches": true
+    },
+    {
+      "input": "purecopy-sequence-snapshot",
+      "gnu_receipt": "purecopy-sequence-snapshot-gnu.json",
+      "emaxx_receipt": "source103-purecopy-sequence-snapshot.json",
+      "same_input": true,
+      "receipts_valid": true,
+      "matches": true
+    },
+    {
+      "input": "purecopy-callback-purify-flag",
+      "gnu_receipt": "purecopy-callback-purify-flag-gnu.json",
+      "emaxx_receipt": "source103-purecopy-callback-purify-flag.json",
+      "same_input": true,
+      "receipts_valid": true,
+      "matches": true
+    },
+    {
+      "input": "record-purecopy-callback",
+      "gnu_receipt": "record-purecopy-callback-gnu-tty2.json",
+      "emaxx_receipt": "source103-record-purecopy-callback.json",
+      "same_input": true,
+      "receipts_valid": true,
+      "matches": true
+    }
+  ],
+  "source_unchanged": true,
+  "all_match": true,
+  "qualification": "Exact report bytes. Terminal screens are retained but not compared. Four focused inputs, not a full terminal or frozen pass. Expanded GNU crashes remain failed and separate."
+}

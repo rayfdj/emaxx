@@ -1,0 +1,14 @@
+{
+  "source": 93,
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "session_id": 60820,
+  "filters": [
+    "record",
+    "lisp::primitives::pdumper::tests"
+  ],
+  "static": true
+}
