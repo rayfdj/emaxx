@@ -1966,20 +1966,28 @@ impl Interpreter {
         let mut seen = HashSet::new();
         while let Some(value) = pending.pop() {
             signature.push(value.word());
-            if !seen.insert(value.word()) {
-                continue;
-            }
+            // Only an object whose contents we visit can form a cycle or
+            // repeat a mutable payload. Keep every scalar in the signature,
+            // without hashing the many integer mappings in a case table.
             match value.kind() {
-                Kind::CharTable(table) => pending.extend(table.slots()),
-                Kind::SubCharTable(table) => {
+                Kind::CharTable(table) if seen.insert(value.word()) => {
+                    pending.extend(table.slots());
+                }
+                Kind::SubCharTable(table) if seen.insert(value.word()) => {
                     signature.extend([table.depth(), table.min_char() as usize]);
                     pending.extend(table.slots());
                 }
-                Kind::Cons(cell) => pending.extend([cell.car.get(), cell.cdr.get()]),
-                Kind::Vector(vector) => pending.extend(vector.slots()),
-                Kind::Record(record) => pending.extend(record.slots.iter().copied()),
-                Kind::LispRecord(record) => pending.extend(record.slots()),
-                Kind::StringObject(string) => {
+                Kind::Cons(cell) if seen.insert(value.word()) => {
+                    pending.extend([cell.car.get(), cell.cdr.get()]);
+                }
+                Kind::Vector(vector) if seen.insert(value.word()) => pending.extend(vector.slots()),
+                Kind::Record(record) if seen.insert(value.word()) => {
+                    pending.extend(record.slots.iter().copied());
+                }
+                Kind::LispRecord(record) if seen.insert(value.word()) => {
+                    pending.extend(record.slots())
+                }
+                Kind::StringObject(string) if seen.insert(value.word()) => {
                     let string = string.borrow();
                     signature.push(string.text.len());
                     signature.extend(string.text.bytes().map(usize::from));
