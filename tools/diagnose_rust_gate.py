@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay a selected Rust gate inventory under GDB; never certify a full gate."""
+"""Replay a selected Rust gate inventory, optionally under GDB; not a full gate."""
 
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--filter", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--plain", action="store_true",
+        help="execute the recorded test binary directly, without a debugger",
+    )
     arguments = parser.parse_args()
     if not arguments.filter.strip():
         parser.error("--filter must select an explicit nonempty test inventory")
@@ -29,7 +33,11 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=False)
     environment = gate.gate_environment(True)
     summary = {
-        "scope": "Selected library tests under GDB; not a full gate or performance run",
+        "scope": (
+            "Selected library tests directly; not a full gate or performance run"
+            if arguments.plain else
+            "Selected library tests under GDB; not a full gate or performance run"
+        ),
         "git": gate.git_state(),
         "filter": arguments.filter,
         "timeout_seconds": gate.DEFAULT_TIMEOUT_SECONDS,
@@ -79,7 +87,7 @@ def main() -> int:
         assert set(ignored) <= set(selected) <= set(all_tests)
         summary.update(expected_tests=selected, ignored_tests=ignored, total_tests=len(all_tests))
         test_command = [str(binary), arguments.filter, "--test-threads", "1"]
-        command = [
+        command = test_command if arguments.plain else [
             "gdb", "--batch", "--return-child-result",
             "-ex", "set pagination off", "-ex", "set print thread-events off",
             "-ex", "run",
@@ -91,7 +99,7 @@ def main() -> int:
         summary.update(status="running", command=command, test_command=test_command)
         save()
         started = time.monotonic()
-        log = output / "backtrace.log"
+        log = output / ("replay.log" if arguments.plain else "backtrace.log")
         with log.open("wb") as stream:
             process = subprocess.Popen(
                 command, cwd=gate.PROJECT_ROOT, env=environment,
@@ -120,7 +128,7 @@ def main() -> int:
         )
         save()
         if timed_out or process.returncode:
-            raise gate.GateError(f"debugger exited with {process.returncode}; timed_out={timed_out}")
+            raise gate.GateError(f"diagnostic exited with {process.returncode}; timed_out={timed_out}")
         result = gate.parse_test_result(text)
         summary["result"] = result
         gate.validate_test_result(result, len(selected), len(all_tests), len(ignored))

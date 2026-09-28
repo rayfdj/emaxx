@@ -5,14 +5,14 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
         description: Upstream file for affected/ordinary-samples mode, or inclusive start for remaining mode
         type: string
         default: ''
       rust_filter:
-        description: Rust control for an affected ordinary file, or required selector for rust-backtrace
+        description: Rust control for an affected ordinary file, or required selector for rust-backtrace/rust-replay
         type: string
         default: ''
       baseline_revision:
@@ -357,6 +357,15 @@ jobs:
                 CARGO_PROFILE_GATE_DEBUG=1 EMAXX_GC_VERIFY=1 \
                 python3 tools/diagnose_rust_gate.py --filter "$VALIDATION_RUST_FILTER" \
                   --output target/frozen-ci/rust-backtrace
+              ;;
+            rust-replay)
+              # Match the full gate's Cargo profile and execution environment.
+              # Extra debug information and verifier code can change compiler
+              # spills, so their passes do not clear a default-profile failure.
+              # Preserve the executable and all original result checks.
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/diagnose_rust_gate.py --filter "$VALIDATION_RUST_FILTER" \
+                  --plain --output target/frozen-ci/rust-replay
               ;;
             rust-tail)
               # Explicit continuation after the documentation-only failure in
