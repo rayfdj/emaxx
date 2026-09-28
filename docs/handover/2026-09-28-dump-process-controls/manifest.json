@@ -1,0 +1,399 @@
+{
+  "base": {
+    "commit": "f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6",
+    "manifest_scope": "Cargo files, build.rs, all src, tests and tools",
+    "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx"
+  },
+  "evidence_files": {
+    "compare-source-inventories.py": {
+      "raw_bytes": 1915,
+      "raw_sha256": "92cf986e245fa84f2ccb60aaa924c5aac926222b8b2674bce96b85e7968cd5a3",
+      "sha256": "92cf986e245fa84f2ccb60aaa924c5aac926222b8b2674bce96b85e7968cd5a3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/compare-source-inventories.py"
+    },
+    "inventory-108-to-109-comparison.json": {
+      "raw_bytes": 118,
+      "raw_sha256": "53a2c1450d8e932dbe2eb75a40a91b7036665dff96fe812b4f72e93bba37542a",
+      "sha256": "53a2c1450d8e932dbe2eb75a40a91b7036665dff96fe812b4f72e93bba37542a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-comparison.json"
+    },
+    "inventory-108-to-109-source108.json": {
+      "raw_bytes": 475,
+      "raw_sha256": "d549e9228349fe25dd6a73024b2b31cc26716feb7ae3752c67bef750b7e32fd5",
+      "sha256": "d549e9228349fe25dd6a73024b2b31cc26716feb7ae3752c67bef750b7e32fd5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source108.json"
+    },
+    "inventory-108-to-109-source108.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source108.stderr"
+    },
+    "inventory-108-to-109-source108.stdout.gz": {
+      "raw_bytes": 254580,
+      "raw_sha256": "920e6ce252a892d2baec60f8a943d902286cd2b591ec966efb02e2dd0e0e9426",
+      "sha256": "03b4b17449d32392fcf95e18ed71dc5a2abba71a3377d84203d38a181ca15857",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source108.stdout"
+    },
+    "inventory-108-to-109-source109.json": {
+      "raw_bytes": 483,
+      "raw_sha256": "af5831c0f7efd1c6ddc43672d2a766af465db771155d0aae5a47e13b1804158b",
+      "sha256": "af5831c0f7efd1c6ddc43672d2a766af465db771155d0aae5a47e13b1804158b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source109.json"
+    },
+    "inventory-108-to-109-source109.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source109.stderr"
+    },
+    "inventory-108-to-109-source109.stdout.gz": {
+      "raw_bytes": 254580,
+      "raw_sha256": "920e6ce252a892d2baec60f8a943d902286cd2b591ec966efb02e2dd0e0e9426",
+      "sha256": "03b4b17449d32392fcf95e18ed71dc5a2abba71a3377d84203d38a181ca15857",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/inventory-108-to-109-source109.stdout"
+    },
+    "launch-source109.py": {
+      "raw_bytes": 1454,
+      "raw_sha256": "36653c448c0e2f34082563fd7dea61a3782365a46b62f7f10ad3d036fba46829",
+      "sha256": "36653c448c0e2f34082563fd7dea61a3782365a46b62f7f10ad3d036fba46829",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/launch-source109.py"
+    },
+    "package-source109-controls.py": {
+      "raw_bytes": 3178,
+      "raw_sha256": "6911dc47f8152d7929fe71a421844407848db21a4b2611791e1921c6190c5404",
+      "sha256": "6911dc47f8152d7929fe71a421844407848db21a4b2611791e1921c6190c5404",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-source109-controls.py"
+    },
+    "probe-process-partial-output.py": {
+      "raw_bytes": 1695,
+      "raw_sha256": "1df557bdebe1c36085791414e4de531420c505dcf4476f9081785e8d7aab9edc",
+      "sha256": "1df557bdebe1c36085791414e4de531420c505dcf4476f9081785e8d7aab9edc",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-process-partial-output.py"
+    },
+    "probe-suspended-bytecode-original.py": {
+      "raw_bytes": 1653,
+      "raw_sha256": "d42de04e343bcc43b0c14cf71ac2e12f445b920fb8b8cbfb2b23f1f7dfc2a23d",
+      "sha256": "d42de04e343bcc43b0c14cf71ac2e12f445b920fb8b8cbfb2b23f1f7dfc2a23d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-suspended-bytecode-original.py"
+    },
+    "process-partial-output-control.el": {
+      "raw_bytes": 1442,
+      "raw_sha256": "5c9be1f5b9de611c29be3e3424f20e0d022089b4716349bcc2d9ea361ad10001",
+      "sha256": "5c9be1f5b9de611c29be3e3424f20e0d022089b4716349bcc2d9ea361ad10001",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/process-partial-output-control.el"
+    },
+    "source108-suspended-bytecode-original.el": {
+      "raw_bytes": 2645,
+      "raw_sha256": "9ff4cbb8c1c6851a7b0780ac3f8af7af7b5ddaf756d89174eec44949276e20d2",
+      "sha256": "9ff4cbb8c1c6851a7b0780ac3f8af7af7b5ddaf756d89174eec44949276e20d2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-bytecode-original.el"
+    },
+    "source108-suspended-ordinary-comparison.json": {
+      "raw_bytes": 619,
+      "raw_sha256": "8c6f69bc019368ba7c6151e01db23030b10afeee9448f885794f07e63f82a45c",
+      "sha256": "8c6f69bc019368ba7c6151e01db23030b10afeee9448f885794f07e63f82a45c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-comparison.json"
+    },
+    "source108-suspended-ordinary-emaxx-command.json": {
+      "raw_bytes": 1090,
+      "raw_sha256": "15e19e7c86b4b00e136babb6a8c9c93a9bae436704b5c3714997979b34aade80",
+      "sha256": "15e19e7c86b4b00e136babb6a8c9c93a9bae436704b5c3714997979b34aade80",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-emaxx-command.json"
+    },
+    "source108-suspended-ordinary-emaxx-result.json": {
+      "raw_bytes": 179,
+      "raw_sha256": "c51f9f43bad304fd8f65963191df118e4a67596e8805336f747649d43f18e69f",
+      "sha256": "c51f9f43bad304fd8f65963191df118e4a67596e8805336f747649d43f18e69f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-emaxx-result.json"
+    },
+    "source108-suspended-ordinary-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-emaxx.stderr"
+    },
+    "source108-suspended-ordinary-emaxx.stdout.gz": {
+      "raw_bytes": 17,
+      "raw_sha256": "df019c7894e231274401ceabdc9a5fb6fc315e4925302c682727750b3225a729",
+      "sha256": "a42457d9d96d9586f60865170bfca88d4cbccdfdc1c7f6924066912bc5e146ad",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-emaxx.stdout"
+    },
+    "source108-suspended-ordinary-gnu-command.json": {
+      "raw_bytes": 1063,
+      "raw_sha256": "75bc74d73dc6f2b1cc9d8bd7b2937226a8e1387c70c869955bd14d231ba94223",
+      "sha256": "75bc74d73dc6f2b1cc9d8bd7b2937226a8e1387c70c869955bd14d231ba94223",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-gnu-command.json"
+    },
+    "source108-suspended-ordinary-gnu-result.json": {
+      "raw_bytes": 179,
+      "raw_sha256": "2ad92adb82b83c62711199e1209b7701bb6018758e2e55950c6c07183804a191",
+      "sha256": "2ad92adb82b83c62711199e1209b7701bb6018758e2e55950c6c07183804a191",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-gnu-result.json"
+    },
+    "source108-suspended-ordinary-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-gnu.stderr"
+    },
+    "source108-suspended-ordinary-gnu.stdout.gz": {
+      "raw_bytes": 17,
+      "raw_sha256": "df019c7894e231274401ceabdc9a5fb6fc315e4925302c682727750b3225a729",
+      "sha256": "a42457d9d96d9586f60865170bfca88d4cbccdfdc1c7f6924066912bc5e146ad",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-ordinary-gnu.stdout"
+    },
+    "source109-base.json": {
+      "raw_bytes": 204,
+      "raw_sha256": "ef291e50e0626d44516b570ab96d57da3d7481b2fd4230b843e125772581981b",
+      "sha256": "ef291e50e0626d44516b570ab96d57da3d7481b2fd4230b843e125772581981b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-base.json"
+    },
+    "source109-check-command.json": {
+      "raw_bytes": 469,
+      "raw_sha256": "7c1d7cfff28c9dcebc81ef90f23916228b2d8a8b5adbeb498829fdaf411c342a",
+      "sha256": "7c1d7cfff28c9dcebc81ef90f23916228b2d8a8b5adbeb498829fdaf411c342a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-check-command.json"
+    },
+    "source109-check-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "91521d2f5c04609d670468320128f89b7db3d09580595608a7e1391918eca16e",
+      "sha256": "91521d2f5c04609d670468320128f89b7db3d09580595608a7e1391918eca16e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-check-result.json"
+    },
+    "source109-check.log.gz": {
+      "raw_bytes": 149,
+      "raw_sha256": "86f91dde5fbb1ad9c089a5a9723cedd9f7e3d081e4aa30b1b96e9d7e5cbb44be",
+      "sha256": "4df0b9f7ccbc7ff15ffcf8a6bfa8b91ec798b6b2e196a4bd0ed340109fa56683",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-check.log"
+    },
+    "source109-clippy-command.json": {
+      "raw_bytes": 506,
+      "raw_sha256": "a7349a21e39d2961ce4f3513bbb1d44ba0d4446ce8866da3b7f742483af4bc3a",
+      "sha256": "a7349a21e39d2961ce4f3513bbb1d44ba0d4446ce8866da3b7f742483af4bc3a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-clippy-command.json"
+    },
+    "source109-clippy-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "bf8774649b39c4f69d41e43f9e443a96ea3f23ce68e34c829fa763172af92aa9",
+      "sha256": "bf8774649b39c4f69d41e43f9e443a96ea3f23ce68e34c829fa763172af92aa9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-clippy-result.json"
+    },
+    "source109-clippy.log.gz": {
+      "raw_bytes": 150,
+      "raw_sha256": "7c8cc4621b2307febee64cb9306cc6072c669da0930c4b4898815b473d6f8442",
+      "sha256": "427b49e18cafbb7dea53e038d759b58fad953a9270543c4b66f479ea4823cea1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-clippy.log"
+    },
+    "source109-code-commit.json": {
+      "raw_bytes": 59,
+      "raw_sha256": "96f79f7c8986e85b1fe54b4cf723864c1fbef6e6c1fd2eabc1578c7acce5a2a1",
+      "sha256": "96f79f7c8986e85b1fe54b4cf723864c1fbef6e6c1fd2eabc1578c7acce5a2a1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-code-commit.json"
+    },
+    "source109-debug-build-command.json": {
+      "raw_bytes": 524,
+      "raw_sha256": "27f581bc9dcb385b5d6fad701a82477075e54c38f85bb6ebdb89f582972aead4",
+      "sha256": "27f581bc9dcb385b5d6fad701a82477075e54c38f85bb6ebdb89f582972aead4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-build-command.json"
+    },
+    "source109-debug-build-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "0f038d95a9c7556b088728457e23a05a7eb1e61f44b089561e5f91d13b5ba03a",
+      "sha256": "0f038d95a9c7556b088728457e23a05a7eb1e61f44b089561e5f91d13b5ba03a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-build-result.json"
+    },
+    "source109-debug-build.log.gz": {
+      "raw_bytes": 176499,
+      "raw_sha256": "247b243318faafc9cd924047eac841460d06f120100bc3c3505ff8bad5a40078",
+      "sha256": "24992671ce124b1c52d8a72e70c942a86fa5db3ac10ae53bc90d33eec8ff7657",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-build.log"
+    },
+    "source109-debug-launch.json": {
+      "raw_bytes": 1052,
+      "raw_sha256": "18892c9df50d1ef62cd5f11ebfebbff9ecbe62830a23a6dc22fa57a6870a42fe",
+      "sha256": "18892c9df50d1ef62cd5f11ebfebbff9ecbe62830a23a6dc22fa57a6870a42fe",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-launch.json"
+    },
+    "source109-debug-selected-command.json": {
+      "raw_bytes": 1011,
+      "raw_sha256": "fa372e1abed48ea9572b5c892dff14b8faf615e1114a3b3888cbb6320e043c30",
+      "sha256": "fa372e1abed48ea9572b5c892dff14b8faf615e1114a3b3888cbb6320e043c30",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-selected-command.json"
+    },
+    "source109-debug-selected-result.json": {
+      "raw_bytes": 85,
+      "raw_sha256": "9280d18f3111afcc065ea7e21e3da08018ee3209b6cd15c9028ba2db22f4a19b",
+      "sha256": "9280d18f3111afcc065ea7e21e3da08018ee3209b6cd15c9028ba2db22f4a19b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-selected-result.json"
+    },
+    "source109-debug-selected.log.gz": {
+      "raw_bytes": 5805,
+      "raw_sha256": "35845ef97b21c7e910d5f79e9776627fde20851b7e7196ace98ab9a1d2b1c6f6",
+      "sha256": "15948dc0e5ccb89bbe1e63b6437a5d32363a9705ec9060acf80c5c2c7af0fd22",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-selected.log"
+    },
+    "source109-diff-check-command.json": {
+      "raw_bytes": 422,
+      "raw_sha256": "e82e939d75b12ad0b06662fc29195a80e967a8de53c28d8963e2a070e7990f25",
+      "sha256": "e82e939d75b12ad0b06662fc29195a80e967a8de53c28d8963e2a070e7990f25",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-diff-check-command.json"
+    },
+    "source109-diff-check-result.json": {
+      "raw_bytes": 91,
+      "raw_sha256": "9707bfefa316e6f179b766590091b75fa7a7337eb35a251f91c2fb8b7f7bf43b",
+      "sha256": "9707bfefa316e6f179b766590091b75fa7a7337eb35a251f91c2fb8b7f7bf43b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-diff-check-result.json"
+    },
+    "source109-diff-check.log.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-diff-check.log"
+    },
+    "source109-fmt-command.json": {
+      "raw_bytes": 446,
+      "raw_sha256": "2a77e0677e608cb86559d291df0e265f3bc22ae0d6ef612c7a3c5d60a7d9d866",
+      "sha256": "2a77e0677e608cb86559d291df0e265f3bc22ae0d6ef612c7a3c5d60a7d9d866",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-fmt-command.json"
+    },
+    "source109-fmt-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "10ef2d0a7a56c1c79a6317fe83df3b99b7ef8e617c2afcf1a66220be02fcf905",
+      "sha256": "10ef2d0a7a56c1c79a6317fe83df3b99b7ef8e617c2afcf1a66220be02fcf905",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-fmt-result.json"
+    },
+    "source109-fmt.log.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-fmt.log"
+    },
+    "source109-manifest.json": {
+      "raw_bytes": 38340,
+      "raw_sha256": "af99be91be10fb0218acf16ef742a3cb413320ce155b52849d9a951b6b75df2d",
+      "sha256": "af99be91be10fb0218acf16ef742a3cb413320ce155b52849d9a951b6b75df2d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-manifest.json"
+    },
+    "source109-partial-output-comparison.json": {
+      "raw_bytes": 653,
+      "raw_sha256": "55d13f35a08b47a1267a902a563b72d9552364758df62ae18d45f62e166b0880",
+      "sha256": "55d13f35a08b47a1267a902a563b72d9552364758df62ae18d45f62e166b0880",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-comparison.json"
+    },
+    "source109-partial-output-emaxx-command.json": {
+      "raw_bytes": 1125,
+      "raw_sha256": "6aa3efcbd4886b448b2496893359b2cd9bd625aee859f97674949c3747f46110",
+      "sha256": "6aa3efcbd4886b448b2496893359b2cd9bd625aee859f97674949c3747f46110",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-emaxx-command.json"
+    },
+    "source109-partial-output-emaxx-result.json": {
+      "raw_bytes": 229,
+      "raw_sha256": "41a3a28d1eeaa306dfc168b9f80ff34759dbf713308a152c2e508170cf806621",
+      "sha256": "41a3a28d1eeaa306dfc168b9f80ff34759dbf713308a152c2e508170cf806621",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-emaxx-result.json"
+    },
+    "source109-partial-output-emaxx.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-emaxx.stderr"
+    },
+    "source109-partial-output-emaxx.stdout.gz": {
+      "raw_bytes": 42,
+      "raw_sha256": "62a6ab8c822a86cc2466df585abb789d4df73d35f8b1360f48e18b12eefdd340",
+      "sha256": "cb724ce703e494c722449b6682b9eb02f7362789cfa4984382a78c28b031cffa",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-emaxx.stdout"
+    },
+    "source109-partial-output-gnu-command.json": {
+      "raw_bytes": 1098,
+      "raw_sha256": "bc15201d9b2a191320b3db70185e10b5d7a9a91053fc0930fa731fc2d76aaced",
+      "sha256": "bc15201d9b2a191320b3db70185e10b5d7a9a91053fc0930fa731fc2d76aaced",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-gnu-command.json"
+    },
+    "source109-partial-output-gnu-result.json": {
+      "raw_bytes": 237,
+      "raw_sha256": "2dc400b5504059b34891670c9e214c154843af7bb1cebba6df64c78a0bca4acd",
+      "sha256": "2dc400b5504059b34891670c9e214c154843af7bb1cebba6df64c78a0bca4acd",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-gnu-result.json"
+    },
+    "source109-partial-output-gnu.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-gnu.stderr"
+    },
+    "source109-partial-output-gnu.stdout.gz": {
+      "raw_bytes": 42,
+      "raw_sha256": "62a6ab8c822a86cc2466df585abb789d4df73d35f8b1360f48e18b12eefdd340",
+      "sha256": "cb724ce703e494c722449b6682b9eb02f7362789cfa4984382a78c28b031cffa",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-partial-output-gnu.stdout"
+    },
+    "source109-production-equivalence.json": {
+      "raw_bytes": 430,
+      "raw_sha256": "bb63376f7fefef1743edefd09f99d6a80bf8c259f393f90b5051bc1c5714bfe9",
+      "sha256": "bb63376f7fefef1743edefd09f99d6a80bf8c259f393f90b5051bc1c5714bfe9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-production-equivalence.json"
+    },
+    "source109-release-build-command.json": {
+      "raw_bytes": 541,
+      "raw_sha256": "06a6106c02043c1be58a08f2e86dec33ea71bed03e5108532d2dad69dc31e879",
+      "sha256": "06a6106c02043c1be58a08f2e86dec33ea71bed03e5108532d2dad69dc31e879",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-build-command.json"
+    },
+    "source109-release-build-result.json": {
+      "raw_bytes": 90,
+      "raw_sha256": "3f241c5fe821f2d1e877e193abe23c5fa6d35fc39ee7841250bdf7826f0aa64b",
+      "sha256": "3f241c5fe821f2d1e877e193abe23c5fa6d35fc39ee7841250bdf7826f0aa64b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-build-result.json"
+    },
+    "source109-release-build.log.gz": {
+      "raw_bytes": 185213,
+      "raw_sha256": "3dd7868b1c4a82983ca9fc335f7abc79ac746c69ae3b396e760c77ae1b59b8c6",
+      "sha256": "523b0fcae0533c34f399c6d8f361bedb2f78c0bfe408495f8e213c001d9d9589",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-build.log"
+    },
+    "source109-release-launch.json": {
+      "raw_bytes": 1053,
+      "raw_sha256": "c0cab868ef782db3e50ec1c221980230ceb2cc945aad5ae443a513608c0f4ef0",
+      "sha256": "c0cab868ef782db3e50ec1c221980230ceb2cc945aad5ae443a513608c0f4ef0",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-launch.json"
+    },
+    "source109-release-selected-command.json": {
+      "raw_bytes": 1013,
+      "raw_sha256": "4336c9bdcabe13bb495193e1924e3acd3456fe14a639765033a321e075b227e1",
+      "sha256": "4336c9bdcabe13bb495193e1924e3acd3456fe14a639765033a321e075b227e1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-selected-command.json"
+    },
+    "source109-release-selected-result.json": {
+      "raw_bytes": 89,
+      "raw_sha256": "a4ac6b50c4f14fde7a4be186a451d64fe41220e6dae9019f92bf35695683f682",
+      "sha256": "a4ac6b50c4f14fde7a4be186a451d64fe41220e6dae9019f92bf35695683f682",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-selected-result.json"
+    },
+    "source109-release-selected.log.gz": {
+      "raw_bytes": 5804,
+      "raw_sha256": "d9c83f5ee475bb57da832072ddc4b0e6aba946aae2a0a61ae854bef246e5bbd4",
+      "sha256": "768a272711ae88dc8a65cae8b1a98ead6fbb06c486a1e327a78fc98ee5647aed",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-release-selected.log"
+    },
+    "source109.patch.gz": {
+      "raw_bytes": 4252,
+      "raw_sha256": "10cc0bad32ed8c051ccbe5187c5eddd79be004a0f126c8604d8b9222fef1be6d",
+      "sha256": "cfc0dba3912b6a8a28ff5e5032697a97fc891f5999c4db215ce0a84afbb204d9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109.patch"
+    },
+    "validate-frame-snapshot-v2.py": {
+      "raw_bytes": 4314,
+      "raw_sha256": "ea45796b43b35c6dc696eb4feb6bacb748dab3409600314c3ac9404aa2fc2d0a",
+      "sha256": "ea45796b43b35c6dc696eb4feb6bacb748dab3409600314c3ac9404aa2fc2d0a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py"
+    }
+  },
+  "format_version": 1,
+  "goal_complete": false,
+  "patch": "source109.patch.gz",
+  "qualification": "Only Rust tests changed: capture dump roots before printing the context result, and await all process bytes within the original60s deadline. Expected values, root comparisons, selectors, ignores and inventory unchanged. GNU source print.c:print_prepare and process.c:Faccept_process_output explain both corrections. Same-input ordinary partial-output handshake matches GNU exactly.52debug/52release and all strict static checks pass. Full macOS running; Linux suspended-bytecode failure unresolved. No full or frozen pass.",
+  "software_snapshot": 109,
+  "source_manifest": "source109-manifest.json"
+}

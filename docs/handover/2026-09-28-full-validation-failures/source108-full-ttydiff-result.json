@@ -1,0 +1,12 @@
+{
+  "exit_code": 1,
+  "elapsed_seconds": 3080.501642167,
+  "source_unchanged": true,
+  "inputs_unchanged": true,
+  "expected_scenarios": 223,
+  "started_scenarios": 187,
+  "complete_start_inventory": false,
+  "terminal_summary": [
+    "RuntimeError: editor did not display startup target 'ttydiff-org-fiel'; visible screen: ['File Edit Options Buffers Tools Lisp-Interaction Help', '-UUU:---  F1  *scratch*      All   L1     (Lisp Interaction ElDoc) -------------']"
+  ]
+}

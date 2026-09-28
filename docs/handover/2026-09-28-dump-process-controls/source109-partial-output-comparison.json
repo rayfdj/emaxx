@@ -1,0 +1,18 @@
+{
+  "all_match": true,
+  "expected_stdout_hex": "28227365637265740a7365636f6e640a2220227365637265740a7365636f6e640a726567696f6e0a2229",
+  "expected_stderr_hex": "",
+  "results": [
+    {
+      "engine": "gnu",
+      "result": "source109-partial-output-gnu-result.json",
+      "command": "source109-partial-output-gnu-command.json"
+    },
+    {
+      "engine": "emaxx",
+      "result": "source109-partial-output-emaxx-result.json",
+      "command": "source109-partial-output-emaxx-command.json"
+    }
+  ],
+  "qualification": "Same original input through ordinary entry points; not frozen oracle or full validation. Linux bytecode failure remains open."
+}

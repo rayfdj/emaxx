@@ -1,0 +1,18 @@
+{
+  "all_match": true,
+  "expected_stdout_hex": "2828312074203029202831207420302929",
+  "expected_stderr_hex": "",
+  "results": [
+    {
+      "engine": "gnu",
+      "result": "source108-suspended-ordinary-gnu-result.json",
+      "command": "source108-suspended-ordinary-gnu-command.json"
+    },
+    {
+      "engine": "emaxx",
+      "result": "source108-suspended-ordinary-emaxx-result.json",
+      "command": "source108-suspended-ordinary-emaxx-command.json"
+    }
+  ],
+  "qualification": "Same original input through ordinary entry points; not frozen oracle or full validation. Linux bytecode failure remains open."
+}

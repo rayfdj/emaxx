@@ -6,7 +6,10 @@ after the complete goal. Inline records are combined with the function-cell and
 text-conversion repairs. A release-only eager-expansion GC failure is reproduced
 against ordinary GNU and repaired; pending Lisp forms now remain reachable.
 Source 108 passes 147 selected debug and 663 release tests, strict static checks
-and ordinary comparisons. Full macOS validation is running. The regexp
+and ordinary comparisons. Full macOS and Linux validation subsequently failed;
+the [completed full-run evidence](docs/runtime-representation-integration-checkpoint.md#completed-full-runs)
+records their failures and unexecuted stages. The first 186 terminal scenarios
+match; scenario 187 fails startup, leaving the run incomplete. The regexp
 profile identifies and removes unnecessary scalar hashing, while measured pilot
 Lisp bodies remain several times slower than GNU. Full goal completion is open.
 

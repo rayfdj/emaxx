@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-debug-libtest",
+    "--list"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "exit_code": 0,
+  "binary_sha256": "300c97f1bf95dfd0fd9867b45342ffe9b2506354cefd0e48027369373c320a1e",
+  "binary_unchanged": true,
+  "elapsed_seconds": 0.06754833299999996,
+  "tests": 2892,
+  "qualification": "Inventory enumeration only; not test execution or a pass for listed tests."
+}

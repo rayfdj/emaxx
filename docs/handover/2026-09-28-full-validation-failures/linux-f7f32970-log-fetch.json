@@ -1,0 +1,13 @@
+{
+  "command": [
+    "gh",
+    "run",
+    "view",
+    "36405772114",
+    "--repo",
+    "rayfdj/emaxx",
+    "--log-failed"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 3.7460625000000003
+}

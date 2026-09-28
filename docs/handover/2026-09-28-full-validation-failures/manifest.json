@@ -1,0 +1,433 @@
+{
+  "evidence_files": {
+    "full-gate-source108/build.log.gz": {
+      "raw_bytes": 189104,
+      "raw_sha256": "20d58deb16f1cb3aa8916dd07fe05cd40aa2595e3cbebf18960ff4876e500597",
+      "sha256": "fbaea1ecbb74b21ba7114e73ec7d6f34a5fe521ca35144130a466b01447acf50",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/build.log"
+    },
+    "full-gate-source108/ignored-inventory.txt.gz": {
+      "raw_bytes": 71,
+      "raw_sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+      "sha256": "4e2a08ad969b5ccbc0e4bf966691b1334ce4742fb8a52e3cb8afa8f57d10de00",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/ignored-inventory.txt"
+    },
+    "full-gate-source108/inventory.txt.gz": {
+      "raw_bytes": 254554,
+      "raw_sha256": "8998d248a1eb25687f6945792bacf37ddd7d4cebf685504a8e26213d39592632",
+      "sha256": "9ed190d608c3f03709ece7e772ee7e2d25fa3c687d538c2c178ee63774aec55d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/inventory.txt"
+    },
+    "full-gate-source108/repeat-01-eval_01.json": {
+      "raw_bytes": 487,
+      "raw_sha256": "412223df380a6a227b0fdc29cc9be11cbec2776f50c2acf7eda53538e81760f8",
+      "sha256": "412223df380a6a227b0fdc29cc9be11cbec2776f50c2acf7eda53538e81760f8",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_01.json"
+    },
+    "full-gate-source108/repeat-01-eval_01.log.gz": {
+      "raw_bytes": 36487,
+      "raw_sha256": "644455bfe063944d363ce57070394afb733c6f509ea3aa4993ad60bacf1abf7e",
+      "sha256": "8359caef3ec39521e1dd599ed8e1321b2ae37ab460a2daf043cba0e7823c93ba",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_01.log"
+    },
+    "full-gate-source108/repeat-01-eval_02.json": {
+      "raw_bytes": 492,
+      "raw_sha256": "2ab662141d8de4a67712a1a357274492011be4d7e403e72e66df8edc36c7e514",
+      "sha256": "2ab662141d8de4a67712a1a357274492011be4d7e403e72e66df8edc36c7e514",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_02.json"
+    },
+    "full-gate-source108/repeat-01-eval_02.log.gz": {
+      "raw_bytes": 71451,
+      "raw_sha256": "c5cdfb102b0d10a6c340840116dfb268c1e10f9f356eb902934f8c6ddbf77f22",
+      "sha256": "2c7e4dc0e5488cd07ff13c7445c74fe82e65a8e8e3b238169aa77998abebb24c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_02.log"
+    },
+    "full-gate-source108/repeat-01-eval_03.json": {
+      "raw_bytes": 492,
+      "raw_sha256": "ce02b798daefe468774e670223d349e5d700dae831bcad0dbb8503a0ebe2cbd5",
+      "sha256": "ce02b798daefe468774e670223d349e5d700dae831bcad0dbb8503a0ebe2cbd5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_03.json"
+    },
+    "full-gate-source108/repeat-01-eval_03.log.gz": {
+      "raw_bytes": 30420,
+      "raw_sha256": "d74a159306d0d7e565c614334b828112b91c0d532516561d2088466531f586bb",
+      "sha256": "196f42fccdb9149223a72bbb16e42d15f536b564d1506a7383814905800d8180",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_03.log"
+    },
+    "full-gate-source108/repeat-01-eval_04.json": {
+      "raw_bytes": 492,
+      "raw_sha256": "cba8e220b1adc8064faee613dc0902eb83562626240504b7936265f0d0ca8d8b",
+      "sha256": "cba8e220b1adc8064faee613dc0902eb83562626240504b7936265f0d0ca8d8b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_04.json"
+    },
+    "full-gate-source108/repeat-01-eval_04.log.gz": {
+      "raw_bytes": 24662,
+      "raw_sha256": "183675be5a3a3c86b39b3937ad548a99b50f46d71c6d7c947770352a711b3acc",
+      "sha256": "9bf365451608be652619b1c5d84bb5bc469b32f6619fcb05a87c4cfbe76653a3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_04.log"
+    },
+    "full-gate-source108/repeat-01-eval_05.json": {
+      "raw_bytes": 487,
+      "raw_sha256": "e145e79812878375cee03ca01e4e64152a69bbb62330f00589afa7b6f28ae8b9",
+      "sha256": "e145e79812878375cee03ca01e4e64152a69bbb62330f00589afa7b6f28ae8b9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_05.json"
+    },
+    "full-gate-source108/repeat-01-eval_05.log.gz": {
+      "raw_bytes": 73181,
+      "raw_sha256": "10a21e579e939db7b1f195217a853dac6ac4ed2a3b25df56e19b3a40b2dfc920",
+      "sha256": "c6def8e7a3cfa1ec786843dd9b85a6ce59625aa05bfb9d0b0bc81d37aabefee3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-eval_05.log"
+    },
+    "full-gate-source108/repeat-01-primitives.json": {
+      "raw_bytes": 497,
+      "raw_sha256": "da0ebfcbb95e17aca0ad7f6e41d3445c07017ee3bc0b295159c6df8958d25fa9",
+      "sha256": "da0ebfcbb95e17aca0ad7f6e41d3445c07017ee3bc0b295159c6df8958d25fa9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-primitives.json"
+    },
+    "full-gate-source108/repeat-01-primitives.log.gz": {
+      "raw_bytes": 294135,
+      "raw_sha256": "1c92cd19bf533137c22460ec8231ddc7fe286ee9a583492a80c3ec6a1d348ccc",
+      "sha256": "be18711b474a01f760200196ced91b54987385c87fd329333a69d8f69863ac28",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/repeat-01-primitives.log"
+    },
+    "full-gate-source108/summary.json": {
+      "raw_bytes": 1999,
+      "raw_sha256": "7e54dc7a42cf198789ca9f048372dd6f22274cf358d294a41f2119da491bbae9",
+      "sha256": "7e54dc7a42cf198789ca9f048372dd6f22274cf358d294a41f2119da491bbae9",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source108/summary.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/metadata/ci-bwrap.apparmor.gz": {
+      "raw_bytes": 335,
+      "raw_sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+      "sha256": "d9dd6bee03e9f01a38be897ef2ea76593afded9e1eab137df7c88a75e6d0687e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/metadata/ci-bwrap.apparmor"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/metadata/oracle.txt.gz": {
+      "raw_bytes": 449,
+      "raw_sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+      "sha256": "42b89efca943a8a65437df1ebbba45046199d065d2a9de3ac4b54869282cd833",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/metadata/oracle.txt"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/build.log.gz": {
+      "raw_bytes": 174752,
+      "raw_sha256": "68a3423d963ac51f210c6285b3924c8eec5271c5cee839c03cf6ba616278f9ff",
+      "sha256": "4a00207bfb5715fd2404d6dce910b5ba0c50c5a53a3c52bf3f7c861a1689ed19",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/build.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/ignored-inventory.txt.gz": {
+      "raw_bytes": 71,
+      "raw_sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+      "sha256": "4e2a08ad969b5ccbc0e4bf966691b1334ce4742fb8a52e3cb8afa8f57d10de00",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/ignored-inventory.txt"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/inventory.txt.gz": {
+      "raw_bytes": 253821,
+      "raw_sha256": "bde4971d19c564bd1d5f64292fd14c02b4fd0208967dd104882d16f50218f981",
+      "sha256": "151c2d619641de3eb8efff22d1d85f241edb89c969c7aa6468ac8ef7d98c9228",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/inventory.txt"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_01.json": {
+      "raw_bytes": 452,
+      "raw_sha256": "b1ceb339133ca60e58cd5df3fec036f0f23be3789926d0d1893b11b22830644b",
+      "sha256": "b1ceb339133ca60e58cd5df3fec036f0f23be3789926d0d1893b11b22830644b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_01.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_01.log.gz": {
+      "raw_bytes": 36487,
+      "raw_sha256": "4dd9ce8b300ba5c0e6bd25454a95ec9d3616f4a86d9f67e249c9b675d7889a28",
+      "sha256": "5f8773ced01650a0d41e25b9a5ab67b87ed15f34e54327706965051781da7248",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_01.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_02.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "14a7a8ce816217c84ddc36a96a86a23cdae6fdcb1e17f82f7cf98d6e35b1794b",
+      "sha256": "14a7a8ce816217c84ddc36a96a86a23cdae6fdcb1e17f82f7cf98d6e35b1794b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_02.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_02.log.gz": {
+      "raw_bytes": 66513,
+      "raw_sha256": "94471f56a19078fba4aaf4003a6606b4dabfac729ae394b9d7b3be202b1b1fe3",
+      "sha256": "cea3230ebca42eb4c78bfe26950cea2a10f2036a733907c18da1f4ecbd655b5a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_02.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_03.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "70298bc98549f1b897bd81e7f351ce5c0229a049b1b9f62a184645a39594518d",
+      "sha256": "70298bc98549f1b897bd81e7f351ce5c0229a049b1b9f62a184645a39594518d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_03.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_03.log.gz": {
+      "raw_bytes": 30399,
+      "raw_sha256": "14221a524870c102a1ca46dcd4d953f06cd7ab4d38d0928aca0a6e323c3bcee9",
+      "sha256": "2e11e798cba71ba594b1d976af419fb776dd4e9cf81a86ae70c1c346bfb61555",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_03.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_04.json": {
+      "raw_bytes": 457,
+      "raw_sha256": "e4eebac7499ec3f784f7b60bfc50ca1babed500da0321fe2ba81a6ec4f446fb8",
+      "sha256": "e4eebac7499ec3f784f7b60bfc50ca1babed500da0321fe2ba81a6ec4f446fb8",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_04.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_04.log.gz": {
+      "raw_bytes": 24398,
+      "raw_sha256": "8a8affb15537f72d2c3e28d94e4f35077c35913e92498de130880513588d3b93",
+      "sha256": "933fc7f17ea17622652ddc25d977ed0aba1e384c6d71ba9444bb08455a4ac570",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_04.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_05.json": {
+      "raw_bytes": 454,
+      "raw_sha256": "20a6c07f94a60232136a8ec45fc6b01c68403c54d52fe11c4448698c1fb96711",
+      "sha256": "20a6c07f94a60232136a8ec45fc6b01c68403c54d52fe11c4448698c1fb96711",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_05.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_05.log.gz": {
+      "raw_bytes": 69219,
+      "raw_sha256": "a536a15108685f7957be221405c9206954e4743c6a646dc74f0c7efc5b5dddcc",
+      "sha256": "e32c58c5a1ffe824e436591cc7193b1e14e683d691f2c61539cf7dba8d5825f2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-eval_05.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-primitives.json": {
+      "raw_bytes": 463,
+      "raw_sha256": "69d09c072fdf08ac374c2f6a0d32c48bc1496f60dd509310fc51835fe7907887",
+      "sha256": "69d09c072fdf08ac374c2f6a0d32c48bc1496f60dd509310fc51835fe7907887",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-primitives.json"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-primitives.log.gz": {
+      "raw_bytes": 282527,
+      "raw_sha256": "9e3c2ad20ceb5bace8a39bfe33a48303cef45accfd79f9a503f16d7f6059258a",
+      "sha256": "27693151c2d48984953da57f15c19a21863c931d9c9996fc3e5b708916962bc3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/repeat-01-primitives.log"
+    },
+    "linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/summary.json": {
+      "raw_bytes": 1953,
+      "raw_sha256": "72fed34781b525ecc2266b817a231990975fb76ec330fa545ea9de0b5130309a",
+      "sha256": "72fed34781b525ecc2266b817a231990975fb76ec330fa545ea9de0b5130309a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-e9cd46bd-artifacts/ordinary-linux-e9cd46bd7a762e9fe524f3424b6d2efdf45ed3ca/rust/summary.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/metadata/ci-bwrap.apparmor.gz": {
+      "raw_bytes": 335,
+      "raw_sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+      "sha256": "d9dd6bee03e9f01a38be897ef2ea76593afded9e1eab137df7c88a75e6d0687e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/metadata/ci-bwrap.apparmor"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/metadata/oracle.txt.gz": {
+      "raw_bytes": 449,
+      "raw_sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+      "sha256": "42b89efca943a8a65437df1ebbba45046199d065d2a9de3ac4b54869282cd833",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/metadata/oracle.txt"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/build.log.gz": {
+      "raw_bytes": 174752,
+      "raw_sha256": "906c85866d5c8825cc0a08a857e00581e19f968c6c5d1ca42a14d2536878b003",
+      "sha256": "3433c177fbd3892e49af8335f6fb63fd0b3e89f841ab351bb3c66f7ee7a7b432",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/build.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/ignored-inventory.txt.gz": {
+      "raw_bytes": 71,
+      "raw_sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+      "sha256": "4e2a08ad969b5ccbc0e4bf966691b1334ce4742fb8a52e3cb8afa8f57d10de00",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/ignored-inventory.txt"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/inventory.txt.gz": {
+      "raw_bytes": 255243,
+      "raw_sha256": "5f6af63725950897fc01ab02aef5dc9a95a3a6f9b497ad9ce891137cd66310e2",
+      "sha256": "3f4db0a83660ee3698cd212405e4cbe14b14d4b672beefbfff3fdffed362d5f1",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/inventory.txt"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_01.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "c52997bceb9d10b4f88f86ebb6de6ac4a553b7abc071f27a6edfcab60b9c92b5",
+      "sha256": "c52997bceb9d10b4f88f86ebb6de6ac4a553b7abc071f27a6edfcab60b9c92b5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_01.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_01.log.gz": {
+      "raw_bytes": 36487,
+      "raw_sha256": "e6cd3023ec3bcdec6843dfca0c0a798269860e8dfae46a4c2b617bab178da229",
+      "sha256": "cdb16a36958e767061536cefb2ab0556a3be8c11a03e57b78ee55e2ef91f1cc6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_01.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_02.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "691e066193ef206797e74f0ea3527fe7840edade04c2efd6e4697f7236358b93",
+      "sha256": "691e066193ef206797e74f0ea3527fe7840edade04c2efd6e4697f7236358b93",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_02.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_02.log.gz": {
+      "raw_bytes": 66512,
+      "raw_sha256": "3fe46b1d24ba19c8d6f02cc94f51ceee451c078c37070b7f5ee7df377f6a0a88",
+      "sha256": "2cff412d5eb0cca1b6ab975b14a28266470f481664d0c54238cc2178e6072f92",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_02.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_03.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "c06fdf90d946669c388ea89140055545f52477878af311b7d39f2facb71e1b1e",
+      "sha256": "c06fdf90d946669c388ea89140055545f52477878af311b7d39f2facb71e1b1e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_03.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_03.log.gz": {
+      "raw_bytes": 30398,
+      "raw_sha256": "e489cb089a9e74faa1aca9c3a554d8d5d36d343deaf7134ceec967e4cb770eaa",
+      "sha256": "6b33c22ccb98dcff2efd770d22c2f6b0a1e22a10736d9e1f076894c65c39fe5c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_03.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_04.json": {
+      "raw_bytes": 458,
+      "raw_sha256": "6a38e9e8d6c44a21f19b200ce6f17474fd0f0df3696e479379ba18616c207142",
+      "sha256": "6a38e9e8d6c44a21f19b200ce6f17474fd0f0df3696e479379ba18616c207142",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_04.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_04.log.gz": {
+      "raw_bytes": 24398,
+      "raw_sha256": "7d26d629584a61f3c12d0b92792e16812293d3b1fef966c533603684f8d3e538",
+      "sha256": "872ad18d0f73d2cbf5de703dab68d45ee26504b56a392dcc9184b39c912d2810",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_04.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_05.json": {
+      "raw_bytes": 453,
+      "raw_sha256": "38a7723e5c6b983aee2d919398092ad28912c76ea51d33b0f63ce87ae259067b",
+      "sha256": "38a7723e5c6b983aee2d919398092ad28912c76ea51d33b0f63ce87ae259067b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_05.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_05.log.gz": {
+      "raw_bytes": 69321,
+      "raw_sha256": "6210445b7f6093c4d9d23fd9b630b946c967cd2f85e45da9750fe7d9551485ee",
+      "sha256": "d91833ba11bd4418e88ddeb4aa87fdbf0e6b7788d7dc673bd3887328a874c3c4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-eval_05.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-primitives.json": {
+      "raw_bytes": 463,
+      "raw_sha256": "1858f4566f0d58f128d650242fce88403c3bb02fa275598a63ef43e9ccd58c07",
+      "sha256": "1858f4566f0d58f128d650242fce88403c3bb02fa275598a63ef43e9ccd58c07",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-primitives.json"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-primitives.log.gz": {
+      "raw_bytes": 286463,
+      "raw_sha256": "e0b144a70d8945a03529ab8a051ec8fe4c41e09df99652c40d629764821831b4",
+      "sha256": "aaec8dffc83be356ccfbc3bec712a5412801420c793f3f3f4b69b7035b5e750a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/repeat-01-primitives.log"
+    },
+    "linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/summary.json": {
+      "raw_bytes": 1882,
+      "raw_sha256": "8466bb044def1c397fead50b892868a00d9a764195f6ca17c0ebff8bcc43ceec",
+      "sha256": "8466bb044def1c397fead50b892868a00d9a764195f6ca17c0ebff8bcc43ceec",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-artifacts/ordinary-linux-f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6/rust/summary.json"
+    },
+    "linux-f7f32970-failed.log.gz": {
+      "raw_bytes": 163032,
+      "raw_sha256": "0507d3bb30e648fbcd5264054abab9b6c67ad723182121131cb6e84dd075ba33",
+      "sha256": "41066d43584b6dc401e7726738d2cc21cc638e6a40eb8ab03d82322769179f8e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-failed.log"
+    },
+    "linux-f7f32970-failed.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-failed.stderr"
+    },
+    "linux-f7f32970-log-fetch.json": {
+      "raw_bytes": 186,
+      "raw_sha256": "03b5b3951996804b93734d8e1a8f9c10a1424f7be2cbe945ecf0a6fa4a7583a3",
+      "sha256": "03b5b3951996804b93734d8e1a8f9c10a1424f7be2cbe945ecf0a6fa4a7583a3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-f7f32970-log-fetch.json"
+    },
+    "package-source108-full-failures.py": {
+      "raw_bytes": 3206,
+      "raw_sha256": "e4ad8550f08f947d78be6a2559eef6e273991b178ce639764e6760aa7b49bd53",
+      "sha256": "e4ad8550f08f947d78be6a2559eef6e273991b178ce639764e6760aa7b49bd53",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-source108-full-failures.py"
+    },
+    "recheck-source108-full-failures.py": {
+      "raw_bytes": 2752,
+      "raw_sha256": "b7ff315df503ed3dd5e64b229ef031dc4f534902b6aa2144f4ee001c1bc44c6c",
+      "sha256": "b7ff315df503ed3dd5e64b229ef031dc4f534902b6aa2144f4ee001c1bc44c6c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/recheck-source108-full-failures.py"
+    },
+    "run-source108-full-gate.py": {
+      "raw_bytes": 2789,
+      "raw_sha256": "b6aeb866e07860ae5b90a2e4834856c10064eecac38e83db3cae73c05bc3ab82",
+      "sha256": "b6aeb866e07860ae5b90a2e4834856c10064eecac38e83db3cae73c05bc3ab82",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source108-full-gate.py"
+    },
+    "run-source108-full-tty.py": {
+      "raw_bytes": 2914,
+      "raw_sha256": "fa1008e01afbd640ed70542ba2860bd6c034e31a56c9f2aff48b5a30fcd9ad24",
+      "sha256": "fa1008e01afbd640ed70542ba2860bd6c034e31a56c9f2aff48b5a30fcd9ad24",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source108-full-tty.py"
+    },
+    "source108-dump-root-difference.json": {
+      "raw_bytes": 223000,
+      "raw_sha256": "07c02c1a6172c2cb11bdac6d4e0c0886746278fc7ba896fdeccd64cef83dc2db",
+      "sha256": "07c02c1a6172c2cb11bdac6d4e0c0886746278fc7ba896fdeccd64cef83dc2db",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-dump-root-difference.json"
+    },
+    "source108-failed-selectors-with-socket-access-command.json": {
+      "raw_bytes": 4004,
+      "raw_sha256": "07ab23b4c1a66024941728f2b3f2ac1f1277bb8fdd94df35c947d53f27b8673b",
+      "sha256": "07ab23b4c1a66024941728f2b3f2ac1f1277bb8fdd94df35c947d53f27b8673b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-failed-selectors-with-socket-access-command.json"
+    },
+    "source108-failed-selectors-with-socket-access-result.json": {
+      "raw_bytes": 113,
+      "raw_sha256": "5ab4df51389b8a9c82d85d3ae642a52f389655c04c3e7404a74a8fb444ddabbe",
+      "sha256": "5ab4df51389b8a9c82d85d3ae642a52f389655c04c3e7404a74a8fb444ddabbe",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-failed-selectors-with-socket-access-result.json"
+    },
+    "source108-failed-selectors-with-socket-access.log.gz": {
+      "raw_bytes": 225888,
+      "raw_sha256": "7d34ee66383ee2ebac70d5e7128a61c945dfead3c6d49c7c73e7e93144338378",
+      "sha256": "f9e646a75ca8ebad05e043745ea0937e6ada646e38355b3c361f1f1ac4baf107",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-failed-selectors-with-socket-access.log"
+    },
+    "source108-full-gate-command.json": {
+      "raw_bytes": 908,
+      "raw_sha256": "e849c8ed7ffbba7557e1182d0828bb7e493c69fc9ae8ef9ef0cde4d66a77c835",
+      "sha256": "e849c8ed7ffbba7557e1182d0828bb7e493c69fc9ae8ef9ef0cde4d66a77c835",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-gate-command.json"
+    },
+    "source108-full-gate-result.json": {
+      "raw_bytes": 2487,
+      "raw_sha256": "30ca195f4c59f272774fc100118855bcc4b205fe8c26744151d3880ff2dd7464",
+      "sha256": "30ca195f4c59f272774fc100118855bcc4b205fe8c26744151d3880ff2dd7464",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-gate-result.json"
+    },
+    "source108-full-gate.log.gz": {
+      "raw_bytes": 695,
+      "raw_sha256": "0e72c4302a3025bcdbe2a1c70aff99802f9432c7b9c9c5d81686955fcaea997e",
+      "sha256": "6c4f3c13ed6094887ab89c5925e649ae0298161b51f147c99446acc3fce24fe2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-gate.log"
+    },
+    "source108-full-ttydiff-command.json": {
+      "raw_bytes": 7730,
+      "raw_sha256": "bea4b01b4c81c479faf04e5ff1b80b9cbc1acab915141c357bd1466034f5abbd",
+      "sha256": "bea4b01b4c81c479faf04e5ff1b80b9cbc1acab915141c357bd1466034f5abbd",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-ttydiff-command.json"
+    },
+    "source108-full-ttydiff-result.json": {
+      "raw_bytes": 472,
+      "raw_sha256": "0b0f9e4f527e0b8dd0cf51d585e72be32430fdc8548eb527046bb132ef907b35",
+      "sha256": "0b0f9e4f527e0b8dd0cf51d585e72be32430fdc8548eb527046bb132ef907b35",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-ttydiff-result.json"
+    },
+    "source108-full-ttydiff.log.gz": {
+      "raw_bytes": 41289,
+      "raw_sha256": "b09bb725612aa8bcbc597c82507940d2cea0baac0c2ad54ca72bf5d46b17e5ba",
+      "sha256": "b63d42be8831aa8af3b004c84a35b9863b0562660d99e1f56b215fdd21bc099f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-full-ttydiff.log"
+    },
+    "source108-linux-downloaded-artifact-hashes.json": {
+      "raw_bytes": 6471,
+      "raw_sha256": "23567fd5fba4822b20d8f0b70e50f49b3fc88768b16bad7cb60a036248c48ff5",
+      "sha256": "23567fd5fba4822b20d8f0b70e50f49b3fc88768b16bad7cb60a036248c48ff5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-linux-downloaded-artifact-hashes.json"
+    }
+  },
+  "format_version": 1,
+  "goal_complete": false,
+  "linux_runs": [
+    "https://github.com/rayfdj/emaxx/actions/runs/36405772114",
+    "https://github.com/rayfdj/emaxx/actions/runs/36400765916"
+  ],
+  "qualification": "Completed failed full gates and incomplete terminal inventory. macOS: 2154 passed,13 failed; later groups and Cargo stages unexecuted. Twelve socket failures pass unchanged when loopback is permitted; dump-state comparison still fails. Linux combined: 2172 passed,3 failed; older text-conversion source:2163 passed,1 failed. Nested child GC failure preserved verbatim; strict result parser rejects extra summary. Terminal186 scenarios match,187th fails startup; remaining36 never started. These are not full or frozen passes. GNU candidate still differs from the frozen Darwin pin.",
+  "software_snapshot": "../2026-09-28-combined-records/manifest.json",
+  "source_checkpoint": "f7f32970fee8ea5dc9f99187f79ad6ddda4cbff6"
+}
