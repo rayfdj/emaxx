@@ -1337,18 +1337,15 @@ fn run_frames(
                     // Fsymbol_value's CHECK_SYMBOL path.
                     let name = program.constant(index);
                     let value = match name.kind() {
-                        Kind::Symbol(symbol) => match interp
-                            .symbol_value_cell_symbol(&symbol)
-                            .map_err(LispError::into_kind)
-                        {
+                        Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
                             Ok(value) => value,
-                            Err(LispErrorKind::Void(_)) => {
+                            Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::symbol("void-variable"),
                                     name,
                                 ])));
                             }
-                            Err(error) => return Err(LispError::from(error)),
+                            Err(error) => return Err(error),
                         },
                         _ => prim(interp, "symbol-value", &[name], env)?,
                     };
@@ -1468,13 +1465,19 @@ fn run_frames(
                     let value =
                         interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
                             match interp.eval(&body, env) {
-                                Err(error) => match error.into_kind() {
-                                    LispErrorKind::Throw(thrown, thrown_value)
-                                        if prim(interp, "eq", &[tag, thrown], env)?.is_truthy() =>
-                                    {
-                                        Ok(thrown_value)
+                                Err(error) => match error.kind() {
+                                    LispErrorKind::Throw(thrown, thrown_value) => {
+                                        let matched = interp
+                                            .with_lisp_stack_roots(&error, |interp| {
+                                                prim(interp, "eq", &[tag, *thrown], env)
+                                            })?;
+                                        if matched.is_truthy() {
+                                            Ok(*thrown_value)
+                                        } else {
+                                            Err(error)
+                                        }
                                     }
-                                    other => Err(LispError::from(other)),
+                                    _ => Err(error),
                                 },
                                 ok => ok,
                             }
@@ -2193,17 +2196,15 @@ fn run_frames(
                             (HandlerKind::ConditionCase(_), LispErrorKind::Throw(_, _))
                             | (HandlerKind::ConditionCase(_), LispErrorKind::Terminate(_))
                             | (HandlerKind::Catch(_), _) => None,
-                            (HandlerKind::ConditionCase(clause), error) => {
-                                let condition = error.condition_type();
+                            (HandlerKind::ConditionCase(clause), kind) => {
+                                let condition = kind.condition_type();
                                 let condition_list = interp.error_condition_names(&condition);
                                 if Interpreter::clause_head_matches(
                                     clause,
                                     &condition,
                                     &condition_list,
                                 ) {
-                                    Some(super::super::eval::error_condition_value(
-                                        &LispError::from(error.clone()),
-                                    ))
+                                    Some(super::super::eval::error_condition_value(&error))
                                 } else {
                                     None
                                 }
@@ -2324,11 +2325,20 @@ fn run_frames(
     // the subject started executing GNU's compiled Lisp.  A condition-case
     // inside this frame has already had its chance above, so anything still
     // propagating belongs to an outer handler.
-    match result.map_err(LispError::into_kind) {
-        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-            Err(LispError::from(error))
+    // Keep the error in its box. Unpacking LispErrorKind reserves its large
+    // payload in this long-lived VM frame even on successful bytecode paths;
+    // inactive stack words can then retain Lisp objects under conservative GC.
+    // GNU dispatches the error without introducing this extra payload copy.
+    match result {
+        Err(error)
+            if matches!(
+                error.kind(),
+                LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+            ) =>
+        {
+            Err(error)
         }
-        Err(error) => interp.dispatch_handler_bindings(LispError::from(error), env),
+        Err(error) => interp.dispatch_handler_bindings(error, env),
         Ok(value) => Ok(value),
     }
 }

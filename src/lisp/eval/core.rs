@@ -1167,11 +1167,11 @@ impl Interpreter {
     // reports the source callee instead. Translate before signaling to
     // handler-bind, while the callee's backtrace frame is still live.
     fn builtin_call_error(name: &str, nargs: usize, funcall: bool, error: LispError) -> LispError {
-        match error.into_kind() {
-            LispErrorKind::WrongNumberOfArgs(ref failed_name, count)
+        match error.kind() {
+            LispErrorKind::WrongNumberOfArgs(failed_name, count)
                 if funcall
                     && failed_name == name
-                    && count == nargs
+                    && *count == nargs
                     && primitives::GNU_C_PRIMITIVES
                         .binary_search_by_key(&name, |contract| contract.name)
                         .ok()
@@ -1183,10 +1183,10 @@ impl Interpreter {
                 LispError::SignalValue(Value::list([
                     Value::symbol("wrong-number-of-arguments"),
                     Value::BuiltinFunc(name.into()),
-                    Value::Integer(count as i64),
+                    Value::Integer(*count as i64),
                 ]))
             }
-            error => LispError::from(error),
+            _ => error,
         }
     }
 
@@ -1222,11 +1222,9 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match error.into_kind() {
-            error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)) => {
-                Err(LispError::from(error))
-            }
-            error => self.dispatch_handler_bindings(LispError::from(error), env),
+        let result = match error.kind() {
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_) => Err(error),
+            _ => self.dispatch_handler_bindings(error, env),
         };
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);
