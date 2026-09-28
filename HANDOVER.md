@@ -16,8 +16,17 @@ repaired too. Read the
 for 359 selected release passes, 19 ordinary exact comparisons, preserved prior
 failures and remaining requirements. The earlier full gate failed at native
 artifact identity after its library and binary stages passed. Its local GNU
-ABI configuration differs from the committed target. The approved older Linux
-run also failed. Neither result is complete final-source validation.
+ABI configuration differs from the committed target. The separately built pristine
+GNU candidate now matches that configuration, and all nine unchanged native
+artifact fixtures pass on the function-cell source; see the
+[native configuration checkpoint](docs/runtime-representation-native-configuration-checkpoint.md).
+Its executable still differs from the frozen pin. The approved older Linux run
+also failed; the new [Linux run on c3204ce5](https://github.com/rayfdj/emaxx/actions/runs/36381574831)
+finishes with 999 passes and one failure in the first three groups:
+`set-text-conversion-style` still has no dispatch. The char-table key-range
+failure is repaired. Later groups and Cargo stages did not execute; the
+[raw Linux evidence](docs/handover/2026-09-28-linux-function-cells/manifest.json)
+retains the failed result. None of these results is complete final-source validation.
 The integrated [GC continuation](docs/runtime-representation-gc-checkpoint.md)
 adds migrated-kind verifier coverage and removes inactive error payload storage
 that retained a dead thread key. Its separate checkpoint passes 186 debug and

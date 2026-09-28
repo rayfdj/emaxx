@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/generate-native-subrs-gnu256",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-subrs.rs"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 28.177918499999997,
+  "identity": {
+    "source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "source_status": "",
+    "binary": "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "image": "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp",
+    "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "pinned_binary_sha256": "591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d",
+    "matches_pinned_binary": false
+  },
+  "binary_and_image_unchanged": true
+}

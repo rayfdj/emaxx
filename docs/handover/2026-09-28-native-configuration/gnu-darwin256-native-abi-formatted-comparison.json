@@ -1,0 +1,16 @@
+{
+  "command": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-subrs-formatted.rs"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.266353083,
+  "generator_output_sha256": "1d50fd81ad09fd10a225fdb11fe2e47ecfe2803e92272f0b542ae08cce174a22",
+  "formatted_sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+  "committed_sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+  "committed_table_unchanged": true,
+  "formatted_native_abi_matches": true,
+  "qualification": "The standard regeneration recipe in .github/workflows/frozen-run.yml applies rustfmt before cmp. Original raw generator output and initial unformatted mismatch retained; only a separate generated copy is formatted."
+}

@@ -1,0 +1,287 @@
+{
+  "artifact_retention_limit": "The unchanged native integration test deletes its temporary generated artifacts after success. Raw test output, commands, all software manifests, executable/image hashes, and build logs are retained; generated native artifact bytes are not retained by that test.",
+  "evidence_files": {
+    "check-gnu-candidate.py": {
+      "raw_bytes": 2997,
+      "raw_sha256": "9a11b8832aff4fcd8a4e314104c84929a60d87b6867cfc59000fd35b6315a05f",
+      "sha256": "9a11b8832aff4fcd8a4e314104c84929a60d87b6867cfc59000fd35b6315a05f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/check-gnu-candidate.py"
+    },
+    "emaxx-runtime-gnu-20260928-build.json": {
+      "raw_bytes": 5812,
+      "raw_sha256": "8f453399732bea01d24460dc4f55abd73e11c80ed8c5782d514ba2aa07edbe92",
+      "sha256": "8f453399732bea01d24460dc4f55abd73e11c80ed8c5782d514ba2aa07edbe92",
+      "source_path": "/private/tmp/emaxx-runtime-gnu-20260928-build.json"
+    },
+    "gnu-darwin256-candidate-capabilities.json": {
+      "raw_bytes": 1248,
+      "raw_sha256": "bb540bcb92461015dc35a9b63b12482debb76ab300b1625aa833b611d84b2e9d",
+      "sha256": "bb540bcb92461015dc35a9b63b12482debb76ab300b1625aa833b611d84b2e9d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-capabilities.json"
+    },
+    "gnu-darwin256-candidate-capabilities.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-capabilities.stderr"
+    },
+    "gnu-darwin256-candidate-capabilities.stdout.gz": {
+      "raw_bytes": 1299,
+      "raw_sha256": "235f09dc452304eb15547f21c2d1af651b5b247b1b6806f15269d48a6896eeb8",
+      "sha256": "0c9f3b53399bd8e924cbd82309243f7b11cbf95086ca91050341efcd59f2214d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-capabilities.stdout"
+    },
+    "gnu-darwin256-candidate-command.json": {
+      "raw_bytes": 1307,
+      "raw_sha256": "493b7b6af616b6baeb4e424f68c025b429fe31424b7f70c4cd1db1bc14368116",
+      "sha256": "493b7b6af616b6baeb4e424f68c025b429fe31424b7f70c4cd1db1bc14368116",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-command.json"
+    },
+    "gnu-darwin256-candidate-identity.json": {
+      "raw_bytes": 913,
+      "raw_sha256": "e73378300e05901177a7a121037ef28fb2e53489c819264e6ccfc7f82c529194",
+      "sha256": "e73378300e05901177a7a121037ef28fb2e53489c819264e6ccfc7f82c529194",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-identity.json"
+    },
+    "gnu-darwin256-candidate-native-abi.json": {
+      "raw_bytes": 1054,
+      "raw_sha256": "1746f29bd0c76537293ff09faec9bea2b71c5c2faeb99f464d4fe47e6a866296",
+      "sha256": "1746f29bd0c76537293ff09faec9bea2b71c5c2faeb99f464d4fe47e6a866296",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-native-abi.json"
+    },
+    "gnu-darwin256-candidate-native-abi.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-native-abi.stderr"
+    },
+    "gnu-darwin256-candidate-native-abi.stdout.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-native-abi.stdout"
+    },
+    "gnu-darwin256-candidate-result.json": {
+      "raw_bytes": 113,
+      "raw_sha256": "e72f5f0dcf3c77a790281e4559e0b38d3ca0b1feb550f549d9b352d5a750615e",
+      "sha256": "e72f5f0dcf3c77a790281e4559e0b38d3ca0b1feb550f549d9b352d5a750615e",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate-result.json"
+    },
+    "gnu-darwin256-candidate.log.gz": {
+      "raw_bytes": 131830,
+      "raw_sha256": "e7775943fcbccbde9593ee13498e77f574653a416cac10b663098e41504934df",
+      "sha256": "d2dcfde205e44ac84de975988c3fae7bc1b56b1aa7ab2b4e60441ca45e02760d",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-candidate.log"
+    },
+    "gnu-darwin256-generator-build.json": {
+      "raw_bytes": 543,
+      "raw_sha256": "42c2fcd95136773043b2bb48279595c87274cf2b989e61a3fa8ba12d8d820d54",
+      "sha256": "42c2fcd95136773043b2bb48279595c87274cf2b989e61a3fa8ba12d8d820d54",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-generator-build.json"
+    },
+    "gnu-darwin256-generator-build.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-generator-build.stderr"
+    },
+    "gnu-darwin256-generator-build.stdout.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-generator-build.stdout"
+    },
+    "gnu-darwin256-native-abi-format.stderr.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-abi-format.stderr"
+    },
+    "gnu-darwin256-native-abi-format.stdout.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-abi-format.stdout"
+    },
+    "gnu-darwin256-native-abi-formatted-comparison.json": {
+      "raw_bytes": 793,
+      "raw_sha256": "15a83514579161e96ca728fa34115f3376a7bbe1576b90f2bdd9841411a1f740",
+      "sha256": "15a83514579161e96ca728fa34115f3376a7bbe1576b90f2bdd9841411a1f740",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-abi-formatted-comparison.json"
+    },
+    "gnu-darwin256-native-subrs-formatted.rs.gz": {
+      "raw_bytes": 507568,
+      "raw_sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+      "sha256": "6c84ed1cf873f7b11f8712abe66fd9c9e18ea311181ff2845b3c2580fce1b537",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-subrs-formatted.rs"
+    },
+    "gnu-darwin256-native-subrs.rs.gz": {
+      "raw_bytes": 429973,
+      "raw_sha256": "1d50fd81ad09fd10a225fdb11fe2e47ecfe2803e92272f0b542ae08cce174a22",
+      "sha256": "d71f7f098c4b918ebfb0730631f780d09683b5abdc6cad2a9e2757d477267a3a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-darwin256-native-subrs.rs"
+    },
+    "package-native96-evidence.py": {
+      "raw_bytes": 3579,
+      "raw_sha256": "a088a8a1c05aa074971dd85704dd1f61205d8941a3145af5c835b64a95200eb4",
+      "sha256": "a088a8a1c05aa074971dd85704dd1f61205d8941a3145af5c835b64a95200eb4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-native96-evidence.py"
+    },
+    "source96-base.json": {
+      "raw_bytes": 205,
+      "raw_sha256": "ad2fe5f9c94cade55bd696086fb4d9d9ca8891edd66cc1512793a58c40be6911",
+      "sha256": "ad2fe5f9c94cade55bd696086fb4d9d9ca8891edd66cc1512793a58c40be6911",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-base.json"
+    },
+    "source96-candidate-setup.json": {
+      "raw_bytes": 1430,
+      "raw_sha256": "3037044ad237b9f9a589180dbec458e0870fe83ace1dde3013e556cbaa909903",
+      "sha256": "3037044ad237b9f9a589180dbec458e0870fe83ace1dde3013e556cbaa909903",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-candidate-setup.json"
+    },
+    "source96-manifest.json": {
+      "raw_bytes": 34404,
+      "raw_sha256": "6768de8fc9280c5c89e3b6053156553e2cd3ca79eb8b37a270565a02df839954",
+      "sha256": "6768de8fc9280c5c89e3b6053156553e2cd3ca79eb8b37a270565a02df839954",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-manifest.json"
+    },
+    "source96-native-build-command.json": {
+      "raw_bytes": 713,
+      "raw_sha256": "35ea1cbcff3b742a77eff80f043a2280345e814dfcd90889c4599a5c5386baa5",
+      "sha256": "35ea1cbcff3b742a77eff80f043a2280345e814dfcd90889c4599a5c5386baa5",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-build-command.json"
+    },
+    "source96-native-build-result.json": {
+      "raw_bytes": 95,
+      "raw_sha256": "9c77344ef9087b76ba0a3ef38ab293826d3d4c57227218ea586264f9d6e06743",
+      "sha256": "9c77344ef9087b76ba0a3ef38ab293826d3d4c57227218ea586264f9d6e06743",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-build-result.json"
+    },
+    "source96-native-build.log.gz": {
+      "raw_bytes": 189251,
+      "raw_sha256": "d9f76df3def588015d5b7a99fbf8c42c2d2aa0c475a67af8a1f6e3061f6d9199",
+      "sha256": "7363b7fd36ef815af8b1878743d76dc683ff4ba5c362573ee313c9e5a177f55c",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-build.log"
+    },
+    "source96-native-final-identity.json": {
+      "raw_bytes": 72,
+      "raw_sha256": "bf4c3d140ba1f619b1107967c6713006e0988260bd274fa12ddab11cc68e1fce",
+      "sha256": "bf4c3d140ba1f619b1107967c6713006e0988260bd274fa12ddab11cc68e1fce",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-final-identity.json"
+    },
+    "source96-native-identity-command.json": {
+      "raw_bytes": 677,
+      "raw_sha256": "3cf52425f5439efb6b5185c24756731dd66c8085d04474d5fe420fc66db53ee6",
+      "sha256": "3cf52425f5439efb6b5185c24756731dd66c8085d04474d5fe420fc66db53ee6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-identity-command.json"
+    },
+    "source96-native-identity-result.json": {
+      "raw_bytes": 95,
+      "raw_sha256": "8d3394ede968e46431c2c0305c35ff47e97a623b5be218e327669e2fd6f8e41f",
+      "sha256": "8d3394ede968e46431c2c0305c35ff47e97a623b5be218e327669e2fd6f8e41f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-identity-result.json"
+    },
+    "source96-native-identity.log.gz": {
+      "raw_bytes": 2623,
+      "raw_sha256": "49abf2b3725d1b2516b1748e52d53eb6b7c6d8dd9cf1e72c060e9b7ec24f8626",
+      "sha256": "778747bf3133cdcf42d222622afe49226bc43c772e4bd960ae0a14d37b99ebeb",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-identity.log"
+    },
+    "source96-native-test-artifacts.json": {
+      "raw_bytes": 444,
+      "raw_sha256": "d34dc09a5d374cc08b15b786dcf7611667077a1d3ae09893522f695d6db6bd3a",
+      "sha256": "d34dc09a5d374cc08b15b786dcf7611667077a1d3ae09893522f695d6db6bd3a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-test-artifacts.json"
+    },
+    "source96-ordinary-artifacts.json": {
+      "raw_bytes": 328,
+      "raw_sha256": "4be7a267ed2aa567d65f071370b3c4f56f2096ac9f6c622a36a715a0c9cadae6",
+      "sha256": "4be7a267ed2aa567d65f071370b3c4f56f2096ac9f6c622a36a715a0c9cadae6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-artifacts.json"
+    },
+    "source96-ordinary-build-command.json": {
+      "raw_bytes": 566,
+      "raw_sha256": "699892e1208ea9edce6173d89537c27283c85e5c5fb25dce077c18e2af52441a",
+      "sha256": "699892e1208ea9edce6173d89537c27283c85e5c5fb25dce077c18e2af52441a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-build-command.json"
+    },
+    "source96-ordinary-build-result.json": {
+      "raw_bytes": 83,
+      "raw_sha256": "16349e9a2095b06eae469a6f800af3b264ae8c34c774b3c933f161d15dcf75bf",
+      "sha256": "16349e9a2095b06eae469a6f800af3b264ae8c34c774b3c933f161d15dcf75bf",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-build-result.json"
+    },
+    "source96-ordinary-build.log.gz": {
+      "raw_bytes": 62,
+      "raw_sha256": "d6f14fa414f78cc9fa069b992a2381a482fd9b613d9c0482bf01a39931f158e1",
+      "sha256": "9a8c0dd3d09345a80e5dc3549c95b90cbb3e45c67c5d92b21527136008d4a162",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-build.log"
+    },
+    "source96-ordinary-image-command.json": {
+      "raw_bytes": 521,
+      "raw_sha256": "482c625f0855e8af61c2c0e945414e14f4f6250ac3f88ad1111b7888e2044f11",
+      "sha256": "482c625f0855e8af61c2c0e945414e14f4f6250ac3f88ad1111b7888e2044f11",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-image-command.json"
+    },
+    "source96-ordinary-image-result.json": {
+      "raw_bytes": 90,
+      "raw_sha256": "e25cf2b4d15f2c2c7716e09a1464c190d14a579e389f5a28593b9df18f6217ee",
+      "sha256": "e25cf2b4d15f2c2c7716e09a1464c190d14a579e389f5a28593b9df18f6217ee",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-image-result.json"
+    },
+    "source96-ordinary-image.log.gz": {
+      "raw_bytes": 6591,
+      "raw_sha256": "d0c97d9f3bafbe3be3761c9f60e0a20ad111ff807c8f0b1ebbd40fb9cbf067e4",
+      "sha256": "1a5a560dad9675389e1360ad2328cb512333798554e648a28135e953e70fb5f2",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-image.log"
+    },
+    "source96-ordinary-wrapper-command.json": {
+      "raw_bytes": 674,
+      "raw_sha256": "fb9968c1cd7de44cfc3e5a6eb740d39715e6cd2ab58b111c67d95d11dc720510",
+      "sha256": "fb9968c1cd7de44cfc3e5a6eb740d39715e6cd2ab58b111c67d95d11dc720510",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-wrapper-command.json"
+    },
+    "source96-ordinary-wrapper-result.json": {
+      "raw_bytes": 99,
+      "raw_sha256": "92760186dd1faacdb95e458b2a0255a38fd6bc23ef26a926efd0f3536d9259b7",
+      "sha256": "92760186dd1faacdb95e458b2a0255a38fd6bc23ef26a926efd0f3536d9259b7",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-wrapper-result.json"
+    },
+    "source96-ordinary-wrapper.log.gz": {
+      "raw_bytes": 205,
+      "raw_sha256": "ccd83a316d353b11244db56bc19cecdf28f2bb3323ae92855cc8a8df2a11f9cc",
+      "sha256": "93d7d9454ff24c1f1dc46857dd6b9a535d61d9e55a4406c6e6d63e17e1dc4b13",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-ordinary-wrapper.log"
+    },
+    "source96.patch.gz": {
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96.patch"
+    },
+    "validate-frame-snapshot.py": {
+      "raw_bytes": 4273,
+      "raw_sha256": "29a3b62dbe1100c62a208e85a9b3bcb51fbd43688fb772edc80af8c16ec1f7e4",
+      "sha256": "29a3b62dbe1100c62a208e85a9b3bcb51fbd43688fb772edc80af8c16ec1f7e4",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py"
+    },
+    "validate-gnu256-native.py": {
+      "raw_bytes": 4450,
+      "raw_sha256": "3b4803402791513f41a70038cf754ac6897d7b7db907ef7d0031169b21c208b3",
+      "sha256": "3b4803402791513f41a70038cf754ac6897d7b7db907ef7d0031169b21c208b3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-gnu256-native.py"
+    }
+  },
+  "format_version": 1,
+  "goal_complete": false,
+  "qualification": "Diagnostic native identity on unchanged function-cell source, using a freshly built pristine GNU reference whose formatted ABI matches the committed table. All nine unchanged GNU fixtures pass exact raw artifact comparison. Neither this candidate nor the older GNU binary matches the frozen executable pin. No source, ABI table, pin, selector, timeout or comparison change. The earlier source72 full gate remains failed and this is not a full/frozen/final-source certificate.",
+  "software_snapshot": 96,
+  "source_snapshots": {
+    "source96": {
+      "base_commit": "316fda406287d3ce148545191e5bc6a15fcef460",
+      "patch": "source96.patch.gz",
+      "software_manifest": "source96-manifest.json",
+      "untracked_file_sources": {}
+    }
+  }
+}

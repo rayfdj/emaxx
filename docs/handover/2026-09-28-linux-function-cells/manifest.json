@@ -1,0 +1,106 @@
+{
+  "evidence_files": {
+    "linux-c3204ce5-failed.log.gz": {
+      "raw_bytes": 41361,
+      "raw_sha256": "0074f5164f5e75fc8099b5840f73fa9b519cec0be8891edfe3f2a42727bcb9d4",
+      "sha256": "fb040a3f9eb8f2781cda243efa4da64fc87739515b665a1ec3b4e099e5a01898",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-failed.log"
+    },
+    "linux-c3204ce5-publication.json": {
+      "raw_bytes": 494,
+      "raw_sha256": "bd526ddb670132bebe166eb7e1fa5eb9f6c3aacb68842545577b9ccc8b0b94e3",
+      "sha256": "bd526ddb670132bebe166eb7e1fa5eb9f6c3aacb68842545577b9ccc8b0b94e3",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-publication.json"
+    },
+    "linux-c3204ce5-run.json": {
+      "raw_bytes": 4145,
+      "raw_sha256": "ac11abc8839706f455dd48c43ada2f7a6821d6fbd49412801f071c008e08a43f",
+      "sha256": "ac11abc8839706f455dd48c43ada2f7a6821d6fbd49412801f071c008e08a43f",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-run.json"
+    },
+    "metadata/ci-bwrap.apparmor": {
+      "raw_bytes": 335,
+      "raw_sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/metadata/ci-bwrap.apparmor"
+    },
+    "metadata/oracle.txt.gz": {
+      "raw_bytes": 449,
+      "raw_sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+      "sha256": "42b89efca943a8a65437df1ebbba45046199d065d2a9de3ac4b54869282cd833",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/metadata/oracle.txt"
+    },
+    "package-linux-c3204-evidence.py": {
+      "raw_bytes": 2560,
+      "raw_sha256": "97443afe57ba2527f57130109c21e33e3ccafc7685a9ffbc144d05e44bc77797",
+      "sha256": "97443afe57ba2527f57130109c21e33e3ccafc7685a9ffbc144d05e44bc77797",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-linux-c3204-evidence.py"
+    },
+    "rust/build.log.gz": {
+      "raw_bytes": 174752,
+      "raw_sha256": "c8a5c8e5f76ddefb2f2d0dda408972fccafc23e3c00da39e32d1f73f5b65dda1",
+      "sha256": "5a7a0473dead69f88e413b6a874d0062251f4620dda740773525788d705f11ef",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/build.log"
+    },
+    "rust/ignored-inventory.txt.gz": {
+      "raw_bytes": 71,
+      "raw_sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+      "sha256": "4e2a08ad969b5ccbc0e4bf966691b1334ce4742fb8a52e3cb8afa8f57d10de00",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/ignored-inventory.txt"
+    },
+    "rust/inventory.txt.gz": {
+      "raw_bytes": 253205,
+      "raw_sha256": "790fc2d4455334efe119daeeecff9048f10bb8f41652498c8b829908e0b0a6f6",
+      "sha256": "e42149992a2c53c7b23d817d009b9f7b93ab778c9379ac61c7b5b966e31ebef6",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/inventory.txt"
+    },
+    "rust/repeat-01-eval_01.json": {
+      "raw_bytes": 453,
+      "raw_sha256": "11b6f3b0821662ab7686d6a89b503dea442ea64e9baad9c2877fce6558aa1dfd",
+      "sha256": "11b6f3b0821662ab7686d6a89b503dea442ea64e9baad9c2877fce6558aa1dfd",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_01.json"
+    },
+    "rust/repeat-01-eval_01.log.gz": {
+      "raw_bytes": 36487,
+      "raw_sha256": "d447dc88dd8b08f706194f566ddcea7327ac3bb57518770bf71b9f65f675cc8e",
+      "sha256": "99c79d7154c832ec6c9f18544dbb0a1cd087af83f0c6502f62c5294b14d5e10b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_01.log"
+    },
+    "rust/repeat-01-eval_02.json": {
+      "raw_bytes": 457,
+      "raw_sha256": "e88628214c32d147afe654c5cef88906f046d15328487aca073d3912fc9f059b",
+      "sha256": "e88628214c32d147afe654c5cef88906f046d15328487aca073d3912fc9f059b",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_02.json"
+    },
+    "rust/repeat-01-eval_02.log.gz": {
+      "raw_bytes": 66512,
+      "raw_sha256": "52606ddfc56adbf7204f50abb146200738b364b9b892e082f3bcbd20e3d770d6",
+      "sha256": "8d926eb6356e399dabdc45324a71b1d80b142277ca9b26ae91ffb272052cf22a",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_02.log"
+    },
+    "rust/repeat-01-eval_03.json": {
+      "raw_bytes": 455,
+      "raw_sha256": "d5c9050648fdcf889cf1343776079a8afc07ef240e59cf887328ec881c646bee",
+      "sha256": "d5c9050648fdcf889cf1343776079a8afc07ef240e59cf887328ec881c646bee",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_03.json"
+    },
+    "rust/repeat-01-eval_03.log.gz": {
+      "raw_bytes": 32411,
+      "raw_sha256": "ece8dbe3a64d94deb46688279f973d772d79a605f117ec88bf55b9fb85337db7",
+      "sha256": "ac7fb1d26120fe6d9c0178f2a2c319e9aa75079093ed151001d0983ec91b7416",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/repeat-01-eval_03.log"
+    },
+    "rust/summary.json": {
+      "raw_bytes": 1953,
+      "raw_sha256": "41826cdcc748c45e817f1d639a056bc3140195aacaea7f5c83a187aec914d587",
+      "sha256": "41826cdcc748c45e817f1d639a056bc3140195aacaea7f5c83a187aec914d587",
+      "source_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/linux-c3204ce5-artifacts/ordinary-linux-c3204ce5359fcb87e30dace71af62a43d54fbbea/rust/summary.json"
+    }
+  },
+  "format_version": 1,
+  "goal_complete": false,
+  "qualification": "Existing Linux workflow validation=rust. ABI, formatting, compiler/Clippy and build steps pass. First three library groups total 999 passes and one failure: set-text-conversion-style has no implementation. The char-table key-range failure from803e4326 is repaired. Seven later groups and subsequent Cargo stages did not execute. No full/frozen/final-source validation claim.",
+  "run_url": "https://github.com/rayfdj/emaxx/actions/runs/36381574831",
+  "source_commit": "c3204ce5359fcb87e30dace71af62a43d54fbbea",
+  "status": "failed"
+}
