@@ -1,0 +1,80 @@
+{
+  "groups": [
+    {
+      "group": "repeat-01-batch",
+      "passed": 50,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 2788 filtered out; finished in 124.60s"
+    },
+    {
+      "group": "repeat-01-compat_runtime",
+      "passed": 86,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 2752 filtered out; finished in 15.18s"
+    },
+    {
+      "group": "repeat-01-eval_01",
+      "passed": 385,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 385 passed; 0 failed; 0 ignored; 0 measured; 2453 filtered out; finished in 305.35s"
+    },
+    {
+      "group": "repeat-01-eval_02",
+      "passed": 295,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 295 passed; 0 failed; 0 ignored; 0 measured; 2543 filtered out; finished in 433.39s"
+    },
+    {
+      "group": "repeat-01-eval_03",
+      "passed": 320,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 320 passed; 0 failed; 0 ignored; 0 measured; 2518 filtered out; finished in 599.69s"
+    },
+    {
+      "group": "repeat-01-eval_04",
+      "passed": 254,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 254 passed; 0 failed; 0 ignored; 0 measured; 2584 filtered out; finished in 208.61s"
+    },
+    {
+      "group": "repeat-01-eval_05",
+      "passed": 351,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 351 passed; 0 failed; 0 ignored; 0 measured; 2487 filtered out; finished in 1453.94s"
+    },
+    {
+      "group": "repeat-01-lightweight",
+      "passed": 508,
+      "failed": 3,
+      "ignored": 0,
+      "result": "test result: FAILED. 508 passed; 3 failed; 0 ignored; 0 measured; 2327 filtered out; finished in 19.81s"
+    },
+    {
+      "group": "repeat-01-primitives",
+      "passed": 527,
+      "failed": 0,
+      "ignored": 0,
+      "result": "test result: ok. 527 passed; 0 failed; 0 ignored; 0 measured; 2311 filtered out; finished in 389.30s"
+    },
+    {
+      "group": "repeat-01-tty",
+      "passed": 57,
+      "failed": 0,
+      "ignored": 2,
+      "result": "test result: ok. 57 passed; 0 failed; 2 ignored; 0 measured; 2779 filtered out; finished in 10.95s"
+    }
+  ],
+  "totals": {
+    "passed": 2833,
+    "failed": 3,
+    "ignored": 2
+  },
+  "qualification": "Complete library inventory attempted. Failed lightweight group prevents later Cargo binary, integration and doc stages. Source65 immutable full gate remains failed; no frozen/performance certificate."
+}

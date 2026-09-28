@@ -30,6 +30,26 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
     ctx.buffer().to_vec()
 }
 
+#[test]
+fn positioned_symbols_are_rejected_as_in_gnu_dump_vectorlike() {
+    let interpreter = Interpreter::new();
+    let object = Value::positioned_symbol(Value::symbol("undumpable-position"), Value::Integer(19));
+    let mut context = DumpContext::new(true, interpreter.main_thread_record_id());
+    let result = write_image(
+        &mut context,
+        &interpreter,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, Value::vector([object, object]))]),
+    );
+    match result {
+        Err(super::context::DumpError::Unsupported(error)) => {
+            assert_eq!(error.object.word(), object.word());
+            assert_eq!(error.message, "pseudovector type 6");
+        }
+        Err(super::context::DumpError::Lisp(error)) => panic!("unrelated dump error: {error}"),
+        Ok(_) => panic!("GNU rejects a reachable PVEC_SYMBOL_WITH_POS"),
+    }
+}
+
 /// Structural equality with identity correspondence: every object of A
 /// maps to exactly one object of B, so sharing and cycles are preserved.
 fn graph_matches(

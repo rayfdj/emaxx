@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((private (obarray-make))) (let ((obarray private) (symbols-with-pos-enabled nil)) (mapcar (lambda (name) (let* ((object (read-positioning-symbols name)) (bare (bare-symbol object))) (list name (symbol-with-pos-p object) (eq bare (intern name private)) (symbol-name bare)))) (list \"nil\" \"t\" \"reader-private-name\")))))"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.169346292,
+  "stdout": "((\"nil\" t t \"nil\") (\"t\" t t \"t\") (\"reader-private-name\" t t \"reader-private-name\"))",
+  "stderr": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "qualification": "Source65 ordinary/source-matched diagnostic; not frozen or performance certification."
+}

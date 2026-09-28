@@ -139,6 +139,42 @@ fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
 }
 
 #[test]
+fn positioned_symbol_fields_survive_interpreted_bytecode_and_native_calls() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-symbol-native-words.el"),
+        "((t t t t 36) (t t t t 36))",
+        "positioned symbol identity, flags and collection across all execution modes",
+    );
+}
+
+#[test]
+fn positioned_reader_preserves_cycles_shorthands_and_private_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader.el"),
+        r###"((("expanded-α" 2) ("s-raw" 8) ("t" 14) nil) (("expanded-β" 25) t) (t tag expanded-value) '("expanded-quote" 53) (t 0 t))"###,
+        "positioned reader characters, opaque literals, cycles and private obarray identity",
+    );
+}
+
+#[test]
+fn positioned_reader_resolves_private_nil_and_t_before_wrapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader-special.el"),
+        r###"(("nil" t t "nil") ("t" t t "t") ("reader-private-name" t t "reader-private-name"))"###,
+        "positioned reader canonical nil versus private nil and t symbols",
+    );
+}
+
+#[test]
+fn positioned_reader_keeps_uninterned_names_and_source_positions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader-uninterned.el"),
+        r###"((("s-name" nil nil nil) ("nil" nil nil nil) ("t" nil nil nil) ("123" nil nil nil) ("" nil nil nil)) (("s-name" t 2 nil) ("nil" t 2 nil) ("t" t 2 nil) ("123" t 2 nil) ("" nil nil nil)))"###,
+        "positioned reader uninterned names, empty names and source positions",
+    );
+}
+
+#[test]
 fn native_string_words_preserve_mutation_and_cycles_across_execution_modes() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/shared-string-native-words.el"),

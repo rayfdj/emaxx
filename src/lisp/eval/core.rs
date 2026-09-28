@@ -390,7 +390,7 @@ impl Interpreter {
             // evaluation put there (GNU strings are always heap objects).
             Kind::String(_) => Ok(Self::stored_value(*expr)),
 
-            Kind::Record(_)
+            Kind::SymbolWithPos(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
             {
@@ -426,6 +426,7 @@ impl Interpreter {
             | Kind::SubCharTable(_)
             | Kind::Frame(_)
             | Kind::Terminal(_)
+            | Kind::SymbolWithPos(_)
             | Kind::Record(_)
             | Kind::Finalizer(_)
             | Kind::Unbound => Ok(*expr),

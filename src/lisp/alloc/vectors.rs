@@ -20,6 +20,8 @@
 
 pub(crate) mod char_tables;
 pub use char_tables::{CharTableRef, SubCharTableRef};
+mod symbols_with_pos;
+pub use symbols_with_pos::SymbolWithPosRef;
 
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
@@ -74,6 +76,7 @@ pub enum VectorTag {
     Marker = 3,
     Overlay = 4,
     Finalizer = 5,
+    SymbolWithPos = 6,
     Frame = 10,
     Buffer = 13,
     Terminal = 16,
@@ -96,6 +99,7 @@ impl VectorTag {
             3 => Self::Marker,
             4 => Self::Overlay,
             5 => Self::Finalizer,
+            6 => Self::SymbolWithPos,
             10 => Self::Frame,
             13 => Self::Buffer,
             16 => Self::Terminal,
@@ -226,7 +230,10 @@ impl VectorHeader {
             let traced = self.size & PSEUDOVECTOR_SIZE_MASK;
             let rest = (self.size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK;
             let bytes = HEADER_SIZE + (traced + rest) * WORD_SIZE;
-            if matches!(self.tag(), VectorTag::CharTable | VectorTag::SubCharTable) {
+            if matches!(
+                self.tag(),
+                VectorTag::CharTable | VectorTag::SubCharTable | VectorTag::SymbolWithPos
+            ) {
                 vroundup(bytes)
             } else {
                 bytes
@@ -862,6 +869,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
             VectorTag::Buffer
+            | VectorTag::SymbolWithPos
             | VectorTag::Frame
             | VectorTag::Terminal
             | VectorTag::Marker
@@ -936,7 +944,10 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
             // destructor. Its children are reclaimed by tracing, as in C.
-            VectorTag::Closure | VectorTag::CharTable | VectorTag::SubCharTable => {}
+            VectorTag::Closure
+            | VectorTag::CharTable
+            | VectorTag::SubCharTable
+            | VectorTag::SymbolWithPos => {}
             VectorTag::StringObject => {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
@@ -1002,6 +1013,7 @@ impl SweepStats {
                     self.vector_slots += 4;
                 }
                 VectorTag::Buffer
+                | VectorTag::SymbolWithPos
                 | VectorTag::Frame
                 | VectorTag::Terminal
                 | VectorTag::Marker
@@ -1270,6 +1282,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Frame => Value::Frame(VectorlikeRef::from_raw(header)),
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
+            VectorTag::SymbolWithPos => Value::SymbolWithPos(SymbolWithPosRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),

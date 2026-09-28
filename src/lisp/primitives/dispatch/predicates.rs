@@ -533,7 +533,7 @@ define_dispatch!(
             }
             "symbol-with-pos-p" => {
                 need_args(name, args, 1)?;
-                Ok(if symbol_with_pos_parts(interp, &args[0]).is_some() {
+                Ok(if matches!(args[0].kind(), Kind::SymbolWithPos(_)) {
                     Value::T
                 } else {
                     Value::Nil

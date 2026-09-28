@@ -182,11 +182,7 @@ fn purecopy_inner(
     table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record|
-            record.kind == crate::lisp::eval::RecordKind::SymbolWithPos))
-        && symbols_with_pos_enabled(interp, env)
-    {
+    if matches!(value.kind(), Kind::SymbolWithPos(_)) && symbols_with_pos_enabled(interp, env) {
         // SYMBOLP includes PVEC_SYMBOL_WITH_POS while this flag is active,
         // so alloc.c:Fpurecopy returns it unchanged with ordinary symbols.
         return Ok(*value);
@@ -249,6 +245,7 @@ fn purecopy_inner(
         | Kind::SubCharTable(_)
         | Kind::Frame(_)
         | Kind::Terminal(_)
+        | Kind::SymbolWithPos(_)
         | Kind::Finalizer(_)
         | Kind::ReaderForm(_)
         | Kind::Unbound => {

@@ -746,6 +746,9 @@ impl Interpreter {
                 Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
                     pending.extend(vector.slots());
                 }
+                Kind::SymbolWithPos(object) if seen_vectors.insert(object.identity()) => {
+                    pending.push(object.symbol());
+                }
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
                         for (property, property_value) in &span.props {
@@ -871,16 +874,6 @@ impl Interpreter {
                     },
                     ReaderForm::BoolVector { bits } => {
                         ReaderForm::BoolVector { bits: bits.clone() }
-                    }
-                    ReaderForm::PositionedSymbol { name, pos } => {
-                        // lread.c interns the bare symbol through the
-                        // active obarray even when LOCATE_SYMS wraps the
-                        // occurrence with a position.
-                        crate::lisp::primitives::intern_in_obarray(self, obarray, name)?;
-                        ReaderForm::PositionedSymbol {
-                            name: name.clone(),
-                            pos: *pos,
-                        }
                     }
                 };
                 Ok(Value::ReaderForm(

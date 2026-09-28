@@ -561,8 +561,8 @@ fn run_fast(
             }
             Op::Eq => {
                 let len = ops.len();
-                if matches!(ops[len - 1].kind(), Kind::Record(_))
-                    || matches!(ops[len - 2].kind(), Kind::Record(_))
+                if matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
+                    || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_))
                 {
                     slow!();
                 }

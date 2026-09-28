@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 0.165165,
+  "stdout": "(((\"s-name\" nil nil nil) (\"nil\" nil nil nil) (\"t\" nil nil nil) (\"123\" nil nil nil) (\"\" nil nil nil)) ((\"s-name\" t 2 nil) (\"nil\" t 2 nil) (\"t\" t 2 nil) (\"123\" t 2 nil) (\"\" nil nil nil)))",
+  "matches_expected": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true
+}

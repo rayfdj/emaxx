@@ -22,7 +22,6 @@ use crate::lisp::{
     types::{Env, LispError},
 };
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -951,12 +950,6 @@ impl NativeRuntime {
             .iter()
             .map(|handler| handler.storage.value())
             .collect::<Vec<_>>();
-        roots.extend(
-            self.heap
-                .symbol_with_position_views
-                .values()
-                .flat_map(|view| [view.symbol, view.position]),
-        );
         for range in self
             .permanent_root_ranges
             .iter()
@@ -2492,7 +2485,7 @@ fn native_symbolp(active: &mut ActiveCall, word: NativeWord) -> Result<bool, Lis
         return Ok(false);
     }
     let value = decode_word(active, word)?;
-    Ok(symbol_with_pos_parts(unsafe { &*active.interpreter }, &value).is_some())
+    Ok(matches!(value.kind(), Kind::SymbolWithPos(_)))
 }
 
 /// The non-vectorlike portion of data.c:Ftype_of is a pure tag dispatch.
@@ -2591,37 +2584,20 @@ unsafe fn native_cdr(value: NativeWord) -> NativeWord {
 /// lisp.h:maybe_remove_pos_from_symbol after the caller checked the C flag.
 /// PSEUDOVECTORP only reads the subtype; it never traverses an unrelated
 /// cons or vector. Only a positioned symbol needs its bare-symbol field.
-fn native_remove_symbol_position(
-    active: &mut ActiveCall,
-    word: NativeWord,
-) -> Result<NativeWord, LispError> {
+fn native_remove_symbol_position(word: NativeWord) -> NativeWord {
     if word & TAG_MASK != TAG_VECTORLIKE {
-        return Ok(word);
+        return word;
     }
-    // Read only the header before choosing the payload layout. Remaining
-    // native handles and short ordinary vectors cannot be read as records.
     let header = word.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
+    // SAFETY: the active native argument roots this live allocation. Inspect
+    // only its header before selecting the positioned-symbol field layout.
     if unsafe { crate::lisp::alloc::vectors::header_tag(header) }
-        != crate::lisp::alloc::VectorTag::Record
+        != crate::lisp::alloc::VectorTag::SymbolWithPos
     {
-        return Ok(word);
+        return word;
     }
-    // SAFETY: the active argument roots this allocated record, whose header
-    // just established the payload type. Copy its field before calling out.
-    let record = unsafe { crate::lisp::types::RecordRef::from_raw(header) };
-    if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos {
-        return Ok(word);
-    }
-    let symbol = record.slots.first().copied();
-    let Some(symbol) = symbol else {
-        return Ok(word);
-    };
-    // Valid positioned symbols contain a canonical symbol word. Retain the
-    // ordinary encoder's behavior for internally mutated malformed fields.
-    unsafe { &mut *active.runtime }
-        .heap
-        .encode(&symbol)
-        .map_err(|error| super::lisp::native_ice(&error))
+    let object = unsafe { crate::lisp::types::SymbolWithPosRef::from_raw(header) };
+    object.symbol().word()
 }
 
 fn native_eq(
@@ -2638,8 +2614,8 @@ fn native_eq(
     if left & TAG_MASK != TAG_VECTORLIKE && right & TAG_MASK != TAG_VECTORLIKE {
         return Ok(false);
     }
-    let left = native_remove_symbol_position(active, left)?;
-    let right = native_remove_symbol_position(active, right)?;
+    let left = native_remove_symbol_position(left);
+    let right = native_remove_symbol_position(right);
     Ok(left == right)
 }
 
@@ -2660,7 +2636,7 @@ fn native_eql(
     let left_value = decode_word(active, left)?;
     if !matches!(
         left_value.kind(),
-        Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_) | Kind::Record(_)
+        Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_) | Kind::SymbolWithPos(_)
     ) {
         return Ok(false);
     }
@@ -3151,18 +3127,15 @@ extern "C" fn runtime_wrong_type_argument(predicate: NativeWord, value: NativeWo
 
 extern "C" fn runtime_pseudovector_typep(value: NativeWord, code: i32) -> bool {
     with_active(|active| match decode_word(active, value) {
-        Ok(value) => {
-            let interpreter = unsafe { &mut *active.interpreter };
-            match code {
-                2 => {
-                    matches!(value.kind(), Kind::BigInteger(_))
-                        || matches!(value.kind(), Kind::Integer(integer)
+        Ok(value) => match code {
+            2 => {
+                matches!(value.kind(), Kind::BigInteger(_))
+                    || matches!(value.kind(), Kind::Integer(integer)
                             if !(MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer))
-                }
-                6 => symbol_with_pos_parts(interpreter, &value).is_some(),
-                _ => false,
             }
-        }
+            6 => matches!(value.kind(), Kind::SymbolWithPos(_)),
+            _ => false,
+        },
         Err(error) => {
             remember_helper_error(active, error);
             false
@@ -3277,16 +3250,19 @@ extern "C" fn runtime_save_restriction() {
     });
 }
 
+// comp.c:helper_GET_SYMBOL_WITH_POSITION returns the actual untagged object.
+fn symbol_with_position_pointer(value: &Value) -> Result<*mut c_void, LispError> {
+    let Kind::SymbolWithPos(object) = value.kind() else {
+        return Err(wrong_type_argument("wrong-type-argument", *value));
+    };
+    Ok(object.identity() as *mut c_void)
+}
+
 extern "C" fn runtime_get_symbol_with_position(value: NativeWord) -> *mut c_void {
     with_active(|active| {
         let result = (|| {
             let value = decode_word(active, value)?;
-            let interpreter = unsafe { &mut *active.interpreter };
-            let runtime = unsafe { &mut *active.runtime };
-            runtime
-                .heap
-                .symbol_with_position_pointer(interpreter, &value)
-                .map_err(|error| super::lisp::native_ice(&error))
+            symbol_with_position_pointer(&value)
         })();
         match result {
             Ok(pointer) => pointer,
@@ -3685,19 +3661,11 @@ impl NativeGcState {
     }
 }
 
-#[repr(C, align(8))]
-struct NativeSymbolWithPosition {
-    header: isize,
-    symbol: NativeWord,
-    position: NativeWord,
-}
-
 /// Native activation and GC tuning state. Lisp objects themselves belong to
 /// the shared allocator: no ownership map, mirror, conversion work or read
 /// barrier can be required to reach an ordinary Lisp field.
 pub(crate) struct NativeHeap {
     gc: NativeGcState,
-    symbol_with_position_views: HashMap<u64, Box<NativeSymbolWithPosition>>,
     native_call_depth: usize,
     native_stack_bottom: *const NativeWord,
 }
@@ -3706,14 +3674,13 @@ impl NativeHeap {
     fn new() -> Self {
         Self {
             gc: NativeGcState::default(),
-            symbol_with_position_views: HashMap::default(),
             native_call_depth: 0,
             native_stack_bottom: std::ptr::null(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.symbol_with_position_views.is_empty() && self.native_call_depth == 0
+        self.native_call_depth == 0
     }
 
     pub(crate) fn begin_call(&mut self) {
@@ -3989,6 +3956,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::SubCharTable
                         | crate::lisp::alloc::VectorTag::Marker
                         | crate::lisp::alloc::VectorTag::Finalizer
+                        | crate::lisp::alloc::VectorTag::SymbolWithPos
                 )
             {
                 // SAFETY: the checked boundary found this allocated object's
@@ -4004,41 +3972,250 @@ impl NativeHeap {
         self.end_call();
         Ok(())
     }
-
-    fn symbol_with_position_pointer(
-        &mut self,
-        interpreter: &Interpreter,
-        value: &Value,
-    ) -> Result<*mut c_void, String> {
-        let Kind::Record(record_id) = value.kind() else {
-            return Err("native symbol-with-position helper received a non-record".to_string());
-        };
-        let (symbol, position) = symbol_with_pos_parts(interpreter, value).ok_or_else(|| {
-            "native symbol-with-position helper received the wrong record".to_string()
-        })?;
-        let symbol = self.encode(&symbol)?;
-        let position = self.encode(&Value::Integer(position))?;
-        // PSEUDOVECTOR_FLAG | (PVEC_SYMBOL_WITH_POS << 24) | two Lisp fields.
-        const HEADER: isize = (1_isize << 62) | (6_isize << 24) | 2;
-        let view = self
-            .symbol_with_position_views
-            .entry(record_id.id)
-            .or_insert_with(|| {
-                Box::new(NativeSymbolWithPosition {
-                    header: HEADER,
-                    symbol: 0,
-                    position: 0,
-                })
-            });
-        view.symbol = symbol;
-        view.position = position;
-        Ok((&mut **view as *mut NativeSymbolWithPosition).cast())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn positioned_symbol_fields_use_the_public_native_word_without_preparation() {
+        let mut interpreter = Interpreter::new();
+        let symbol = Value::symbol("unprepared-positioned-field");
+        let value = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[symbol, Value::Integer(43)],
+            &mut Env::new(),
+        )
+        .expect("position-symbol");
+        let address = value.word() & !TAG_MASK;
+        // lisp.h:Lisp_Symbol_With_Pos, allocated by build_symbol_with_pos.
+        let words = address as *const usize;
+        let header = unsafe { words.read() };
+        assert_eq!((header >> 24) & 0x3f, 6, "GNU PVEC_SYMBOL_WITH_POS");
+        assert_eq!(header & 0xfff, 2, "exactly two traced Lisp fields");
+        assert_eq!(
+            (header >> 12) & 0xfff,
+            0,
+            "allocator padding is not a Lisp field"
+        );
+        assert_eq!(unsafe { words.add(1).read() }, symbol.word());
+        assert_eq!(unsafe { words.add(2).read() }, Value::Integer(43).word());
+        let holder = Value::vector([Value::cons(value, Value::Nil)]);
+        let mut heap = NativeHeap::new();
+        assert_eq!(
+            heap.encode(&holder).expect("unchanged holder word"),
+            holder.word()
+        );
+        assert_eq!(heap.decode(value.word()).expect("shared object"), value);
+    }
+
+    #[test]
+    fn positioned_symbol_native_helper_returns_the_actual_allocation() {
+        let mut first = Interpreter::new();
+        let mut second = Interpreter::new();
+        let left = crate::lisp::primitives::call(
+            &mut first,
+            "position-symbol",
+            &[Value::symbol("first-positioned-object"), Value::Integer(17)],
+            &mut Env::new(),
+        )
+        .expect("first positioned symbol");
+        let right = crate::lisp::primitives::call(
+            &mut second,
+            "position-symbol",
+            &[
+                Value::symbol("second-positioned-object"),
+                Value::Integer(61),
+            ],
+            &mut Env::new(),
+        )
+        .expect("second positioned symbol");
+        assert_ne!(left.word(), right.word());
+        let mut heap = NativeHeap::new();
+        assert_eq!(heap.encode(&left).expect("first heap"), left.word());
+        let left_pointer = symbol_with_position_pointer(&left).expect("left");
+        let right_pointer = symbol_with_position_pointer(&right).expect("right");
+        assert_eq!(left_pointer as usize, left.word() & !TAG_MASK);
+        assert_eq!(right_pointer as usize, right.word() & !TAG_MASK);
+        assert_ne!(left_pointer, right_pointer);
+        let mut other_heap = NativeHeap::new();
+        let decoded = other_heap
+            .decode(heap.encode(&left).expect("encode"))
+            .expect("another activation");
+        assert_eq!(
+            symbol_with_position_pointer(&decoded).expect("another activation"),
+            left_pointer
+        );
+    }
+
+    #[test]
+    fn positioned_symbol_raw_stores_are_visible_to_lisp_and_native_readers() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
+        let old_symbol = Value::symbol("positioned-original");
+        let new_symbol = Value::symbol("positioned-replacement");
+        let object = Value::positioned_symbol(old_symbol, Value::Integer(11));
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    direct_native_eq as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[object, old_symbol],
+                )
+                .expect("initial native field"),
+            Value::T
+        );
+        let fields = symbol_with_position_pointer(&object)
+            .expect("actual payload")
+            .cast::<usize>();
+        // Both stores name valid Lisp words. Cell<Value> owns these exact
+        // locations; no Rust borrow of a field spans the native mutation.
+        unsafe {
+            fields.add(1).write(new_symbol.word());
+            fields.add(2).write(Value::Integer(59).word());
+        }
+        assert_eq!(
+            symbol_with_pos_parts(&interpreter, &object),
+            Some((new_symbol, 59))
+        );
+        for (symbol, expected) in [(old_symbol, Value::Nil), (new_symbol, Value::T)] {
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        direct_native_eq as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[object, symbol],
+                    )
+                    .expect("current native field"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn positioned_symbol_native_helper_checks_the_object_tag() {
+        let mut interpreter = Interpreter::new();
+        let named_record =
+            interpreter.create_record("symbol-with-pos", vec![Value::T, Value::Integer(7)]);
+        for value in [
+            Value::Nil,
+            Value::T,
+            Value::Integer(7),
+            Value::vector([Value::T, Value::Integer(7)]),
+            named_record,
+        ] {
+            let error = symbol_with_position_pointer(&value).expect_err("not PVEC_SYMBOL_WITH_POS");
+            assert_eq!(
+                crate::lisp::eval::error_condition_value(&error),
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("wrong-type-argument"),
+                    value
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn positioned_symbol_native_roots_keep_only_reachable_objects_and_names() {
+        #[inline(never)]
+        fn make_roots(runtime: &mut NativeRuntime) -> (Box<[NativeWord; 1]>, [usize; 4]) {
+            let name = |text, id| {
+                Value::Symbol(crate::lisp::types::SymbolName::make_uninterned(
+                    Value::string(text),
+                    text,
+                    id,
+                ))
+            };
+            let live_symbol = name("positioned-live-root", 101);
+            let live = Value::positioned_symbol(live_symbol, Value::Integer(37));
+            let dead_symbol = name("positioned-dead-control", 103);
+            let dead = Value::positioned_symbol(dead_symbol, Value::Integer(71));
+            symbol_with_position_pointer(&live).expect("expose live native fields");
+            symbol_with_position_pointer(&dead).expect("expose unreachable native fields");
+            let words = [live, live_symbol, dead, dead_symbol].map(Value::word);
+            let roots = Box::new([words[0]]);
+            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            (roots, words.map(|word| word ^ HIDE))
+        }
+
+        #[inline(never)]
+        fn collect_and_check(
+            runtime: &mut NativeRuntime,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            hidden: [usize; 4],
+            keep: bool,
+        ) {
+            let marker = 0;
+            runtime.collect_native_heap_now(std::ptr::from_ref(&marker), interpreter, environment);
+            for (index, hidden_word) in hidden.into_iter().enumerate() {
+                let value = runtime.heap.decode(hidden_word ^ HIDE);
+                assert_eq!(
+                    value.is_ok(),
+                    keep && index < 2,
+                    "object {index}, keep = {keep}"
+                );
+                if keep && index == 0 {
+                    let object = value.expect("live wrapper");
+                    let (symbol, position) =
+                        symbol_with_pos_parts(interpreter, &object).expect("actual fields");
+                    assert_eq!(symbol.word(), hidden[1] ^ HIDE);
+                    assert_eq!(position, 37);
+                }
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let (mut roots, hidden) = make_roots(&mut runtime);
+        for _ in 0..3 {
+            crate::lisp::alloc::clobber_stack();
+            collect_and_check(&mut runtime, &mut interpreter, &environment, hidden, true);
+        }
+        roots[0] = Value::Nil.word();
+        crate::lisp::alloc::clobber_stack();
+        collect_and_check(&mut runtime, &mut interpreter, &environment, hidden, false);
+    }
+
+    #[test]
+    fn positioned_symbol_graph_copy_preserves_sharing_with_distinct_storage() {
+        let mut source = Interpreter::new();
+        let symbol = Value::symbol("copied-positioned-symbol");
+        let object = Value::positioned_symbol(symbol, Value::Integer(79));
+        source.set_symbol_value_cell("positioned-copy-root", Value::vector([object, object]));
+        let copied = source.deep_clone_image();
+        let root = copied
+            .symbol_value_cell("positioned-copy-root")
+            .expect("copied root");
+        let Kind::Vector(vector) = root.kind() else {
+            panic!("root vector")
+        };
+        let first = vector.get(0).expect("first reference");
+        assert_eq!(
+            first.word(),
+            vector.get(1).expect("shared reference").word()
+        );
+        assert_ne!(first.word(), object.word());
+        assert_eq!(symbol_with_pos_parts(&copied, &first), Some((symbol, 79)));
+        let original = symbol_with_position_pointer(&object)
+            .expect("original storage")
+            .cast::<usize>();
+        unsafe {
+            original.add(2).write(Value::Integer(83).word());
+        }
+        assert_eq!(symbol_with_pos_parts(&source, &object), Some((symbol, 83)));
+        assert_eq!(symbol_with_pos_parts(&copied, &first), Some((symbol, 79)));
+    }
 
     #[test]
     fn cons_payload_is_exactly_two_lisp_words() {
@@ -6012,11 +6189,7 @@ mod tests {
         );
 
         interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
-        let positioned = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::SymbolWithPos,
-            "symbol-with-pos",
-            vec![Value::symbol("positioned"), Value::Integer(7)],
-        );
+        let positioned = Value::positioned_symbol(Value::symbol("positioned"), Value::Integer(7));
         assert_eq!(
             runtime
                 .invoke(
@@ -6217,7 +6390,7 @@ mod tests {
                         expected.identity_ptr(),
                         "target={target:?}: report the exact original symbol, not its alias target"
                     ),
-                    (Kind::Record(actual), Kind::Record(expected)) => assert!(
+                    (Kind::SymbolWithPos(actual), Kind::SymbolWithPos(expected)) => assert!(
                         actual.ptr_eq(&expected),
                         "target={target:?}: retain the original positioned-symbol object"
                     ),
@@ -7476,26 +7649,27 @@ mod tests {
     fn native_constant_write_survives_heap_move_and_teardown() {
         for read_before_drop in [false, true] {
             let value = Value::cons(Value::Integer(1), Value::Nil);
-            let mut heap = NativeHeap::new();
-            heap.begin_call();
-            let word = heap.encode(&value).expect("relocation constant");
-            heap.finish_call().expect("finish loading");
-            let mut moved_heap = heap;
-            moved_heap.begin_call();
             let text = Value::String("native replacement".into());
-            let text_word = moved_heap.encode(&text).expect("string handle");
-            let child = moved_heap.cons(text_word, 0);
-            unsafe {
-                let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
-                (*native).set_cdr(child);
+            {
+                let mut heap = NativeHeap::new();
+                heap.begin_call();
+                let word = heap.encode(&value).expect("relocation constant");
+                heap.finish_call().expect("finish loading");
+                let mut moved_heap = heap;
+                moved_heap.begin_call();
+                let text_word = moved_heap.encode(&text).expect("string handle");
+                let child = moved_heap.cons(text_word, 0);
+                unsafe {
+                    let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+                    (*native).set_cdr(child);
+                }
+                moved_heap
+                    .finish_call()
+                    .expect("return without explicit cons argument");
+                if read_before_drop {
+                    assert_eq!(value.cdr().expect("tail").car().expect("child"), text);
+                }
             }
-            moved_heap
-                .finish_call()
-                .expect("return without explicit cons argument");
-            if read_before_drop {
-                assert_eq!(value.cdr().expect("tail").car().expect("child"), text);
-            }
-            drop(moved_heap);
             assert_eq!(
                 value
                     .cdr()
@@ -7512,15 +7686,17 @@ mod tests {
         // Historical selector retained: the same allocation now belongs to
         // the shared collector and needs no per-native-heap owner at all.
         let value = Value::cons(Value::Integer(1), Value::Nil);
-        let mut first = NativeHeap::new();
         let mut second = NativeHeap::new();
-        let word = first.encode(&value).expect("first owner");
-        assert_eq!(second.encode(&value).expect("shared live heap"), word);
-        unsafe {
-            let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
-            (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
-        }
-        drop(first);
+        let word = {
+            let mut first = NativeHeap::new();
+            let word = first.encode(&value).expect("first owner");
+            assert_eq!(second.encode(&value).expect("shared live heap"), word);
+            unsafe {
+                let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+                (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+            }
+            word
+        };
         let next_word = second
             .encode(&value)
             .expect("detached value can cross again");
@@ -7863,28 +8039,30 @@ mod tests {
             .stack_size(2 * 1024 * 1024)
             .spawn(|| {
                 for through_car in [false, true] {
-                    let mut heap = NativeHeap::new();
                     let text = Value::string("retained native leaf");
-                    let text_word = heap.encode(&text).expect("leaf handle");
-                    let leaf = heap.cons(text_word, 0);
-                    let mut root = leaf;
-                    for _ in 0..100_000 {
-                        root = if through_car {
-                            heap.cons(root, 0)
-                        } else {
-                            heap.cons(0, root)
-                        };
-                    }
-                    let shared = heap.cons(root, root);
-                    unsafe {
-                        (*(leaf.wrapping_sub(TAG_CONS) as *mut NativeCons)).set_cdr(shared);
-                    }
-                    let value = heap.decode(shared).expect("decode deep cyclic graph");
-                    assert_eq!(
-                        value.car().expect("shared car").word(),
-                        value.cdr().expect("shared cdr").word()
-                    );
-                    drop(heap);
+                    let value = {
+                        let mut heap = NativeHeap::new();
+                        let text_word = heap.encode(&text).expect("leaf handle");
+                        let leaf = heap.cons(text_word, 0);
+                        let mut root = leaf;
+                        for _ in 0..100_000 {
+                            root = if through_car {
+                                heap.cons(root, 0)
+                            } else {
+                                heap.cons(0, root)
+                            };
+                        }
+                        let shared = heap.cons(root, root);
+                        unsafe {
+                            (*(leaf.wrapping_sub(TAG_CONS) as *mut NativeCons)).set_cdr(shared);
+                        }
+                        let value = heap.decode(shared).expect("decode deep cyclic graph");
+                        assert_eq!(
+                            value.car().expect("shared car").word(),
+                            value.cdr().expect("shared cdr").word()
+                        );
+                        value
+                    };
                     let mut next = value.car().expect("root survives heap teardown");
                     for _ in 0..100_000 {
                         next = if through_car {
@@ -8123,71 +8301,73 @@ mod tests {
     fn native_symbols_and_immediates_share_the_interpreter_word_across_heaps() {
         // lisp.h:EQ compares the one word naming the object. Crossing a
         // native boundary or creating another runtime cannot change it.
-        let mut first = NativeHeap::new();
         let mut second = NativeHeap::new();
-        for integer in [
-            MOST_NEGATIVE_FIXNUM,
-            -73,
-            -1,
-            0,
-            1,
-            73,
-            MOST_POSITIVE_FIXNUM,
-        ] {
-            let value = Value::Integer(integer);
-            let word = first.encode(&value).expect("canonical fixnum");
-            assert_eq!(word, value.word());
-            assert_eq!(word & 3, TAG_FIXNUM_LOW);
-            assert_eq!(second.encode(&value).expect("another runtime"), word);
-            assert_eq!(first.decode(word).expect("fixnum round trip"), value);
-        }
-        for value in [
-            Value::Nil,
-            Value::T,
-            Value::Unbound,
-            Value::symbol("symbol"),
-            Value::symbol("integer"),
-            Value::symbol("string"),
-            Value::symbol("cons"),
-            Value::symbol("float"),
-            Value::symbol("canonical-symbol-identity-73"),
-            Value::symbol(":canonical-keyword"),
-        ] {
-            let word = first.encode(&value).expect("first native runtime");
-            assert_eq!(word, value.word());
-            assert_eq!(word & TAG_MASK, TAG_SYMBOL);
-            assert_eq!(second.encode(&value).expect("second runtime"), word);
-            assert_eq!(first.decode(word).expect("checked read").word(), word);
+        let (value, word) = {
+            let mut first = NativeHeap::new();
+            for integer in [
+                MOST_NEGATIVE_FIXNUM,
+                -73,
+                -1,
+                0,
+                1,
+                73,
+                MOST_POSITIVE_FIXNUM,
+            ] {
+                let value = Value::Integer(integer);
+                let word = first.encode(&value).expect("canonical fixnum");
+                assert_eq!(word, value.word());
+                assert_eq!(word & 3, TAG_FIXNUM_LOW);
+                assert_eq!(second.encode(&value).expect("another runtime"), word);
+                assert_eq!(first.decode(word).expect("fixnum round trip"), value);
+            }
+            for value in [
+                Value::Nil,
+                Value::T,
+                Value::Unbound,
+                Value::symbol("symbol"),
+                Value::symbol("integer"),
+                Value::symbol("string"),
+                Value::symbol("cons"),
+                Value::symbol("float"),
+                Value::symbol("canonical-symbol-identity-73"),
+                Value::symbol(":canonical-keyword"),
+            ] {
+                let word = first.encode(&value).expect("first native runtime");
+                assert_eq!(word, value.word());
+                assert_eq!(word & TAG_MASK, TAG_SYMBOL);
+                assert_eq!(second.encode(&value).expect("second runtime"), word);
+                assert_eq!(first.decode(word).expect("checked read").word(), word);
+                assert_eq!(
+                    unsafe { second.decode_live(word) }
+                        .expect("live read")
+                        .word(),
+                    word
+                );
+            }
+            assert_eq!(Value::symbol("nil").word(), Value::Nil.word());
+            assert_eq!(Value::symbol("t").word(), Value::T.word());
             assert_eq!(
-                unsafe { second.decode_live(word) }
-                    .expect("live read")
-                    .word(),
-                word
+                [Value::Nil.word(), Value::T.word(), Value::Unbound.word()],
+                [0, 48, 96]
             );
-        }
-        assert_eq!(Value::symbol("nil").word(), Value::Nil.word());
-        assert_eq!(Value::symbol("t").word(), Value::T.word());
-        assert_eq!(
-            [Value::Nil.word(), Value::T.word(), Value::Unbound.word()],
-            [0, 48, 96]
-        );
-        for text in ["nil", "t", "integer", "another-uninterned-name"] {
-            let a = Value::Symbol(SymbolName::make_uninterned(Value::string(text), text, 731));
-            let b = Value::Symbol(SymbolName::make_uninterned(Value::string(text), text, 732));
-            let word = first.encode(&a).expect("uninterned symbol");
-            assert_eq!(word, a.word());
-            assert_eq!(second.encode(&a).expect("same symbol"), word);
-            assert_ne!(first.encode(&b).expect("different symbol"), word);
-            assert_ne!(
-                first.encode(&Value::symbol(text)).expect("interned symbol"),
-                word
-            );
-            assert!(first.decode(word + std::mem::size_of::<usize>()).is_err());
-        }
-        assert!(first.decode(8).is_err());
-        let value = Value::symbol("symbol-survives-native-owner-drop");
-        let word = first.encode(&value).expect("symbol word");
-        drop(first);
+            for text in ["nil", "t", "integer", "another-uninterned-name"] {
+                let a = Value::Symbol(SymbolName::make_uninterned(Value::string(text), text, 731));
+                let b = Value::Symbol(SymbolName::make_uninterned(Value::string(text), text, 732));
+                let word = first.encode(&a).expect("uninterned symbol");
+                assert_eq!(word, a.word());
+                assert_eq!(second.encode(&a).expect("same symbol"), word);
+                assert_ne!(first.encode(&b).expect("different symbol"), word);
+                assert_ne!(
+                    first.encode(&Value::symbol(text)).expect("interned symbol"),
+                    word
+                );
+                assert!(first.decode(word + std::mem::size_of::<usize>()).is_err());
+            }
+            assert!(first.decode(8).is_err());
+            let value = Value::symbol("symbol-survives-native-owner-drop");
+            let word = first.encode(&value).expect("symbol word");
+            (value, word)
+        };
         assert_eq!(
             second.decode(word).expect("same live object").word(),
             value.word()

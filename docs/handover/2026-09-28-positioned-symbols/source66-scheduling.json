@@ -1,0 +1,8 @@
+{
+  "source": 66,
+  "qualification": "Two correctness acceptance probes only; no performance measurement. Run from a separate source-identical baseline worktree while source65 full gate runs. One Cargo build job limits build load; the gate source and artifact directories are independent.",
+  "environment_override": {
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "baseline_directory": "/private/tmp/emaxx-runtime-positioned-baseline/emaxx"
+}

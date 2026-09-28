@@ -779,6 +779,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::SubCharTable(_) => "sub-char-table",
         Kind::Frame(_) => "frame",
         Kind::Terminal(_) => "terminal",
+        Kind::SymbolWithPos(_) => "symbol-with-pos",
         Kind::Record(id) => {
             let Some(record) = interp.find_record(id) else {
                 return Ok(Value::symbol("record"));
@@ -805,7 +806,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                     Some("font-object") => "font-object",
                     _ => "font-spec",
                 },
-                crate::lisp::eval::RecordKind::SymbolWithPos => "symbol-with-pos",
                 crate::lisp::eval::RecordKind::Process => "process",
                 crate::lisp::eval::RecordKind::HashTable => "hash-table",
                 crate::lisp::eval::RecordKind::Obarray => "obarray",

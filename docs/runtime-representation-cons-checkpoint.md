@@ -6,7 +6,11 @@ and [ordering](runtime-representation-ordering-checkpoint.md) checkpoints at
 `76ad608fdd71fe4590042f601780e5ddfeea9e9a`. Source 65 passes 185 selected release
 tests, strict static checks, and four ordinary batch comparisons against
 source-matched GNU using a fresh executable and dump image. Source 64's broader
-release failure remains recorded below. The full macOS gate is next. This is
+release failure remains recorded below. The full macOS gate subsequently fails:
+2,833 library tests pass, three audit checks fail, and two existing opt-in TTY
+tests remain ignored. Later Cargo stages do not execute. The audit repairs and
+the next object migration are recorded in the
+[positioned-symbol checkpoint](runtime-representation-positioned-symbol-checkpoint.md). This is
 not a full validation or performance certificate. The [portable evidence
 manifest](handover/2026-09-28-cons/manifest.json) preserves every source snapshot
 and its successful or failed validation; binaries must be rebuilt elsewhere.
@@ -128,7 +132,7 @@ No runtime speedup or GNU performance parity has been measured for this checkpoi
 
 ## Continue here
 
-Run the complete macOS gate and ordinary compatibility/TTY comparisons. Preserve
+Run the complete macOS gate on the later repaired source and ordinary compatibility/TTY comparisons. Preserve
 every unsuccessful run, including the earlier completed source-36 full-gate
 failure and the sixteen source-25 terminal divergences.
 
@@ -136,6 +140,8 @@ Record/hash/keymap and symbol authority, symbol-with-position native views,
 dump treatment, the public ownership and serialization audit, original audit
 findings, full Linux/macOS and pinned frozen validation, VM/call profiles,
 allocation counters and the locked sixteen-workload performance evidence are
-still required. The 3% criterion and full inventory are unchanged. Publication
-and Linux CI remain pending explicit permission after the earlier automatic
-push rejection.
+still required. The later checkpoint removes the symbol-with-position views.
+The 3% criterion and full inventory are unchanged. The user subsequently
+approved publication and Linux CI for `803e4326`; that earlier char-table
+commit is pushed and its Linux run is recorded in the later checkpoint.
+It does not certify this cons source.

@@ -257,7 +257,8 @@ fn values_equal_recursive_with_env(
     env: Option<&Env>,
 ) -> bool {
     if let Some(env) = env
-        && (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
+        && (matches!(left.kind(), Kind::SymbolWithPos(_))
+            || matches!(right.kind(), Kind::SymbolWithPos(_)))
         && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
     {
         return equal;
@@ -337,6 +338,9 @@ fn values_equal_recursive_with_env(
 
         (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => {
+            left.symbol().eq_value(right.symbol()) && left.position() == right.position()
+        }
         (Kind::Record(left_id), Kind::Record(right_id))
             if interp
                 .find_record(left_id)
@@ -492,6 +496,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
         (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eql on non-numbers is eq; identity must be reflexive here too.
@@ -522,9 +527,10 @@ pub(crate) fn values_eq_in_env(
     right: &Value,
     env: &Env,
 ) -> bool {
-    // Only records can carry symbol-with-pos payloads; every other pair
-    // (the overwhelmingly common case) must not pay the outlined probes.
-    if (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
+    // Only the positioned-symbol subtype needs the compatibility flag.
+    // Ordinary values compare their words without probing symbol fields.
+    if (matches!(left.kind(), Kind::SymbolWithPos(_))
+        || matches!(right.kind(), Kind::SymbolWithPos(_)))
         && let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env)
     {
         return equal;
@@ -564,6 +570,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
         (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
+        (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
         // eq must be reflexive on every object: edebug-unwrap*'s fixed point
@@ -742,7 +749,8 @@ pub(crate) fn values_equal_including_properties_recursive(
     // type/equality dispatch.  The switch is the dynamically bound
     // `symbols-with-pos-enabled' flag, so the including-properties variant
     // must consult the same evaluator environment as ordinary `equal'.
-    if (matches!(left.kind(), Kind::Record(_)) || matches!(right.kind(), Kind::Record(_)))
+    if (matches!(left.kind(), Kind::SymbolWithPos(_))
+        || matches!(right.kind(), Kind::SymbolWithPos(_)))
         && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
     {
         return equal;
@@ -1062,12 +1070,6 @@ pub(crate) fn compare_record_values(
     seen_lists: &mut HashSet<(usize, usize)>,
 ) -> Result<Option<ValueOrder>, LispError> {
     match (left.kind(), right.kind()) {
-        (Kind::Record(_), _) | (_, Kind::Record(_))
-            if record_type_name(interp, left) == Some("symbol-with-pos")
-                || record_type_name(interp, right) == Some("symbol-with-pos") =>
-        {
-            return compare_symbol_values(interp, left, right, env);
-        }
         (Kind::Record(_), _) | (_, Kind::Record(_)) => {}
         _ => return Ok(None),
     }
@@ -1136,7 +1138,6 @@ pub(crate) fn compare_record_values(
         }
         crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
-        | crate::lisp::eval::RecordKind::SymbolWithPos
         | crate::lisp::eval::RecordKind::HashTable
         | crate::lisp::eval::RecordKind::Obarray
         | crate::lisp::eval::RecordKind::Window
@@ -1600,6 +1601,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Kind::Overlay(_)
             | Kind::CharTable(_)
             | Kind::Lambda(_)
+            | Kind::SymbolWithPos(_)
             | Kind::ReaderForm(_) => false,
             Kind::Cons(_) => {
                 let mut tail = *value;
@@ -1654,10 +1656,8 @@ pub(crate) fn runtime_hash_bucket_key(
         return equal_hash_table_key_hash(interp, value);
     }
     let mut state = 0xcbf2_9ce4_8422_2325u64;
-    if matches!(value.kind(), Kind::Record(_))
-        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
-    {
-        hash_value_eq(&mut state, &symbol);
+    if let Kind::SymbolWithPos(object) = value.kind() {
+        hash_value_eq(&mut state, &object.symbol());
         return Some(state as i64);
     }
     match value.kind() {
@@ -1825,6 +1825,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         Kind::Terminal(id) => {
             hash_mix(state, 19);
             hash_mix(state, id.identity() as u64);
+        }
+        Kind::SymbolWithPos(object) => {
+            hash_mix(state, 21);
+            hash_mix(state, object.identity() as u64);
         }
         Kind::Record(id) => {
             hash_mix(state, 12);
@@ -2049,6 +2053,12 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, 49);
             hash_mix(state, id.identity() as u64);
         }
+        Kind::SymbolWithPos(object) => {
+            // fns.c:sxhash_obj uses this address with positions disabled.
+            // When enabled, the wrapper is stripped in the branch above.
+            hash_mix(state, 51);
+            hash_mix(state, object.identity() as u64);
+        }
         Kind::Record(id) => {
             hash_record_equal(
                 interp,
@@ -2141,7 +2151,6 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::NativeCompiledFunction
         | crate::lisp::eval::RecordKind::ModuleFunction
         | crate::lisp::eval::RecordKind::UserPointer
-        | crate::lisp::eval::RecordKind::SymbolWithPos
         | crate::lisp::eval::RecordKind::TreeSitterParser
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery

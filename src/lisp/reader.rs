@@ -12,6 +12,15 @@ const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AtomSyntax {
+    Ordinary,
+    ShorthandExempt,
+    Uninterned,
+}
+
+type SymbolResolver<'a> = dyn FnMut(&str) -> Result<Value, LispError> + 'a;
+
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
     match value.kind() {
         Kind::ReaderForm(form) => match form.as_ref() {
@@ -75,9 +84,7 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
                     pending.extend(slots.iter().cloned());
                 }
-                // A bool vector holds no sub-objects to scan; a
-                // positioned symbol is a leaf.
-                ReaderForm::BoolVector { .. } | ReaderForm::PositionedSymbol { .. } => {}
+                ReaderForm::BoolVector { .. } => {}
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     return true;
                 }
@@ -169,10 +176,11 @@ pub struct Reader<'a> {
     input: &'a [u8],
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
+    symbol_resolver: Option<&'a mut SymbolResolver<'a>>,
     backquote_depth: usize,
     unescaped_character_literals: BTreeSet<u8>,
-    /// read0's LOCATE_SYMS: wrap each symbol occurrence (t included, nil
-    /// excluded) in a position-bearing `ReaderForm::PositionedSymbol'.
+    /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
+    /// occurrence except the canonical nil symbol.
     locate_symbols: bool,
     /// Added to each recorded character offset (a buffer read reports
     /// buffer positions, a string read zero-based string offsets).
@@ -182,7 +190,7 @@ pub struct Reader<'a> {
     position_cursor_char: i64,
     /// Whether any datum read so far is a `ReaderForm' placeholder (a
     /// circular label or reference, a hash-table, record, char-table,
-    /// bool-vector or closure literal, a positioned symbol): only then
+    /// bool-vector or closure literal): only then
     /// does the read result need Interpreter-owned object materialization.
     emitted_reader_forms: bool,
 }
@@ -200,6 +208,7 @@ impl<'a> Reader<'a> {
             input: input.as_bytes(),
             pos: 0,
             symbol_shorthands,
+            symbol_resolver: None,
             backquote_depth: 0,
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
@@ -228,6 +237,21 @@ impl<'a> Reader<'a> {
 
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    /// Resolve atom names through the active obarray before applying
+    /// LOCATE_SYMS, as lread.c's oblookup/intern_driver do. The borrowed
+    /// resolver avoids a second object graph and a post-read interning walk.
+    pub(crate) fn with_symbol_resolver(mut self, resolver: &'a mut SymbolResolver<'a>) -> Self {
+        self.symbol_resolver = Some(resolver);
+        self
+    }
+
+    fn resolve_symbol(&mut self, name: &str) -> Result<Value, LispError> {
+        match self.symbol_resolver.as_mut() {
+            Some(resolve) => resolve(name),
+            None => Ok(Value::symbol(name)),
+        }
     }
 
     pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
@@ -1110,7 +1134,7 @@ impl<'a> Reader<'a> {
             None => Err(LispError::ReadError("#".into())),
             Some(b'#') => {
                 self.advance();
-                Ok(Some(Value::Symbol("".into())))
+                self.resolve_symbol("").map(Some)
             }
             // lread.c read0: `#!' (the shebang line of an executable
             // script) skips the rest of the line and reads on.
@@ -1130,8 +1154,8 @@ impl<'a> Reader<'a> {
                     | Some(
                         b' ' | b'\t' | b'\n' | b'\r' | 0x0C | b'(' | b')' | b'[' | b']' | b'"'
                         | b'\'' | b';' | b'#' | b'`' | b',',
-                    ) => Ok(Some(Value::Symbol(String::new().into()))),
-                    Some(_) => self.read_atom_with_shorthands(false),
+                    ) => self.resolve_symbol("").map(Some),
+                    Some(_) => self.read_atom_in_syntax(AtomSyntax::ShorthandExempt),
                 }
             }
             Some(b'\'') => {
@@ -1316,16 +1340,33 @@ impl<'a> Reader<'a> {
             }
             Some(b':') => {
                 self.advance();
-                let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput())?;
-                let Kind::Symbol(base) = symbol.kind() else {
-                    return Err(LispError::ReadError(
-                        "invalid uninterned symbol syntax".into(),
-                    ));
-                };
-                let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(Some(Value::Symbol(
-                    make_uninterned_symbol_name(&base, id).into(),
-                )))
+                if matches!(
+                    self.peek(),
+                    None | Some(
+                        b' ' | b'\t'
+                            | b'\n'
+                            | b'\r'
+                            | 0x0C
+                            | b'('
+                            | b')'
+                            | b'['
+                            | b']'
+                            | b'"'
+                            | b'\''
+                            | b';'
+                            | b'#'
+                            | b'`'
+                            | b','
+                    )
+                ) {
+                    // lread.c's empty #: branch returns a bare fresh symbol.
+                    let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+                    Ok(Some(Value::Symbol(
+                        make_uninterned_symbol_name("", id).into(),
+                    )))
+                } else {
+                    self.read_atom_in_syntax(AtomSyntax::Uninterned)
+                }
             }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
@@ -1612,17 +1653,7 @@ impl<'a> Reader<'a> {
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
-        self.read_atom_with_shorthands(true)
-    }
-
-    /// An atom the reader consumes for its own syntax (`#:', `#s(') —
-    /// never positioned, whatever LOCATE_SYMS says.
-    fn read_bare_atom(&mut self) -> Result<Option<Value>, LispError> {
-        let saved = self.locate_symbols;
-        self.locate_symbols = false;
-        let result = self.read_atom();
-        self.locate_symbols = saved;
-        result
+        self.read_atom_in_syntax(AtomSyntax::Ordinary)
     }
 
     /// Character position of BYTE, amortized O(1) over a monotone scan.
@@ -1636,20 +1667,27 @@ impl<'a> Reader<'a> {
         self.position_base + self.position_cursor_char
     }
 
-    /// read0's LOCATE_SYMS wrap: every symbol occurrence (`t' included,
-    /// `nil' excluded) becomes a position-bearing wrapper the caller
-    /// materializes into a real `symbol-with-pos'.
-    fn positioned_symbol_value(&mut self, start_byte: usize, name: String) -> Value {
-        let pos = self.character_position(start_byte);
-        Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-            crate::lisp::types::ReaderForm::PositionedSymbol { name, pos },
-        ))
+    fn read_symbol_value(
+        &mut self,
+        start_byte: usize,
+        name: &str,
+        syntax: AtomSyntax,
+    ) -> Result<Value, LispError> {
+        let symbol = if syntax == AtomSyntax::Uninterned {
+            let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+            Value::Symbol(make_uninterned_symbol_name(name, id).into())
+        } else {
+            self.resolve_symbol(name)?
+        };
+        Ok(if self.locate_symbols && !symbol.is_nil() {
+            let position = self.character_position(start_byte);
+            Value::positioned_symbol(symbol, Value::Integer(position))
+        } else {
+            symbol
+        })
     }
 
-    fn read_atom_with_shorthands(
-        &mut self,
-        apply_shorthands: bool,
-    ) -> Result<Option<Value>, LispError> {
+    fn read_atom_in_syntax(&mut self, syntax: AtomSyntax) -> Result<Option<Value>, LispError> {
         let token_start = self.pos;
         let mut token = String::new();
         let mut saw_escape = false;
@@ -1708,21 +1746,18 @@ impl<'a> Reader<'a> {
         }
 
         if saw_escape {
-            let token = if apply_shorthands {
+            let token = if syntax == AtomSyntax::Ordinary {
                 self.apply_symbol_shorthands(token)
             } else {
                 token
             };
-            return Ok(Some(match token.as_str() {
-                "nil" => Value::Nil,
-                _ if self.locate_symbols => self.positioned_symbol_value(token_start, token),
-                "t" => Value::T,
-                _ => Value::Symbol(token.into()),
-            }));
+            return self
+                .read_symbol_value(token_start, &token, syntax)
+                .map(Some);
         }
 
         // Try parsing as integer
-        if apply_shorthands {
+        if syntax == AtomSyntax::Ordinary {
             if let Ok(n) = token.parse::<i64>() {
                 return Ok(Some(Value::Integer(n)));
             }
@@ -1740,19 +1775,14 @@ impl<'a> Reader<'a> {
             }
         }
 
-        let token = if apply_shorthands {
+        let token = if syntax == AtomSyntax::Ordinary {
             self.apply_symbol_shorthands(token)
         } else {
             token
         };
 
-        // Special atoms
-        match token.as_str() {
-            "nil" => Ok(Some(Value::Nil)),
-            _ if self.locate_symbols => Ok(Some(self.positioned_symbol_value(token_start, token))),
-            "t" => Ok(Some(Value::T)),
-            _ => Ok(Some(Value::Symbol(token.into()))),
-        }
+        self.read_symbol_value(token_start, &token, syntax)
+            .map(Some)
     }
 
     fn read_unsigned_decimal(&mut self) -> u32 {
@@ -1906,6 +1936,56 @@ mod tests {
 
     fn read_one(s: &str) -> Value {
         Reader::new(s).read().unwrap().unwrap()
+    }
+
+    #[test]
+    fn positioning_reader_returns_final_native_words_without_materialization() {
+        let mut reader = Reader::with_positioned_symbols("(alpha [β alpha t nil])", vec![], 17);
+        let form = reader.read().expect("read positions").expect("one form");
+        assert!(!reader.emitted_reader_forms());
+        assert!(!read_object_needs_resolution(&form));
+        let items = form.to_vec().expect("outer list");
+        let Kind::Vector(vector) = items[1].kind() else {
+            panic!("nested vector");
+        };
+        let slots = vector.slots().collect::<Vec<_>>();
+        assert_eq!(slots[3], Value::Nil);
+        let objects = [items[0], slots[0], slots[1], slots[2]];
+        for (object, (name, position)) in
+            objects
+                .into_iter()
+                .zip([("alpha", 18), ("β", 25), ("alpha", 27), ("t", 33)])
+        {
+            // lisp.h:Lisp_Symbol_With_Pos is already available to native
+            // loads before any interpreter or materialization is involved.
+            assert_eq!(object.word() & 7, 5);
+            let fields = (object.word() & !7) as *const usize;
+            let header = unsafe { fields.read() };
+            assert_eq!((header >> 24) & 0x3f, 6);
+            assert_eq!(header & 0xfff, 2);
+            assert_eq!(unsafe { fields.add(1).read() }, Value::symbol(name).word());
+            assert_eq!(
+                unsafe { fields.add(2).read() },
+                Value::Integer(position).word()
+            );
+        }
+        assert_ne!(objects[0].word(), objects[2].word(), "distinct occurrences");
+        let before = objects.map(|object| object.word());
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        interpreter.intern_symbols_in_value(&form);
+        let after = interpreter
+            .materialize_read_object_literals(form, &mut crate::lisp::types::Env::new())
+            .expect("no replacement objects");
+        assert_eq!(after.word(), form.word());
+        let items = after.to_vec().expect("same list");
+        let Kind::Vector(vector) = items[1].kind() else {
+            panic!("same vector");
+        };
+        let slots = vector.slots().collect::<Vec<_>>();
+        assert_eq!(
+            [items[0], slots[0], slots[1], slots[2]].map(|v| v.word()),
+            before
+        );
     }
 
     #[test]

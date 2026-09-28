@@ -251,15 +251,11 @@ pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value.kind(), Kind::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
-pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
-    let Kind::Record(id) = value.kind() else {
+pub(crate) fn symbol_with_pos_parts(_interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
+    let Kind::SymbolWithPos(object) = value.kind() else {
         return None;
     };
-    let record = interp.find_record(id)?;
-    if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos || record.slots.len() < 2 {
-        return None;
-    }
-    Some((record.slots[0], record.slots[1].as_integer().ok()?))
+    Some((object.symbol(), object.position().as_fixnum().ok()?))
 }
 
 #[cfg(test)]

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "git",
+    "push",
+    "origin",
+    "803e4326a16b7bfe13bb0b757ee85c8b02ac3998:refs/heads/runtime-char-tables"
+  ],
+  "commit": "803e4326a16b7bfe13bb0b757ee85c8b02ac3998",
+  "authorization": "Explicit user approval: Approve branch push and Linux CI",
+  "exit_code": 0,
+  "elapsed_seconds": 2.76052188873291,
+  "output": "remote: \nremote: Create a pull request for 'runtime-char-tables' on GitHub by visiting:        \nremote:      https://github.com/rayfdj/emaxx/pull/new/runtime-char-tables        \nremote: \nTo https://github.com/rayfdj/emaxx.git\n * [new branch]        803e4326a16b7bfe13bb0b757ee85c8b02ac3998 -> runtime-char-tables\n"
+}

@@ -197,12 +197,6 @@ pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
 
 pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<Value>> {
     let record = interp.find_record(id)?;
-    // GNU print.c handles PVEC_SYMBOL_WITH_POS directly rather than as a
-    // record or print-circle candidate.  Its dedicated rendering branch is
-    // in `render_prin1_body' below.
-    if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {
-        return None;
-    }
     match record.kind {
         crate::lisp::eval::RecordKind::Thread
         | crate::lisp::eval::RecordKind::Mutex
@@ -1243,19 +1237,18 @@ pub(crate) fn render_prin1_body(
                 format!("#<terminal {}>", terminal.id)
             })
         }
+        Kind::SymbolWithPos(object) => {
+            let symbol = object.symbol();
+            let position = object.position();
+            if context.options.symbols_bare {
+                return render_prin1_with_context(interp, &symbol, env, context, depth);
+            }
+            let rendered_symbol =
+                render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
+            Ok(format!("#<symbol {rendered_symbol} at {position}>"))
+        }
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {
-                if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {
-                    let Some((symbol, position)) = symbol_with_pos_parts(interp, value) else {
-                        return Ok("#<symbol NOT A SYMBOL!! NOT A POSITION!!>".into());
-                    };
-                    if context.options.symbols_bare {
-                        return render_prin1_with_context(interp, &symbol, env, context, depth);
-                    }
-                    let rendered_symbol =
-                        render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
-                    return Ok(format!("#<symbol {rendered_symbol} at {position}>"));
-                }
                 let rendered = match record.kind {
                     crate::lisp::eval::RecordKind::ModuleFunction => {
                         crate::lisp::modules::print_function(interp, id.id)
@@ -1603,115 +1596,35 @@ fn read_one_positioned_form(
     // silently dropped every later position; bytecomp warnings inherited
     // the enclosing defun's position instead of the offending form's).
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let mut reader = crate::lisp::reader::Reader::with_positioned_symbols(
-        text,
-        symbol_shorthands,
-        base_position,
-    );
-    let value = match reader.read()? {
-        Some(value) => value,
-        None => return Err(end_of_file_error(interp, env)),
+    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+    let (value, consumed, unescaped) = {
+        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let mut reader = crate::lisp::reader::Reader::with_positioned_symbols(
+            text,
+            symbol_shorthands,
+            base_position,
+        )
+        .with_symbol_resolver(&mut resolve_symbol);
+        let value = reader.read()?;
+        let consumed = text[..reader.position()].chars().count();
+        let unescaped = reader
+            .unescaped_character_literals()
+            .map(Value::Integer)
+            .collect::<Vec<_>>();
+        (value, consumed, unescaped)
     };
+    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
     interp.set_variable(
         "lread--unescaped-character-literals",
-        Value::list(reader.unescaped_character_literals().map(Value::Integer)),
+        Value::list(unescaped),
         env,
     );
-    let consumed = text[..reader.position()].chars().count();
-    // GNU 30.2 lread.c:read0 interns every ordinary symbol even when
-    // LOCATE_SYMS asks it to return a `symbol-with-pos' wrapper.
-    interp.intern_symbols_in_value(&value);
-    let mut seen = std::collections::HashSet::new();
-    let value = materialize_positioned_symbols(interp, value, &mut seen);
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
     // Emaxx's parser-private ReaderForm marker.
     let value = interp.materialize_read_object_literals(value, env)?;
     Ok((value, consumed))
-}
-
-/// Replace each `ReaderForm::PositionedSymbol' the positioning reader
-/// emitted with a real `symbol-with-pos' pseudovector.  Mutates cons
-/// cells in place (a cycle-safe walk over possibly shared structure).
-fn materialize_positioned_symbols(
-    interp: &mut Interpreter,
-    value: Value,
-    seen: &mut std::collections::HashSet<*const crate::lisp::types::ConsCell>,
-) -> Value {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
-                let bare = match name.as_str() {
-                    "t" => Value::T,
-                    _ => Value::Symbol(name.clone().into()),
-                };
-                interp.intern_symbols_in_value(&bare);
-                interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::SymbolWithPos,
-                    "symbol-with-pos",
-                    vec![bare, Value::Integer(*pos)],
-                )
-            }
-            crate::lisp::types::ReaderForm::Record { slots } => {
-                let slots = slots
-                    .iter()
-                    .map(|slot| materialize_positioned_symbols(interp, *slot, seen))
-                    .collect();
-                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-                    crate::lisp::types::ReaderForm::Record { slots },
-                ))
-            }
-            crate::lisp::types::ReaderForm::HashTable { fields } => {
-                let fields = fields
-                    .iter()
-                    .map(|field| materialize_positioned_symbols(interp, *field, seen))
-                    .collect();
-                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-                    crate::lisp::types::ReaderForm::HashTable { fields },
-                ))
-            }
-            crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
-                let payload = materialize_positioned_symbols(interp, *payload, seen);
-                Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-                    crate::lisp::types::ReaderForm::CircularLabel { id: *id, payload },
-                ))
-            }
-            _ => Value::ReaderForm(form),
-        },
-        Kind::Cons(cell) => {
-            let pointer = cell.as_ptr();
-            if seen.insert(pointer) {
-                let car = cell.car.get();
-                let car = materialize_positioned_symbols(interp, car, seen);
-                cell.car.set(car);
-                let cdr = cell.cdr.get();
-                let cdr = materialize_positioned_symbols(interp, cdr, seen);
-                cell.cdr.set(cdr);
-            }
-            Value::Cons(cell)
-        }
-        // lread.c's read_positioning_symbols reads a symbol inside a vector
-        // as a symbol with position too (byte-run.el's
-        // `byte-run--strip-vector/record' walks vectors for them); the
-        // placeholder left here reached the byte compiler's constants
-        // vector and was printed as `#<reader-form>' into every `.elc'
-        // and `.eln' holding a key sequence such as `[mouse-1]'.
-        Kind::Vector(vector) => {
-            let pointer = vector.identity() as *const crate::lisp::types::ConsCell;
-            if seen.insert(pointer) {
-                let slots = vector.slots().collect::<Vec<_>>();
-                for (index, materialized) in slots.into_iter().enumerate() {
-                    vector.set(
-                        index,
-                        materialize_positioned_symbols(interp, materialized, seen),
-                    );
-                }
-            }
-            Value::Vector(vector)
-        }
-        other => other.value(),
-    }
 }
 
 pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {

@@ -28,6 +28,7 @@ pub(crate) enum ObjectKey {
     String(usize),
     StringObject(usize),
     Symbol(u32),
+    SymbolWithPos(usize),
     Vector(usize),
     Float(usize),
     Bignum(usize),
@@ -62,6 +63,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::Symbol(name.id())
         }
         Kind::Vector(vector) => ObjectKey::Vector(vector.identity()),
+        Kind::SymbolWithPos(object) => ObjectKey::SymbolWithPos(object.identity()),
         Kind::Float(float) => ObjectKey::Float(float.identity_ptr()),
         Kind::BigInteger(integer) => ObjectKey::Bignum(integer.identity_ptr()),
         Kind::Integer(integer) => {
@@ -110,7 +112,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::BoolVector => 2,
         RecordKind::Closure => 3,
         RecordKind::Font => 4,
-        RecordKind::SymbolWithPos => 5,
         RecordKind::Process => 6,
         RecordKind::HashTable => 7,
         RecordKind::Obarray => 8,
@@ -138,7 +139,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         2 => RecordKind::BoolVector,
         3 => RecordKind::Closure,
         4 => RecordKind::Font,
-        5 => RecordKind::SymbolWithPos,
+        // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
         7 => RecordKind::HashTable,
         8 => RecordKind::Obarray,
@@ -1061,6 +1062,8 @@ impl DumpContext {
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
             Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
             Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
+            // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
+            Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
@@ -1282,11 +1285,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Record
-            | RecordKind::Closure
-            | RecordKind::Font
-            | RecordKind::SymbolWithPos
-            | RecordKind::Keymap => {
+            RecordKind::Record | RecordKind::Closure | RecordKind::Font | RecordKind::Keymap => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }

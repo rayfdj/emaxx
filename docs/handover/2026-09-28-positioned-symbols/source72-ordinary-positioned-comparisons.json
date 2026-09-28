@@ -1,0 +1,182 @@
+{
+  "passed": true,
+  "records": [
+    {
+      "case": "shared-positioned-symbol-native-words",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 2.1236633339999997,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-symbol-native-words",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 10.671906875,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.170822832999999,
+      "stdout": "(((\"expanded-\u03b1\" 2) (\"s-raw\" 8) (\"t\" 14) nil) ((\"expanded-\u03b2\" 25) t) (t tag expanded-value) '(\"expanded-quote\" 53) (t 0 t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7043319589999992,
+      "stdout": "(((\"expanded-\u03b1\" 2) (\"s-raw\" 8) (\"t\" 14) nil) ((\"expanded-\u03b2\" 25) t) (t tag expanded-value) '(\"expanded-quote\" 53) (t 0 t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader-special",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.16299162500000008,
+      "stdout": "((\"nil\" t t \"nil\") (\"t\" t t \"t\") (\"reader-private-name\" t t \"reader-private-name\"))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader-special",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7066755419999993,
+      "stdout": "((\"nil\" t t \"nil\") (\"t\" t t \"t\") (\"reader-private-name\" t t \"reader-private-name\"))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader-uninterned",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.165165,
+      "stdout": "(((\"s-name\" nil nil nil) (\"nil\" nil nil nil) (\"t\" nil nil nil) (\"123\" nil nil nil) (\"\" nil nil nil)) ((\"s-name\" t 2 nil) (\"nil\" t 2 nil) (\"t\" t 2 nil) (\"123\" t 2 nil) (\"\" nil nil nil)))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-positioned-reader-uninterned",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7101772920000009,
+      "stdout": "(((\"s-name\" nil nil nil) (\"nil\" nil nil nil) (\"t\" nil nil nil) (\"123\" nil nil nil) (\"\" nil nil nil)) ((\"s-name\" t 2 nil) (\"nil\" t 2 nil) (\"t\" t 2 nil) (\"123\" t 2 nil) (\"\" nil nil nil)))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-cons-mutation",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.17515191599999902,
+      "stdout": "((t t 37) (t (17 payload)) (t table-command parent-command))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-cons-mutation",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7163744160000025,
+      "stdout": "((t t 37) (t (17 payload)) (t table-command parent-command))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-value-ordering",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 0.1718007080000028,
+      "stdout": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "runtime-value-ordering",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7109707500000013,
+      "stdout": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-vector-native-words",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 1.991816,
+      "stdout": "((t t 45) (t t 45))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-vector-native-words",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 9.742623250000001,
+      "stdout": "((t t 45) (t t 45))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-string-native-words",
+      "editor": "gnu",
+      "exit_code": 0,
+      "elapsed_seconds": 2.2572008749999988,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    },
+    {
+      "case": "shared-string-native-words",
+      "editor": "emaxx",
+      "exit_code": 0,
+      "elapsed_seconds": 10.338856625000002,
+      "stdout": "((t t t t 36) (t t t t 36))",
+      "matches_expected": true,
+      "source_unchanged": true,
+      "binary_unchanged": true,
+      "image_unchanged": true
+    }
+  ],
+  "qualification": "Sixteen diagnostic processes over eight identical inputs; not frozen or performance certification."
+}

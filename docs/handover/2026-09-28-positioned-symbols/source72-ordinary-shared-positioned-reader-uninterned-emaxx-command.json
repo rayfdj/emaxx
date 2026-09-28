@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((read-symbol-shorthands '((\"s-\" . \"expanded-\")))\n      (symbols-with-pos-enabled nil))\n  (mapcar (lambda (reader)\n            (mapcar (lambda (source)\n                      (condition-case error\n                          (let* ((object (funcall reader source))\n                                 (bare (bare-symbol object)))\n                            (list (symbol-name bare)\n                                  (symbol-with-pos-p object)\n                                  (and (symbol-with-pos-p object)\n                                       (symbol-with-pos-pos object))\n                                  (eq bare (intern (symbol-name bare)))))\n                        (error (car error))))\n                    '(\"#:s-name\" \"#:nil\" \"#:t\" \"#:123\" \"#:\")))\n          '(read read-positioning-symbols)))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "artifact": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+    "image_sha256": "28f5a21137d4f18d93d761308d1eeca548676cc87643d0b4b2d035574a33d22e"
+  },
+  "fixture": "tests/fixtures/shared-positioned-reader-uninterned.el",
+  "fixture_sha256": "abde7b1f53830a459671cfdef37fe81e463673a40241b81e455e51fbe8480c6b",
+  "expected": "(((\"s-name\" nil nil nil) (\"nil\" nil nil nil) (\"t\" nil nil nil) (\"123\" nil nil nil) (\"\" nil nil nil)) ((\"s-name\" t 2 nil) (\"nil\" t 2 nil) (\"t\" t 2 nil) (\"123\" t 2 nil) (\"\" nil nil nil)))",
+  "qualification": "Source-matched diagnostic; GNU binary differs from pinned Darwin oracle."
+}

@@ -1270,6 +1270,7 @@ pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStrin
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
+pub use crate::lisp::alloc::vectors::SymbolWithPosRef;
 
 /// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
 /// write these same two Lisp words. Allocator metadata is in the containing
@@ -1597,14 +1598,6 @@ pub enum ReaderForm {
     BoolVector {
         bits: Vec<bool>,
     },
-    /// A symbol occurrence read with `read-positioning-symbols': lread.c's
-    /// read0 wraps every symbol it reads in a `symbol-with-pos' when
-    /// LOCATE_SYMS is set.  The reader has no Interpreter to allocate the
-    /// pseudovector in, so the name and character position wait here.
-    PositionedSymbol {
-        name: String,
-        pos: i64,
-    },
 }
 
 /// lisp.h's `Lisp_Object': one machine word, the object's address or an
@@ -1658,6 +1651,8 @@ pub enum Kind {
     String(SharedText),
     StringObject(StringObjectRef),
     Symbol(SymbolName),
+    /// GNU PVEC_SYMBOL_WITH_POS: the symbol and position in the allocation.
+    SymbolWithPos(SymbolWithPosRef),
     Cons(SharedCons),
     /// An ordinary vector with GNU vector identity and contiguous slots.
     Vector(VectorRef),
@@ -1746,6 +1741,10 @@ impl Value {
     #[inline]
     pub fn Cons(cell: SharedCons) -> Value {
         Value::from_bits(cell.as_ptr() as usize | TAG_CONS)
+    }
+    #[inline]
+    pub fn SymbolWithPos(object: SymbolWithPosRef) -> Value {
+        Value::from_bits(object.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Vector(vector: VectorRef) -> Value {
@@ -1884,6 +1883,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Finalizer => {
                             Kind::Finalizer(crate::lisp::alloc::FinalizerRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::SymbolWithPos => {
+                            Kind::SymbolWithPos(SymbolWithPosRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Subr => {
                             Kind::BuiltinFunc(BuiltinRef::from_raw(header as usize))
                         }
@@ -1998,6 +2000,7 @@ impl Kind {
             Kind::SubCharTable(v) => Value::SubCharTable(v),
             Kind::Frame(v) => Value::Frame(v),
             Kind::Terminal(v) => Value::Terminal(v),
+            Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
             Kind::ReaderForm(v) => Value::ReaderForm(v),
@@ -2364,6 +2367,10 @@ impl Value {
         Value::Cons(crate::lisp::alloc::allocate_cons(ConsCell::new(car, cdr)))
     }
 
+    pub(crate) fn positioned_symbol(symbol: Value, position: Value) -> Self {
+        Self::SymbolWithPos(SymbolWithPosRef::allocate(symbol, position))
+    }
+
     pub fn vector(items: impl IntoIterator<Item = Value>) -> Self {
         let slots = items.into_iter().collect::<Vec<_>>();
         if !slots.is_empty() {
@@ -2619,6 +2626,7 @@ impl Value {
             Kind::SubCharTable(id) => format!("sub-char-table<{:x}>", id.identity()),
             Kind::Frame(id) => format!("frame<{}>", id.borrow().id),
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
+            Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
@@ -2751,6 +2759,7 @@ fn values_equal_recursive(
         }
         (Kind::Frame(a), Kind::Frame(b)) => a == b,
         (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
+        (Kind::SymbolWithPos(a), Kind::SymbolWithPos(b)) => a.ptr_eq(&b),
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
@@ -2857,6 +2866,9 @@ fn format_value(
         Kind::SubCharTable(id) => write!(f, "#<sub-char-table {:x}>", id.identity()),
         Kind::Frame(id) => write!(f, "#<frame id:{}>", id.borrow().id),
         Kind::Terminal(terminal) => write!(f, "#<terminal id:{}>", terminal.id),
+        Kind::SymbolWithPos(object) => {
+            write!(f, "#<symbol {} at {}>", object.symbol(), object.position())
+        }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),

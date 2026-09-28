@@ -46,6 +46,14 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
     (
+        "selected_frame_id",
+        "an actual FrameRef root; frame.c:init_frame_once_for_pdumper resets selected_frame, and the new process creates its initial live frame",
+    ),
+    (
+        "old_selected_frame_id",
+        "an actual FrameRef root, re-created with selected_frame_id after the old frame objects are nilled",
+    ),
+    (
         "terminals",
         "the terminal pseudovectors are nilled (pdumper.c:dump_vectorlike PVEC_TERMINAL); init_tty makes the initial terminal anew, its parameters, codings and keyboard with it",
     ),
@@ -128,6 +136,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
         "buffer_local_hooks",
         "written per buffer with the local bindings",
+    ),
+    (
+        "buffer_case_tables",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE slot and restored by load_buffer through install_buffer_case_table",
     ),
     (
         "standard_obarray_id",
@@ -243,10 +255,9 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "window state re-created with the initial frame",
     ),
     (
-        "selected_frame_id",
-        "frame.c:init_frame_once_for_pdumper resets selected_frame",
+        "next_frame_id",
+        "a process-local allocation counter, not frame identity: frame.c resets live frames at startup; install_dead_frame assigns each nilled image frame a fresh id and advances this counter",
     ),
-    ("old_selected_frame_id", "frame state, as selected_frame_id"),
     (
         "next_terminal_id",
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
@@ -256,6 +267,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "functions_position",
         "an index over functions, rebuilt as they are installed",
+    ),
+    (
+        "functions_index",
+        "the last-wins lookup index over functions; install_function_cell uses set_function_binding to rebuild it from each restored symbol function cell, or removes a voided binding",
     ),
     ("syntax_segment_cache", "a cache"),
     ("equal_hash_tables", "thawed from the hash list"),
@@ -276,7 +291,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "input_interrupt_mode",
         "keyboard.c's interrupt mode is set at terminal init",
     ),
-    ("buffer_case_tables", "written per buffer record"),
     ("records", "installed per record"),
     (
         "record_owner",

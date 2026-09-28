@@ -1,10 +1,11 @@
 # Resume the compact runtime goal here
 
-**Development continuation:** conses now have one authoritative 16-byte payload
-shared by interpreter, bytecode and native code. Read the
-[latest cons continuation](docs/runtime-representation-cons-checkpoint.md)
-for selected release/static and ordinary batch validation, preserved failures,
-remaining adapters and pending full validation. Frame, ordering, input,
+**Development continuation:** positioned symbols now use one authoritative GNU
+layout, and the reader creates that allocation directly. Conses retain their
+shared 16-byte payload. Read the
+[latest positioned-symbol continuation](docs/runtime-representation-positioned-symbol-checkpoint.md)
+for selected validation, the failed source-65 full gate, three still-failing
+stream-reader comparisons, and remaining requirements. Frame, ordering, input,
 char-table and keymap repairs are integrated too.
 Do not reapply the old patch on this branch. The full goal remains incomplete.
 
@@ -17,14 +18,15 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
-2. [Authoritative cons payload and pending full gate](docs/runtime-representation-cons-checkpoint.md).
-3. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
-4. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
-5. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
-6. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
-7. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
-8. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
-9. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
+2. [Authoritative positioned symbols and current failures](docs/runtime-representation-positioned-symbol-checkpoint.md).
+3. [Authoritative cons payload and failed full gate](docs/runtime-representation-cons-checkpoint.md).
+4. [Allocated frames and earlier cons failure](docs/runtime-representation-frame-checkpoint.md).
+5. [Ordering repair and completed full-gate failure](docs/runtime-representation-ordering-checkpoint.md).
+6. [Input repair and completed older terminal results](docs/runtime-representation-input-checkpoint.md).
+7. [Keymap continuation and pending full validation](docs/runtime-representation-keymap-checkpoint.md).
+8. [Char-table implementation and earlier evidence](docs/runtime-representation-char-table-checkpoint.md).
+9. [27 September handover: original baseline and goal-wide obligations](docs/runtime-representation-handover.md).
+10. [Original portable draft/evidence manifest](docs/handover/2026-09-27/manifest.json).
 
 The original main checkpoint packaged its unfinished work as
 [char-table-wip.patch](docs/handover/2026-09-27/char-table-wip.patch). That patch is

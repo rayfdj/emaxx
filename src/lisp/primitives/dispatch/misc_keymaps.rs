@@ -1534,6 +1534,8 @@ define_dispatch!(
                     Kind::String(_) => "string",
                     Kind::StringObject(_) => "string",
                     Kind::Symbol(_) => "symbol",
+                    Kind::SymbolWithPos(_) if symbols_with_pos_enabled(interp, env) => "symbol",
+                    Kind::SymbolWithPos(_) => "symbol-with-pos",
                     Kind::Vector(_) => "vector",
                     Kind::Cons(_) if is_vector_value(&args[0]) => "vector",
                     Kind::Cons(_) => "cons",

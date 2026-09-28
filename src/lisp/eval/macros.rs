@@ -352,10 +352,6 @@ impl CircularReadMaterializer<'_> {
                     ReaderForm::BoolVector { bits } => {
                         ReaderForm::BoolVector { bits: bits.clone() }
                     }
-                    ReaderForm::PositionedSymbol { name, pos } => ReaderForm::PositionedSymbol {
-                        name: name.clone(),
-                        pos: *pos,
-                    },
                     ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                         unreachable!("circular forms are handled before structural descent")
                     }

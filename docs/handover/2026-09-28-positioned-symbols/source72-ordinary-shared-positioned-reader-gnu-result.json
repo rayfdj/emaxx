@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 0.170822832999999,
+  "stdout": "(((\"expanded-\u03b1\" 2) (\"s-raw\" 8) (\"t\" 14) nil) ((\"expanded-\u03b2\" 25) t) (t tag expanded-value) '(\"expanded-quote\" 53) (t 0 t))",
+  "matches_expected": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true
+}

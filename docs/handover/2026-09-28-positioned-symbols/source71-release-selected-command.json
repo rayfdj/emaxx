@@ -1,0 +1,29 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source71-release-libtest",
+    "lisp::native_comp::runtime::tests::",
+    "lisp::bytecode::",
+    "lisp::reader::",
+    "positioned",
+    "positioning",
+    "symbol_with_pos",
+    "position_aware",
+    "lisp::primitives::pdumper::",
+    "value_ordering",
+    "byte_code_hot_loop",
+    "anti_cheat::gate_tests::interpreter_",
+    "every_reset_root_is_a_mark_phase_root",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-positioned-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "d208d35babba72a987e14b4d474339f853caf78e9440a163fe7d0404afe840ff"
+}

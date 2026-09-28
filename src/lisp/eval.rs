@@ -1199,7 +1199,6 @@ pub(crate) enum RecordKind {
     BoolVector,
     Closure,
     Font,
-    SymbolWithPos,
     Process,
     HashTable,
     Obarray,
@@ -1232,7 +1231,6 @@ impl RecordKind {
             Self::Closure => logical_slots.saturating_add(1),
             // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
-            Self::SymbolWithPos => 3,
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::HashTable => 9,
             Self::Obarray => 3,
@@ -2814,6 +2812,7 @@ struct ImageGraphCopier {
     overlays: std::collections::HashMap<usize, Value>,
     terminals: std::collections::HashMap<usize, Value>,
     frame_objects: std::collections::HashMap<usize, Value>,
+    positioned_symbols: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -2834,6 +2833,7 @@ impl ImageGraphCopier {
             overlays: Default::default(),
             terminals: Default::default(),
             frame_objects: Default::default(),
+            positioned_symbols: Default::default(),
             record_owner,
         }
     }
@@ -2841,6 +2841,18 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::SymbolWithPos(object) => {
+                if let Some(copied) = self.positioned_symbols.get(&object.identity()) {
+                    return *copied;
+                }
+                let copied = Value::positioned_symbol(Value::Nil, Value::Integer(0));
+                self.positioned_symbols.insert(object.identity(), copied);
+                let Kind::SymbolWithPos(copy) = copied.kind() else {
+                    unreachable!("positioned symbol allocation")
+                };
+                copy.initialize(self.copy(&object.symbol()), self.copy(&object.position()));
+                copied
+            }
             Kind::Frame(frame) => {
                 if let Some(copied) = self.frame_objects.get(&frame.identity()) {
                     return *copied;
@@ -3158,12 +3170,6 @@ impl ImageGraphCopier {
                         crate::lisp::types::ReaderForm::BoolVector { bits } => {
                             crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
                         }
-                        crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
-                            crate::lisp::types::ReaderForm::PositionedSymbol {
-                                name: name.clone(),
-                                pos: *pos,
-                            }
-                        }
                     },
                 ));
                 self.reader_forms.insert(key, copied);
@@ -3349,6 +3355,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
@@ -3432,6 +3439,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
+            Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
@@ -3440,6 +3448,10 @@ impl LispReachability {
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         match value.kind() {
+            Kind::SymbolWithPos(object) => {
+                self.enqueue(&object.position());
+                self.enqueue(&object.symbol());
+            }
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
@@ -3587,9 +3599,7 @@ impl LispReachability {
                     | ReaderForm::SubCharTable { fields }
                     | ReaderForm::Record { slots: fields }
                     | ReaderForm::Closure { slots: fields, .. } => fields,
-                    ReaderForm::CircularReference(_)
-                    | ReaderForm::BoolVector { .. }
-                    | ReaderForm::PositionedSymbol { .. } => &[],
+                    ReaderForm::CircularReference(_) | ReaderForm::BoolVector { .. } => &[],
                 };
                 for child in children {
                     self.enqueue(child);
