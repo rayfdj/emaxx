@@ -742,13 +742,10 @@ define_dispatch!(
                 if record.kind != crate::lisp::eval::RecordKind::HashTable {
                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
                 }
-                let copy = interp.copy_record(id.id)?;
-                if let Kind::Record(copy_id) = copy.kind() {
-                    interp.reindex_hash_table_runtime_entries_in_env(copy_id.id, env);
-                    Ok(Value::Record(copy_id))
-                } else {
-                    Ok(copy)
-                }
+                // fns.c:copy_hash_table copies the existing hash codes and
+                // indices. Rehashing would make a mutated key spuriously
+                // reachable and change dynamically positioned-symbol keys.
+                interp.copy_record(id.id)
             }
             "gethash" => {
                 if args.len() < 2 || args.len() > 3 {

@@ -7228,6 +7228,33 @@ fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
 }
 
 #[test]
+fn hash_copy_preserves_stored_codes_after_key_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-copy-stored-codes.el"),
+        include_str!("../../../tests/fixtures/hash-copy-stored-codes.expected"),
+        "hash-copy-stored-codes",
+    );
+}
+
+#[test]
+fn hash_captured_functions_survive_redefinition_copy_and_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-captured-functions.el"),
+        include_str!("../../../tests/fixtures/hash-captured-functions.expected"),
+        "hash-captured-functions",
+    );
+}
+
+#[test]
+fn hash_captured_symbols_keep_dynamic_function_resolution() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.el"),
+        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.expected"),
+        "hash-captured-symbol-functions",
+    );
+}
+
+#[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
