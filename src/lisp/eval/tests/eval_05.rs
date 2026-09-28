@@ -8417,6 +8417,31 @@ fn calc_file_cases_remain_order_independent_in_native_runner() {
 }
 
 #[test]
+fn eager_macroexpand_keeps_pending_progn_forms_through_collection() {
+    run_with_large_stack(|| {
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/eager-macroexpand-gc-source.el"),
+        )
+        .expect("load a fresh expansion that collects before evaluating its remaining forms");
+        let result = eval_str_with(
+            &mut interp,
+            "(list (symbol-name (aref emaxx-eager-root-result 0))
+                   (length (aref emaxx-eager-root-result 1))
+                   (aref emaxx-eager-root-result 2))",
+        );
+        assert_eq!(
+            crate::lisp::primitives::render_prin1_ephemeral(&mut interp, &result, &Env::new())
+                .expect("print the complete surviving graph"),
+            r#"("fresh-eager-symbol" 257 #s(eager-payload (17 29)))"#,
+            "same source and result as the ordinary GNU load control"
+        );
+    });
+}
+
+#[test]
 fn ert_source_diagnostic_loop_evaluates_function_alias_chain() {
     run_with_large_stack(|| {
         let options = crate::batch::BatchRunOptions {

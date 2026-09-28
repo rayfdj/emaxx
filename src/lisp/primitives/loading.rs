@@ -613,11 +613,16 @@ fn eager_expand_eval_inner(
     {
         // A top-level progn is expanded form by form so a macro defined by
         // one subform is live while expanding the rest.
-        let mut result = Value::Nil;
-        for subform in &items[1..] {
-            result = eager_expand_eval(interp, subform, env)?;
-        }
-        return Ok(result);
+        // Expansion can return a fresh list whose only remaining references
+        // are this heap-allocated snapshot. GNU keeps its pending forms on the
+        // scanned C stack; register ours while earlier forms can collect.
+        return interp.with_lisp_stack_roots(&items, |interp| {
+            let mut result = Value::Nil;
+            for subform in &items[1..] {
+                result = eager_expand_eval(interp, subform, env)?;
+            }
+            Ok(result)
+        });
     }
     let full = call_internal_macroexpand_for_load(interp, &expanded, Value::T, env)?;
     interp.eval(&full, env)
