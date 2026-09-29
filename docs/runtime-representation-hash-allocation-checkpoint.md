@@ -110,8 +110,27 @@ allocation, so the observed record-counter change is correctly zero. Source 135
 exception and requires the entire remembered-scalar group to match exactly.
 Every other root, native-unit and restored-behavior assertion remains. This is
 a test-only change. Both dump controls pass in debug and release, with zero
-ignores, and all strict static checks pass. Fresh complete macOS and
-[Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36527539384) are running.
+ignores, and all strict static checks pass. Its fresh complete macOS and
+[Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36527539384) then fail at
+`value_less_selected_upstream_unordered_cases_match_emacs`: macOS has 2,260
+passes and Linux 2,268 before the one failure. Three later library groups and
+all later Cargo stages remain unexecuted. Those failures and their exact
+artifacts are in the [ordering repair receipts](handover/2026-09-29-hash-ordering-repair/manifest.json).
+
+GNU `fns.c:value_cmp` treats two hash tables as unordered. The representation
+migration left the new hash kind outside this branch, causing `value<` to signal
+`type-mismatch`. Source 139 (audit `736dd41e`, integration `75b69738`) restores
+that dispatch; different object kinds still signal. No test assertion changes.
+The unchanged original control covers both directions and nested comparisons.
+All 154 selected debug and 154 release tests pass, with zero ignores, together
+with strict static checks. A fresh ordinary executable and image pass all eight
+previous hash comparisons plus a new same-input GNU comparison covering self
+and distinct tables, differing capacities and tests, callback non-invocation,
+forced GC, nested list/vector ordering and mixed-type error operand identities.
+All 18 processes exit zero with empty stderr and unchanged source/artifact
+hashes. The original ordinary executable fails the same new input; its output
+is retained. Complete macOS and [Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
+are running on this repaired source. PR #76 remains draft pending both results.
 
 All 16 locked workloads also complete on the ordinary source-133 executable:
 32 successful processes, exact results and execution modes, unchanged inputs.

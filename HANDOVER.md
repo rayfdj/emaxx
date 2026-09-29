@@ -3,15 +3,16 @@
 **Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
 after the complete goal. Source 133 replaces the host record and four side maps
 with one GNU-compatible allocation and owned arrays shared by all execution
-engines, GC and image loading. It passes 105 selected debug and 271 release tests,
-all strict static checks and eight ordinary exact GNU comparisons. Both complete
-gates then fail on a dump test that still expects the removed hash record
-allocator to advance. Source 135 corrects that assertion to require exact
-restoration of every remembered scalar; its two debug and two release dump
-controls and strict checks pass. Fresh complete gates are running on PR #76,
-head `27effbdd`. The original failures, diagnostic workload results and separate
-Linux compatibility tail are [preserved](docs/handover/2026-09-29-hash-gate-repair/manifest.json).
-This checkpoint is not merged yet; the full goal remains open.
+engines, GC and image loading. Both complete gates exposed an obsolete dump
+counter assertion; source 135 requires exact restoration of every remembered
+scalar. Both fresh gates then exposed missing unordered hash-table comparison
+handling. Source 139 repairs that production dispatch without changing the test:
+154 debug and 154 release controls, strict checks and nine ordinary exact GNU
+comparisons pass. Complete macOS and [Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
+are running on PR #76, integration `75b69738`. The
+[original failures](docs/handover/2026-09-29-hash-gate-repair/manifest.json) and
+[ordering repair evidence](docs/handover/2026-09-29-hash-ordering-repair/manifest.json)
+remain preserved. This checkpoint is not merged yet; the full goal remains open.
 
 **Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
 combines two measured ordinary-path improvements, with 232 debug and 232 release
