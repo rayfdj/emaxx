@@ -9,10 +9,14 @@ scalar. Both fresh gates then exposed missing unordered hash-table comparison
 handling. Source 139 repairs that production dispatch without changing the test:
 154 debug and 154 release controls, strict checks and nine ordinary exact GNU
 comparisons pass. Complete macOS and [Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
-are running on PR #76, integration `75b69738`. The
+now pass on PR #76, integration `75b69738`: 2,999 and 3,011 tests respectively,
+with two existing terminal ignores each. Native artifact identity passes.
+[Complete receipts](docs/handover/2026-09-29-hash-complete/manifest.json),
 [original failures](docs/handover/2026-09-29-hash-gate-repair/manifest.json) and
 [ordering repair evidence](docs/handover/2026-09-29-hash-ordering-repair/manifest.json)
-remain preserved. This checkpoint is not merged yet; the full goal remains open.
+remain preserved. Separate keymap callback/error diagnostics also fail on the
+retained previous main executable; compatibility repairs continue independently.
+This validated checkpoint does not complete the full goal.
 
 **Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
 combines two measured ordinary-path improvements, with 232 debug and 232 release

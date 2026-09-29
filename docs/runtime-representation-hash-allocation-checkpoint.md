@@ -129,8 +129,25 @@ and distinct tables, differing capacities and tests, callback non-invocation,
 forced GC, nested list/vector ordering and mixed-type error operand identities.
 All 18 processes exit zero with empty stderr and unchanged source/artifact
 hashes. The original ordinary executable fails the same new input; its output
-is retained. Complete macOS and [Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
-are running on this repaired source. PR #76 remains draft pending both results.
+is retained.
+
+## Complete Rust gates
+
+The unchanged source-139 complete gates now pass. macOS has 2,900 library,
+60 binary and 39 integration passes (2,999 total); Linux has 2,908 library,
+61 binary and 42 integration passes (3,011 total). Each retains exactly the two
+existing terminal-test ignores. All ten library groups and both later Cargo
+stages execute. Native artifact identity and both original suspended-root
+contracts pass. The [Linux run](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
+checks integration `75b69738`; macOS checks audit `736dd41e`. All 305 runtime,
+test and build inputs match the task-branch source.
+
+The [complete portable receipts](handover/2026-09-29-hash-complete/manifest.json)
+retain the full inventories, commands, logs, source identities and artifact
+hashes. Both retained test executables and every retained image were verified
+against their recorded hashes. Post-run image retention does not establish
+which individual tests used each image. This is complete Rust-gate evidence,
+not a full frozen compatibility or performance result.
 
 All 16 locked workloads also complete on the ordinary source-133 executable:
 32 successful processes, exact results and execution modes, unchanged inputs.
@@ -149,7 +166,16 @@ on the same main runtime passes those 18 files and 468 outcomes, with no
 mismatches; it does not clear the failed full run. The same original keymap file reproduces nine Emaxx failures on macOS
 while all 46 GNU tests pass. See the [compatibility record](runtime-representation-call-window-checkpoint.md).
 
-Complete gates for this hash source, final pinned comparisons on both platforms,
+A separate menu-filter error probe crashes on the retained previous main
+executable as well as source 139. A valid lexical-closure variant executes on
+that retained main binary; the error-path crash therefore predates this hash
+migration. The debugger reaches batch error-message rendering and symbol
+property lookup. A separate pending-signal/GC probe succeeds in GNU but the
+Emaxx process is killed with exit -9; that kill's cause is not established.
+These diagnostics and unsuccessful debugger attempts remain in the complete
+bundle. They are open correctness work, not passing compatibility controls.
+
+Final-source complete gates, pinned comparisons on both platforms,
 remaining representation and ownership work, allocation accounting, the final
 adversarial audit and the locked performance criterion remain required. Parked
 interpreter states still retain their weak entries strongly under an existing
