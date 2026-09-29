@@ -1,5 +1,14 @@
 # Resume the compact runtime goal here
 
+**Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
+after the complete goal. Source 133 replaces the host record and four side maps
+with one GNU-compatible allocation and owned arrays shared by all execution
+engines, GC and image loading. It passes 105 selected debug and 271 release tests,
+all strict static checks and eight ordinary exact GNU comparisons. Complete
+macOS and Linux gates are pending. Original failures and two GNU-grounded test
+corrections remain in the portable evidence. This checkpoint is not merged yet;
+the full goal remains open.
+
 **Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
 combines two measured ordinary-path improvements, with 232 debug and 232 release
 passes, strict static checks and all 16 workload result/mode checks. Complete
@@ -97,6 +106,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [shared hash-table allocation checkpoint](docs/runtime-representation-hash-allocation-checkpoint.md).
    Then read the [current task-branch follow-up](docs/runtime-representation-call-window-checkpoint.md).
    Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).
    Then read the [newest regexp, VM and completed Linux continuation](docs/runtime-representation-regexp-checkpoint.md).
