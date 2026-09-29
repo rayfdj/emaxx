@@ -45,22 +45,11 @@ fn lookup_key_once(
     };
     let normalized = normalize_lucid_key_events(interp, &key, env)?;
     interp.with_lisp_stack_roots(&(keymap, normalized), |interp| {
-        let parts = key_sequence_keymap_parts(&normalized)?;
-        let found = keymap_lookup_sequence_value_with_default(
-            interp,
-            &keymap,
-            &parts,
-            accept_default,
-            env,
-        )?;
-        if let Kind::Integer(prefix_len) = found.kind() {
-            Ok(Value::Integer(key_sequence_prefix_event_count(
-                &normalized,
-                usize::try_from(prefix_len).unwrap_or(0),
-            )? as i64))
-        } else {
-            Ok(found)
-        }
+        // lookup_key_1 advances once per original event. Meta-to-ESC is
+        // part of access_keymap_1; a missing Meta prefix on the final event
+        // is an undefined binding, not a zero-length failed sequence.
+        let events = key_description_events(&normalized)?;
+        keymap_lookup_sequence_value_with_default(interp, &keymap, &events, accept_default, env)
     })
 }
 

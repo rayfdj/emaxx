@@ -3537,7 +3537,51 @@ fn keymap_access_event(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let map = keymap_reference_map(interp, &map, env).unwrap_or(map);
-    let map = public_keymap_value(interp, &map);
+    let mut map = public_keymap_value(interp, &map);
+    let event = event.cons_values().map_or(event, |(head, _)| head);
+    let mut event = match event.kind() {
+        Kind::Integer(code) => {
+            Value::Integer(code & (KEY_DESCRIPTION_META_BIT | (KEY_DESCRIPTION_META_BIT - 1)))
+        }
+        Kind::Symbol(name) => {
+            let (modifiers, base) = event_symbol_name_modifiers(&name);
+            Value::symbol(&modified_event_symbol_name(modifiers, base))
+        }
+        _ => event,
+    };
+    // Current map, cursor, result, composite tail, default, current event.
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
+        map,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        event,
+    ]);
+    if let Kind::Integer(code) = event.kind()
+        && code & KEY_DESCRIPTION_META_BIT != 0
+    {
+        // keymap.c:access_keymap_1 handles Meta within this one event, so
+        // failure here cannot consume part of lookup_key_1's key sequence.
+        let mut prefix = interp
+            .lookup_var("meta-prefix-char", env)
+            .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));
+        if prefix.as_integer()? & KEY_DESCRIPTION_META_BIT != 0 {
+            prefix = Value::Integer(KEY_DESCRIPTION_META_PREFIX);
+            interp.set_global_binding("meta-prefix-char", prefix);
+        }
+        let binding = keymap_access_event(interp, map, prefix, accept_default, env)?;
+        if let Some(prefix_map) =
+            binding.and_then(|value| keymap_reference_map(interp, &value, env))
+        {
+            map = prefix_map;
+            event = Value::Integer(code & !KEY_DESCRIPTION_META_BIT);
+        } else if accept_default {
+            event = Value::T;
+        } else {
+            return Ok(binding.filter(Value::is_nil));
+        }
+    }
     let tail = if map
         .car()
         .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
@@ -3546,15 +3590,9 @@ fn keymap_access_event(
     } else {
         map
     };
-    // Current map, cursor, result, composite tail, default, current event.
-    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
-        map,
-        tail,
-        Value::Nil,
-        Value::Nil,
-        Value::Nil,
-        event,
-    ]);
+    roots[0] = map;
+    roots[1] = tail;
+    roots[5] = event;
     let mut found = false;
     let mut have_default = false;
     loop {

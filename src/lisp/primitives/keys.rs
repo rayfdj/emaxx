@@ -40,7 +40,7 @@ pub(crate) fn solitary_event_modifier(name: &str) -> i64 {
     }
 }
 
-fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
+pub(crate) fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
     let mut name = String::new();
     for (bit, prefix) in [
         (KEY_DESCRIPTION_ALT_BIT, "A-"),
@@ -176,7 +176,7 @@ fn event_modifier_elements(modifiers: i64) -> Vec<Value> {
     .collect()
 }
 
-fn event_symbol_name_modifiers(symbol: &str) -> (i64, &str) {
+pub(crate) fn event_symbol_name_modifiers(symbol: &str) -> (i64, &str) {
     let symbol = crate::lisp::types::visible_symbol_name(symbol);
     let mut modifiers = 0;
     let mut offset = 0;
@@ -517,23 +517,6 @@ pub(crate) fn keymap_parts_from_events(
         }
     }
     Ok(parts)
-}
-
-pub(crate) fn key_sequence_prefix_event_count(
-    value: &Value,
-    keymap_prefix_len: usize,
-) -> Result<usize, LispError> {
-    let mut consumed_parts = 0;
-    let mut consumed_events = 0;
-    for event in key_description_events(value)? {
-        let sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
-        consumed_parts += key_sequence_keymap_parts(&sequence)?.len();
-        if consumed_parts > keymap_prefix_len {
-            break;
-        }
-        consumed_events += 1;
-    }
-    Ok(consumed_events)
 }
 
 pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<Value>, LispError> {

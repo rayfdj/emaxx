@@ -23,10 +23,22 @@
          answers)
     (unless (and (byte-code-function-p bytecode) (native-comp-function-p native))
       (error "Reclamation modes were not compiled"))
-    (dolist (function (list body bytecode native))
-      (let ((unwind-reclamation-table (make-hash-table :test 'eq :weakness 'value)))
-        (let ((survived (funcall function)))
-          (garbage-collect)
-          (push (list survived (hash-table-count unwind-reclamation-table)) answers))))
+    ;; GNU's conservative native stack scan can retain the most recent
+    ;; payload until the enclosing caller returns on Linux. Collect only
+    ;; after all creating/calling frames have returned, while keeping each
+    ;; weak table and its live-payload verdict. No payload becomes strong.
+    (setq answers
+          (funcall
+           (lambda (functions)
+             (let (results)
+               (dolist (function functions (nreverse results))
+                 (let ((unwind-reclamation-table
+                        (make-hash-table :test 'eq :weakness 'value)))
+                   (push (list (funcall function) unwind-reclamation-table)
+                         results)))))
+           (list body bytecode native)))
+    (garbage-collect)
     (list (byte-code-function-p bytecode) (native-comp-function-p native)
-          (nreverse answers))))
+          (mapcar (lambda (result)
+                    (list (car result) (hash-table-count (cadr result))))
+                  answers))))
