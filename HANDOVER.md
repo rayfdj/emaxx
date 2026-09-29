@@ -1,43 +1,40 @@
 # Resume the compact runtime goal here
 
-**Current merge candidate:** source161 repairs Table/Org captions in composed
-menu maps by calling unchanged GNU `keymap-canonicalize`. It passes strict
-static checks, **72 debug and 72 release controls**, fifteen ordinary exact
-GNU comparisons, and the unchanged `org-open` terminal scenario. Its complete
-macOS Rust/terminal runs and [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36596279103)
-/ [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36596290294) runs are active.
-PR #77 remains a draft; main remains `1d1e8cdc`. The
-[menu repair receipts](docs/handover/2026-09-30-menu-composition-repair/manifest.json)
-preserve source159's initial setup failure and source155's complete terminal
-failure: all 223 scenarios started, 17 diverged on the same missing captions.
-Later checkpoints within each divergent scenario were not executed.
-
-Source155 already passes complete Rust gates: **3,012 macOS / 3,024 Linux**,
-two existing terminal ignores each, and native artifact identity. Its full
-Linux frozen comparison also passes: **519 files / 7,928 outcomes**, all 1,038
-runner processes successful. [Complete receipts](docs/handover/2026-09-30-compatibility-rust-frozen/manifest.json)
-retain and verify those results. Source153's earlier native reclamation failure
-and GNU Eglot timeout remain failed historical evidence; their precise causes
-are not established by the later pass. Source161 still requires its own complete
-validation. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
+**Validated merge candidate:** source161 passes complete Rust gates:
+**3,013 macOS / 3,025 Linux**, with two existing terminal ignores each and native
+artifact identity passing. Its [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
+matches **519 files / 7,928 outcomes**, with all 1,038 processes successful.
+All **223 terminal scenarios, 651 screen comparisons and 28 filesystem
+comparisons** match source/ABI-matched GNU. The [complete receipts](docs/handover/2026-09-30-compatibility-complete/manifest.json)
+verify raw inventories, outcomes and artifact hashes. All 328 compiled/test
+inputs match published `d9caac1e`, documentation checkpoint `72b487b1` and the
+macOS worktree. PR #77 is ready for normal merge; main is still `1d1e8cdc`
+at this evidence checkpoint. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
 after the complete goal.
 
-**Separate architecture work:** the [source162 keymap draft](docs/handover/2026-09-30-keymap-authority-draft/manifest.json)
-replaces private record keymaps, reverse indexes, snapshots, binding caches and
-process-lifetime roots with actual cons/char-table storage. It passes strict
-checks, **386 debug and 386 release controls** and eighteen ordinary GNU
-comparisons. Its portable patch replays all 333 inputs from published `f237bfcf`.
-It remains an unfinished draft, separate from PR #77's production code; it
-predates the source161 menu repair and has no complete gate certification.
+Source161 repairs Table/Org captions by calling unchanged GNU
+`keymap-canonicalize`, with collecting callback roots preserved. Strict checks,
+72 debug and 72 release controls and fifteen ordinary GNU comparisons pass.
+The initial restricted-sandbox full run failed twelve socket tests; the complete
+host-permitted rerun passes using the identical source and test binary.
+That failure, source155's 17 terminal divergences and source153's native
+reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
+establish the causes of those older source153 failures.
 
-A nineteenth draft comparison exposes eager copying of key-sequence input:
-a collecting prefix callback changes a later event, but lookup reads the old
-copy. The original case also fails source161 and retained main source139;
-expanded string, Lucid and translated-input cases are retained with the menu
-receipts. Source163 integrates the menu repair and reads each event from the
-actual input when reached. Its strict checks pass; selected debug/release and
-ordinary validation are underway in the isolated keymap worktree. Preserve
-source162's negative results until source163 has its own evidence.
+**Separate architecture work:** the [source166 portable keymap draft](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json)
+replaces private record keymaps, reverse indexes, snapshots, binding caches and
+permanent roots with actual cons/char-table storage. It integrates source161's
+menu repair, reads live input events through collecting callbacks, shares the
+actual lookup path with `key-binding`/remapping and removes hardcoded prefix
+decisions and duplicate filter calls. Strict checks, **462 debug and 462 release
+controls** and all **25 ordinary GNU comparisons** pass. Its portable patch
+replays all 339 inputs from published `d9caac1e`.
+
+Source166 remains separate from PR #77 production code. Its complete macOS Rust
+and terminal runs are active; Linux/frozen certification is not yet available.
+The source162/163/165 negative comparisons, source164 compiler failure and
+retained-main callback/dispatch failures remain in the linked draft history.
+Source166's selected passes do not substitute for complete validation.
 
 The compact representation, symbol authority, physical allocation accounting,
 final audit, complete final-source compatibility and locked performance goal

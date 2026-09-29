@@ -6,7 +6,40 @@ macOS and Linux Rust gates passing. This follow-up repairs the runtime-entry,
 keymap, casing and error-lifetime paths exposed by its compatibility work.
 The [complete goal](runtime-representation-goal.md) remains open.
 
-## Completed Rust/frozen runs and terminal repair — sources 155 and 161
+## Complete merge-candidate validation — source161
+
+Source161 passes the complete Rust gates: **3,013 macOS** (2,914 library,
+60 binary, 39 integration) and **3,025 Linux** (2,922 library, 61 binary,
+42 integration), with two existing terminal ignores each. Native artifact
+identity passes on both. The [Linux Rust run](https://github.com/rayfdj/emaxx/actions/runs/36596279103)
+and [Linux frozen run](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
+use `d9caac1e`; all 328 compiled/test inputs match the macOS worktree and later
+documentation checkpoint `72b487b1`.
+
+Frozen comparison matches **519/519 files and 7,928/7,928 outcomes**. Each
+editor reports 7,670 passes, 47 existing expected failures, 211 skips and zero
+unexpected outcomes. All 1,038 raw processes succeed without timeouts; their
+file and test inventories are checked. The GNU executable matches the Linux
+pin. The complete default terminal run passes **223 scenarios**, with all
+**651 screen and 28 filesystem comparisons** verified in their original order.
+Its Darwin GNU is source/ABI matched, not the frozen executable.
+
+The [complete receipts](handover/2026-09-30-compatibility-complete/manifest.json)
+retain raw results, commands and checked artifact identities. Fourteen remaining
+macOS Rust artifacts and four Linux artifacts are rehashed; this does not imply
+every test used every retained image. The first macOS full run was launched
+inside the restricted sandbox and failed twelve localhost socket checks after
+2,176 passes. Four later groups and both Cargo stages did not execute. The
+host-permitted complete rerun passes on the identical source and test binary;
+the failed attempt stays preserved. Its initial retainer used the wrong fixture
+directory, so only binary retention is claimed for that failed attempt.
+
+PR #77 is ready for normal merge. Preexisting sequence-type, callback-mutation
+and macro-prefix mismatches remain documented in ordinary negative probes;
+the separately packaged source166 draft repairs them with its own evidence.
+This checkpoint does not complete the architecture or performance goal.
+
+## Previous Rust/frozen runs and terminal repair — sources 155 and 161
 
 Source155 passes both complete Rust gates: **3,012 macOS** (2,913 library,
 60 binary, 39 integration) and **3,024 Linux** (2,921 library, 61 binary,
@@ -47,18 +80,46 @@ Lisp owner without changing their assertions. Source159's failed coordinate
 control (71 passes/one failure in a bare interpreter) remains preserved in the
 [242 menu repair receipts](handover/2026-09-30-menu-composition-repair/manifest.json).
 
-The complete source161 macOS Rust and terminal runs are active, alongside
-[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36596279103) and
-[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36596290294) on published
-`d9caac1e`. Pending runs are not passes. Two additional ordinary callback-mutation
+The complete source161 results are recorded above. Additional ordinary callback-mutation
 probes fail: lookup copies later input events before a callback can change them.
 The original case also fails retained main source139; expanded cases cover
 strings, unibyte Meta, Lucid and translated sequences. This existing mismatch
 and the previously documented initial sequence-type check are handled in the
-separate architecture draft. PR #77 remains a draft pending complete source161
-validation. No architecture or performance completion is claimed.
+separate architecture draft. No architecture or performance completion is claimed.
 
-## Separate authoritative keymap draft — sources 162 and 163
+## Separate authoritative keymap draft — sources 162 through 166
+
+[Source166's portable draft](handover/2026-09-30-keymap-live-authority-draft/manifest.json)
+supersedes the source162 entry point below and includes the source161 menu
+repair. All 339 compiled/test inputs replay from published `d9caac1e`.
+Strict checks, **393 selected plus 69 disjoint command-loop tests per mode**
+(462 debug and 462 release), and all **25 ordinary exact GNU comparisons** pass.
+Complete macOS Rust and terminal runs are active; complete Linux and frozen
+certification remain required.
+
+Lookup reads actual vector/string events when reached, including mutable
+unibyte Meta, Lucid and translated sequences. `key-binding` invokes actual
+lookup on current active maps, preserves collecting prefix/leaf filters and
+ordinary-error versus quit/throw behavior, then reacquires maps for remapping.
+Command readers reuse the resolved binding to decide whether to read a prefix.
+This removes hardcoded C-x/C-c/ESC prefix decisions and a redundant lookup that
+called collecting leaf filters twice. The shared scoped-root mechanism protects
+actual inputs, map lists, events and pending commands through callbacks.
+
+Source163 passes 391 debug and 391 release controls, the unchanged `org-open`
+terminal scenario and 20 of 23 ordinary comparisons; three later comparisons
+remain negative. Source164 fails to compile because a triple root tuple lacks
+the required trait. Source165 uses the existing nested-pair roots, passes 392
+selected plus 69 additional controls per mode and 22 of 25 ordinary comparisons;
+three macro-dispatch cases remain negative. Source166 fixes those cases. All
+failures remain preserved, alongside successful negative replays on retained
+main. The initial retained-main replay's environment setup error is recorded
+separately from its corrected semantic negative results.
+
+This remains packaged continuation material, separate from PR #77 production
+code. Temporary compound-event/enumeration adapters and older bounded paths in
+input decoding and signal handling still require removal or justification.
+The focused source166 review is not the final goal-wide adversarial audit.
 
 [Source162's portable draft](handover/2026-09-30-keymap-authority-draft/manifest.json)
 uses actual Lisp cons and char-table storage and removes private keymap records,
@@ -78,9 +139,8 @@ symbolic-map store failures, source160's compiler failure and source162's
 remaining live-input mismatch. It predates source161's menu repair and has no
 complete Rust, terminal or frozen certification. Source163 integrates that
 repair and follows GNU's per-event `Faref` traversal, avoiding the eager input
-copy. It passes strict checks; selected debug/release and ordinary validation
-are underway. This draft is packaged continuation material, separate from the
-current production merge candidate. Residual event/enumeration adapters, symbol
+copy. Its completed results and source166 follow-up are recorded above.
+Residual event/enumeration adapters, symbol
 authority, physical allocation accounting, final audit and locked performance
 validation remain open.
 
