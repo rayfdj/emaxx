@@ -2056,7 +2056,12 @@ fn direct_funcall_target(
     function: &Value,
 ) -> Option<DirectFuncallTarget> {
     let resolved = match function.kind() {
-        Kind::Symbol(name) => interpreter.lookup_function(&name, environment).ok()?,
+        // Ffuncall/indirect_function follows the symbol's actual function
+        // cell. The word already names that symbol; do not resolve its text
+        // back through the interned-name cache on every native call.
+        Kind::Symbol(name) => interpreter
+            .lookup_function_symbol(&name, environment)
+            .ok()?,
         other => other.value(),
     };
     match resolved.kind() {
