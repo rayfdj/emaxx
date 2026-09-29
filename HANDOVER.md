@@ -1,32 +1,36 @@
 # Resume the compact runtime goal here
 
 **Current follow-up:** read the [runtime entry and compatibility repairs](docs/runtime-representation-compatibility-checkpoint.md)
-after the complete goal. Source 153 passes strict checks, **382 debug and 382
-release controls**, including all three previously failing assertions. It fixes
-Meta event boundaries and preserves GNU's textual-vector key translation. The
-reclamation fixture still requires live survival and eventual collection in all
-three execution modes, now after the creating/calling frames return. Full macOS
-validation is running alongside [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36544217147),
-[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36544220911) and the
-[Linux reclamation control](https://github.com/rayfdj/emaxx/actions/runs/36544224404)
-on PR #77, published at `900a6b7f`. The reclamation control has completed and
-passes; both full Linux runs remain pending. All thirteen ordinary exact GNU fixtures
-and four unchanged upstream reports now match, including all three repeat tests.
-[5,618 portable receipts](docs/handover/2026-09-29-compatibility-gate-repair/manifest.json)
-include original failed runs, identities and the current selected evidence.
+after the complete goal. Source153's complete macOS Rust gate passes **3,011
+tests**, with two existing terminal ignores. Linux passes nine library groups
+(2,387 tests), then aborts on the native non-LIFO reclamation assertion in the
+lightweight group; both Cargo stages remain unexecuted. Its full frozen run
+executes all 519 files and 7,928 outcomes. The previous repeat failure now
+matches; one GNU Eglot request timeout differs from Emaxx's pass. These Linux
+runs remain failed, preserved in the [completed-run receipts](docs/handover/2026-09-29-compatibility-completed-runs/manifest.json).
 
-Source 148's full Rust gates failed: macOS 2,185 passes/one failure and Linux
-2,192 passes/two failures, with later stages unexecuted. Its Linux frozen run
-completed **all 519 files**, with 7,927/7,928 matching outcomes; only
-`repeat-tests-check-key` differs. Those original failures remain preserved.
-The previous [history](docs/handover/2026-09-29-compatibility-history/manifest.json)
-and [source148 receipts](docs/handover/2026-09-29-compatibility/manifest.json)
-remain unchanged. Main's hash checkpoint is merged through PR #76 at `1d1e8cdc`.
-The [separately packaged keymap draft](docs/handover/2026-09-29-keymap-authority-draft/manifest.json)
-is parked and is not part of the production merge candidate. It compiles with
-one warning and has no executed tests; its source150 patch replays exactly
-from published `c2d328ab`, but predates the source153 lookup repair. The
-architecture and performance goal is **not complete**.
+The original native test passes in separate ordinary and debugger Linux
+replays, which do not clear its full-sequence failure. Source155 preserves
+its exact survival/reclamation assertions and uses the existing test helper
+to clear dead driver stack space before collection. A separate negative
+ordinary probe also exposed missing array type validation after a redefined
+`key-parse`; source155 repairs that check and adds the same-input GNU control.
+Source155 passes compiler, formatting, warnings-denied Clippy and six focused
+debug controls. Release and ordinary comparisons are running. Fresh complete
+gates follow on production `72d98598`. Source154 passed 382 controls in each
+mode but failed the new fixture on a trailing parenthesis; that fixture typo
+is corrected without changing the expected behavior.
+
+Source153's 382 debug and 382 release controls and thirteen ordinary exact GNU
+fixtures pass. Its unchanged repeat, keymap, casefiddle and gv reports match
+GNU. The focused Linux unwind-payload reclamation control passes. Original
+source148 full failures and the intermediate repairs remain in the
+[earlier receipts](docs/handover/2026-09-29-compatibility-gate-repair/manifest.json).
+Main's hash checkpoint is merged through PR #76 at `1d1e8cdc`; PR #77 is still
+a draft. The [separately packaged keymap draft](docs/handover/2026-09-29-keymap-authority-draft/manifest.json)
+compiles with one warning and has no executed tests. It replays from published
+`c2d328ab`, predates newer lookup repairs, and is not production code in this
+merge candidate. The architecture and performance goal is **not complete**.
 
 **Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
 after the complete goal. Source 133 replaces the host record and four side maps

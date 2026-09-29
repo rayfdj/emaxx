@@ -6,26 +6,62 @@ macOS and Linux Rust gates passing. This follow-up repairs the runtime-entry,
 keymap, casing and error-lifetime paths exposed by its compatibility work.
 The [complete goal](runtime-representation-goal.md) remains open.
 
-## Latest gate repair — source 153
+## Latest complete runs and follow-up — sources 153–155
 
-Source 153 passes strict compiler, formatting, warnings-denied Clippy and diff
-checks, plus **382 debug and 382 release controls**, zero failures or ignores.
-It includes the original parameterized-character control omitted from the earlier
-selected set. All thirteen ordinary GNU comparisons pass. The unchanged
-upstream repeat file passes all three tests, keymap passes all 46, casing
-matches ten passes and one existing locale skip, and generalized variables
-match six passes and two existing expected failures, including full messages.
-The [5,618 portable receipts](handover/2026-09-29-compatibility-gate-repair/manifest.json)
-preserve all inputs, outcomes and original failures.
+Source153's complete macOS Rust gate passes **3,011 tests**: 2,912 library,
+60 binary and 39 integration tests, with two existing terminal ignores.
+The unchanged native artifact identity contract passes. Production `82fcb6c9`
+and published `900a6b7f` have the same 326 compiled/test inputs.
 
-The complete macOS gate is running on production `82fcb6c9`. Published
-`900a6b7f` has the same 326 compiled/test inputs. Fresh Linux runs are
-[complete Rust](https://github.com/rayfdj/emaxx/actions/runs/36544217147),
-[full frozen](https://github.com/rayfdj/emaxx/actions/runs/36544220911) and
-[reclamation replay](https://github.com/rayfdj/emaxx/actions/runs/36544224404).
-The reclamation replay passes its original named control, zero failures or
-ignores; the downloaded executable and image match their recorded hashes.
-Both full Linux runs and full macOS validation remain pending. PR #77 remains a draft.
+The [complete Linux Rust gate](https://github.com/rayfdj/emaxx/actions/runs/36544217147)
+passes nine library groups (2,387 tests), then aborts in lightweight on
+`native_continuations_can_return_in_non_lifo_order`: the second collection
+finds two weak keys instead of one. Lightweight has no completed result
+summary; both Cargo stages remain unexecuted. The original test passes in
+[an isolated ordinary replay](https://github.com/rayfdj/emaxx/actions/runs/36588607032)
+and [a debugger replay](https://github.com/rayfdj/emaxx/actions/runs/36588611905).
+These narrower observations do not clear the full-sequence failure.
+
+The [full Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36544220911)
+executes all 519 files and 7,928 outcomes: 7,927 match, one differs. Emaxx passes
+`eglot-test-rust-completion-exit-function`; GNU fails with a JSON-RPC request
+id 2 timeout. The original repeat-command mismatch now matches. The complete
+run remains failed; no timeout, selector or expectation is changed. The
+[completed-run receipts](handover/2026-09-29-compatibility-completed-runs/manifest.json)
+retain both Linux failures and the complete macOS pass, with locally verified
+Rust executable/image identities. Frozen Linux binaries are identified by
+runner provenance and are not included in the downloaded reports.
+
+Source155 uses the existing test-only `clobber_stack` helper before the native
+reclamation collections. This removes words in dead driver stack space while
+leaving live caller frames and suspended coroutine stacks intact. Original
+2-to-1-to-0 counts, native result checks and the single-continuation zero count
+remain unchanged. Exact root attribution for the original Linux failure is
+not established; fresh complete validation is required.
+
+Review also found a concrete source153 lookup mismatch: a redefined
+`key-parse` returning nil, an integer or a symbol bypasses GNU's array check.
+The ordinary same-input negative control and full outputs are preserved.
+Source155 applies the GNU type check before checking sequence length and
+adds a collecting-callback differential control covering invalid types, empty
+arrays and valid strings/vectors. Compiler, formatting, warnings-denied Clippy
+and diff checks pass. Source155 also passes six focused debug controls. Its
+release and ordinary comparisons are running. Fresh complete gates follow on
+production `72d98598`; PR #77 remains a draft. Source154 passed 382 controls
+in each mode but failed to read the new fixture because of an extra trailing
+parenthesis. Source155 corrects that typo; the complete outputs and expected
+GNU behavior are unchanged. Both failed source154 runs remain preserved.
+
+Source153's earlier **382 debug and 382 release controls** pass, zero failures
+or ignores, including the original parameterized-character control omitted
+from the earlier selected set. All thirteen ordinary GNU comparisons pass.
+The unchanged upstream repeat file passes all three tests, keymap passes all
+46, casing matches ten passes and one existing locale skip, and generalized
+variables match six passes and two existing expected failures, including full
+messages. The [5,618 earlier receipts](handover/2026-09-29-compatibility-gate-repair/manifest.json)
+preserve those inputs, outcomes and original failures. The
+[Linux reclamation replay](https://github.com/rayfdj/emaxx/actions/runs/36544224404)
+passes its original named control, zero failures or ignores.
 
 The original source148 complete Rust gates fail: macOS 2,185 passes/one failure,
 Linux 2,192 passes/two failures. Four later library groups and both Cargo stages
@@ -40,7 +76,8 @@ payload is still retained while its enclosing caller is active. The fixture now
 returns from all creating/calling frames before collecting. All live-payload
 checks, actual execution-mode predicates and the required final zero count in
 every mode remain. Three ordinary Darwin GNU runs and the fresh Linux replay
-pass; full-gate coverage remains pending. No ignore or expected failure was added.
+pass; the complete primitive groups now pass on both platforms as well.
+No ignore or expected failure was added.
 
 The [source148 Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
 finishes all 519 files and compares all 7,928 required outcomes: 7,927 match and
