@@ -15,9 +15,14 @@ its exact survival/reclamation assertions and uses the existing test helper
 to clear dead driver stack space before collection. A separate negative
 ordinary probe also exposed missing array type validation after a redefined
 `key-parse`; source155 repairs that check and adds the same-input GNU control.
-Source155 passes compiler, formatting, warnings-denied Clippy and six focused
-debug controls. Release and ordinary comparisons are running. Fresh complete
-gates follow on production `72d98598`. Source154 passed 382 controls in each
+Source155 passes compiler, formatting, warnings-denied Clippy, six focused
+debug and six release controls, and fourteen exact ordinary GNU comparisons.
+[Repair receipts](docs/handover/2026-09-29-compatibility-final-repair/manifest.json)
+retain its inputs and the original failures. Full macOS Rust and terminal
+validation are running on production `72d98598`, alongside
+[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36590575463) and
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36590580818) on
+published `f237bfcf` (identical compiled/test inputs). Source154 passed 382 controls in each
 mode but failed the new fixture on a trailing parenthesis; that fixture typo
 is corrected without changing the expected behavior.
 

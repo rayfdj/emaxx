@@ -45,9 +45,14 @@ The ordinary same-input negative control and full outputs are preserved.
 Source155 applies the GNU type check before checking sequence length and
 adds a collecting-callback differential control covering invalid types, empty
 arrays and valid strings/vectors. Compiler, formatting, warnings-denied Clippy
-and diff checks pass. Source155 also passes six focused debug controls. Its
-release and ordinary comparisons are running. Fresh complete gates follow on
-production `72d98598`; PR #77 remains a draft. Source154 passed 382 controls
+and diff checks pass. Source155 also passes six focused debug and six release
+controls, and all fourteen fresh ordinary exact GNU comparisons. The
+[230 repair receipts](handover/2026-09-29-compatibility-final-repair/manifest.json)
+retain its inputs, commands, identities and outcomes. Full macOS Rust and
+terminal runs are active on production `72d98598`. Published `f237bfcf` has
+identical compiled/test inputs and runs [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
+and [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36590580818).
+These complete runs are pending; PR #77 remains a draft. Source154 passed 382 controls
 in each mode but failed to read the new fixture because of an extra trailing
 parenthesis. Source155 corrects that typo; the complete outputs and expected
 GNU behavior are unchanged. Both failed source154 runs remain preserved.
