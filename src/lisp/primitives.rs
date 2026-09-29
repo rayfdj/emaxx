@@ -54,6 +54,7 @@ pub(crate) mod coding;
 mod color_lcms;
 mod completion;
 mod dispatch;
+pub(crate) use dispatch::{restore_unicode_menu_case_table, unicode_menu_case_table};
 mod file_io;
 mod generated_builtin_arities;
 pub(crate) mod generated_gnu_c_bool_variables;

@@ -3764,34 +3764,8 @@ pub(crate) fn unwrap_function_quote(value: &Value) -> Value {
         .unwrap_or(*value)
 }
 
-pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
-    match value.kind() {
-        Kind::Nil => "undefined".into(),
-        Kind::Symbol(name) => name.to_string(),
-        Kind::BuiltinFunc(subr) => subr.to_string(),
-        Kind::Record(_) => "Prefix Command".into(),
-        Kind::Cons(_) => value
-            .to_vec()
-            .ok()
-            .and_then(|items| {
-                match items
-                    .as_slice()
-                    .iter()
-                    .map(|v| v.kind())
-                    .collect::<Vec<_>>()
-                    .as_slice()
-                {
-                    [Kind::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
-                        Some(keymap_binding_display_name(&inner.value()))
-                    }
-                    _ => None,
-                }
-            })
-            .unwrap_or_else(|| value.to_string()),
-        _ => value.to_string(),
-    }
-}
-
+/// keymap.c:Fdescribe_buffer_bindings selects the maps and their shadow order;
+/// unchanged help.el owns traversal, filtering, ranges and presentation.
 pub(crate) fn describe_buffer_bindings(
     interp: &mut Interpreter,
     args: &[Value],
@@ -3803,82 +3777,225 @@ pub(crate) fn describe_buffer_bindings(
             args.len(),
         ));
     }
-
-    let prefix = args
-        .get(1)
-        .filter(|value| !value.is_nil())
-        .map(key_sequence_binding_text)
-        .transpose()?;
-    let mut output = String::from("key             binding\n---             -------\n");
-    let mut seen = HashSet::new();
-
-    let mut visited = HashSet::new();
-    for map in current_active_maps(interp, env, true, None)? {
-        collect_described_keymap_bindings(
+    let buffer = args[0];
+    if !matches!(buffer.kind(), Kind::Buffer(_)) {
+        return Err(LispError::WrongTypeArgument("bufferp".into(), buffer));
+    }
+    let prefix = args.get(1).copied().unwrap_or(Value::Nil);
+    let nomenu = if args.get(2).is_some_and(Value::is_truthy) {
+        Value::Nil
+    } else {
+        Value::T
+    };
+    // This is the actual argument vector for help--describe-map-tree. Keep
+    // its maps, accumulated shadow list, prefix and buffer rooted across
+    // arbitrary Lisp filters and insertion hooks.
+    let mut description = crate::lisp::alloc::RootedVec::from_vec(vec![
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        prefix,
+        Value::Nil,
+        nomenu,
+        Value::T,
+        Value::Nil,
+        Value::Nil,
+        buffer,
+    ]);
+    let translation = interp
+        .lookup_var("keyboard-translate-table", env)
+        .unwrap_or(Value::Nil);
+    if !prefix.is_nil()
+        && let Some(table) = string_like(&translation)
+    {
+        let size = table.text.chars().count();
+        let mut heading = true;
+        for index in 0..size {
+            // GNU reacquires the table after insertions, which can run Lisp.
+            let table = interp
+                .lookup_var("keyboard-translate-table", env)
+                .unwrap_or(Value::Nil);
+            let Some(table) = string_like(&table) else {
+                break;
+            };
+            let bytes = internal_string_bytes(&table)?;
+            let Some(&translated) = bytes.get(index) else {
+                break;
+            };
+            if usize::from(translated) == index {
+                continue;
+            }
+            if heading {
+                call(interp, "insert", &[Value::String("Keyboard translations:\n\nYou type        Translation\n--------        -----------\n".into())], env)?;
+                heading = false;
+            }
+            let key = single_key_description_text(&Value::Integer(i64::from(translated)), false)?;
+            call(interp, "insert", &[Value::String(key.into())], env)?;
+            call(
+                interp,
+                "indent-to",
+                &[Value::Integer(16), Value::Integer(1)],
+                env,
+            )?;
+            let key = single_key_description_text(&Value::Integer(index as i64), false)?;
+            call(
+                interp,
+                "insert",
+                &[Value::String(key.into()), Value::String("\n".into())],
+                env,
+            )?;
+        }
+        call(interp, "insert", &[Value::String("\n".into())], env)?;
+    }
+    let translations = interp
+        .lookup_var("key-translation-map", env)
+        .unwrap_or(Value::Nil);
+    if !translations.is_nil() {
+        insert_keymap_description(
             interp,
-            &map,
-            &[],
-            prefix.as_deref(),
-            &mut visited,
-            &mut seen,
-            &mut output,
+            &mut description,
+            translations,
+            "Key translations".into(),
             env,
         )?;
     }
-
-    interp.insert_current_buffer(&output);
+    description[1] = Value::T;
+    description[6] = Value::Nil;
+    let terminal = interp
+        .lookup_var("overriding-terminal-local-map", env)
+        .unwrap_or(Value::Nil);
+    let overriding = if !terminal.is_nil() {
+        insert_keymap_description(
+            interp,
+            &mut description,
+            terminal,
+            "\x0c\nOverriding Bindings".into(),
+            env,
+        )?;
+        description[2] = Value::cons(description[0], description[2]);
+        Value::Nil
+    } else {
+        interp
+            .lookup_var("overriding-local-map", env)
+            .unwrap_or(Value::Nil)
+    };
+    if !overriding.is_nil() {
+        insert_keymap_description(
+            interp,
+            &mut description,
+            overriding,
+            "\x0c\nOverriding Bindings".into(),
+            env,
+        )?;
+        description[2] = Value::cons(description[0], description[2]);
+    } else {
+        let minor = with_keymap_description_buffer(interp, buffer, |interp| {
+            active_minor_mode_bindings(interp, env).map(crate::lisp::alloc::RootedVec::from_vec)
+        })?;
+        let property = with_keymap_description_buffer(interp, buffer, |interp| {
+            Ok(keymap_at_active_position(interp, None).unwrap_or(Value::Nil))
+        })?;
+        if !property.is_nil() {
+            insert_keymap_description(
+                interp,
+                &mut description,
+                property,
+                "\x0c\n`keymap' Property Bindings".into(),
+                env,
+            )?;
+            description[2] = Value::cons(description[0], description[2]);
+        }
+        for (mode, map) in minor.iter() {
+            insert_keymap_description(
+                interp,
+                &mut description,
+                *map,
+                format!("\x0c\n`{mode}' Minor Mode Bindings"),
+                env,
+            )?;
+            description[2] = Value::cons(description[0], description[2]);
+        }
+        let (local, is_buffer_map, major) =
+            with_keymap_description_buffer(interp, buffer, |interp| {
+                let normal = interp
+                    .lookup_var("current-local-map", env)
+                    .unwrap_or(Value::Nil);
+                let local = local_map_at_active_position(interp, None).unwrap_or(normal);
+                let major = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+                Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
+            })?;
+        if !local.is_nil() {
+            description[0] = local;
+            let title = if is_buffer_map {
+                let title = call(
+                    interp,
+                    "format",
+                    &[
+                        Value::String("\x0c\n`%s' Major Mode Bindings".into()),
+                        major,
+                    ],
+                    env,
+                )?;
+                string_like(&title).expect("format returns a string").text
+            } else {
+                "\x0c\n`local-map' Property Bindings".into()
+            };
+            insert_keymap_description(interp, &mut description, local, title, env)?;
+            description[2] = Value::cons(description[0], description[2]);
+        }
+    }
+    description[7] = Value::T;
+    let global = interp.current_global_map_value();
+    insert_keymap_description(
+        interp,
+        &mut description,
+        global,
+        "\x0c\nGlobal Bindings".into(),
+        env,
+    )?;
+    description[1] = Value::Nil;
+    description[2] = Value::Nil;
+    description[6] = Value::T;
+    description[7] = Value::Nil;
+    for (variable, title) in [
+        (
+            "local-function-key-map",
+            "\x0c\nFunction key map translations",
+        ),
+        ("input-decode-map", "\x0c\nInput decoding map translations"),
+    ] {
+        let map = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
+        if !map.is_nil() {
+            insert_keymap_description(interp, &mut description, map, title.into(), env)?;
+        }
+    }
     Ok(Value::Nil)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn collect_described_keymap_bindings(
+fn insert_keymap_description(
     interp: &mut Interpreter,
-    map: &Value,
-    prefix_parts: &[Value],
-    requested_prefix: Option<&str>,
-    visited: &mut HashSet<((bool, usize), Vec<usize>)>,
-    seen: &mut HashSet<String>,
-    output: &mut String,
+    args: &mut crate::lisp::alloc::RootedVec<Value>,
+    map: Value,
+    title: String,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some(identity) = keymap_value_identity(interp, map) else {
-        return Ok(());
-    };
-    if !visited.insert((identity, key_parts_identity(prefix_parts))) {
-        return Ok(());
-    }
-    let entries = keymap_direct_entries(interp, map, env)?;
-    for (event, value) in entries.iter() {
-        let mut parts = crate::lisp::alloc::RootedVec::from_vec(prefix_parts.to_vec());
-        parts.push(*event);
-        let key = key_parts_description(&parts)?;
-        let resolved = keymap_get_keyelt(interp, value, true, env)?;
-        if let Some(nested) = keymap_reference_map(interp, &resolved, env) {
-            collect_described_keymap_bindings(
-                interp,
-                &nested,
-                &parts,
-                requested_prefix,
-                visited,
-                seen,
-                output,
-                env,
-            )?;
-            continue;
-        }
-        if resolved.is_nil()
-            || !requested_prefix
-                .is_none_or(|prefix| key == prefix || key.starts_with(&format!("{prefix} ")))
-            || !seen.insert(key.clone())
-        {
-            continue;
-        }
-        output.push_str(&format!(
-            "{key:<16} {}\n",
-            keymap_binding_display_name(&resolved)
-        ));
-    }
+    args[0] = map;
+    args[4] = Value::String(title.into());
+    call_function_value(interp, &Value::symbol("help--describe-map-tree"), args, env)?;
     Ok(())
+}
+
+fn with_keymap_description_buffer<T>(
+    interp: &mut Interpreter,
+    buffer: Value,
+    body: impl FnOnce(&Interpreter) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let saved = interp.current_buffer_id();
+    let target = interp.resolve_buffer_id(&buffer)?;
+    interp.set_current_buffer_id(target)?;
+    let result = body(interp);
+    let restored = interp.set_current_buffer_id(saved);
+    result.and_then(|value| restored.map(|()| value))
 }
 
 pub(crate) fn reader_control_char(base: i64) -> Option<i64> {
@@ -4087,7 +4204,7 @@ pub(crate) fn help_describe_vector(
     let entries = interp
         .char_table_effective_ranges(table_id)
         .unwrap_or_default();
-    let mut ranges = Vec::<(u32, u32, Value, Value)>::new();
+    let mut ranges = crate::lisp::alloc::RootedVec::<(u32, u32, Value, Value)>::new();
 
     for entry in entries {
         for code in entry.start..=entry.end {
@@ -4142,7 +4259,7 @@ pub(crate) fn help_describe_vector(
     let output_buffer = Value::Buffer(interp.buffer);
     let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
-        for (start, end, definition, shadowed_by) in ranges {
+        for &(start, end, definition, shadowed_by) in ranges.iter() {
             if first {
                 interp.insert_current_buffer("\n");
                 first = false;
@@ -4152,10 +4269,10 @@ pub(crate) fn help_describe_vector(
                 parts.push(Value::Integer(i64::from(code)));
                 key_sequence_binding_text(&key_parts_to_sequence_value(&parts))
             };
-            interp.insert_current_buffer(&describe(start)?);
+            insert_described_key(interp, describe(start)?, env)?;
             if start != end {
                 interp.insert_current_buffer(" .. ");
-                interp.insert_current_buffer(&describe(end)?);
+                insert_described_key(interp, describe(end)?, env)?;
             }
             call_function_value(interp, &args[2], &[definition], env)?;
             if !shadowed_by.is_nil() {
@@ -4179,6 +4296,27 @@ pub(crate) fn help_describe_vector(
         result = Err(error);
     }
     result
+}
+
+// keymap.c:describe_key_maybe_fontify applies this property to each
+// endpoint independently. Keep the separator between range endpoints plain.
+fn insert_described_key(
+    interp: &mut Interpreter,
+    text: String,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let key = call(
+        interp,
+        "propertize",
+        &[
+            Value::String(text.into()),
+            Value::symbol("font-lock-face"),
+            Value::symbol("help-key-binding"),
+        ],
+        env,
+    )?;
+    call(interp, "insert", &[key], env)?;
+    Ok(())
 }
 
 /// Return GNU's current minor-mode stack as `(mode-variable, keymap)` pairs.

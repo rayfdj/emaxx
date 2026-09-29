@@ -1,6 +1,6 @@
 use super::*;
 use crate::lisp::primitives::string_like;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{CharTableRef, Kind};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,6 +8,192 @@ use std::path::PathBuf;
 thread_local! {
     static SEMANTIC_CPP_INCLUDE_TAG_CACHE: RefCell<HashMap<PathBuf, Vec<Value>>> =
         RefCell::new(HashMap::new());
+}
+
+// keymap.c keeps the Unicode menu-case table in a staticpro'd slot. The
+// existing serialized runtime owns this process slot, including host-thread
+// handoff; it is also an explicit image root below.
+static UNICODE_MENU_CASE_TABLE: crate::lisp::types::ProcessTable<Option<CharTableRef>> =
+    crate::lisp::types::ProcessTable::new();
+
+pub(crate) fn unicode_menu_case_table() -> Value {
+    UNICODE_MENU_CASE_TABLE.with_borrow(|table| table.map_or(Value::Nil, Value::CharTable))
+}
+
+pub(crate) fn restore_unicode_menu_case_table(value: Value) -> Result<(), String> {
+    let table = match value.kind() {
+        Kind::Nil => None,
+        Kind::CharTable(table) => Some(table),
+        _ => return Err("Unicode menu case table: expected nil or char-table".into()),
+    };
+    UNICODE_MENU_CASE_TABLE.with_borrow_mut(|slot| *slot = table);
+    Ok(())
+}
+
+fn lookup_key_once(
+    interp: &mut Interpreter,
+    keymap: Value,
+    key: Value,
+    accept_default: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let normalized = normalize_lucid_key_events(interp, &key, env)?;
+    interp.with_lisp_stack_roots(&(keymap, normalized), |interp| {
+        let parts = key_sequence_keymap_parts(&normalized)?;
+        let mut found = keymap_lookup_sequence_value_with_default(
+            interp,
+            &keymap,
+            &parts,
+            accept_default,
+            env,
+        )?;
+        // lookup_key_1 returns the first non-prefix length even when the
+        // non-prefix binding is nil. Other keymap callers still want nil.
+        if found.is_nil() {
+            for prefix_len in 1..parts.len() {
+                let prefix = keymap_lookup_sequence_value_with_default(
+                    interp,
+                    &keymap,
+                    &parts[..prefix_len],
+                    accept_default,
+                    env,
+                )?;
+                if keymap_reference_map(interp, &prefix, env).is_none() {
+                    found = Value::Integer(prefix_len as i64);
+                    break;
+                }
+            }
+        }
+        if let Kind::Integer(prefix_len) = found.kind() {
+            Ok(Value::Integer(key_sequence_prefix_event_count(
+                &normalized,
+                usize::try_from(prefix_len).unwrap_or(0),
+            )? as i64))
+        } else {
+            Ok(found)
+        }
+    })
+}
+
+fn lookup_key_value(
+    interp: &mut Interpreter,
+    keymap: Value,
+    key: Value,
+    accept_default: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut found = lookup_key_once(interp, keymap, key, accept_default, env)?;
+    if !found.is_nil() && !is_number_value(&found) {
+        return Ok(found);
+    }
+    // Flookup_key's compatibility fallback applies only to a vector whose
+    // original first event is menu-bar, after exact lookup has failed.
+    let Kind::Vector(original) = key.kind() else {
+        return Ok(found);
+    };
+    if !original
+        .get(0)
+        .is_some_and(|event| values_eq_in_env(interp, &event, &Value::symbol("menu-bar"), env))
+    {
+        return Ok(found);
+    }
+    let unicode = match unicode_menu_case_table().kind() {
+        Kind::CharTable(table) => table,
+        _ => {
+            let table = super::strings::call(
+                interp,
+                "unicode-property-table-internal",
+                &[Value::symbol("lowercase")],
+                env,
+            )?;
+            let Kind::CharTable(table) = table.kind() else {
+                return Ok(found);
+            };
+            if !table.is_uniprop() {
+                return Ok(found);
+            }
+            UNICODE_MENU_CASE_TABLE.with_borrow_mut(|slot| *slot = Some(table));
+            table
+        }
+    };
+    let local = interp.current_case_table_id();
+    let new_key = Value::vector(std::iter::repeat_n(Value::Nil, original.len()));
+    let Kind::Vector(converted) = new_key.kind() else {
+        unreachable!()
+    };
+    interp.with_lisp_stack_roots(
+        &vec![keymap, key, new_key, Value::CharTable(local)],
+        |interp| {
+            for table in [unicode, local] {
+                for index in 0..original.len() {
+                    let item = original.get(index).expect("vector length is fixed");
+                    if !item.is_symbol()
+                        && !(symbols_with_pos_enabled(interp, env)
+                            && symbol_with_pos_parts(interp, &item).is_some())
+                    {
+                        converted.set(index, item);
+                        continue;
+                    }
+                    let name = direct_symbol_name(interp, &[item], env)?;
+                    let string = string_like(&name).expect("symbol-name returns a string");
+                    let lowered = if !string.multibyte {
+                        super::strings::call(interp, "downcase", &[name], env)?
+                    } else {
+                        let mut text = String::new();
+                        let mut extended = Vec::new();
+                        for (position, code) in string.character_codes().into_iter().enumerate() {
+                            let mapped = interp
+                                .char_table_get(table, code as u32)
+                                .filter(|value| !value.is_nil())
+                                .map_or(Ok(code), |value| value.as_integer())?;
+                            match char_from_integer(mapped) {
+                                Ok(ch) => text.push(ch),
+                                Err(_) if (0..=0x3f_ffff).contains(&mapped) => {
+                                    extended.push((position, mapped as u32));
+                                    text.push(crate::lisp::json::INVALID_UNICODE_SENTINEL);
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        make_shared_string_value_with_extended_chars(
+                            text,
+                            Vec::new(),
+                            true,
+                            extended,
+                        )
+                    };
+                    converted.set(index, super::call(interp, "intern", &[lowered], env)?);
+                }
+                found = lookup_key_once(interp, keymap, new_key, accept_default, env)?;
+                if !found.is_nil() && !is_number_value(&found) {
+                    break;
+                }
+                for index in 0..converted.len() {
+                    let item = converted.get(index).expect("vector length is fixed");
+                    if !item.is_symbol() {
+                        continue;
+                    }
+                    let name = direct_symbol_name(interp, &[item], env)?;
+                    let string = string_like(&name).expect("symbol-name returns a string");
+                    if !string.text.contains(' ') {
+                        continue;
+                    }
+                    let dashed = make_shared_string_value_with_extended_chars(
+                        string.text.replace(' ', "-"),
+                        Vec::new(),
+                        true,
+                        string.extended_chars,
+                    );
+                    converted.set(index, super::call(interp, "intern", &[dashed], env)?);
+                }
+                found = lookup_key_once(interp, keymap, new_key, accept_default, env)?;
+                if !found.is_nil() && !is_number_value(&found) {
+                    break;
+                }
+            }
+            Ok(found)
+        },
+    )
 }
 
 fn map_keymap_direct_value(
@@ -232,25 +418,13 @@ define_dispatch!(
             "lookup-key" => {
                 keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 2, 3)?;
-                // keymap.c:lookup_key_1 applies the same Lucid event-list
-                // conversion as Fdefine_key.
-                let normalized_key = normalize_lucid_key_events(interp, &args[1], env)?;
-                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
-                let result = keymap_lookup_sequence_value_with_default(
+                lookup_key_value(
                     interp,
-                    &args[0],
-                    &key_parts,
+                    args[0],
+                    args[1],
                     args.get(2).is_some_and(Value::is_truthy),
                     env,
-                )?;
-                if let Kind::Integer(prefix_len) = result.kind() {
-                    let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
-                    Ok(Value::Integer(
-                        key_sequence_prefix_event_count(&normalized_key, prefix_len)? as i64,
-                    ))
-                } else {
-                    Ok(result)
-                }
+                )
             }
             "accessible-keymaps" => accessible_keymaps(interp, args, env),
             "current-minor-mode-maps" => {
@@ -1635,8 +1809,9 @@ pub(super) fn direct_symbol_name(
     Ok(symbol_name.lisp_name())
 }
 
-/// The cached include tags, a root of every collection while cached.
+/// Include tags and GNU's captured Unicode menu table are roots while cached.
 pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
+    mark(&unicode_menu_case_table());
     SEMANTIC_CPP_INCLUDE_TAG_CACHE.with_borrow(|cache| {
         for tags in cache.values() {
             for tag in tags {

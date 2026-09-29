@@ -1,0 +1,43 @@
+((nil t #("
+`report-mode-enabled' Minor Mode Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+x		minor-visible
+
+`report-major-mode' Major Mode Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+0 .. 9		number-command
+
+a		filtered-command
+
+Global Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+g		global-visible
+" 70 149 (face separator-line) 150 151 (font-lock-face help-key-binding face help-key-binding) 235 314 (face separator-line) 315 316 (font-lock-face help-key-binding) 320 321 (font-lock-face help-key-binding) 339 340 (font-lock-face help-key-binding face help-key-binding) 403 482 (face separator-line) 483 484 (font-lock-face help-key-binding face help-key-binding))) (nil t #("
+`report-mode-enabled' Minor Mode Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+x		minor-visible
+
+`report-major-mode' Major Mode Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+0 .. 9		number-command
+
+a		filtered-command
+
+<menu-bar> <report> <action>	menu-command
+
+Global Bindings:
+
+Key             Binding
+-------------------------------------------------------------------------------
+g		global-visible
+" 70 149 (face separator-line) 150 151 (font-lock-face help-key-binding face help-key-binding) 235 314 (face separator-line) 315 316 (font-lock-face help-key-binding) 320 321 (font-lock-face help-key-binding) 339 340 (font-lock-face help-key-binding face help-key-binding) 360 388 (font-lock-face help-key-binding face help-key-binding) 446 525 (face separator-line) 526 527 (font-lock-face help-key-binding face help-key-binding))) (nil t "") (wrong-type-argument bufferp))

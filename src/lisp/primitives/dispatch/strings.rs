@@ -362,31 +362,29 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0])
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                // character.c's unibyte_char_to_multibyte under the
-                // harness's unibyte environment: a non-ASCII byte becomes
-                // an eight-bit character ((string-make-multibyte "\300")
-                // is the raw byte 4194240), not a latin-1 character.
+                // fns.c:Fstring_make_multibyte preserves the original
+                // object and properties for multibyte or all-ASCII input.
+                if string.multibyte || string.text.is_ascii() {
+                    return Ok(args[0]);
+                }
                 let bytes = encode_raw_text_bytes(&string.text)?;
                 let text = bytes
-                    .iter()
-                    .map(|&byte| {
+                    .into_iter()
+                    .map(|byte| {
                         if byte <= 0x7F {
                             char::from(byte)
                         } else {
                             raw_byte_regex_char(byte)
                         }
                     })
-                    .collect::<String>();
-                let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
-                Ok(if string.props.is_empty() {
-                    if multibyte {
-                        make_shared_string_value_with_multibyte(text, Vec::new(), true)
-                    } else {
-                        Value::String(text.into())
-                    }
-                } else {
-                    make_shared_string_value_with_multibyte(text, string.props, multibyte)
-                })
+                    .collect();
+                // Converting actual non-ASCII bytes allocates a new string
+                // with no intervals, as GNU's make_uninit_multibyte_string.
+                Ok(make_shared_string_value_with_multibyte(
+                    text,
+                    Vec::new(),
+                    true,
+                ))
             }
             "string-as-multibyte" => {
                 // character.c str_as_multibyte: reinterpret the unibyte

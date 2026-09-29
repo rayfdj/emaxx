@@ -452,6 +452,7 @@ pub(crate) enum RootSlot {
     /// the view-to-record index (GNU's keymaps are the lists themselves).
     KeymapRecords = 55,
     SyntaxCodeObjects = 56,
+    UnicodeMenuCaseTable = 57,
 }
 
 impl RootSlot {
@@ -512,6 +513,7 @@ impl RootSlot {
             54 => Self::RememberedScalars,
             55 => Self::KeymapRecords,
             56 => Self::SyntaxCodeObjects,
+            57 => Self::UnicodeMenuCaseTable,
             _ => return None,
         })
     }

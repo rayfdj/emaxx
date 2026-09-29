@@ -583,6 +583,12 @@ impl Interpreter {
         // buffer_defaults' BVARs (remembered data in GNU): the standard
         // syntax, category and case tables; casetab.c's ASCII tables.
         groups.push((RootSlot::SyntaxCodeObjects, self.syntax_code_objects));
+        // keymap.c's staticpro'd Unicode table, including a captured table
+        // no longer named by char-code-property-alist.
+        groups.push((
+            RootSlot::UnicodeMenuCaseTable,
+            crate::lisp::primitives::unicode_menu_case_table(),
+        ));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1095,6 +1101,9 @@ mod install {
                 RootSlot::StandardCaseTable => {
                     self.standard_case_table_id =
                         opt_of(value, |v| expect_char_table(v, "standard case table"))?;
+                }
+                RootSlot::UnicodeMenuCaseTable => {
+                    crate::lisp::primitives::restore_unicode_menu_case_table(*value)?;
                 }
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();
