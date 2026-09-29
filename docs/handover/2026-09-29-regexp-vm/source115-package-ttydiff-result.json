@@ -1,0 +1,12 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 61.562704374999996,
+  "source_unchanged": true,
+  "inputs_unchanged": true,
+  "expected_scenarios": 1,
+  "started_scenarios": 1,
+  "complete_start_inventory": true,
+  "terminal_summary": [
+    "PASS: all scenarios match"
+  ]
+}

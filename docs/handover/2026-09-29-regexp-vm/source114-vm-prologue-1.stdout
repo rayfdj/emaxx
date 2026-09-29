@@ -1,0 +1,46 @@
+
+/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001003b7aec <emaxx::lisp::bytecode::vm::run_frames::{closure#0}>:
+1003b7aec: a9ba6ffc    	stp	x28, x27, [sp, #-0x60]!
+1003b7af0: a90167fa    	stp	x26, x25, [sp, #0x10]
+1003b7af4: a9025ff8    	stp	x24, x23, [sp, #0x20]
+1003b7af8: a90357f6    	stp	x22, x21, [sp, #0x30]
+1003b7afc: a9044ff4    	stp	x20, x19, [sp, #0x40]
+1003b7b00: a9057bfd    	stp	x29, x30, [sp, #0x50]
+1003b7b04: 910143fd    	add	x29, sp, #0x50
+1003b7b08: d10e43ff    	sub	sp, sp, #0x390
+1003b7b0c: f9400418    	ldr	x24, [x0, #0x8]
+1003b7b10: f90033f8    	str	x24, [sp, #0x60]
+1003b7b14: f8430f09    	ldr	x9, [x24, #0x30]!
+1003b7b18: b401fc29    	cbz	x9, 0x1003bba9c <emaxx::lisp::bytecode::vm::run_frames::{closure#0}+0x3fb0>
+1003b7b1c: aa0003e8    	mov	x8, x0
+1003b7b20: f9400015    	ldr	x21, [x0]
+1003b7b24: a9412817    	ldp	x23, x10, [x0, #0x10]
+1003b7b28: f9003bea    	str	x10, [sp, #0x70]
+1003b7b2c: f940140a    	ldr	x10, [x0, #0x28]
+1003b7b30: f9002fea    	str	x10, [sp, #0x58]
+1003b7b34: 90003b20    	adrp	x0, 0x100b1b000 <emaxx::lisp::modules::ACTIVE_RUNTIMES::{K#0}::{closure#0}::__RUST_STD_INTERNAL_VAL>
+1003b7b38: 91090000    	add	x0, x0, #0x240
+1003b7b3c: f940000a    	ldr	x10, [x0]
+1003b7b40: d63f0140    	blr	x10
+1003b7b44: f9002be0    	str	x0, [sp, #0x50]
+1003b7b48: 90003b20    	adrp	x0, 0x100b1b000 <emaxx::lisp::modules::ACTIVE_RUNTIMES::{K#0}::{closure#0}::__RUST_STD_INTERNAL_VAL>
+1003b7b4c: 9108a000    	add	x0, x0, #0x228
+1003b7b50: f940000a    	ldr	x10, [x0]
+1003b7b54: d63f0140    	blr	x10
+1003b7b58: f9401116    	ldr	x22, [x8, #0x20]
+1003b7b5c: a943290b    	ldp	x11, x10, [x8, #0x30]
+1003b7b60: a9042ff7    	stp	x23, x11, [sp, #0x40]
+1003b7b64: f90037ea    	str	x10, [sp, #0x68]
+1003b7b68: f9402108    	ldr	x8, [x8, #0x40]
+1003b7b6c: a90283e8    	stp	x8, x0, [sp, #0x28]
+1003b7b70: f9001ff5    	str	x21, [sp, #0x38]
+1003b7b74: 14000012    	b	0x1003b7bbc <emaxx::lisp::bytecode::vm::run_frames::{closure#0}+0xd0>
+1003b7b78: eb08017f    	cmp	x11, x8
+1003b7b7c: 1a9fb7e8    	cset	w8, ge
+1003b7b80: 7100011f    	cmp	w8, #0x0
+1003b7b84: 52800608    	mov	w8, #0x30               ; =48
+1003b7b88: 9a9f1109    	csel	x9, x8, xzr, ne

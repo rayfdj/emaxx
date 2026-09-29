@@ -1,0 +1,32 @@
+RUN [1/1] package-menu-install-refresh-remove
+MATCH [package-menu-install-refresh-remove::1:open-local-package-menu]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::2:filter-by-package-name]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::3:mark-package-install]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::4:show-install-confirmation]: text area identical (22 rows)
+DIVERGE [package-menu-install-refresh-remove::5:confirm-install]: 23 terminal difference(s)
+  row 2:
+    gnu  : '  ttydiff-package                1.0            installed             TTY packa$'
+    emaxx: 'I ttydiff-package                1.0            available    local    TTY packa$'
+  row 3:
+    gnu  : '  allout                         2.3            built-in              extensive$'
+    emaxx: ''
+  row 4:
+    gnu  : '  allout-widgets                 1.0            built-in              Visually $'
+    emaxx: ''
+  row 5:
+    gnu  : '  ansi-color                     3.4.2          built-in              translate$'
+    emaxx: ''
+  row 6:
+    gnu  : '  antlr-mode                     2.2.3          built-in              major mod$'
+    emaxx: ''
+  row 7:
+    gnu  : '  auth-source-pass               5.0.0          built-in              Integrate$'
+    emaxx: ''
+  row 8:
+    gnu  : '  backtrace                      1.0            built-in              generic m$'
+    emaxx: ''
+  row 9:
+    gnu  : '  bind-key                       2.4.1          built-in              A simple $'
+    emaxx: ''
+FAIL: 1 scenario(s) diverged
+{"exit_code": 1, "elapsed_seconds": 56.240727959000004, "source_unchanged": true, "inputs_unchanged": true, "checkpoint_count": 5, "failed_checkpoints": ["package-menu-install-refresh-remove::5:confirm-install"]}

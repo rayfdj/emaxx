@@ -1,0 +1,12 @@
+{
+  "exit_code": 1,
+  "elapsed_seconds": 3698.661957458,
+  "source_unchanged": true,
+  "inputs_unchanged": true,
+  "expected_scenarios": 223,
+  "started_scenarios": 223,
+  "complete_start_inventory": true,
+  "terminal_summary": [
+    "FAIL: 1 scenario(s) diverged"
+  ]
+}

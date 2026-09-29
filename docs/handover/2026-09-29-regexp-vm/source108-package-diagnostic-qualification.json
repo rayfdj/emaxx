@@ -1,0 +1,7 @@
+{
+  "scope": "Post-failure sample is diagnostic only, not controlled performance evidence.",
+  "source108_full_terminal": "223 started,222 match,1package checkpoint failure; original failure retained.",
+  "sample_limit": "Sampling awaited synchronously while PTY was not drained:1345/1737 samples blocked in write can be an observer artifact. 391 samples show package-menu post-refresh; 334 in tabulated list printing, with regexp table snapshots prominent. Do not attribute blocked write to production performance.",
+  "late_screen": "A screen captured after20 additional seconds reaches the installed state. This does not pass the original6-second checkpoint.",
+  "source114_commit": "c9ce1b2dc23cf20a400e3c2aa15d6afb6aebdb96"
+}

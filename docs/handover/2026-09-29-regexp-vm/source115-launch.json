@@ -1,0 +1,43 @@
+{
+  "commands": [
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "115",
+      "regexp",
+      "regex",
+      "syntax",
+      "category",
+      "case_table",
+      "char_table",
+      "--static"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "115",
+      "regexp",
+      "regex",
+      "syntax",
+      "category",
+      "case_table",
+      "char_table",
+      "--release"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "115",
+      "--ordinary"
+    ]
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Exact regexp table snapshot validation on published VM+hash source. Original test assertions and selectors retained. New adversarial same-input GNU fixture uses shared leaf mutation and replaced edges after GC. No performance or Linux GC completion claim."
+}

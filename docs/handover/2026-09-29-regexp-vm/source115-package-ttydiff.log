@@ -1,0 +1,13 @@
+RUN [1/1] package-menu-install-refresh-remove
+MATCH [package-menu-install-refresh-remove::1:open-local-package-menu]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::2:filter-by-package-name]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::3:mark-package-install]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::4:show-install-confirmation]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::5:confirm-install]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::6:refresh-package-menu]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::7:find-installed-package]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::8:mark-package-delete]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::9:show-delete-confirmation]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::10:confirm-delete]: text area identical (22 rows)
+MATCH [package-menu-install-refresh-remove::11:verify-package-removal]: text area identical (22 rows)
+PASS: all scenarios match

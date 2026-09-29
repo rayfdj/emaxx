@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-bytecode-original.el"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx": "42346870f9ecaba46bf4395393cb13503957f4b40ce383f3217231c874a64775",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx.pdmp": "4adc582f7a0132dd322641c689a757e419e79f7f006e91747bdebef3294a2382",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-suspended-bytecode-original.el": "9ff4cbb8c1c6851a7b0780ac3f8af7af7b5ddaf756d89174eec44949276e20d2"
+  },
+  "qualification": "Ordinary same-input diagnostic of a original suspended-bytecode live-root and post-exit reclamation contract; original failing release run remains failed. GNU source-matched, not frozen pin."
+}

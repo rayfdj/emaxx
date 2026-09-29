@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((case-fold-search nil)\n      (answers nil))\n  (with-temp-buffer\n    (let* ((parent (make-syntax-table))\n           (child (make-char-table 'syntax-table nil))\n           (descriptor (cons 1 nil))\n           (categories (make-category-table)))\n      (set-char-table-parent child parent)\n      (set-syntax-table child)\n      (set-category-table categories)\n      (define-category ?x \"snapshot category\" categories)\n      (dolist (character '(?a ?\\u03a9))\n        (set-char-table-range parent character descriptor)\n        (modify-category-entry character ?x categories))\n      (insert \"a\\u03a9\")\n      (goto-char (point-min))\n      ;; Warm both caches, including a shared descriptor and category set.\n      (dotimes (_ 2)\n        (push (list (looking-at \"\\\\w\") (looking-at \"\\\\cx\")) answers))\n      ;; The leaf identities stay fixed while their contents change.\n      (setcar descriptor 2)\n      (aset (aref categories ?a) ?x nil)\n      (push (list (looking-at \"\\\\w\") (looking-at \"\\\\cx\")) answers)\n      (forward-char)\n      (push (looking-at \"\\\\w\") answers)\n      ;; Disconnect the cached graph, collect, and allocate new payloads.\n      ;; Validation must reject the changed edge before reading old nodes.\n      (dolist (character '(?a ?\\u03a9))\n        (set-char-table-range parent character (cons 1 nil)))\n      (setq descriptor nil)\n      (garbage-collect)\n      (dotimes (index 600) (make-vector (+ 1 (% index 9)) index))\n      (push (looking-at \"\\\\w\") answers)\n      (modify-syntax-entry ?\\u03a9 \"w\" parent)\n      (push (looking-at \"\\\\w\") answers)\n      (goto-char (point-min))\n      (modify-category-entry ?a ?x categories)\n      (push (looking-at \"\\\\cx\") answers)))\n  (nreverse answers))\n)"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "7a979482649db10f97b815b03285ca933b6f02dc6d8d384068c5f9b537bbff81",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "9a5a17a8f75eaddbb65ac3d4e06e713d6628d85ae8f8f3d8e463f6e055d90f45",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/regexp-table-snapshot-mutation.el": "864223b0598aa1e0e0c49680bc0a0ae9228a91dad248261f64e412e30ab744bf",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/regexp-table-snapshot-mutation.expected": "292300a1e717b8e4ef983995e50afa168795998cedfefbf388fdbf9dfe70b1c1"
+  },
+  "source_manifest": "source115-manifest.json",
+  "scope": "Fresh ordinary source115 executable/image, same input and exact bytes. GNU source matched, not frozen pin. Native hash authority remains failing."
+}

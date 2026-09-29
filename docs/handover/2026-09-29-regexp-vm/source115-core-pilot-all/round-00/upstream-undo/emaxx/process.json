@@ -1,0 +1,41 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+    "--eval",
+    "(setq native-comp-jit-compilation nil load-no-native t)",
+    "-L",
+    "/private/tmp/emaxx-runtime-gnu-20260928/test",
+    "-l",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/compat/core_runtime_perf.el",
+    "--eval",
+    "(core-perf-run \"upstream-undo\" 1000 0 1 \"/private/tmp/emaxx-runtime-gnu-20260928\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-native/emaxx/comp-test-funcs.eln\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-pilot-all/round-00/upstream-undo/emaxx/report.json\")"
+  ],
+  "environment": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-pilot-all/environment/emaxx/home",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "timeout": false,
+  "startup_seconds": 0.2279679775238037,
+  "load_average_before": [
+    3.4677734375,
+    4.6708984375,
+    4.75390625
+  ],
+  "exit": 0,
+  "total_seconds": 1.746715334000001,
+  "user_seconds": 1.658356,
+  "system_seconds": 0.050366999999999995,
+  "peak_rss_bytes": 185909248,
+  "load_average_after": [
+    3.59033203125,
+    4.67626953125,
+    4.7548828125
+  ]
+}

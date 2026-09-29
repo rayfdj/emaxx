@@ -1,0 +1,71 @@
+{
+  "round": 0,
+  "runner": "emaxx",
+  "case_id": "bytecode-calls",
+  "process": {
+    "command": [
+      "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+      "--eval",
+      "(setq native-comp-jit-compilation nil load-no-native t)",
+      "-L",
+      "/private/tmp/emaxx-runtime-gnu-20260928/test",
+      "-l",
+      "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/compat/core_runtime_perf.el",
+      "--eval",
+      "(core-perf-run \"bytecode-calls\" 12000000 0 1 \"/private/tmp/emaxx-runtime-gnu-20260928\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-native/emaxx/comp-test-funcs.eln\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/round-00/bytecode-calls/emaxx/report.json\")"
+    ],
+    "environment": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/environment/emaxx/home",
+      "LANG": "C",
+      "LC_ALL": "C",
+      "TZ": "UTC",
+      "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+    },
+    "timeout": false,
+    "startup_seconds": 0.29651808738708496,
+    "load_average_before": [
+      2.82080078125,
+      3.18115234375,
+      3.36572265625
+    ],
+    "exit": 0,
+    "total_seconds": 1.3251761250000005,
+    "user_seconds": 1.259917,
+    "system_seconds": 0.030334999999999997,
+    "peak_rss_bytes": 161873920,
+    "load_average_after": [
+      2.7548828125,
+      3.1611328125,
+      3.357421875
+    ]
+  },
+  "observations": [
+    {
+      "index": 0,
+      "warmup": false,
+      "seconds": 0.42948079109191895,
+      "gc_count": 0,
+      "gc_seconds": 0.0,
+      "result": "71999994000000",
+      "allocation_before": {
+        "status": "unavailable",
+        "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+      },
+      "allocation_after": {
+        "status": "unavailable",
+        "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+      },
+      "heap_before": "((conses 16 211418 0) (symbols 48 19080 0) (strings 32 80535 0) (string-bytes 1 3392150) (vectors 16 22078) (vector-slots 8 504456 0) (floats 8 140 0) (intervals 56 24 0) (buffers 992 5))"
+    }
+  ],
+  "validation": "completed",
+  "modes": {
+    "driver": "interpreted",
+    "core-perf-byte-calls": "bytecode",
+    "core-perf-byte-add": "bytecode"
+  }
+}

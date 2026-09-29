@@ -1,0 +1,73 @@
+{
+  "scope": "Selected library tests directly; not a full gate or performance run",
+  "git": {
+    "head": "b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be",
+    "dirty": false
+  },
+  "filter": "lisp::primitives::tests::",
+  "timeout_seconds": 3600,
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "EMAXX_IMAGE_TEMPLATE": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/home/runner/work/emaxx/emaxx/emaxx/target/grouped-gate/fixture-images",
+    "CARGO_PROFILE_GATE_DEBUG": null,
+    "EMAXX_GC_VERIFY": null
+  },
+  "status": "selected diagnostic passed",
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5287effe3d3b10a7b7da10ec89117c030bb157373b3f2c32a006309a082bb873",
+    "artifact": "libtest"
+  },
+  "ignored_tests": [],
+  "total_tests": 2900,
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "test_command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 360.563595277,
+  "executed_tests": {
+    "count": 569
+  },
+  "source_after": {
+    "head": "b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be",
+    "dirty": false
+  },
+  "result": {
+    "status": "ok",
+    "passed": 569,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 2331,
+    "reported_seconds": 360.49
+  },
+  "expected_test_count": 569,
+  "files": {
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/metadata/oracle.txt": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/metadata/ci-bwrap.apparmor": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/summary.json": "cfecaf62ffa51777fa7cf3be79b9c4a8902413ee1dad9ea575d60cddfbca92b5",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/ignored-inventory.log": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/selected-inventory.log": "02ad8d1774fc801350a802d5de73f3a1dc8570497ab516059733207bfd8a9730",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/full-inventory.log": "16c0d4a2054a04ddd07b51628b00d03bbd51cf2642e2fb922c761dbab75a2c75",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/replay.log": "0183d84b0eba2c7607b63aca8c46fbad239722d9ca7d965ca7d920fcb0cea08d",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/libtest": "5287effe3d3b10a7b7da10ec89117c030bb157373b3f2c32a006309a082bb873",
+    "ordinary-linux-b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be/rust-replay/build.log": "9c72c0233dee90c7123192e767340036c1ff2af095cb6f58ea94e46a9d4f02b1"
+  },
+  "run_url": "https://github.com/rayfdj/emaxx/actions/runs/36427656115",
+  "qualification": "Whole primitives group only; full gate failure remains unresolved. Exact binary matches the failed full gate."
+}

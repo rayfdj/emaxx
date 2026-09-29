@@ -1,6 +1,15 @@
 # Resume the compact runtime goal here
 
-**Newest results:** source 109 completes the entire macOS gate: 2,890 library
+**Newest continuation:** read the [regexp and VM checkpoint](docs/runtime-representation-regexp-checkpoint.md)
+after the complete goal. Source 115 passes 152 debug and 152 release tests,
+strict static checks, four ordinary GNU comparisons and all 11 original package
+installation checkpoints. The latest full Linux run still fails after 2,177
+passes: a dead suspended-bytecode weak key remains. All 16 diagnostic workloads
+match results and execution modes but remain substantially slower than GNU;
+allocation accounting and parity are unfinished. The [portable evidence](docs/handover/2026-09-29-regexp-vm/manifest.json)
+preserves those results and all prior failures. The full goal remains open.
+
+**Previous results:** source 109 completes the entire macOS gate: 2,890 library
 passes, two existing ignores, 60 binary passes and 39 integration passes,
 including unchanged GNU native artifact identity. Linux completes with 2,174
 passes and one suspended-bytecode weak-key reclamation failure; its later
@@ -69,6 +78,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [newest regexp, VM and completed Linux continuation](docs/runtime-representation-regexp-checkpoint.md).
 2. [Latest combined-source continuation and profiling limits](docs/runtime-representation-integration-checkpoint.md).
    Then read the [completed validation and hash semantics continuation](docs/runtime-representation-hash-checkpoint.md).
 3. [Inline generic records and preserved failures](docs/runtime-representation-record-checkpoint.md).

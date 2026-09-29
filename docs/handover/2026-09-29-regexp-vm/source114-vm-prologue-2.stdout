@@ -1,0 +1,46 @@
+
+/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx:	file format mach-o arm64
+
+Disassembly of section __TEXT,__text:
+
+00000001003c0c9c <emaxx::lisp::bytecode::vm::run_fast>:
+1003c0c9c: d101c3ff    	sub	sp, sp, #0x70
+1003c0ca0: a9016ffc    	stp	x28, x27, [sp, #0x10]
+1003c0ca4: a90267fa    	stp	x26, x25, [sp, #0x20]
+1003c0ca8: a9035ff8    	stp	x24, x23, [sp, #0x30]
+1003c0cac: a90457f6    	stp	x22, x21, [sp, #0x40]
+1003c0cb0: a9054ff4    	stp	x20, x19, [sp, #0x50]
+1003c0cb4: a9067bfd    	stp	x29, x30, [sp, #0x60]
+1003c0cb8: 910183fd    	add	x29, sp, #0x60
+1003c0cbc: aa0303f3    	mov	x19, x3
+1003c0cc0: f9400069    	ldr	x9, [x3]
+1003c0cc4: f9401008    	ldr	x8, [x0, #0x20]
+1003c0cc8: eb08013f    	cmp	x9, x8
+1003c0ccc: 54000202    	b.hs	0x1003c0d0c <emaxx::lisp::bytecode::vm::run_fast+0x70>
+1003c0cd0: aa0403f6    	mov	x22, x4
+1003c0cd4: aa0203f5    	mov	x21, x2
+1003c0cd8: aa0103f8    	mov	x24, x1
+1003c0cdc: aa0003f7    	mov	x23, x0
+1003c0ce0: 91002039    	add	x25, x1, #0x8
+1003c0ce4: 5280031a    	mov	w26, #0x18              ; =24
+1003c0ce8: 3940009c    	ldrb	w28, [x4]
+1003c0cec: 5280003b    	mov	w27, #0x1               ; =1
+1003c0cf0: d2a7e008    	mov	x8, #0x3f000000         ; =1056964608
+1003c0cf4: f2e80008    	movk	x8, #0x4000, lsl #48
+1003c0cf8: b2402d08    	orr	x8, x8, #0xfff
+1003c0cfc: f90007e8    	str	x8, [sp, #0x8]
+1003c0d00: d0002251    	adrp	x17, 0x10080a000 <dyld_stub_binder+0x10080a000>
+1003c0d04: 91256231    	add	x17, x17, #0x958
+1003c0d08: 1400000d    	b	0x1003c0d3c <emaxx::lisp::bytecode::vm::run_fast+0xa0>
+1003c0d0c: aa0903f4    	mov	x20, x9
+1003c0d10: d2800000    	mov	x0, #0x0                ; =0
+1003c0d14: f9000274    	str	x20, [x19]
+1003c0d18: 14000276    	b	0x1003c16f0 <emaxx::lisp::bytecode::vm::run_fast+0xa54>
+1003c0d1c: f9400aa8    	ldr	x8, [x21, #0x10]
+1003c0d20: b4005d88    	cbz	x8, 0x1003c18d0 <emaxx::lisp::bytecode::vm::run_fast+0xc34>
+1003c0d24: d1000508    	sub	x8, x8, #0x1
+1003c0d28: f9000aa8    	str	x8, [x21, #0x10]
+1003c0d2c: f94012e8    	ldr	x8, [x23, #0x20]
+1003c0d30: aa1403e9    	mov	x9, x20
+1003c0d34: eb08029f    	cmp	x20, x8
+1003c0d38: 54fffec2    	b.hs	0x1003c0d10 <emaxx::lisp::bytecode::vm::run_fast+0x74>

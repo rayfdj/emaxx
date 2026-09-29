@@ -1,0 +1,92 @@
+{
+  "round": 0,
+  "runner": "oracle",
+  "case_id": "upstream-undo",
+  "process": {
+    "command": [
+      "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+      "--eval",
+      "(setq native-comp-jit-compilation nil load-no-native t)",
+      "-L",
+      "/private/tmp/emaxx-runtime-gnu-20260928/test",
+      "-l",
+      "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/compat/core_runtime_perf.el",
+      "--eval",
+      "(core-perf-run \"upstream-undo\" 1000 0 1 \"/private/tmp/emaxx-runtime-gnu-20260928\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-native/oracle/comp-test-funcs.eln\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/round-00/upstream-undo/oracle/report.json\")"
+    ],
+    "environment": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/environment/oracle/home",
+      "LANG": "C",
+      "LC_ALL": "C",
+      "TZ": "UTC",
+      "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+    },
+    "timeout": false,
+    "startup_seconds": 0.17956089973449707,
+    "load_average_before": [
+      3.48876953125,
+      3.29345703125,
+      3.39794921875
+    ],
+    "exit": 0,
+    "total_seconds": 0.34481795800000015,
+    "user_seconds": 0.270274,
+    "system_seconds": 0.037136999999999996,
+    "peak_rss_bytes": 65257472,
+    "load_average_after": [
+      3.48876953125,
+      3.29345703125,
+      3.39794921875
+    ]
+  },
+  "observations": [
+    {
+      "index": 0,
+      "warmup": false,
+      "seconds": 0.11935615539550781,
+      "gc_count": 5,
+      "gc_seconds": 0.036956,
+      "result": "passed/4000",
+      "allocation_before": {
+        "status": "available",
+        "counts": [
+          5934093,
+          373,
+          1047223,
+          20733,
+          7881092,
+          42,
+          105079
+        ]
+      },
+      "allocation_after": {
+        "status": "available",
+        "counts": [
+          7022341,
+          385,
+          3201475,
+          20793,
+          8407863,
+          16042,
+          159018
+        ]
+      },
+      "heap_before": "((conses 16 34362 45710) (symbols 48 4285 2) (strings 32 10851 1270) (string-bytes 1 672905) (vectors 16 5797) (vector-slots 8 46422 10048) (floats 8 23 1) (intervals 56 3 4) (buffers 992 3))"
+    }
+  ],
+  "validation": "completed",
+  "modes": {
+    "driver": "interpreted",
+    "undo-test0": "interpreted",
+    "undo-test1": "interpreted",
+    "undo-test2": "interpreted",
+    "undo-test5": "interpreted",
+    "undo": "bytecode",
+    "undo-more": "bytecode",
+    "primitive-undo": "bytecode"
+  }
+}

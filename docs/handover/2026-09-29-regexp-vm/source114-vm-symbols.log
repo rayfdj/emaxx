@@ -1,0 +1,8 @@
+00000001003b58a8 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run
+00000001003b7aec l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}
+00000001003c0c9c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_fast
+00000001003c1d2c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#1}
+00000001003c2388 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::eval::WindowConfigurationSnapshot), core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#2}>
+00000001003c25b4 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::types::Value), core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#3}>
+00000001003c297c l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#4}>
+00000001003c2b14 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#5}>

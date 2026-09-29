@@ -1,0 +1,6 @@
+{
+  "exact_match": true,
+  "source_unchanged": true,
+  "expected": "((1 t 0) (1 t 0))",
+  "qualification": "macOS ordinary comparison; default Linux full-gate failure remains unresolved"
+}

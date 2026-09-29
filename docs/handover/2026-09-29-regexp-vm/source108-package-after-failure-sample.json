@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/usr/bin/sample",
+    "57263",
+    "2",
+    "1",
+    "-file",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-package-after-failure.sample"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "Sampling process 57263 for 2 seconds with 1 millisecond of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 57263 written to file /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-package-after-failure.sample\n"
+}

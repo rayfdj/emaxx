@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (progn\n  (let ((functions\n         (eval '(let ((prefix \"captured-prefix\"))\n                  (list (lambda (left right)\n                          (and (equal prefix \"captured-prefix\")\n                               (equal left right)))\n                        (lambda (_key) (length prefix))))\n               t)))\n    (define-hash-table-test 'capture-check (car functions) (cadr functions)))\n  (let* ((old (make-hash-table :test 'capture-check :weakness 'key))\n         (key (copy-sequence \"retained-key\")))\n    (puthash key 'old-value old)\n    (define-hash-table-test 'capture-check\n      (lambda (_left _right) nil) (lambda (_key) 39))\n    (let ((new (make-hash-table :test 'capture-check))\n          (copy (copy-hash-table old)))\n      (puthash key 'new-value new)\n      (put 'capture-check 'hash-table-test nil)\n      (garbage-collect)\n      (let ((before (list (gethash (copy-sequence key) old 'absent)\n                          (gethash (copy-sequence key) new 'absent)\n                          (gethash (copy-sequence key) copy 'absent)\n                          (eq (hash-table-test copy) 'capture-check)\n                          (eq (hash-table-weakness copy) 'key))))\n        (clrhash copy)\n        (puthash key 'copied-value copy)\n        (remhash (copy-sequence key) old)\n        (append before\n                (list (gethash (copy-sequence key) copy 'absent)\n                      (hash-table-count old) (hash-table-count new)\n                      (hash-table-count copy)))))))\n)"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx": "42346870f9ecaba46bf4395393cb13503957f4b40ce383f3217231c874a64775",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx.pdmp": "4adc582f7a0132dd322641c689a757e419e79f7f006e91747bdebef3294a2382",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/tests/fixtures/hash-captured-functions.el": "67987c27fa2b6b0833862d618fe78990332ac7a2588e1855dde1f189675404a9",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/tests/fixtures/hash-captured-functions.expected": "7f73a5901e5da790fa32645ed6f063f7d0e0b4cfeec0a3aa0674bc6a5e898979"
+  },
+  "source_manifest": "source114-manifest.json",
+  "scope": "Fresh ordinary source114 executable/image, same input and exact bytes. GNU source matched, not frozen pin. Native hash authority remains failing."
+}

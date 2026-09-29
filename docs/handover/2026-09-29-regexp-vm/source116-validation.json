@@ -1,0 +1,56 @@
+{
+  "scope": "Diagnostic tooling only; original gate runtime, tests, selectors and profile unchanged.",
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools",
+        "-p",
+        "test_diagnose_rust_gate.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.0741195
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools",
+        "-p",
+        "test_grouped_gate.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.501955417
+    },
+    {
+      "command": [
+        "python3",
+        "tools/diagnose_rust_gate.py",
+        "--help"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.12212391600000005
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.04680783299999991
+    }
+  ],
+  "ast": "passed",
+  "workflow_bash_blocks": 7,
+  "source_unchanged": true
+}

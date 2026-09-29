@@ -1,0 +1,87 @@
+{
+  "round": 0,
+  "runner": "oracle",
+  "case_id": "bytecode-to-native",
+  "process": {
+    "command": [
+      "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+      "--eval",
+      "(setq native-comp-jit-compilation nil load-no-native t)",
+      "-L",
+      "/private/tmp/emaxx-runtime-gnu-20260928/test",
+      "-l",
+      "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/compat/core_runtime_perf.el",
+      "--eval",
+      "(core-perf-run \"bytecode-to-native\" 16000000 0 1 \"/private/tmp/emaxx-runtime-gnu-20260928\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-native/oracle/comp-test-funcs.eln\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/round-00/bytecode-to-native/oracle/report.json\")"
+    ],
+    "environment": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all/environment/oracle/home",
+      "LANG": "C",
+      "LC_ALL": "C",
+      "TZ": "UTC",
+      "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+    },
+    "timeout": false,
+    "startup_seconds": 0.18108272552490234,
+    "load_average_before": [
+      2.6943359375,
+      3.1416015625,
+      3.34912109375
+    ],
+    "exit": 0,
+    "total_seconds": 0.3702054169999993,
+    "user_seconds": 0.30741599999999997,
+    "system_seconds": 0.026969999999999997,
+    "peak_rss_bytes": 53526528,
+    "load_average_after": [
+      2.6943359375,
+      3.1416015625,
+      3.34912109375
+    ]
+  },
+  "observations": [
+    {
+      "index": 0,
+      "warmup": false,
+      "seconds": 0.16178297996520996,
+      "gc_count": 0,
+      "gc_seconds": 0.0,
+      "result": "128000008000000",
+      "allocation_before": {
+        "status": "available",
+        "counts": [
+          5840272,
+          358,
+          1017018,
+          19483,
+          7345505,
+          43,
+          96017
+        ]
+      },
+      "allocation_after": {
+        "status": "available",
+        "counts": [
+          5846185,
+          365,
+          1020568,
+          19629,
+          7387424,
+          43,
+          97039
+        ]
+      },
+      "heap_before": "((conses 16 14524 15625) (symbols 48 3037 8) (strings 32 4762 477) (string-bytes 1 258502) (vectors 16 2642) (vector-slots 8 22515 7140) (floats 8 11 1) (intervals 56 4 3) (buffers 992 3))"
+    }
+  ],
+  "validation": "completed",
+  "modes": {
+    "driver": "interpreted",
+    "core-perf-byte-native": "bytecode",
+    "comp-tests-fixnum-1-plus-f": "native"
+  }
+}

@@ -1,0 +1,2 @@
+CORE-PERF-READY 1790604229.001302004
+CORE-PERF-SAMPLE {"index":0,"warmup":false,"seconds":0.19118189811706543,"gc_count":0,"gc_seconds":0.0,"result":"2000001000000","allocation_before":{"status":"available","counts":[5839818,358,1016686,19483,7345386,43,96004]},"allocation_after":{"status":"available","counts":[5845737,365,1020236,19629,7387256,43,97025]},"heap_before":"((conses 16 14558 15137) (symbols 48 3037 8) (strings 32 4760 479) (string-bytes 1 258512) (vectors 16 2641) (vector-slots 8 22510 6634) (floats 8 11 1) (intervals 56 4 3) (buffers 992 3))"}

@@ -1,5 +1,10 @@
 # Hash semantics and completed macOS validation — 28 September 2026
 
+The [subsequent regexp and VM continuation](runtime-representation-regexp-checkpoint.md)
+records completed replay and terminal results, the validated VM checkpoint's
+remaining full Linux failure, and the regexp improvement. Pending statements
+below describe this earlier checkpoint's packaging time.
+
 The [complete runtime goal](runtime-representation-goal.md) remains open.
 The [portable receipts](handover/2026-09-28-validation-and-hash-semantics/manifest.json)
 preserve the completed validation, new failed baselines, semantic repairs and
