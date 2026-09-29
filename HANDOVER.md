@@ -4,7 +4,11 @@
 combines two measured ordinary-path improvements, with 232 debug and 232 release
 passes, strict static checks and all 16 workload result/mode checks. Complete
 gates for this newer source now pass: 2,993 tests on macOS and 3,005 on Linux,
-with two existing ignores each. PR #75 integrates this follow-up. The previous checkpoint is already
+with two existing ignores each. PR #75 integrates this follow-up at `49d0c25b`.
+Its fresh full terminal run passes all 223 scenarios against source-matched GNU.
+The Linux frozen comparison fails after 500 of 519 files: two differ, then the
+keymap report's invalid UTF-8 stops parsing; 18 later files never run. Complete
+raw evidence and limits are linked from the checkpoint. The previous checkpoint is already
 merged into `main` at `bf483660` through PR #74. Full goal completion remains open.
 
 **Newest continuation:** read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md)

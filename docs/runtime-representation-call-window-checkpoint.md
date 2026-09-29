@@ -80,6 +80,26 @@ scenarios did not run. The source and inputs were unchanged. A diagnostic replay
 of the original scenario passed all three checkpoints with the original
 120-second timeout, while recording raw terminal output and both clocks. It
 does not turn the failed full run into a pass. A separate replay of the failed
-scenario and remaining tail is underway. Full final-source pinned comparisons, shared hash allocation, remaining representation and
+scenario and remaining tail now passes all 77 scenarios in 1,639.31 seconds.
+
+Source 119 also completes a fresh full terminal comparison: all 223 scenarios
+match in 3,428.97 seconds. Its complete inventory, original actions and timeouts,
+source, executable and image remain unchanged. The GNU candidate matches the
+source and native ABI configuration, but is not the frozen Darwin executable.
+
+The [Linux frozen run on main](https://github.com/rayfdj/emaxx/actions/runs/36518176955)
+at `49d0c25b50b41bf5a3163ca5853b246864df327f` fails with incomplete inventory.
+Of 519 contracted files, 500 finish comparison: 498 match and two differ, with
+7,411 matching and three mismatching test outcomes. `gv-tests.el` has an error
+message difference. Two stdout controls in `emacs-tests.el` fail with SIGSYS;
+their retained backtraces identify `pthread_getattr_np` calling
+`pthread_getaffinity_np`. The next file, `keymap-tests.el`, produces invalid
+UTF-8 in Emaxx's JSON report, stopping the parser. Eighteen later files remain
+unexecuted. No decoder relaxation, selector change or oracle-lock update is
+applied. The [complete compatibility receipts](handover/2026-09-29-call-window-compat/manifest.json)
+preserve both terminal runs and every downloaded Linux report, including the
+original malformed bytes. These failures need diagnosis and repair.
+
+Full final-source pinned comparisons, shared hash allocation, remaining representation and
 ownership work, accounting, the adversarial audit and performance parity remain
 unfinished.
