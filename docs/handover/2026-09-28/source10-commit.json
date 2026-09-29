@@ -1,0 +1,7 @@
+{
+  "commit": "803e4326a16b7bfe13bb0b757ee85c8b02ac3998",
+  "source_manifest": "char-table-source-10.json",
+  "all_recorded_source_hashes_match": true,
+  "worktree_clean": true,
+  "publication": "Automatic approval review rejected git push -u origin runtime-char-tables; explicit user approval is pending. No push performed."
+}

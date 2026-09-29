@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source65-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((left (position-symbol 'position-equality-probe 23)) (right (position-symbol 'position-equality-probe 23))) (list (let ((symbols-with-pos-enabled nil)) (list (eq left left) (eq left right) (eql left right) (equal left right) (equal-including-properties left right))) (let ((symbols-with-pos-enabled t)) (list (eq left right) (eql left right) (equal left right) (equal-including-properties left right) (eq left 'position-equality-probe))))))"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.7561792079999999,
+  "stdout": "((t nil nil t t) (t t t t t))",
+  "stderr": "",
+  "binary_sha256": "66737f4709695e254325af713a1c1f8be1c784b03b5d36b1bfc4517deab48e6f",
+  "image_sha256": "65de500d674d5c2af40d9accb0cd0fa4ad9a71b2ba9336e53283999b52724c56",
+  "qualification": "Source65 ordinary source-matched diagnostic, not frozen/performance certification."
+}

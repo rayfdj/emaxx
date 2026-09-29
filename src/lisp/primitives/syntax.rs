@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,9 +184,7 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
         class,
         ..SyntaxEntry::default()
     };
-    if matches!(class, SyntaxClass::OpenParen | SyntaxClass::CloseParen) {
-        entry.matching = chars.next();
-    }
+    entry.matching = chars.next().filter(|ch| *ch != ' ' && *ch != '\0');
     for flag in chars {
         match flag {
             '1' => entry.start_first = true,
@@ -215,7 +214,7 @@ mod syntax_spec_tests {
         assert!(entry.nested);
         assert!(entry.prefix);
 
-        let word = parse_syntax_spec("w2c").expect("valid word syntax");
+        let word = parse_syntax_spec("w 2c").expect("valid word syntax");
         assert_eq!(word.class, SyntaxClass::Word);
         assert!(word.start_second);
         assert!(word.style_c);
@@ -259,11 +258,15 @@ fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
     code
 }
 
-pub(super) fn syntax_entry_value(entry: SyntaxEntry) -> Value {
+pub(super) fn syntax_entry_value(interp: &Interpreter, entry: SyntaxEntry) -> Value {
     if entry.class == SyntaxClass::Inherit {
         return Value::Nil;
     }
-    let code = Value::Integer(syntax_entry_code(entry));
+    let raw_code = syntax_entry_code(entry);
+    if raw_code < 16 && entry.matching.is_none() {
+        return interp.syntax_code_object(raw_code as usize);
+    }
+    let code = Value::Integer(raw_code);
     Value::cons(
         code,
         entry
@@ -385,16 +388,6 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
     (description, entry.prefix)
 }
 
-pub(super) fn char_table_public_value(interp: &Interpreter, table_id: u64, value: Value) -> Value {
-    if interp.char_table_subtype(table_id).flatten().as_deref() == Some("syntax-table")
-        && let Some(spec) = string_like(&value)
-        && let Some(entry) = parse_syntax_spec(&spec.text)
-    {
-        return syntax_entry_value(entry);
-    }
-    value
-}
-
 // GNU standard-syntax-table classes for characters a syntax table leaves
 // unset: `$'/`%' are word constituents, `&*+-/<=>|_' symbol constituents,
 // alongside the usual delimiter/escape assignments.
@@ -429,11 +422,11 @@ fn default_syntax_entry(ch: char) -> SyntaxEntry {
     }
 }
 
-pub(crate) fn standard_syntax_table_default_value(code: u32) -> Option<Value> {
-    char::from_u32(code).map(|ch| syntax_entry_value(default_syntax_entry(ch)))
-}
-
-pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
+pub(super) fn syntax_entry_for_code(
+    interp: &Interpreter,
+    table_id: CharTableRef,
+    code: u32,
+) -> SyntaxEntry {
     // GNU character codes include the raw-byte range above Unicode's scalar
     // limit.  Keep the public code as the char-table key, but use the shared
     // character boundary to obtain Emaxx's internal marker when a default
@@ -441,16 +434,7 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
     let Ok(ch) = char_from_integer(i64::from(code)) else {
         return SyntaxEntry::default();
     };
-    let Some((explicit, terminal)) = interp.char_table_explicit_or_terminal(table_id, code) else {
-        return default_syntax_entry(ch);
-    };
-    let value = match explicit {
-        Some(value) => value,
-        None if terminal.id == interp.standard_syntax_table_id() && terminal.default.is_nil() => {
-            return default_syntax_entry(ch);
-        }
-        None => &terminal.default,
-    };
+    let value = table_id.get(code);
     let entry = match value.kind() {
         Kind::Nil => SyntaxEntry {
             // A nil entry in a syntax table denotes whitespace.  In
@@ -481,7 +465,7 @@ pub(super) fn current_syntax_word_char(
     class == SyntaxClass::Word || (include_symbols && class == SyntaxClass::Symbol)
 }
 
-fn syntax_entry_for_char(interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
+fn syntax_entry_for_char(interp: &Interpreter, table_id: CharTableRef, ch: char) -> SyntaxEntry {
     syntax_entry_for_code(interp, table_id, ch as u32)
 }
 
@@ -557,7 +541,7 @@ fn syntax_class_from_code(code: i64) -> Option<SyntaxClass> {
 // per character.  A mid-scan table or property mutation is observed at
 // the next interval crossing, exactly as in GNU.
 pub(super) struct SyntaxScan {
-    table_id: u64,
+    table_id: CharTableRef,
     use_properties: bool,
     b_property: usize,
     e_property: usize,
@@ -570,16 +554,16 @@ pub(super) struct SyntaxScan {
 
 #[derive(Clone, Copy)]
 enum EffectiveSyntax {
-    Table(u64),
+    Table(CharTableRef),
     Direct(SyntaxEntry),
 }
 
 impl SyntaxScan {
-    pub(super) fn table_id(&self) -> u64 {
+    pub(super) fn table_id(&self) -> CharTableRef {
         self.table_id
     }
 
-    pub(super) fn new(interp: &Interpreter, table_id: u64) -> Self {
+    pub(super) fn new(interp: &Interpreter, table_id: CharTableRef) -> Self {
         // syntax.c:253 (SETUP_SYNTAX_TABLE): the property machinery arms
         // only when `parse-sexp-lookup-properties' is non-nil.
         let use_properties = interp
@@ -649,7 +633,12 @@ impl SyntaxScan {
         }
     }
 
-    fn table_entry(&mut self, interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
+    fn table_entry(
+        &mut self,
+        interp: &Interpreter,
+        table_id: CharTableRef,
+        ch: char,
+    ) -> SyntaxEntry {
         let index = ch as usize;
         if index < 128 {
             if let Some(entry) = self.ascii_memo[index] {
@@ -665,7 +654,7 @@ impl SyntaxScan {
 
 fn syntax_entry_at_buffer_position(
     interp: &Interpreter,
-    table_id: u64,
+    table_id: CharTableRef,
     ch: char,
     pos: usize,
 ) -> SyntaxEntry {
@@ -715,7 +704,7 @@ fn matching_open_char(ch: char, entry: SyntaxEntry) -> Option<char> {
     })
 }
 
-fn newline_comment_end_style(interp: &Interpreter, table_id: u64) -> Option<u8> {
+fn newline_comment_end_style(interp: &Interpreter, table_id: CharTableRef) -> Option<u8> {
     let entry = syntax_entry_for_code(interp, table_id, '\n' as u32);
     (entry.class == SyntaxClass::CommentEnd).then(|| scan_comment_style(&entry, None))
 }
@@ -945,7 +934,7 @@ fn skip_comment_with_status(
 
 fn skip_whitespace_forward(
     interp: &Interpreter,
-    table_id: u64,
+    table_id: CharTableRef,
     chars: &ScanChars,
     pos: usize,
 ) -> usize {
@@ -1548,7 +1537,7 @@ fn find_defun_start_gnu(
 fn back_comment_gnu(
     interp: &mut Interpreter,
     env: &mut Env,
-    table_id: u64,
+    table_id: CharTableRef,
     chars: &ScanChars,
     comment_end: usize,
     stop: usize,

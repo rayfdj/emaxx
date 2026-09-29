@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 /// Map an Emacs character code to a Rust char, translating the raw-byte
@@ -117,17 +118,23 @@ define_dispatch!(
             }
             "record" => {
                 need_args(name, args, 1)?;
-                Ok(interp.create_record_with_type(args[0], args[1..].to_vec()))
+                check_record_data_slots(args.len() - 1)?;
+                Ok(Value::LispRecord(crate::lisp::types::LispRecordRef::new(
+                    args[0],
+                    &args[1..],
+                )))
             }
             "make-record" => {
                 need_args(name, args, 3)?;
-                let length = args[1].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
-                Ok(interp.create_record_with_type(
-                    args[0],
-                    std::iter::repeat_n(args[2], length as usize).collect(),
+                // alloc.c:Fmake_record uses CHECK_FIXNAT (wholenump),
+                // before either checking the record limit or allocating.
+                let length = match args[1].kind() {
+                    Kind::Integer(length) if length >= 0 => length as usize,
+                    _ => return Err(LispError::WrongTypeArgument("wholenump".into(), args[1])),
+                };
+                check_record_data_slots(length)?;
+                Ok(Value::LispRecord(
+                    crate::lisp::types::LispRecordRef::filled(args[0], length, args[2]),
                 ))
             }
             "make-finalizer" => {
@@ -888,7 +895,7 @@ define_dispatch!(
                     let letter = spec.chars().next().unwrap_or('\0');
                     LispError::Signal(format!("Invalid syntax description letter: {letter}"))
                 })?;
-                Ok(syntax::syntax_entry_value(entry))
+                Ok(syntax::syntax_entry_value(interp, entry))
             }
             "internal-describe-syntax-value" => {
                 need_args(name, args, 1)?;
@@ -986,7 +993,7 @@ define_dispatch!(
                 let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
+                if !table_id.has_purpose("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
                 }
                 let character = unicode_property_character(&args[1])?;
@@ -1000,7 +1007,7 @@ define_dispatch!(
                 let Kind::CharTable(table_id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
+                if !table_id.has_purpose("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
                 }
                 let character = unicode_property_character(&args[1])?;
@@ -1026,7 +1033,7 @@ pub(crate) fn uniprop_table_id(
     interp: &mut Interpreter,
     property: &str,
     env: &mut Env,
-) -> Option<u64> {
+) -> Option<CharTableRef> {
     match (registered_unicode_property(interp, property, env).ok()??).kind() {
         Kind::CharTable(table_id) => Some(table_id),
         _ => None,
@@ -1035,7 +1042,11 @@ pub(crate) fn uniprop_table_id(
 
 /// CHAR_TABLE_REF over a Unicode property table, decoding the compressed
 /// representation the generated `uni-*.el' tables use.
-pub(crate) fn uniprop_table_ref(interp: &Interpreter, table_id: u64, code: u32) -> Option<Value> {
+pub(crate) fn uniprop_table_ref(
+    interp: &Interpreter,
+    table_id: CharTableRef,
+    code: u32,
+) -> Option<Value> {
     let raw = interp.char_table_get(table_id, code)?;
     let decoded = decode_unicode_property_value(interp, table_id, raw).ok()?;
     (!decoded.is_nil()).then_some(decoded)
@@ -1099,7 +1110,7 @@ fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
 
 pub(crate) fn decode_unicode_property_value(
     interp: &Interpreter,
-    table_id: u64,
+    table_id: CharTableRef,
     value: Value,
 ) -> Result<Value, LispError> {
     if interp.char_table_extra_slot(table_id, 1) != Some(Value::Integer(0)) {
@@ -1138,7 +1149,7 @@ fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError
 
 fn encode_unicode_property_value(
     interp: &mut Interpreter,
-    table_id: u64,
+    table_id: CharTableRef,
     value: &Value,
 ) -> Result<Value, LispError> {
     let Some(Kind::Integer(encoder)) = interp.char_table_extra_slot(table_id, 2).map(|v| v.kind())

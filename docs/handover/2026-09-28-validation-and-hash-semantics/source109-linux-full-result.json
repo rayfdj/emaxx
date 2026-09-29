@@ -1,0 +1,88 @@
+{
+  "source": "f3842fb56d5b65f9b8df9b13abfab92cdcc25768",
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36422855934",
+  "status": "FAILED",
+  "passed": 2174,
+  "failed": 1,
+  "failure": "suspended_bytecode_retains_operand_and_unwind_roots: ((1 t 1) (1 t 0)) vs ((1 t 0) (1 t 0))",
+  "unexecuted": "Remaining4librarygroups and allCargo stages",
+  "debug_diagnostic_binary_differed": true,
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5287effe3d3b10a7b7da10ec89117c030bb157373b3f2c32a006309a082bb873"
+  },
+  "files": {
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/metadata/ci-bwrap.apparmor": {
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/metadata/oracle.txt": {
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/build.log": {
+      "bytes": 174752,
+      "sha256": "aaa3a09241461b44d324cb7dc13801e5acf4d36342acef4eae26e13d46f59beb"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/ignored-inventory.txt": {
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/inventory.txt": {
+      "bytes": 255243,
+      "sha256": "5f6af63725950897fc01ab02aef5dc9a95a3a6f9b497ad9ce891137cd66310e2"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_01.json": {
+      "bytes": 458,
+      "sha256": "284b11e34129360d2e369ad09de3765355efc1db8daa4d0e431a609856de3a98"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_01.log": {
+      "bytes": 36487,
+      "sha256": "1bc121f3aed5288cbcd4e5b98e52a162fe5a66e8f6bb0b14db6347e6813c31ef"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_02.json": {
+      "bytes": 458,
+      "sha256": "813a9c43861d6846d3121ce30c706bd77c9317fde0b9db9d18eaeae41e2ddc7b"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_02.log": {
+      "bytes": 66512,
+      "sha256": "f515ea57131c67d2fbf47c1318e0c8030804a166dd5aa5a9b2f09310b8976bab"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_03.json": {
+      "bytes": 453,
+      "sha256": "eb8ea30326af803ce050aa58da0b6a8672e89b8d4aef38a6c2e9e30bf3a2dc6a"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_03.log": {
+      "bytes": 30398,
+      "sha256": "00ca989cd9aab2e290a4684848609dfb1a64acec800695e8ed6cdf58c8a3e240"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_04.json": {
+      "bytes": 458,
+      "sha256": "0d56e1e1b94edeccea859ac0eedc55676cc855880a8b17886d95483ef54020e9"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_04.log": {
+      "bytes": 24398,
+      "sha256": "11fff8c671fac4b8a9e34b06c09a28af092e168f74db5323e0581453d34479f1"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_05.json": {
+      "bytes": 453,
+      "sha256": "cb5b81077b1a51a214a78313573b51465bd28fefeeb974833803a0f1c29da271"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-eval_05.log": {
+      "bytes": 69321,
+      "sha256": "57419f6e0719dcb55650d621bf4ebeeea0eb8597e37ba168b2c53df71e06d7bf"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-primitives.json": {
+      "bytes": 462,
+      "sha256": "07cf2f1c216d404ba769be60e4ba5c8b062acc19ad90b645e42f13d0c84107ce"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/repeat-01-primitives.log": {
+      "bytes": 56994,
+      "sha256": "bf5b2d4da2663768d5b8c6db5c1d0f79f27f4932c07b5a155c72985aaf8d9752"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust/summary.json": {
+      "bytes": 1882,
+      "sha256": "f09604d602d4fdc375a781f670915142ac1e8e4ac130a16b21bebf96011022c6"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source91-debug-libtest",
+    "--list"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.03638479099999999,
+  "binary_sha256": "f8152e1bf809b250cb1c1daba99e56e77edff071c5373e7be3ce4a66ed6f51a1"
+}

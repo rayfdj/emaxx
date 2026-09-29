@@ -1,0 +1,87 @@
+diff --git a/src/lisp/native_comp/runtime.rs b/src/lisp/native_comp/runtime.rs
+index 33dea35e..534c161d 100644
+--- a/src/lisp/native_comp/runtime.rs
++++ b/src/lisp/native_comp/runtime.rs
+@@ -9920,6 +9920,82 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn native_hash_tables_expose_the_authoritative_gnu_entry_array() {
++        // lisp.h:Lisp_Hash_Table, verified with the configured GNU C
++        // compiler: 72-byte payload; key_and_value at24, count at48 and
++        // table_size at56. fns.c uses PVEC_HASH_TABLE (14), with no inline
++        // Lisp slots. HASH_VALUE reads the actual out-of-line array.
++        extern "C" fn replace_first_value(table: NativeWord, value: NativeWord) -> NativeWord {
++            // The checked header and dimensions below precede this call.
++            // There is no live Rust borrow of the array during the store.
++            unsafe {
++                let base = (table & !TAG_MASK) as *mut u8;
++                let entries = base.add(24).cast::<*mut NativeWord>().read();
++                entries.add(1).write(value);
++            }
++            table
++        }
++
++        let mut interpreter = Interpreter::new();
++        let mut environment = Env::new();
++        let first_key = Value::symbol("native-hash-first-key");
++        let second_key = Value::Integer(-39);
++        let table = crate::lisp::json::make_hash_table_with_capacity(
++            &mut interpreter,
++            "eq",
++            vec![
++                (first_key, Value::Integer(17)),
++                (second_key, Value::Integer(29)),
++            ],
++            8,
++        );
++        let mut runtime = NativeRuntime::default();
++        let word = runtime.heap.encode(&table).expect("ordinary table word");
++        assert_eq!(word, table.word());
++        let base = (word & !TAG_MASK) as *const u8;
++        // Every vectorlike allocation has this header. Refuse the wrong
++        // type before interpreting any subsequent byte as a GNU hash field.
++        let header = unsafe { base.cast::<NativeWord>().read() };
++        assert_eq!((header >> 24) & 0x3f, 14, "GNU PVEC_HASH_TABLE");
++        assert_eq!(header & 0xfff, 0, "no inline Lisp slots");
++        assert_eq!((header >> 12) & 0xfff, 8, "eight non-Lisp payload words");
++        let (count, capacity, entries) = unsafe {
++            (
++                base.add(48).cast::<i32>().read(),
++                base.add(56).cast::<i32>().read(),
++                base.add(24).cast::<*const NativeWord>().read(),
++            )
++        };
++        assert_eq!(count, 2);
++        assert_eq!(capacity, 8);
++        assert!(!entries.is_null());
++        assert_eq!(unsafe { entries.read() }, first_key.word());
++        assert_eq!(unsafe { entries.add(1).read() }, Value::Integer(17).word());
++        assert_eq!(unsafe { entries.add(2).read() }, second_key.word());
++
++        let replacement = Value::vector([table, Value::string("native-hash-payload")]);
++        let result = runtime
++            .invoke(
++                &mut interpreter,
++                &mut environment,
++                replace_first_value as *const c_void,
++                NativeCallingConvention::Fixed,
++                &[table, replacement],
++            )
++            .expect("native hash value slot write");
++        assert_eq!(result, table);
++        let observed = crate::lisp::primitives::call(
++            &mut interpreter,
++            "gethash",
++            &[first_key, table],
++            &mut environment,
++        )
++        .expect("ordinary gethash observes the native store");
++        assert_eq!(observed.word(), replacement.word());
++        assert_eq!(crate::lisp::alloc::conservative_value(word), Some(table));
++    }
++
+     #[test]
+     fn native_terminals_share_words_and_the_authoritative_parameter_slot() {
+         extern "C" fn replace_parameters(

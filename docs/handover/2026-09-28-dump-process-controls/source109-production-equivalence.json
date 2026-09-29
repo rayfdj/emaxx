@@ -1,0 +1,10 @@
+{
+  "changed_software_files": [
+    "src/lisp/primitives/tests.rs"
+  ],
+  "production_source_unchanged": true,
+  "comparison_baseline": "source108-manifest.json",
+  "current_source": "source109-manifest.json",
+  "ordinary_evidence_binary": "source108-ordinary-artifacts.json",
+  "qualification": "No ordinary rebuild claimed; exact existing installation is reused for GNU semantic controls because only Rust test code changed."
+}

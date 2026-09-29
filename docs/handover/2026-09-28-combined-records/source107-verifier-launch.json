@@ -1,0 +1,7 @@
+{
+  "driver": "launch-source107.py",
+  "underlying_driver": "validate-frame-snapshot-v2.py",
+  "source": 107,
+  "parent_snapshot": 106,
+  "change": "Keep eager-expanded progn snapshot live during evaluation of its subforms; unchanged original ERT test and one new GNU-confirmed regression fixture. Source106 signature bookkeeping edit retained. Formatting completed before snapshot."
+}

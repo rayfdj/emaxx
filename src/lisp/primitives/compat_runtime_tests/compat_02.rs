@@ -1325,6 +1325,17 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         .buffer_value(buf3_id)
         .expect("existing buffer object");
     interp.kill_buffer_id(buf3_id);
+    // fns-tests.el:fns-value<-ordered inserts twenty characters before
+    // positioning markers. Empty buffers would clamp both markers to 1.
+    for (id, text) in [
+        (buf1_id, "aaaaaaaaaaaaaaaaaaaa"),
+        (buf2_id, "bbbbbbbbbbbbbbbbbbbb"),
+    ] {
+        interp
+            .get_buffer_by_id_mut(id)
+            .expect("live fixture buffer")
+            .insert(text);
+    }
 
     let mark1 = interp.make_marker();
     let Kind::Marker(mark1_id) = mark1.kind() else {
@@ -1616,22 +1627,10 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             Value::Marker(mark4_id),
         ),
         ("live_buffers", buf1, buf2),
-        (
-            "dead_buffer_before_live",
-            interp
-                .buffer_value(buf3_id)
-                .expect("existing buffer object"),
-            buf1,
-        ),
-        (
-            "dead_buffer_before_live_2",
-            interp
-                .buffer_value(buf3_id)
-                .expect("existing buffer object"),
-            interp
-                .buffer_value(buf2_id)
-                .expect("existing buffer object"),
-        ),
+        // GNU retains the killed object in buf3; the live-buffer index
+        // intentionally no longer contains it.
+        ("dead_buffer_before_live", buf3, buf1),
+        ("dead_buffer_before_live_2", buf3, buf2),
         ("dead_buffer_before_live_3", buf3, buf1),
         ("process", proc1, proc2),
     ];
@@ -2108,6 +2107,50 @@ fn unicode_property_registry_uses_the_c_owned_symbol_value_cell() {
             &mut env,
         )
         .expect("read the C-owned Unicode property registry"),
+        Value::T
+    );
+}
+
+#[test]
+fn value_less_buffers_and_markers_follow_names_liveness_and_renames() {
+    let mut interpreter = Interpreter::new();
+    let form = Reader::new(include_str!(
+        "../../../../tests/fixtures/runtime-value-ordering.el"
+    ))
+    .read()
+    .expect("read ordering probe")
+    .expect("one expression");
+    let result = interpreter
+        .eval(&form, &mut Env::new())
+        .expect("ordering probe");
+    let expected = Reader::new("((nil nil t) (t t nil) (t t) (t nil t t nil t))")
+        .read()
+        .expect("read GNU result")
+        .expect("GNU result");
+    assert_eq!(result, expected, "GNU buffer and marker ordering");
+}
+
+#[test]
+fn value_less_uses_buffer_objects_across_overlapping_owner_ids() {
+    let mut left = Interpreter::new();
+    let right = Interpreter::new();
+    assert_eq!(left.buffer.id, right.buffer.id);
+    left.buffer.borrow_mut().name = "zebra-owner".into();
+    right.buffer.borrow_mut().name = "alpha-owner".into();
+    let a = Value::Buffer(right.buffer);
+    let z = Value::Buffer(left.buffer);
+    let mut env = Env::new();
+    assert_eq!(
+        call(&mut left, "value<", &[a, z], &mut env).expect("foreign buffer order"),
+        Value::T
+    );
+    assert_eq!(
+        call(&mut left, "value<", &[z, a], &mut env).expect("reverse buffer order"),
+        Value::Nil
+    );
+    right.buffer.borrow_mut().name = "zz-renamed-owner".into();
+    assert_eq!(
+        call(&mut left, "value<", &[z, a], &mut env).expect("renamed foreign buffer order"),
         Value::T
     );
 }

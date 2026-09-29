@@ -1,0 +1,26 @@
+[
+  {
+    "command": [
+      "/usr/bin/lldb",
+      "--batch",
+      "-o",
+      "target create /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source82-debug-libtest",
+      "-o",
+      "disassemble --name \"<emaxx::lisp::eval::Interpreter>::eval\""
+    ],
+    "exit_code": 0,
+    "binary_sha256": "ea91de57a32c829ee663b717b630b744f331cf85d84b7e01775b68ddb3a6a983"
+  },
+  {
+    "command": [
+      "/usr/bin/lldb",
+      "--batch",
+      "-o",
+      "target create /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source84-debug-libtest",
+      "-o",
+      "disassemble --name \"<emaxx::lisp::eval::Interpreter>::eval\""
+    ],
+    "exit_code": 0,
+    "binary_sha256": "e884163a19aa8ce87d2f85a778ec8a7b9d8f45d88db7646d5471b445d4a9ccc9"
+  }
+]

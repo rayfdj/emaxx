@@ -1,0 +1,1 @@
+(let ((private (obarray-make))) (let ((obarray private) (symbols-with-pos-enabled nil)) (mapcar (lambda (name) (let* ((object (read-positioning-symbols name)) (bare (bare-symbol object))) (list name (symbol-with-pos-p object) (eq bare (intern name private)) (symbol-name bare)))) (list "nil" "t" "reader-private-name"))))

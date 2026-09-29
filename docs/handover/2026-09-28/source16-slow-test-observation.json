@@ -1,0 +1,5 @@
+{
+  "observation": "The selected log stayed at recursive_keymap_unset_removes_the_nested_binding long enough to inspect the busy process. By the stack sample it had progressed to upstream_tex_mode_installs_its_lisp_keymap. Both tests subsequently passed. No hang was confirmed and no test was interrupted.",
+  "sample": "source16-hang-sample.txt",
+  "status": "diagnostic observation, not an authoritative performance profile"
+}

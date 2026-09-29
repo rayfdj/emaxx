@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 // Table-less fallbacks, used only where no interpreter (and therefore no
@@ -500,7 +501,7 @@ enum RegexpCategoryScope {
 }
 
 impl RegexpCategoryScope {
-    fn table_id(self, interp: &Interpreter) -> Option<u64> {
+    fn table_id(self, interp: &Interpreter) -> Option<CharTableRef> {
         match self {
             Self::Standard => interp.initialized_standard_category_table_id(),
             Self::CurrentBuffer => interp.initialized_current_category_table_id(),
@@ -525,7 +526,6 @@ pub(super) fn pattern_depends_on_category_table(pattern: &str) -> bool {
 
 fn category_set_contains(interp: &Interpreter, value: &Value, category: char) -> bool {
     match value.kind() {
-        Kind::String(text) => text.chars().any(|member| member == category),
         Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
             record.kind == crate::lisp::eval::RecordKind::BoolVector
                 && record
@@ -537,7 +537,11 @@ fn category_set_contains(interp: &Interpreter, value: &Value, category: char) ->
     }
 }
 
-fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) -> Vec<(u32, u32)> {
+fn category_regex_ranges(
+    interp: &Interpreter,
+    table_id: CharTableRef,
+    category: char,
+) -> Vec<(u32, u32)> {
     const SCALAR_END: u32 = char::MAX as u32 + 1;
     let mut ranges = Vec::<(u32, u32)>::new();
     let mut push = |start: u32, end: u32| {
@@ -549,15 +553,10 @@ fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) ->
             ranges.push((start, end));
         }
     };
-    let Some(state) = interp.find_char_table(table_id) else {
-        return ranges;
-    };
-    // The resolved view of the table, one entry per effective range (the
-    // standard category table's write log holds a quarter of a million
-    // `modify-category-entry' writes for 54,000 ranges), read once each.
-    // Walking the log's boundaries and looking every window up again took
-    // 170 ms for `\\c|'.  A table with a parent reads through both.
-    if state.parent.is_none() && state.default.is_nil() {
+    let state = table_id;
+    // Walk the current radix slots. A table with a parent combines boundaries
+    // from that chain before resolving each range.
+    if state.parent().is_none() && state.default().is_nil() {
         for entry in state.effective_ranges() {
             if !category_set_contains(interp, &entry.value, category) {
                 continue;
@@ -584,11 +583,9 @@ fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) ->
         if !seen.insert(id) {
             break;
         }
-        let Some(state) = interp.find_char_table(id) else {
-            break;
-        };
+        let state = id;
         state.append_change_boundaries(0, char::MAX as u32, &mut boundaries);
-        table = state.parent;
+        table = state.parent();
     }
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -609,7 +606,7 @@ fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) ->
 
 fn category_regex_fragment(
     interp: Option<&Interpreter>,
-    table_id: Option<u64>,
+    table_id: Option<CharTableRef>,
     category: char,
     negated: bool,
 ) -> String {
@@ -723,7 +720,7 @@ fn translate_elisp_regex_with_point(
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
     interp: Option<&Interpreter>,
-    category_table_id: Option<u64>,
+    category_table_id: Option<CharTableRef>,
 ) -> String {
     let rendered_syntax_classes = interp
         .filter(|_| pattern_depends_on_syntax_table(pattern))
@@ -1310,26 +1307,13 @@ fn rendered_table_syntax_classes(
     boundaries.extend([0xd800, 0xe000, SCALAR_END]);
     let mut current = Some(table_id);
     let mut seen = HashSet::new();
-    let mut cacheable = encoding.is_none();
+    let cacheable = encoding.is_none();
     while let Some(id) = current {
         if !seen.insert(id) {
             break;
         }
-        let Some(table) = interp.find_char_table(id) else {
-            cacheable = false;
-            break;
-        };
-        // GNU character-table entries are ordinary live Lisp objects.  An
-        // in-place mutation of a cons or mutable string does not pass through
-        // Emaxx's character-table mutation door, so never retain a rendering
-        // derived from either representation.  Ordinary modify-syntax-entry
-        // strings are immutable SharedText and take the cached path.
-        cacheable &= !matches!(table.default.kind(), Kind::Cons(_) | Kind::StringObject(_))
-            && table
-                .entries
-                .iter()
-                .all(|entry| !matches!(entry.value.kind(), Kind::Cons(_) | Kind::StringObject(_)));
-        for entry in &table.entries {
+        let table = id;
+        for entry in &table.ranges() {
             if entry.start < SCALAR_END {
                 boundaries.push(entry.start);
             }
@@ -1337,7 +1321,7 @@ fn rendered_table_syntax_classes(
                 boundaries.push(entry.end + 1);
             }
         }
-        current = table.parent;
+        current = table.parent();
     }
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -1576,6 +1560,22 @@ struct CaseTableSignature {
     up: crate::lisp::eval::CharTableChainSignature,
 }
 
+impl CaseTableSignature {
+    fn matches_current(&self, interp: &Interpreter) -> bool {
+        let down = interp.initialized_current_case_table_id();
+        let up = down.and_then(|down| {
+            match interp
+                .char_table_extra_slot(down, 0)
+                .map(|value| value.kind())
+            {
+                Some(Kind::CharTable(up)) => Some(up),
+                _ => None,
+            }
+        });
+        self.down.matches(down) && self.up.matches(up)
+    }
+}
+
 fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
     let down = interp.initialized_current_case_table_id();
     let up = down.and_then(
@@ -1585,8 +1585,8 @@ fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
         },
     );
     CaseTableSignature {
-        down: down.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
-        up: up.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
+        down: down.map_or_else(Default::default, |id| interp.char_table_chain_signature(id)),
+        up: up.map_or_else(Default::default, |id| interp.char_table_chain_signature(id)),
     }
 }
 
@@ -1608,21 +1608,22 @@ fn rendered_case_classes(interp: &Interpreter) -> Rc<[String; 3]> {
     // Byte8 aliases use a different public key from their regex encoding.
     boundaries.extend(0..=256);
     boundaries.extend(RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 256);
-    for (id, _) in signature.down.iter().chain(&signature.up) {
-        let Some(table) = interp.find_char_table(*id) else {
-            continue;
-        };
-        for entry in &table.entries {
+    let down = interp.initialized_current_case_table_id();
+    let up = down
+        .and_then(|table| table.extra(0))
+        .and_then(|value| match value.kind() {
+            Kind::CharTable(table) => Some(table),
+            _ => None,
+        });
+    for table in down.into_iter().chain(up) {
+        for entry in table.effective_ranges() {
             boundaries.push(entry.start.min(END));
             boundaries.push(entry.end.saturating_add(1).min(END));
-        }
-        for value in std::iter::once(&table.default).chain(table.entries.iter().map(|e| &e.value)) {
-            if let Kind::Integer(value) = value.kind()
+            if let Kind::Integer(value) = entry.value.kind()
                 && let Ok(value) = u32::try_from(value)
                 && value < END
             {
-                boundaries.push(value);
-                boundaries.push(value + 1);
+                boundaries.extend([value, value + 1]);
             }
         }
     }
@@ -2891,26 +2892,19 @@ fn linear_boundary_prefilter(rendered: &str) -> Option<LinearBoundaryPrefilter> 
 struct CompiledElispRegexKey {
     pattern: String,
     sentinel_table: SentinelTableKey,
-    // search.c compile_pattern re-checks its cached entry with EQ against
-    // the current syntax table before reuse; the analog here is the pair
-    // of table identities plus the write stamps of what each rendering
-    // read, so a hit costs a hash instead of re-running the whole
-    // translation.  The syntax chain signature observes writes through
-    // the table door to the syntax table or any table it inherits from;
-    // the definition generation observes interior mutation of shared
-    // structure (setcar on a cons stored as a table entry bumps it), so
-    // no route to changing what a class renders as escapes the key.
+    // The backend embeds table-dependent classes in compiled patterns.
+    // Their inputs are checked against actual fields, including native
+    // stores and changes to mutable descriptors, before reusing the result.
     /// The hash of the sixteen class renderings of the current syntax
     /// table (with its parents), which is all a syntax-dependent
     /// translation reads from it: two tables rendering alike (a mode's
     /// table copied into each buffer) share the compiled pattern, and a
     /// write to the chain renders again and so changes the hash.
     syntax_classes_hash: u64,
-    category_table_id: u64,
-    category_generation: u64,
-    case_generation: u64,
+    category_table_id: Option<CharTableRef>,
+    category_contents: crate::lisp::eval::CharTableChainSignature,
+    case_contents: Option<CaseTableSignature>,
     case_classes: Option<CaseTableSignature>,
-    definition_generation: u64,
     point_assertion: String,
     at_absolute_start: bool,
     case_fold: bool,
@@ -3952,24 +3946,12 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The key's `definition_generation' field for a pattern that does or
-/// does not depend on the tables.
-fn definition_generation_field(interp: &Interpreter, depends_on_tables: bool) -> u64 {
-    if depends_on_tables
-        && interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id())
-    {
-        interp.current_definition_generation()
-    } else {
-        0
-    }
-}
-
 fn front_regex_lookup(
     interp: &Interpreter,
     pattern_text: &str,
     point_assertion: &str,
     at_absolute_start: bool,
-    category_table_id: Option<u64>,
+    category_table_id: Option<CharTableRef>,
     case_fold: bool,
 ) -> Option<Rc<CompiledElispRegex>> {
     FRONT_REGEX_CACHE.with(|cache| {
@@ -3984,16 +3966,21 @@ fn front_regex_lookup(
                 && key.point_assertion == point_assertion
                 && (!entry.depends_on_syntax_table
                     || key.syntax_classes_hash == syntax_classes_fingerprint(interp))
-                && (!depends_on_tables
-                    || (key.category_table_id == category_table_id.unwrap_or(0)
-                        && key.definition_generation == definition_generation_field(interp, true)))
+                && (!depends_on_tables || (key.category_table_id == category_table_id))
                 && (!entry.depends_on_category_table
-                    || key.category_generation == interp.category_context_generation())
-                && (!case_fold || key.case_generation == interp.case_context_generation())
-                && key.case_classes
-                    == entry
-                        .case_classes
-                        .then(|| current_case_table_signature(interp))
+                    || key.category_contents.matches(category_table_id))
+                && (!case_fold
+                    || key
+                        .case_contents
+                        .as_ref()
+                        .is_some_and(|saved| saved.matches_current(interp)))
+                && if entry.case_classes {
+                    key.case_classes
+                        .as_ref()
+                        .is_some_and(|saved| saved.matches_current(interp))
+                } else {
+                    key.case_classes.is_none()
+                }
         })?;
         if position != 0 {
             let entry = cache.remove(position);
@@ -4037,7 +4024,7 @@ fn compile_elisp_regex_text_with_case_fold(
     let pattern_text = pattern.to_string();
     // Translation is the single owner of Emacs regexp grammar.  A pattern
     // that depends on mutable runtime tables is keyed by the identity of
-    // those tables plus the shared write generation (a table-independent
+    // those tables plus their current field contents (a table-independent
     // pattern keys the same either way), so a regexp compiled under one
     // syntax or category table can never leak into another table's search
     // -- and a cache hit no longer pays the translation it cached.
@@ -4061,50 +4048,23 @@ fn compile_elisp_regex_text_with_case_fold(
             0
         },
         category_table_id: if depends_on_tables {
-            category_table_id.unwrap_or(0)
+            category_table_id
         } else {
-            0
+            None
         },
-        // Each guard observes exactly what its rendering reads: the syntax
-        // classes the current syntax table and its parents, `\\c' the
-        // category table, case folding the case tables.  One shared
-        // generation made a category or syntax write recompile every
-        // case-folded pattern, and one generation over every syntax table
-        // recompiled cc-mode's largest patterns (hundreds of milliseconds
-        // each under the regex crate's unrolling of `\\{,1000\\}') each
-        // time any mode wrote any syntax table.
-        category_generation: if depends_on_category_table {
-            interp.category_context_generation()
+        // The backend embeds table contents in compiled classes. Check the
+        // canonical words so native stores and mutable leaf edits invalidate it.
+        category_contents: if depends_on_category_table {
+            category_table_id.map_or_else(Default::default, |table| {
+                interp.char_table_chain_signature(table)
+            })
         } else {
-            0
+            Default::default()
         },
-        case_generation: if case_fold {
-            interp.case_context_generation()
-        } else {
-            0
-        },
+        case_contents: case_fold.then(|| current_case_table_signature(interp)),
         case_classes: facts
             .case_classes
             .then(|| current_case_table_signature(interp)),
-        // The cons-mutation generation (every `setcar' bumps it) guards a
-        // pattern only when its tables hold objects that can change in
-        // place; a table built by `modify-syntax-entry' holds immutable
-        // strings, and its patterns key on the table generation alone.
-        // Keying every table-dependent pattern on it recompiled cc-mode's
-        // `looking-at' regexps after each of its cons writes: 4 ms a call,
-        // csharp-mode's indentation test 900 times GNU's.  A category
-        // pattern keys on the category generation alone: category sets
-        // change through `modify-category-entry', which writes the table
-        // (category.c stores a fresh set; the door bumps the generation),
-        // and keying `\c' patterns on the cons generation recompiled
-        // fill.el's `\c|' pattern (170 ms) after every `setcar'.
-        definition_generation: if depends_on_tables
-            && interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id())
-        {
-            interp.current_definition_generation()
-        } else {
-            0
-        },
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -4821,7 +4781,7 @@ impl SkipSyntaxSnapshot {
         }
         const SCALAR_END: u32 = char::MAX as u32 + 1;
         let table_id = interp.current_syntax_table_id();
-        // Keyed on the table plus its mutation generation, like the rendered
+        // Keyed on the table and its current contents, like the rendered
         // class cache: resolving the segments per call made skip-chars
         // hundreds of times slower than its literal-spec path.
         if let Some(segments) = interp.cached_syntax_segments(table_id) {
@@ -4851,10 +4811,8 @@ impl SkipSyntaxSnapshot {
             if !seen.insert(id) {
                 break;
             }
-            let Some(table) = interp.find_char_table(id) else {
-                break;
-            };
-            for entry in &table.entries {
+            let table = id;
+            for entry in &table.ranges() {
                 if entry.start < SCALAR_END {
                     boundaries.push(entry.start);
                 }
@@ -4862,7 +4820,7 @@ impl SkipSyntaxSnapshot {
                     boundaries.push(entry.end.saturating_add(1));
                 }
             }
-            current = table.parent;
+            current = table.parent();
         }
         boundaries.push(SCALAR_END);
         boundaries.sort_unstable();

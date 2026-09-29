@@ -1,0 +1,5 @@
+{
+  "status": "harness-failed",
+  "fixture": "positioned-reader-streams-before.el",
+  "reason": "Python text-mode capture raised UnicodeDecodeError on GNU stdout byte0xc0 at offset83. That attempt returned no decoded result and its raw pipe bytes were not retained. Next attempt captures raw bytes; this is not a passed comparison."
+}

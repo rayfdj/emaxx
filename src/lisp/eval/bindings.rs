@@ -122,6 +122,10 @@ impl Interpreter {
         resolved: &str,
         resolved_symbol: Option<&SymbolName>,
     ) -> Option<Value> {
+        if self.has_native_text_conversion_style(resolved) {
+            let value = self.buffer.borrow().text_conversion_style;
+            return (!matches!(value.kind(), Kind::Unbound)).then_some(value);
+        }
         if resolved == "buffer-undo-list" {
             return Some(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer.borrow(),
@@ -243,6 +247,9 @@ impl Interpreter {
     /// the Lisp symbol. Direct evaluator fields may subsequently change
     /// independently of that symbol (for example process_quit_flag).
     pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+        if name == "text-conversion-style" {
+            return Some(self.buffer.borrow().text_conversion_style);
+        }
         if let Some(value) = self.forwarded_eval_cell_value(name) {
             return Some(value);
         }
@@ -446,7 +453,9 @@ impl Interpreter {
             "values" => Some(Value::Nil),
             // xdisp.c:syms_of_xdisp initializes the C callback slot to nil;
             // unchanged minibuffer.el installs its Lisp function later.
-            "clear-message-function" => Some(Value::Nil),
+            // xdisp.c owns both C slots before simple.el installs the
+            // interactive callback. They are special even in a lexical let.
+            "clear-message-function" | "set-message-function" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
             "load-suffixes" => Some(Value::list(
                 dynamic_library_suffix_values()
@@ -732,9 +741,9 @@ impl Interpreter {
             .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
-    /// Whether NAME has a user-level function definition (defun/fset).
-    pub(crate) fn function_index_has(&self, name: &str) -> bool {
-        self.functions_index.contains_key(name)
+    /// Whether SYMBOL has a user-level function definition (defun/fset).
+    pub(crate) fn has_lisp_function_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.has_function_definition(symbol)
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
@@ -792,35 +801,23 @@ impl Interpreter {
         self.raw_function_binding(name, env)
     }
 
-    /// Resolve NAME the way GNU macro dispatch sees the function cell:
-    /// macros live in function cells, so only genuine function-binding
-    /// frames (typed cl-flet/cl-labels frames) can shadow them — a plain
-    /// `let'-bound value never
-    /// does in GNU.  Skipping the per-entry scan of ordinary frames
-    /// keeps the per-form macro probe cheap on deep call stacks.  The
-    /// bool is true when the binding came from an env frame (such a
-    /// verdict must not be cached as a global fact).
-    fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
-        self.raw_function_binding(name, env)
-            .map(|value| (value, false))
-    }
-
-    /// `macro_position_binding' with symbol-alias indirection, for the
-    /// is-this-an-autoloaded-macro probe in macro expansion.  The bool
-    /// is true when any step resolved through an env frame.
-    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
-        let mut current = name.to_string();
-        let mut seen = HashSet::new();
-        let mut from_frame = false;
+    /// eval.c:Fmacroexpand resolves the current function cell, then reads
+    /// its actual car/cdr. No cached verdict may outlive a direct cons store.
+    /// The usual non-alias path needs no allocation or indirection tracking.
+    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<Value> {
+        let binding = self.raw_function_binding(name, env)?;
+        let Kind::Symbol(mut current) = binding.kind() else {
+            return Some(binding);
+        };
+        let mut seen = Vec::new();
         loop {
-            if !seen.insert(current.clone()) {
+            if current.as_str() == name || seen.contains(&current.id()) {
                 return None;
             }
-            let (binding, frame_hit) = self.macro_position_binding(&current, env)?;
-            from_frame |= frame_hit;
-            match binding.kind() {
-                Kind::Symbol(next) => current = next.to_string(),
-                other => return Some((other.value(), from_frame)),
+            seen.push(current.id());
+            match self.raw_function_binding_symbol(&current, env)?.kind() {
+                Kind::Symbol(next) => current = next,
+                other => return Some(other.value()),
             }
         }
     }
@@ -858,8 +855,9 @@ impl Interpreter {
     }
 
     pub fn has_macro_binding(&self, name: &str) -> bool {
-        self.function_cell_macro_expander(name, &Env::new())
-            .is_some()
+        self.macro_position_function(name, &Env::new())
+            .and_then(|function| function.cons_values())
+            .is_some_and(|(head, _)| matches!(head.kind(), Kind::Symbol(name) if name == "macro"))
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
@@ -877,7 +875,7 @@ impl Interpreter {
         let key = super::KnownSymbolsKey {
             globals: self.globals.bound_len(),
             variable_aliases: self.variable_aliases.len(),
-            functions: self.functions.len(),
+            functions: self.globals.function_definitions_len(),
             symbol_properties: self.symbol_properties.len(),
             interned_symbols: self.interned_symbols.len(),
             uninterned_standard: self.uninterned_standard_symbol_names.len(),
@@ -922,8 +920,8 @@ impl Interpreter {
                 for (name, _) in &self.variable_aliases[old.variable_aliases..] {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
                 }
-                for (name, _) in &self.functions[old.functions..] {
-                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                for (symbol, _) in self.globals.function_definitions().skip(old.functions) {
+                    admit(*symbol);
                 }
                 for (name, _) in &self.symbol_properties[old.symbol_properties..] {
                     admit(crate::lisp::types::SymbolName::intern_str(name));
@@ -971,9 +969,9 @@ impl Interpreter {
                     .map(|(name, _)| Source::Name(name.as_str())),
             )
             .chain(
-                self.functions
-                    .iter()
-                    .map(|(name, _)| Source::Name(name.as_str())),
+                self.globals
+                    .function_definitions()
+                    .map(|(symbol, _)| Source::Symbol(symbol)),
             )
             .chain(
                 self.symbol_properties
@@ -1016,7 +1014,7 @@ impl Interpreter {
             || self.interned_symbol_names.contains(name)
             || self.globals.is_bound_name(name)
             || self.globals.alias_by_name(name).is_some()
-            || self.functions_index.contains_key(name)
+            || self.globals.function_definition_by_name(name).is_some()
             || self.symbol_property_index(name).is_some()
     }
 
@@ -1024,33 +1022,10 @@ impl Interpreter {
         self.uninterned_standard_symbol_names.contains(name)
     }
 
-    /// Invalidate all cached not-a-macro verdicts; called on every
-    /// function or macro (re)definition.
-    pub(crate) fn note_definition_changed(&mut self) {
-        self.definition_generation = self.definition_generation.wrapping_add(1);
-    }
-
-    /// A function cell was bound, rebound or voided: every cached funcall
-    /// resolution and every macro verdict is stale.
+    /// A function cell was bound, rebound or voided: cached funcall
+    /// resolutions must be checked again.
     pub(crate) fn note_function_binding_changed(&mut self) {
-        self.note_definition_changed();
         self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
-    }
-
-    pub(crate) fn current_definition_generation(&self) -> u64 {
-        self.definition_generation
-    }
-
-    /// Whether the macroexpansion probe already concluded (at the current
-    /// definition generation) that NAME is not a macro.
-    pub(crate) fn known_not_macro(&self, name: &str) -> bool {
-        self.not_macro_names.get(name).copied() == Some(self.definition_generation)
-    }
-
-    /// Record a global (frame-independent) not-a-macro verdict for NAME.
-    pub(crate) fn note_not_macro(&mut self, name: &str) {
-        let generation = self.definition_generation;
-        self.not_macro_names.insert(name.to_string(), generation);
     }
 
     /// Set a variable in the innermost local frame, or in globals.
@@ -1135,11 +1110,7 @@ impl Interpreter {
             *existing = Self::stored_value(value);
             return Ok(());
         }
-        let buffer_id = match self.assignment_scope_symbol(resolved) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        };
-        self.notify_variable_watchers_symbol(resolved, value, "set", buffer_id, env)?;
+        self.notify_assignment_symbol(resolved, value, env)?;
         self.set_symbol_value_cell_resolved(resolved, value);
         Ok(())
     }
@@ -1229,32 +1200,6 @@ impl Interpreter {
         self.set_global_binding_resolved(symbol, value);
     }
 
-    // GNU stores a macro in the function cell as (macro . EXPANDER); emaxx
-    // keeps a native macro table, so synthesize the GNU shape on demand
-    // (nadvice reads and rewrites it when advising macros).
-    // Follow the function cell (through symbol aliases) to a
-    // (macro . EXPANDER) cons; nadvice installs advised macros that way.
-    pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
-        let mut current: Option<SymbolName> = None;
-        for _ in 0..10 {
-            let (binding, _) =
-                self.macro_position_binding(current.as_ref().map_or(name, |s| s.as_str()), env)?;
-            match binding.kind() {
-                Kind::Symbol(next) => current = Some(next),
-                Kind::Cons(cons_cell) => {
-                    let car = &cons_cell.car;
-                    let cdr = &cons_cell.cdr;
-                    return match car.get().kind() {
-                        Kind::Symbol(head) if head == "macro" => Some(cdr.get()),
-                        _ => None,
-                    };
-                }
-                _ => return None,
-            }
-        }
-        None
-    }
-
     // GNU defalias consults the symbol's `defalias-fset-function' (nadvice
     // sets advice--defalias-fset there) instead of writing the cell
     // directly.  Returns true when the property handled the definition.
@@ -1279,82 +1224,20 @@ impl Interpreter {
         handled.is_ok()
     }
 
-    // GNU keeps macro-ness in the function cell: fsetting a plain function
-    // over a macro name (or voiding the cell) erases the macro definition.
-    // The macro table is positional (cl-macrolet drains index ranges), so
-    // entries are renamed out of resolution instead of removed.
-    pub fn push_function_binding(&mut self, name: &str, function: Value) {
-        self.globals
-            .set_function(&SymbolName::intern_str(name), Some(function));
-        self.functions_index.insert(name.to_string(), function);
-        let position = self.functions.len();
-        self.functions_position.insert(name.to_string(), position);
-        self.functions.push((name.to_string(), function));
-        self.note_function_binding_changed();
-    }
-
-    /// Recompute `functions_position' for the entries at and after INDEX
-    /// once an entry was removed there.
-    fn reposition_function_bindings_from(&mut self, index: usize) {
-        let state = &mut **self;
-        for (position, (name, _)) in state.functions.iter().enumerate().skip(index) {
-            state.functions_position.insert(name.clone(), position);
-        }
-    }
-
-    /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
-    /// or in-place mutation of `functions`.
-    pub(crate) fn reindex_function_binding(&mut self, name: &str) {
-        match self.functions.iter().rev().find(|(fname, _)| fname == name) {
-            Some((_, value)) => {
-                let value = *value;
-                self.globals
-                    .set_function(&SymbolName::intern_str(name), Some(value));
-                self.functions_index.insert(name.to_string(), value);
-            }
-            None => {
-                self.globals
-                    .set_function(&SymbolName::intern_str(name), None);
-                self.functions_index.remove(name);
-            }
-        }
-        self.note_function_binding_changed();
-    }
-
     pub fn remove_all_function_bindings(&mut self, name: &str) {
-        if let Some(index) = self.functions_position.remove(name) {
-            self.functions.remove(index);
-            self.note_obarray_removal();
-            self.reposition_function_bindings_from(index);
-        }
-        self.globals
-            .set_function(&SymbolName::intern_str(name), None);
-        self.functions_index.remove(name);
-        self.note_function_binding_changed();
+        self.set_function_binding(name, None);
     }
 
+    /// GNU keeps macro-ness and callable identity in the same function
+    /// cell. Rebinding changes that payload once; enumeration stores ids.
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
-        match function {
-            Some(function) => {
-                if let Some(&index) = self.functions_position.get(name) {
-                    self.functions[index].1 = function;
-                    self.globals
-                        .set_function(&SymbolName::intern_str(name), Some(function));
-                    self.functions_index.insert(name.to_string(), function);
-                    self.note_function_binding_changed();
-                } else {
-                    self.push_function_binding(name, function);
-                }
-            }
-            None => {
-                if let Some(index) = self.functions_position.remove(name) {
-                    self.functions.remove(index);
-                    self.note_obarray_removal();
-                    self.reposition_function_bindings_from(index);
-                }
-                self.reindex_function_binding(name);
-            }
+        let symbol = SymbolName::intern_str(name);
+        let was_defined = self.globals.has_function_definition(&symbol);
+        self.globals.set_function_definition(&symbol, function);
+        if was_defined && !self.globals.has_function_definition(&symbol) {
+            self.note_obarray_removal();
         }
+        self.note_function_binding_changed();
     }
 
     /// data.c:Ffset's native-comp hook followed by the actual function-cell
@@ -1418,7 +1301,7 @@ impl Interpreter {
         {
             return false;
         }
-        let Some(definition) = self.functions_index.get(name).cloned() else {
+        let Some(definition) = self.globals.function_definition_by_name(name).copied() else {
             return false;
         };
         if !self
@@ -1439,7 +1322,7 @@ impl Interpreter {
             return;
         }
         for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.functions_index.get(&name) == Some(&definition) {
+            if self.globals.function_definition_by_name(&name) == Some(&definition) {
                 self.set_function_binding(&name, None);
             }
         }
@@ -1459,12 +1342,7 @@ impl Interpreter {
                 ])));
             }
             seen.push(current.clone());
-            let Some((_, value)) = self
-                .functions
-                .iter()
-                .rev()
-                .find(|(function_name, _)| function_name == &current)
-            else {
+            let Some(value) = self.globals.function_by_name(&current) else {
                 return Ok(());
             };
             let Kind::Symbol(next) = value.kind() else {
@@ -1501,6 +1379,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "case-symbols-as-words",
     "char-code-property-alist",
     "clear-message-function",
+    "set-message-function",
     "coding-system-for-read",
     "coding-system-for-write",
     "command-error-function",

@@ -1,0 +1,17 @@
+[
+  {
+    "path": "target/runtime-resume/release/emaxx",
+    "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source19-release-emaxx",
+    "sha256": "4a60473e9f8af50d77373c04dd084646cad7e61bddd0b3f11d02d68d634e9e76"
+  },
+  {
+    "path": "target/runtime-resume/release/make-fingerprint",
+    "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source19-release-make-fingerprint",
+    "sha256": "a8f61dc986c0576e0898199ceab74f5d345b8fe70c544d3d2b741ef3249955f6"
+  },
+  {
+    "path": "target/runtime-resume/release/compat-harness",
+    "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source19-release-compat-harness",
+    "sha256": "b8b4012aee725a22cd5f7d1961231d8f4bbe74f47eecd616c1c318467be94306"
+  }
+]

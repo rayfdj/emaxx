@@ -1,0 +1,43 @@
+{
+  "cases": [
+    {
+      "case_id": "upstream-undo",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.17564797401428223
+          ],
+          "median": 0.17564797401428223
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.912125825881958
+          ],
+          "median": 0.912125825881958
+        }
+      },
+      "paired_ratios": [
+        5.1929197077319635
+      ],
+      "median_ratio": 5.1929197077319635,
+      "ratio_interval": [
+        5.1929197077319635,
+        5.1929197077319635
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    }
+  ],
+  "complete_inventory": true,
+  "geometric_mean_ratio": 5.1929197077319635,
+  "criterion_satisfied": false,
+  "action": "pilot",
+  "certification_eligible": false,
+  "inputs_unchanged": true
+}

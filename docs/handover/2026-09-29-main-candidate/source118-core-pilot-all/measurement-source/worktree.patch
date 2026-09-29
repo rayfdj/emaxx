@@ -1,0 +1,59 @@
+diff --git a/src/lisp/eval/runtime.rs b/src/lisp/eval/runtime.rs
+index 3ce2ab0c..75b3ced7 100644
+--- a/src/lisp/eval/runtime.rs
++++ b/src/lisp/eval/runtime.rs
+@@ -953,6 +953,27 @@ impl Interpreter {
+         self.snapshot_frame_window_configuration(self.selected_frame_id)
+     }
+ 
++    fn frame_window_records(
++        &self,
++        frame_id: crate::lisp::types::FrameRef,
++    ) -> impl Iterator<Item = RecordRef> + '_ {
++        // window.c visits windows, not every Lisp pseudovector. Until
++        // windows have their own allocation type, use the existing window
++        // index and read each authoritative record. This creates no new
++        // registry and retains the same record-id order, including deleted
++        // windows, as the former full-record scan.
++        self.record_ids_by_type_index
++            .get("window")
++            .into_iter()
++            .flatten()
++            .filter_map(|id| self.record_ref(*id))
++            .filter(move |record| {
++                record.kind == RecordKind::Window
++                    && record.slots.get(primitives::WINDOW_FRAME_SLOT)
++                        == Some(&Value::Frame(frame_id))
++            })
++    }
++
+     fn snapshot_frame_window_configuration(
+         &self,
+         frame_id: crate::lisp::types::FrameRef,
+@@ -968,13 +989,7 @@ impl Interpreter {
+                 .map(|record| record.slots.clone())
+                 .unwrap_or_default(),
+             window_records: self
+-                .records
+-                .iter()
+-                .flatten()
+-                .filter(|record| {
+-                    record.kind == RecordKind::Window
+-                        && self.window_frame_id(record.id) == Some(frame_id)
+-                })
++                .frame_window_records(frame_id)
+                 .map(|record| (record.id, record.slots.clone()))
+                 .collect(),
+             root_window_id: frame.root_window_id(),
+@@ -1145,10 +1160,7 @@ impl Interpreter {
+             .window_records
+             .into_iter()
+             .collect::<std::collections::HashMap<_, _>>();
+-        let windows = self.records_of_kind(RecordKind::Window, |record| {
+-            record.slots.get(primitives::WINDOW_FRAME_SLOT)
+-                == Some(&Value::Frame(snapshot.frame_id))
+-        });
++        let windows: Vec<_> = self.frame_window_records(snapshot.frame_id).collect();
+         for window in windows {
+             let Some(record) = self.find_record_mut(window) else {
+                 continue;

@@ -1,0 +1,6 @@
+{
+  "note": "Only the new cfg(test) native regexp control changed after the source13 production library artifact had been emitted. string-match-p is owned by GNU subr.el; the bare-runtime control must call its C primitive string-match. Source14 will be rebuilt and is not certified by this interim source13 build.",
+  "changed_path": "src/lisp/native_comp/runtime.rs",
+  "prior_manifest": "source13-manifest.json",
+  "new_manifest": "source14-manifest.json"
+}

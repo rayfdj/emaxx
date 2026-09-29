@@ -1,0 +1,25 @@
+{
+  "before_source": 72,
+  "after_source": 85,
+  "before_count": 2849,
+  "after_count": 2864,
+  "added": [
+    "lisp::primitives::tests::reader_byte_printing_match_gnu",
+    "lisp::primitives::tests::reader_callable_consumption_match_gnu",
+    "lisp::primitives::tests::reader_callable_dots_match_gnu",
+    "lisp::primitives::tests::reader_callable_encoding_match_gnu",
+    "lisp::primitives::tests::reader_callable_errors_match_gnu",
+    "lisp::primitives::tests::reader_callable_execution_modes_match_gnu",
+    "lisp::primitives::tests::reader_callable_gc_match_gnu",
+    "lisp::primitives::tests::reader_callable_lifetime_match_gnu",
+    "lisp::primitives::tests::reader_callable_obarray_match_gnu",
+    "lisp::primitives::tests::reader_callable_redefinition_match_gnu",
+    "lisp::primitives::tests::reader_callable_streams_match_gnu",
+    "lisp::primitives::tests::reader_callable_syntax_match_gnu",
+    "lisp::primitives::tests::reader_printer_bindings_match_gnu",
+    "lisp::primitives::tests::reader_stream_entrypoints_match_gnu",
+    "lisp::primitives::tests::reader_stream_positions_match_gnu"
+  ],
+  "removed": [],
+  "qualification": "Unmodified --list inventory from both immutable release libtest executables; gate has one additional cfg-specific descriptor test."
+}

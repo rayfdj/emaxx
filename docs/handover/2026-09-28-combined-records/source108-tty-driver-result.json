@@ -1,0 +1,93 @@
+{
+  "runs": [
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-gnu-purecopy-five-kinds-gc",
+        "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-five-kinds-gc-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.0837238329999996
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-purecopy-five-kinds-gc",
+        "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-five-kinds-gc-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.534939625
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-gnu-purecopy-sequence-snapshot",
+        "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-sequence-snapshot-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.0152723329999995
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-purecopy-sequence-snapshot",
+        "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-sequence-snapshot-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.405760042000001
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-gnu-purecopy-callback-purify-flag",
+        "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-purify-flag-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.094849667
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-purecopy-callback-purify-flag",
+        "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-purify-flag-tty.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.394760125000001
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-gnu-record-purecopy-callback",
+        "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.073954208
+    },
+    {
+      "command": [
+        "python3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py",
+        "source108-record-purecopy-callback",
+        "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.498825083
+    }
+  ],
+  "all_successful": true
+}

@@ -1,0 +1,21 @@
+(progn
+  (require 'cl-lib)
+  (let ((print-symbols-bare t))
+    (mapcar
+     (lambda (reader)
+       (let ((standard-input "entry-token tail"))
+         (list
+          (condition-case error (prin1-to-string (funcall reader))
+            (error (car error)))
+          (condition-case error (prin1-to-string (funcall reader nil))
+            (error (car error)))
+          (condition-case error (funcall reader 17) (error error))
+          (condition-case error (funcall reader 'missing-reader-callback)
+            (error error))
+          (cl-letf (((symbol-function 'read-minibuffer)
+                     (lambda (prompt) (list 'minibuffer prompt))))
+            (mapcar (lambda (stream)
+                      (condition-case error (funcall reader stream)
+                        (error (car error))))
+                    '(t read-char))))))
+     '(read read-positioning-symbols))))

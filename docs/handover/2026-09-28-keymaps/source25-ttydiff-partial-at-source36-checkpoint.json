@@ -1,0 +1,19 @@
+{
+  "captured_at_utc": "2026-09-27T20:15:35.438503+00:00",
+  "status": "running; partial snapshot, not final inventory or pass",
+  "source_commit": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "sha256": "f3ac7bb3c567ae77c5561437174f6f387a241ea0807d45df0eed079a4d956447",
+  "latest_run": "RUN [162/223] recursive-minibuffer",
+  "divergences": [
+    "DIVERGE [f10-cycle]: 1 terminal difference(s)",
+    "DIVERGE [mouse-bar-click]: 19 terminal difference(s)",
+    "DIVERGE [mouse-cmenu]: 1 terminal difference(s)",
+    "DIVERGE [compile-run]: 11 terminal difference(s)",
+    "DIVERGE [compile-parse]: 11 terminal difference(s)",
+    "DIVERGE [compile-next-error]: 13 terminal difference(s)",
+    "DIVERGE [help-key-then-quit::1:describe-forward-char-key]: 11 terminal difference(s)",
+    "DIVERGE [help-function-then-quit::1:describe-forward-word]: 11 terminal difference(s)",
+    "DIVERGE [bookmark-set-and-jump::3:open-bookmark-set]: 3 terminal difference(s)",
+    "DIVERGE [revert-buffer-confirm::3:confirm-revert-buffer]: 1 terminal difference(s)"
+  ]
+}

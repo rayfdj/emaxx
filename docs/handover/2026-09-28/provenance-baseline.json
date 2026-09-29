@@ -1,0 +1,89 @@
+{
+  "head": {
+    "command": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stdout": "f79b7c73c85ae53aae3d747d883dfbda1b55a10c\n",
+    "stderr": ""
+  },
+  "gnu_source": {
+    "command": [
+      "git",
+      "-C",
+      "../emacs",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stdout": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd\n",
+    "stderr": ""
+  },
+  "gnu_status": {
+    "command": [
+      "git",
+      "-C",
+      "../emacs",
+      "status",
+      "--porcelain"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "compiler": {
+    "command": [
+      "rustc",
+      "-Vv"
+    ],
+    "exit_code": 0,
+    "stdout": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "stderr": ""
+  },
+  "cargo": {
+    "command": [
+      "cargo",
+      "-V"
+    ],
+    "exit_code": 0,
+    "stdout": "cargo 1.97.1 (c980f4866 2026-06-30)\n",
+    "stderr": ""
+  },
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "gnu_probe": {
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(prin1 (list emacs-version system-configuration system-configuration-options system-configuration-features (native-comp-available-p) installation-directory invocation-directory))"
+    ],
+    "exit_code": 0,
+    "stdout": "(\"30.2\" \"aarch64-apple-darwin25.5.0\" \"--with-native-compilation=aot --with-xml2 --with-gnutls --with-modules --with-rsvg --with-webp --with-ns --disable-ns-self-contained --with-tree-sitter --without-dbus 'CFLAGS=-DFD_SETSIZE=10000 -DDARWIN_UNLIMITED_SELECT -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'CPPFLAGS=-I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'LDFLAGS=-L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/lib/gcc/15 -Wl,-rpath,/opt/homebrew/lib/gcc/15 '\" \"ACL GLIB GNUTLS LCMS2 LIBXML2 MODULES NATIVE_COMP NOTIFY KQUEUE NS PDUMPER PNG RSVG SQLITE3 THREADS TOOLKIT_SCROLL_BARS TREE_SITTER WEBP XIM ZLIB\" t \"/Users/nbmhqa186/projects/emacs/\" \"/Users/nbmhqa186/projects/emacs/src/\")",
+    "stderr": ""
+  },
+  "hashes": {
+    "../emacs/src/emacs": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "../emacs/src/emacs.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "../emacs/src/emacs-30.2.1.pdmp": "e7055aa58e40103d7358674fbc29ab62897dbfde1ca004b1d687e971f9719b31",
+    "../emacs/src/emacs-30.2.2.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "../emacs/src/bootstrap-emacs.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "Cargo.lock": "c737063fb1c5d8b24116342ec4a1564213ff51641c2e741c194422b87175eb01",
+    "tests/fixtures/char-table-authoritative-values.el": "23be981aa9b40b9083d6fedf40095f27c0a7e17b09160d89209f453067a00430"
+  },
+  "gnu_baseline": {
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(prin1 ;;; -*- lexical-binding: t; -*-\n(let* ((purpose (make-symbol \"char-table-object-purpose\"))\n       (parent (make-char-table purpose 'parent))\n       (child (make-char-table purpose 'initial))\n       results)\n  (set-char-table-parent child parent)\n  (push (aref child 65) results)\n  (set-char-table-range child nil 'default)\n  (push (aref child 65) results)\n  (aset child 65 nil)\n  (push (aref child 65) results)\n  (set-char-table-range child nil nil)\n  (push (aref child 65) results)\n  (set-char-table-range child t nil)\n  (push (aref child 66) results)\n  (set-char-table-range child nil 'replacement-default)\n  (push (aref child 66) results)\n  (set-char-table-range child '(10 . 20) 'range)\n  (push (char-table-range child '(11 . 14)) results)\n  (let ((first (make-char-table purpose nil))\n        (second (make-char-table purpose nil)))\n    (aset first 700 'old)\n    (aset first 700 'current)\n    (aset second 700 'current)\n    (push (equal first second) results))\n  (put purpose 'char-table-extra-slots 2)\n  (let ((with-extras (make-char-table purpose 'slot-initial)))\n    (push (list (char-table-extra-slot with-extras 0)\n                (char-table-extra-slot with-extras 1)\n                (eq purpose (char-table-subtype with-extras))) results))\n  (let ((weak (make-hash-table :test 'eq :weakness 'key)))\n    ;; The table stays live; replacing a slot must drop the old value even\n    ;; when lookup returns the new value correctly through another index.\n    (funcall (lambda ()\n               (let ((old (vector 'overwritten-value)))\n                 (puthash old 'present weak)\n                 (aset child 900 old)\n                 (aset child 900 'replacement)\n                 (setq old nil))))\n    (garbage-collect)\n    (push (list (aref child 900) (hash-table-count weak)) results))\n  (nreverse results))\n)"
+    ],
+    "exit_code": 0,
+    "stdout": "(initial initial default parent parent replacement-default range t (slot-initial slot-initial t) (replacement 0))",
+    "stderr": ""
+  },
+  "pinned_darwin_binary": false
+}

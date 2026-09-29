@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source3/emaxx-062fd247b26fb761",
+    "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 75.94020025,
+  "sha256_before": "2610247237a17fcb30d36a1bf684a0f223a102d487a09148d1fd29f596a3bbcd",
+  "sha256_after": "2610247237a17fcb30d36a1bf684a0f223a102d487a09148d1fd29f596a3bbcd",
+  "compiler_messages": []
+}

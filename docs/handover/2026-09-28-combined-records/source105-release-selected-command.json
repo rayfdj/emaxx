@@ -1,0 +1,38 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source105-release-libtest",
+    "record",
+    "lisp::primitives::pdumper::tests",
+    "lisp::reader::tests",
+    "lisp::native_comp::runtime::tests",
+    "lisp::types::tests",
+    "lisp::alloc::tests",
+    "purecopy",
+    "text_property",
+    "ert_",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "lisp::eval::roots::tests",
+    "restored_process",
+    "text_quoting",
+    "message_callback_bindings",
+    "function",
+    "lisp::eval::symbol_cells",
+    "lisp::runtime::tests",
+    "anti_cheat::tests::interpreter_",
+    "text_conversion",
+    "buffer_local",
+    "forwarded",
+    "variable_watcher",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-audit-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "3db73c605691aa3e2e39a44c525584d9519fc562252ca9b5587bf7b12a4e845d"
+}

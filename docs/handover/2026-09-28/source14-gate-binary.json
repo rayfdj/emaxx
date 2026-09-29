@@ -1,0 +1,9 @@
+{
+  "head": "1ac30ee886521d087cb5213c2c8ca79551b4c725",
+  "git_dirty": false,
+  "source_manifest": "source14-manifest.json",
+  "source_unchanged_after_build": true,
+  "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source14-gate-libtest",
+  "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/gate/deps/emaxx-2172bc5d2c1706ff",
+  "sha256": "fa0c20318a5f83b016fbbb9de1a279957219e69c9168b604e24aa7028956b152"
+}

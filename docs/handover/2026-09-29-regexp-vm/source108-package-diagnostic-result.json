@@ -1,0 +1,10 @@
+{
+  "exit_code": 1,
+  "elapsed_seconds": 56.240727959000004,
+  "source_unchanged": true,
+  "inputs_unchanged": true,
+  "checkpoint_count": 5,
+  "failed_checkpoints": [
+    "package-menu-install-refresh-remove::5:confirm-install"
+  ]
+}

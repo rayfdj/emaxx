@@ -1,0 +1,54 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+    "-nw",
+    "-Q",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el"
+  ],
+  "environment_overrides": {
+    "EMAXX_RECORD_PROBE_REPORT": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source105-record-purecopy-callback.report"
+  },
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "identities": {
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx": "8d49763b6f3953d957240afd09dde9b7a1ab2ffb71e4c1ba22fad15a606d8eb8",
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx.pdmp": "a4287f680a677ef7728e61d4496aa0dbbdbcf39a98e318eefbb06b671997ed33",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/record-purecopy-callback.el": "299e1ffaa6014b814fd004bdea5b7fb8e13f5692b6cdaa3177a250ccd23a0a82",
+    "/Users/nbmhqa186/projects/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty.py": "6dd8e7166acccc7bfdb89a72f4b8503c038239d8ec3b0767447e732f6afe9d6f"
+  },
+  "inputs_unchanged": true,
+  "wait_status": 0,
+  "exit_code": 0,
+  "elapsed_seconds": 7.598840666,
+  "error": null,
+  "report_exists": true,
+  "report_hex": "283120313330207420742074206e696c29",
+  "screen": [
+    "File Edit Options Buffers Tools Help",
+    "record-purecopy-ready",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "-UUU:---  F1  *record-purecopy-ready*   All   L1     (Fundamental) -------------",
+    "For information about GNU Emacs and the GNU system, type C-h C-a."
+  ],
+  "qualification": "Focused ordinary TTY diagnostic with unchanged Lisp input; no full terminal or pinned-oracle claim."
+}

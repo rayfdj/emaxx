@@ -1,0 +1,84 @@
+{
+  "artifact_root": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust",
+  "cargo_stages": [],
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_BACKTRACE": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "error": "group did not pass: {'status': 'FAILED', 'passed': 319, 'failed': 1, 'ignored': 0, 'measured': 0, 'filtered_out': 2558, 'reported_seconds': 1151.46}",
+  "execution_override": {
+    "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+    "script": "/home/runner/work/emaxx/emaxx/emaxx/tools/serial_grouped_gate.py"
+  },
+  "format_version": 1,
+  "git": {
+    "dirty": false,
+    "head": "c3204ce5359fcb87e30dace71af62a43d54fbbea"
+  },
+  "inventory": {
+    "groups": {
+      "batch": 50,
+      "compat_runtime": 86,
+      "eval_01": 385,
+      "eval_02": 295,
+      "eval_03": 320,
+      "eval_04": 254,
+      "eval_05": 351,
+      "lightweight": 525,
+      "primitives": 553,
+      "tty": 59
+    },
+    "ignored_tests": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "scheduled_tests": 2878,
+    "sha256": "f711a47dc32088827024e21436eec3e15e15d9de3c78c2ca8c07f280c2e2f39b",
+    "total_tests": 2878
+  },
+  "profile": "gate",
+  "repetitions": 1,
+  "runs": [],
+  "schedule": [
+    [
+      "eval_01"
+    ],
+    [
+      "eval_02"
+    ],
+    [
+      "eval_03"
+    ],
+    [
+      "eval_04"
+    ],
+    [
+      "eval_05"
+    ],
+    [
+      "primitives"
+    ],
+    [
+      "compat_runtime"
+    ],
+    [
+      "tty"
+    ],
+    [
+      "batch"
+    ],
+    [
+      "lightweight"
+    ]
+  ],
+  "scope": "full",
+  "status": "failed",
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "65870940d9d6998b41a9d9b1a40790fdb7a70f46895d42e8c1fba20cd839fd2b"
+  },
+  "timeout_seconds": 3600
+}

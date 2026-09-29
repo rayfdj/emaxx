@@ -77,7 +77,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
         let Kind::Cons(cell) = chain.kind() else {
             unreachable!("constructed cons");
         };
-        ((cell.as_ptr() as usize) ^ HIDE, cell.serial)
+        ((cell.as_ptr() as usize) ^ HIDE, cell.serial())
     }
     const HIDE: usize = 0x5555_5555_5555_5555;
     let mut interp = Interpreter::new();

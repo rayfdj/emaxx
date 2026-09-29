@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source65-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((symbols-with-pos-enabled nil)\n      (read-symbol-shorthands '((\"s-\" . \"expanded-\"))))\n  (let* ((form (read-positioning-symbols\n                \"([s-\u03b1 #_s-raw t nil] #1=(s-\u03b2 . #1#) #s(tag s-value) 's-quote)\"))\n         (vector (nth 0 form))\n         (cycle (nth 1 form))\n         (record (nth 2 form))\n         (quoted (nth 3 form))\n         (describe (lambda (object)\n                     (if (symbol-with-pos-p object)\n                         (list (symbol-name (bare-symbol object))\n                               (symbol-with-pos-pos object))\n                       object)))\n         (private (obarray-make))\n         (bare (intern \"reader-private-name\" private))\n         (positioned (let ((obarray private))\n                       (read-positioning-symbols \"reader-private-name\"))))\n    (list (mapcar describe (append vector nil))\n          (list (funcall describe (car cycle)) (eq cycle (cdr cycle)))\n          (list (recordp record) (funcall describe (aref record 0))\n                (funcall describe (aref record 1)))\n          (list (car quoted) (funcall describe (cadr quoted)))\n          (list (eq (bare-symbol positioned) bare)\n                (symbol-with-pos-pos positioned)\n                (eq (intern-soft \"reader-private-name\" private) bare)))))\n)"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.8161795000000001,
+  "stdout": "(((\"expanded-\u03b1\" 2) (\"s-raw\" 8) (\"t\" 14) nil) ((\"expanded-\u03b2\" 25) t) (t tag expanded-value) '(\"expanded-quote\" 53) (nil 0 t))",
+  "stderr": "",
+  "binary_sha256": "66737f4709695e254325af713a1c1f8be1c784b03b5d36b1bfc4517deab48e6f",
+  "image_sha256": "65de500d674d5c2af40d9accb0cd0fa4ad9a71b2ba9336e53283999b52724c56",
+  "qualification": "Source-matched diagnostic. GNU differs from pinned Darwin executable. Emaxx immutable source65 before positioned-symbol migration. No frozen or performance certification."
+}

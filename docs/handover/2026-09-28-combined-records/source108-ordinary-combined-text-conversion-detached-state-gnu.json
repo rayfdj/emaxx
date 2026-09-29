@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let (states)\n  (set-default 'text-conversion-style '(native-default-239))\n  (with-temp-buffer\n    (setq text-conversion-style [native-local-241])\n    (makunbound 'text-conversion-style)\n    (push (list 'void (boundp 'text-conversion-style)\n                (default-boundp 'text-conversion-style)\n                (local-variable-p 'text-conversion-style)\n                (local-variable-if-set-p 'text-conversion-style)\n                (assq 'text-conversion-style (buffer-local-variables))) states)\n    (setq text-conversion-style '(plain-251))\n    (make-local-variable 'text-conversion-style)\n    (setq text-conversion-style '(new-local-257))\n    (push (list 'relocalized text-conversion-style\n                (default-value 'text-conversion-style)\n                (local-variable-p 'text-conversion-style)\n                (delq nil (mapcar (lambda (entry)\n                                  (and (consp entry)\n                                       (eq (car entry) 'text-conversion-style)\n                                       entry))\n                                (buffer-local-variables)))) states)\n    (kill-local-variable 'text-conversion-style)\n    (push (list 'local-killed text-conversion-style\n                (local-variable-p 'text-conversion-style)\n                (assq 'text-conversion-style (buffer-local-variables))) states)\n    (kill-all-local-variables)\n    (push (list 'mode-reset text-conversion-style\n                (local-variable-p 'text-conversion-style)\n                (assq 'text-conversion-style (buffer-local-variables))) states))\n  (nreverse states))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/text-conversion-detached-state.el",
+  "input_sha256": "fa498777e865bbf0736d25be73c5f1ff79b4499a8c310b1f6579d6dd6057ce63",
+  "exit_code": 0,
+  "elapsed_seconds": 0.2864766670000023,
+  "stdout_hex": "2828766f6964206e696c206e696c206e696c206e696c2028746578742d636f6e76657273696f6e2d7374796c65202e205b6e61746976652d6c6f63616c2d3234315d2929202872656c6f63616c697a656420286e65772d6c6f63616c2d323537292028706c61696e2d323531292074202828746578742d636f6e76657273696f6e2d7374796c65202e205b6e61746976652d6c6f63616c2d3234315d292028746578742d636f6e76657273696f6e2d7374796c65206e65772d6c6f63616c2d32353729292920286c6f63616c2d6b696c6c65642028706c61696e2d32353129206e696c2028746578742d636f6e76657273696f6e2d7374796c65202e205b6e61746976652d6c6f63616c2d3234315d292920286d6f64652d72657365742028706c61696e2d32353129206e696c206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

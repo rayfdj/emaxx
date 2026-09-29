@@ -1,0 +1,17 @@
+{
+  "results": [
+    {
+      "fixture": "positioned-reader-streams-before",
+      "matches": false
+    },
+    {
+      "fixture": "positioned-reader-streams-v2",
+      "matches": false
+    },
+    {
+      "fixture": "callable-reader-consumption-before",
+      "matches": false
+    }
+  ],
+  "all_match": false
+}

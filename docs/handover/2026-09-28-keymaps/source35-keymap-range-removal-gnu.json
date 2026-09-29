@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((input \"(list\\n (let ((map (make-keymap)) (parent (make-sparse-keymap)) (seen nil))\\n   (define-key parent [65] 'parent)\\n   (set-keymap-parent map parent)\\n   (define-key map [65] 'first)\\n   (define-key map [66] 'second)\\n   (define-key map [67] 'third)\\n   (define-key map [(65 . 66)] nil t)\\n   (map-keymap-internal #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (list (lookup-key map [65]) (lookup-key map [66])\\n         (aref (car (cdr map)) 65) (aref (car (cdr map)) 66)\\n         (nreverse seen)))\\n (let ((map (make-sparse-keymap)) (seen nil))\\n   (define-key map [65] 'first)\\n   (define-key map [66] 'second)\\n   (define-key map [70] 'retained)\\n   (define-key map [(65 . 66)] 'replacement)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (nreverse seen))\\n (let ((map (make-sparse-keymap)) (seen nil))\\n   (define-key map [65] 'first)\\n   (define-key map [66] 'second)\\n   (define-key map [70] 'retained)\\n   (define-key map [(65 . 66)] nil t)\\n   (map-keymap #'(lambda (key value) (setq seen (cons (list key value) seen))) map)\\n   (list (char-table-p (car (cdr map))) (nreverse seen))))\\n\") (read (read-from-string input))) (prin1 (list (equal (string-trim (substring input (cdr read))) \"\") (eval (car read) t))))"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "exit_code": 0,
+  "stdout": "(t ((parent nil nil nil ((67 third))) (((65 . 66) replacement) (70 retained) (66 replacement) (65 replacement)) (nil ((70 retained)))))",
+  "stderr": "",
+  "fixture_sha256": "39f1c36049b186ac0f754eb5f328f80be30d3b11ed9775f67d625ab3e34e5edb"
+}

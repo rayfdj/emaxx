@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--load",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/char-table-generated.el"
+  ],
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "b5ef73a90b7abaa241a3f76b0db9ac1a86a83c5ef6f576da40ef8bca914aa522",
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.330318459,
+  "stdout_sha256": "83bf76cd86f3dbb7fb8390bd74e8d90137cef3201e9e6ebe07aa904d211d9c82",
+  "stdout_bytes": 171163,
+  "limit": "Local source-matched GNU; not the pinned Darwin certificate or a timing experiment."
+}

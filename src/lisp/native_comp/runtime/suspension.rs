@@ -162,7 +162,7 @@ pub(super) struct NativeLispRoots<'a> {
 }
 
 impl TraceLispRoots for NativeLispRoots<'_> {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for handler in self.handlers {
             marker.value(&handler.match_value);
         }
@@ -193,7 +193,6 @@ impl TraceLispRoots for NativeLispRoots<'_> {
 struct SuspendedTlsGuard {
     active: *mut ActiveCall,
     heap: Option<*mut NativeHeap>,
-    cons_sync_depth: usize,
 }
 
 impl Drop for SuspendedTlsGuard {
@@ -202,7 +201,6 @@ impl Drop for SuspendedTlsGuard {
         if let Some(heap) = self.heap {
             ACTIVE_NATIVE_HEAP.store(heap, Ordering::Relaxed);
         }
-        CONS_SYNC_DEPTH.set(self.cons_sync_depth);
     }
 }
 
@@ -227,7 +225,6 @@ pub(crate) fn with_thread_suspended<R>(
             }
             let runtime = unsafe { &mut *runtime };
             runtime.sync_handlers(interpreter)?;
-            runtime.publish_heap_writes(interpreter, true)?;
 
             let mut ranges = runtime.ephemeral_root_ranges.clone();
             let bottom = runtime.heap.native_stack_bottom;
@@ -275,7 +272,6 @@ pub(crate) fn with_thread_suspended<R>(
                 // can belong to an unrelated OS thread: never change it.
                 heap: (!active.is_null())
                     .then(|| ACTIVE_NATIVE_HEAP.swap(std::ptr::null_mut(), Ordering::Relaxed)),
-                cons_sync_depth: CONS_SYNC_DEPTH.replace(0),
             };
             let roots = NativeLispRoots {
                 handlers: &runtime.handlers,
@@ -291,12 +287,8 @@ pub(crate) fn with_thread_suspended<R>(
             runtime.activate_thread();
             runtime.heap.native_stack_bottom = bottom;
             drop(tls);
-            let publish = runtime
-                .heap
-                .publish_interpreter_writes()
-                .map_err(|error| super::super::lisp::native_ice(&error));
             match result {
-                Ok(result) => publish.map(|()| result),
+                Ok(result) => Ok(result),
                 Err(panic) => resume_unwind(panic),
             }
         })
@@ -319,9 +311,7 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
         // fails: report nil and let the Rust-side test produce the failure.
         with_active_heap(|heap| {
             let pointer = word.wrapping_sub(TAG_CONS) as *const NativeCons;
-            if heap.native_owned.contains_key(&(pointer as usize))
-                || heap.cons_values.contains_key(&(pointer as usize))
-            {
+            if heap.native_cons_is_live(pointer) {
                 word
             } else {
                 0

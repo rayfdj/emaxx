@@ -1,5 +1,5 @@
 use crate::file_system as fs;
-use crate::lisp::types::RecordRef;
+use crate::lisp::types::{CharTableRef, LispRecordRef, RecordRef, SubCharTableRef};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -22,7 +22,9 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
+mod char_table_snapshot;
 pub(crate) use bindings::dynamic_library_suffix_values;
+pub(crate) use char_table_snapshot::CharTableChainSignature;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -1160,37 +1162,7 @@ impl ErtTestDefinition {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct CharTableState {
-    pub id: u64,
-    pub subtype: Option<String>,
-    pub default: Value,
-    pub parent: Option<u64>,
-    pub extra_slots: Vec<Value>,
-    pub entries: Vec<CharTableEntry>,
-    pub category_docs: Vec<(u32, String)>,
-    ascii_entry_indices: Option<Box<[usize; 128]>>,
-    /// A stamp no other table in the process ever carries: taken from one
-    /// process-wide counter when the table is made and again on every
-    /// write through the table door (`find_char_table_mut'), so a cache
-    /// derived from a table's contents can key on (id, stamp) and stay
-    /// valid across writes to every other table.  The process-wide counter
-    /// keeps a table an image installs, or a second interpreter allocates,
-    /// under the same id from ever repeating a stamp a cache may still
-    /// hold for its predecessor.
-    generation: u64,
-    /// Lazily-built non-overlapping view of `entries': each map key is a
-    /// range start, the payload its inclusive end plus the index of the
-    /// newest log entry covering it.  The log itself must stay append-only
-    /// (printing and `equal' compare it verbatim), so this is an index over
-    /// it, kept incrementally current by `push_entry' and dropped whenever
-    /// the log is replaced wholesale.
-    resolved_ranges: std::cell::RefCell<Option<ResolvedCharRanges>>,
-}
-
-/// Range start -> (inclusive range end, newest covering entry index).
-type ResolvedCharRanges = std::collections::BTreeMap<u32, (u32, usize)>;
-
+/// A transient range produced from the current radix leaves.
 #[derive(Clone, Debug)]
 pub struct CharTableEntry {
     pub start: u32,
@@ -1198,212 +1170,19 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
-/// The (id, stamp) of every table in a character table's parent chain, the
-/// table itself first: everything an inherited lookup of that table reads.
-/// A cache keyed on it survives a write to any table outside the chain,
-/// where one process-wide generation recompiled cc-mode's largest patterns
-/// (hundreds of milliseconds each) whenever any mode touched any table.
-pub(crate) type CharTableChainSignature = Vec<(u64, u64)>;
-
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {
-    table_id: u64,
+    table_id: CharTableRef,
     chain: CharTableChainSignature,
     rendered: [String; 16],
-    /// FNV over the sixteen renderings: two tables that render alike
-    /// (cperl-mode copies its table into every buffer) compile a pattern
-    /// alike, so the compiled-regexp cache keys on this, not the table.
     rendered_hash: u64,
 }
 
-/// Range segments of the syntax table, resolved once for the scanners that
-/// cannot hold an interpreter borrow (`skip-chars-forward' and friends).
-/// Keyed like the rendered-class cache so a chain write invalidates it.
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
-    table_id: u64,
+    table_id: CharTableRef,
     chain: CharTableChainSignature,
     pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
-}
-
-/// The process-wide source of char-table stamps (see CharTableState).
-static NEXT_CHAR_TABLE_GENERATION: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
-
-fn next_char_table_generation() -> u64 {
-    NEXT_CHAR_TABLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-impl CharTableState {
-    pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
-        Self::with_entries(id, subtype, default, None, Vec::new())
-    }
-
-    pub(crate) fn with_entries(
-        id: u64,
-        subtype: Option<String>,
-        default: Value,
-        parent: Option<u64>,
-        entries: Vec<CharTableEntry>,
-    ) -> Self {
-        let ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
-        Self {
-            id,
-            subtype,
-            default,
-            parent,
-            extra_slots: Vec::new(),
-            entries,
-            category_docs: Vec::new(),
-            ascii_entry_indices,
-            generation: next_char_table_generation(),
-            resolved_ranges: std::cell::RefCell::new(None),
-        }
-    }
-
-    /// The table's current stamp (see the field).
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// A write is about to reach the table's contents: take a fresh stamp.
-    pub(crate) fn note_written(&mut self) {
-        self.generation = next_char_table_generation();
-    }
-
-    fn build_ascii_entry_indices(entries: &[CharTableEntry]) -> Option<Box<[usize; 128]>> {
-        let mut indices = None;
-        for (index, entry) in entries.iter().enumerate() {
-            if entry.start >= 128 {
-                continue;
-            }
-            let indices = indices.get_or_insert_with(|| Box::new([usize::MAX; 128]));
-            for slot in entry.start as usize..=entry.end.min(127) as usize {
-                indices[slot] = index;
-            }
-        }
-        indices
-    }
-
-    pub(crate) fn push_entry(&mut self, entry: CharTableEntry) {
-        let index = self.entries.len();
-        let start = entry.start;
-        let end = entry.end;
-        self.entries.push(entry);
-        if let Some(map) = self.resolved_ranges.get_mut().as_mut() {
-            Self::overlay_resolved_range(map, start, end, index);
-        }
-        if start >= 128 {
-            return;
-        }
-        let indices = self
-            .ascii_entry_indices
-            .get_or_insert_with(|| Box::new([usize::MAX; 128]));
-        for slot in start as usize..=end.min(127) as usize {
-            indices[slot] = index;
-        }
-    }
-
-    pub(crate) fn replace_entries(&mut self, entries: Vec<CharTableEntry>) {
-        self.ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
-        self.entries = entries;
-        *self.resolved_ranges.get_mut() = None;
-    }
-
-    pub(crate) fn clear_entries(&mut self) {
-        self.entries.clear();
-        self.ascii_entry_indices = None;
-        *self.resolved_ranges.get_mut() = None;
-    }
-
-    /// Overlay `[start, end] -> index' onto a non-overlapping range map,
-    /// trimming or splitting whatever older ranges it eclipses.
-    fn overlay_resolved_range(map: &mut ResolvedCharRanges, start: u32, end: u32, index: usize) {
-        if let Some((&prev_start, &(prev_end, prev_index))) = map.range(..start).next_back()
-            && prev_end >= start
-        {
-            map.insert(prev_start, (start - 1, prev_index));
-            if prev_end > end {
-                map.insert(end + 1, (prev_end, prev_index));
-            }
-        }
-        let eclipsed: Vec<u32> = map.range(start..=end).map(|(&s, _)| s).collect();
-        for eclipsed_start in eclipsed {
-            let (eclipsed_end, eclipsed_index) = map
-                .remove(&eclipsed_start)
-                .expect("resolved range vanished mid-overlay");
-            if eclipsed_end > end {
-                map.insert(end + 1, (eclipsed_end, eclipsed_index));
-            }
-        }
-        map.insert(start, (end, index));
-    }
-
-    fn with_resolved_ranges<R>(&self, read: impl FnOnce(&ResolvedCharRanges) -> R) -> R {
-        let mut borrow = self.resolved_ranges.borrow_mut();
-        let map = borrow.get_or_insert_with(|| {
-            let mut map = ResolvedCharRanges::new();
-            for (index, entry) in self.entries.iter().enumerate() {
-                Self::overlay_resolved_range(&mut map, entry.start, entry.end, index);
-            }
-            map
-        });
-        read(map)
-    }
-
-    pub(crate) fn explicit_entry(&self, key: u32) -> Option<&CharTableEntry> {
-        if key < 128 {
-            let index = *self.ascii_entry_indices.as_ref()?.get(key as usize)?;
-            return (index != usize::MAX)
-                .then_some(index)
-                .and_then(|index| self.entries.get(index));
-        }
-        self.with_resolved_ranges(|map| {
-            let (_, &(end, index)) = map.range(..=key).next_back()?;
-            (end >= key).then_some(index)
-        })
-        .and_then(|index| self.entries.get(index))
-    }
-
-    /// The effective explicit ranges in ascending character order: newer log
-    /// entries mask older ones, and nil writes mask without being reported
-    /// as values.
-    pub(crate) fn effective_ranges(&self) -> Vec<CharTableEntry> {
-        self.with_resolved_ranges(|map| {
-            map.iter()
-                .filter_map(|(&start, &(end, index))| {
-                    let value = &self.entries[index].value;
-                    (!value.is_nil()).then_some(CharTableEntry {
-                        start,
-                        end,
-                        value: *value,
-                    })
-                })
-                .collect()
-        })
-    }
-
-    /// Append points in `[start, end]` at which this table's effective
-    /// explicit range can change.  `resolved_ranges` already folds the
-    /// append-only write log into the current, non-overlapping view, so
-    /// callers do not need to rescan every historical write.
-    pub(crate) fn append_change_boundaries(&self, start: u32, end: u32, boundaries: &mut Vec<u32>) {
-        self.with_resolved_ranges(|map| {
-            if let Some((_, &(range_end, _))) = map.range(..start).next_back()
-                && range_end >= start
-                && range_end < end
-            {
-                boundaries.push(range_end + 1);
-            }
-
-            for (&range_start, &(range_end, _)) in map.range(start..=end) {
-                boundaries.push(range_start);
-                if range_end < end {
-                    boundaries.push(range_end + 1);
-                }
-            }
-        });
-    }
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -1414,11 +1193,9 @@ impl CharTableState {
 /// names happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
-    Record,
     BoolVector,
     Closure,
     Font,
-    SymbolWithPos,
     Process,
     HashTable,
     Obarray,
@@ -1443,15 +1220,11 @@ pub(crate) enum RecordKind {
 impl RecordKind {
     fn gnu_vector_slots(self, logical_slots: usize) -> usize {
         match self {
-            // alloc.c:allocate_record stores the type as the first payload
-            // word; vector accounting also includes the one-word header.
-            Self::Record => logical_slots.saturating_add(2),
             // Both interpreted and byte-code closures are ordinary vectors
             // retagged PVEC_CLOSURE.
             Self::Closure => logical_slots.saturating_add(1),
             // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
-            Self::SymbolWithPos => 3,
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::HashTable => 9,
             Self::Obarray => 3,
@@ -1538,8 +1311,8 @@ pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
     }
 }
 
-/// alloc.c's PVEC_RECORD (and the pseudovector kinds kept as records):
-/// the object in a vector block, reached through `RecordRef'.  The id
+/// Temporary host pseudovector storage, reached through `RecordRef'.
+/// Generic Lisp records use `LispRecordRef` and have no host state. The id
 /// is the name the owning interpreter's side tables know it by (the
 /// hash-table states, the type index, the caches), until those live in
 /// the object as C's do; the owner tells whose id space it is.
@@ -1548,9 +1321,8 @@ pub struct RecordState {
     pub id: u64,
     /// The interpreter whose id space `id' is in (`record_owner').
     pub(crate) owner: u32,
-    /// GNU stores the record type in slot zero and permits either a symbol or
-    /// an arbitrary type descriptor there.  Keep the Lisp object itself as
-    /// the single source of truth; host pseudovectors use symbol tags.
+    /// The host pseudovector's symbol tag. Generic type descriptors are
+    /// stored in the inline Lisp record allocation instead.
     pub type_tag: Value,
     pub slots: Vec<Value>,
     pub(crate) kind: RecordKind,
@@ -1565,7 +1337,7 @@ fn next_record_owner() -> u32 {
 /// alloc.c queues all doomed objects before marking any finalizer list.
 /// The shared allocator can also sweep objects owned by parked interpreters.
 /// Keep their doomed objects until their own evaluator can run the callbacks.
-fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability<'_, '_>) {
+fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability) {
     let epoch = marked.epoch;
     let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
     let states = crate::lisp::alloc::live_states();
@@ -1586,7 +1358,6 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
             // SAFETY: as above; only Lisp marks are updated in this phase.
             let other = unsafe { Interpreter::registered_gc_view(state) };
             let mut other_marked = LispReachability::with_epoch(epoch);
-            other_marked.native = marked.native.as_deref_mut();
             other.mark_doomed_finalizers(&mut other_marked);
         }
     }
@@ -2710,8 +2481,8 @@ struct ProcessState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WindowConfigurationSnapshot {
-    frame_id: u64,
-    selected_frame_id: u64,
+    frame_id: crate::lisp::types::FrameRef,
+    selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,
@@ -2858,7 +2629,6 @@ pub(crate) struct LispFaceState {
     pub(crate) name: String,
     pub(crate) id: Option<i64>,
     pub(crate) global: Option<Value>,
-    pub(crate) frames: HashMap<u64, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2891,27 +2661,42 @@ pub(crate) struct FontsetState {
 pub(crate) struct FrameState {
     pub(crate) terminal: Option<crate::lisp::types::TerminalRef>,
     pub(crate) face_hash_table: Option<Value>,
-    pub(crate) root_window_id: u64,
-    pub(crate) selected_window_id: u64,
-    pub(crate) minibuffer_window_id: u64,
-    pub(crate) old_selected_window_id: Option<u64>,
+    /// Frame-local face vectors belong to this object, including when it
+    /// outlives its creating interpreter. The public hash table is a view.
+    pub(crate) local_faces: Vec<(String, Value)>,
+    pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) old_selected_window: Option<crate::lisp::types::RecordRef>,
     pub(crate) tty_sized: bool,
     pub(crate) id: u64,
-    pub(crate) name: Value,
-    pub(crate) live: bool,
     pub(crate) width: i64,
     pub(crate) height: i64,
     pub(crate) text_height: i64,
     pub(crate) parameter_width: i64,
     pub(crate) parameter_height: i64,
     pub(crate) parameter_overrides: Vec<(String, Value)>,
-    pub(crate) focus_frame_id: Option<u64>,
+    pub(crate) focus_frame_id: Option<crate::lisp::types::FrameRef>,
     pub(crate) left: i64,
     pub(crate) top: i64,
     pub(crate) window_state_change: bool,
     pub(crate) after_make_frame: bool,
     pub(crate) pointer_invisible: bool,
     pub(crate) was_invisible: bool,
+}
+
+impl FrameState {
+    pub(crate) fn root_window_id(&self) -> u64 {
+        self.root_window.map_or(0, |window| window.id)
+    }
+
+    pub(crate) fn selected_window_id(&self) -> u64 {
+        self.selected_window.map_or(0, |window| window.id)
+    }
+
+    pub(crate) fn minibuffer_window_id(&self) -> u64 {
+        self.minibuffer_window.map_or(0, |window| window.id)
+    }
 }
 
 fn empty_lisp_face_vector() -> Value {
@@ -3019,6 +2804,8 @@ struct ImageGraphCopier {
     markers: std::collections::HashMap<usize, Value>,
     overlays: std::collections::HashMap<usize, Value>,
     terminals: std::collections::HashMap<usize, Value>,
+    frame_objects: std::collections::HashMap<usize, Value>,
+    positioned_symbols: std::collections::HashMap<usize, Value>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -3038,6 +2825,8 @@ impl ImageGraphCopier {
             markers: Default::default(),
             overlays: Default::default(),
             terminals: Default::default(),
+            frame_objects: Default::default(),
+            positioned_symbols: Default::default(),
             record_owner,
         }
     }
@@ -3045,6 +2834,67 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
             Kind::Cons(_) => self.copy_cons_chain(value),
+            Kind::SymbolWithPos(object) => {
+                if let Some(copied) = self.positioned_symbols.get(&object.identity()) {
+                    return *copied;
+                }
+                let copied = Value::positioned_symbol(Value::Nil, Value::Integer(0));
+                self.positioned_symbols.insert(object.identity(), copied);
+                let Kind::SymbolWithPos(copy) = copied.kind() else {
+                    unreachable!("positioned symbol allocation")
+                };
+                copy.initialize(self.copy(&object.symbol()), self.copy(&object.position()));
+                copied
+            }
+            Kind::Frame(frame) => {
+                if let Some(copied) = self.frame_objects.get(&frame.identity()) {
+                    return *copied;
+                }
+                let copied =
+                    crate::lisp::types::FrameRef::new(frame.name.get(), frame.borrow().clone());
+                let value = Value::Frame(copied);
+                self.frame_objects.insert(frame.identity(), value);
+                copied.name.set(self.copy(&frame.name.get()));
+                let mut state = copied.borrow_mut();
+                let state = &mut *state;
+                for window in [
+                    &mut state.root_window,
+                    &mut state.selected_window,
+                    &mut state.minibuffer_window,
+                    &mut state.old_selected_window,
+                ] {
+                    if let Some(source) = *window {
+                        let Kind::Record(copied) = self.copy(&Value::Record(source)).kind() else {
+                            unreachable!()
+                        };
+                        *window = Some(copied);
+                    }
+                }
+                if let Some(terminal) = state.terminal {
+                    let Kind::Terminal(terminal) = self.copy(&Value::Terminal(terminal)).kind()
+                    else {
+                        unreachable!()
+                    };
+                    state.terminal = Some(terminal);
+                }
+                if let Some(target) = state.focus_frame_id {
+                    let Kind::Frame(target) = self.copy(&Value::Frame(target)).kind() else {
+                        unreachable!()
+                    };
+                    state.focus_frame_id = Some(target);
+                }
+                if let Some(table) = state.face_hash_table {
+                    state.face_hash_table = Some(self.copy(&table));
+                }
+                for (_, item) in state
+                    .parameter_overrides
+                    .iter_mut()
+                    .chain(&mut state.local_faces)
+                {
+                    *item = self.copy(item);
+                }
+                value
+            }
             Kind::Terminal(terminal) => {
                 if let Some(copied) = self.terminals.get(&terminal.identity()) {
                     return *copied;
@@ -3060,6 +2910,13 @@ impl ImageGraphCopier {
                     (&terminal.glyph_code_table, &copied.glyph_code_table),
                 ] {
                     target.set(self.copy(&source.get()));
+                }
+                let top = copied.borrow().top_frame;
+                if let Some(top) = top {
+                    let Kind::Frame(top) = self.copy(&Value::Frame(top)).kind() else {
+                        unreachable!()
+                    };
+                    copied.borrow_mut().top_frame = Some(top);
                 }
                 for entry in copied.borrow_mut().keyboard.values_mut() {
                     *entry = self.copy(entry);
@@ -3143,6 +3000,30 @@ impl ImageGraphCopier {
                 new_object.set_function(self.copy(&object.function()));
                 copied
             }
+            Kind::CharTable(table) => {
+                if let Some(copy) = self.vectors.get(&table.identity()) {
+                    return *copy;
+                }
+                let copy = CharTableRef::new(Value::Nil, Value::Nil, table.extra_count());
+                self.vectors
+                    .insert(table.identity(), Value::CharTable(copy));
+                for (index, value) in table.slots().enumerate() {
+                    copy.set_slot(index, self.copy(&value));
+                }
+                Value::CharTable(copy)
+            }
+            Kind::SubCharTable(table) => {
+                if let Some(copy) = self.vectors.get(&table.identity()) {
+                    return *copy;
+                }
+                let copy = SubCharTableRef::new(table.depth(), table.min_char(), Value::Nil);
+                self.vectors
+                    .insert(table.identity(), Value::SubCharTable(copy));
+                for (index, value) in table.slots().enumerate() {
+                    copy.set_slot(index, self.copy(&value));
+                }
+                Value::SubCharTable(copy)
+            }
             Kind::Vector(vector) => {
                 if vector.len() == 0 {
                     return *value;
@@ -3191,6 +3072,19 @@ impl ImageGraphCopier {
                     .collect();
                 if let Kind::StringObject(new_state) = copied.kind() {
                     new_state.borrow_mut().props = copied_props;
+                }
+                copied
+            }
+            Kind::LispRecord(record) => {
+                let key = record.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let object = LispRecordRef::filled(Value::Nil, record.len() - 1, Value::Nil);
+                let copied = Value::LispRecord(object);
+                self.vectors.insert(key, copied);
+                for (index, field) in record.slots().enumerate() {
+                    object.set(index, self.copy(&field));
                 }
                 copied
             }
@@ -3281,12 +3175,6 @@ impl ImageGraphCopier {
                         }
                         crate::lisp::types::ReaderForm::BoolVector { bits } => {
                             crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
-                        }
-                        crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
-                            crate::lisp::types::ReaderForm::PositionedSymbol {
-                                name: name.clone(),
-                                pos: *pos,
-                            }
                         }
                     },
                 ));
@@ -3387,20 +3275,15 @@ pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
 pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
 pub(crate) const GNU_BUFFER_SIZE: usize = 992;
-// alloc.c:sweep_vectors counts these fixed-layout objects in the vector
-// totals as well as in their more specific public rows.  These are the
-// configured GNU 64-bit VECSIZE values for the remaining host-state objects.
-// Allocator-owned buffers and terminals use their actual vector footprints.
-pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
-pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
+// Allocator-owned frame, buffer and terminal objects contribute their actual
+// rounded cell sizes to vector totals; their typed public rows are additional.
 
 /// The mark bits of one collection, keyed by object address or id.  The
 /// sets hash by identity (alloc.c's mark bit is a flag on the object; a
 /// SipHash of every visited address made the mark phase a quarter hashing).
 pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
 
-pub(crate) struct LispReachability<'mark, 'heap> {
-    native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+pub(crate) struct LispReachability {
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
     /// alloc.c's `mark_stk': the objects reached and not yet traced,
@@ -3414,11 +3297,9 @@ pub(crate) struct LispReachability<'mark, 'heap> {
     /// every record is traced, a weak table's entry mirror included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
-    char_tables: MarkedIds,
-    frames: MarkedIds,
 }
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     /// A marker for another interpreter state in the same collection:
     /// the same epoch on the objects (conses, vectors, strings, symbols
     /// are the process's), its own sets for the kinds marked by id (a
@@ -3430,7 +3311,7 @@ impl LispReachability<'_, '_> {
     }
 }
 
-impl Default for LispReachability<'_, '_> {
+impl Default for LispReachability {
     /// A fresh collection: its own epoch, so nothing is marked in it yet.
     fn default() -> Self {
         let mut marker = Self::default_without_epoch();
@@ -3439,15 +3320,12 @@ impl Default for LispReachability<'_, '_> {
     }
 }
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     fn default_without_epoch() -> Self {
         Self {
-            native: None,
             pending: Vec::new(),
             retaining: false,
             epoch: 0,
-            char_tables: MarkedIds::default(),
-            frames: MarkedIds::default(),
         }
     }
 }
@@ -3461,7 +3339,7 @@ pub(crate) struct WeakHashReachability {
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
 
-impl LispReachability<'_, '_> {
+impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
@@ -3473,16 +3351,19 @@ impl LispReachability<'_, '_> {
                 crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
                     || symbol.mark_bit().is_marked(self.epoch)
             }
-            Kind::Cons(value) => value.mark.is_marked(self.epoch),
+            Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
-            Kind::CharTable(id) => self.char_tables.contains(&id),
-            Kind::Frame(id) => self.frames.contains(&id),
+            Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
+            Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
+            Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
+            Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
@@ -3505,6 +3386,20 @@ impl LispReachability<'_, '_> {
     pub(crate) fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
         self.enqueue(value);
         self.trace_pending(interp)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trace_order_for_test(interp: &Interpreter, value: Value) -> (u32, Vec<Value>) {
+        let mut marked = Self::default();
+        let mut visited = Vec::new();
+        marked.enqueue(&value);
+        while let Some(value) = marked.pending.pop() {
+            if marked.mark_object(&value) {
+                visited.push(value);
+                marked.trace_fields(interp, &value);
+            }
+        }
+        (marked.epoch, visited)
     }
 
     /// alloc.c:process_mark_stack: pop an object, mark it, and if it
@@ -3541,38 +3436,30 @@ impl LispReachability<'_, '_> {
             Kind::String(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
-            Kind::Cons(value) => value.mark.mark(self.epoch),
+            Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
-            Kind::CharTable(id) => self.char_tables.insert(id),
-            Kind::Frame(id) => self.frames.insert(id),
+            Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
+            Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
+            Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
+            Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
+            Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
             Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
-        // alloc.c completes one graph traversal before sweeping either
-        // vectors or conses. Follow native words here, including edges
-        // discovered by the weak-table fixed point, rather than sweeping
-        // that storage before this pass can discover it.
-        if let Some(native) = self.native.as_deref_mut() {
-            let children = native.trace_lisp_value(value);
-            for child in &children {
-                self.enqueue(child);
-            }
-            // The native walk refreshes reached cons views before returning.
-            // Trace their actual typed fields too: equivalent buffer references
-            // can still own different allocations in the two representations.
-            // This extra traversal disappears with the shared object payload.
-        }
-
         match value.kind() {
+            Kind::SymbolWithPos(object) => {
+                self.enqueue(&object.position());
+                self.enqueue(&object.symbol());
+            }
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
@@ -3594,8 +3481,8 @@ impl LispReachability<'_, '_> {
             }
             Kind::Cons(cell) => {
                 // The two words, read in place.
-                self.enqueue(&cell.car.get());
                 self.enqueue(&cell.cdr.get());
+                self.enqueue(&cell.car.get());
             }
             Kind::Vector(vector) => {
                 // Slot by slot, in place.
@@ -3620,31 +3507,51 @@ impl LispReachability<'_, '_> {
                 // alloc.c:mark_overlay traces only the strong plist slot.
                 self.enqueue(&overlay.plist());
             }
-            Kind::CharTable(id) => {
-                // The slots in place (alloc.c's mark_char_table).
-                if let Some(table) = interp.find_char_table(id) {
-                    self.enqueue(&table.default);
-                    for child in &table.extra_slots {
-                        self.enqueue(child);
-                    }
-                    for entry in &table.entries {
-                        self.enqueue(&entry.value);
-                    }
+            Kind::CharTable(table) => {
+                for value in table.slots() {
+                    self.enqueue(&value);
                 }
             }
-            Kind::Frame(id) => {
-                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == id) {
-                    self.enqueue(&frame.name);
-                    if let Some(terminal) = frame.terminal {
-                        self.enqueue(&Value::Terminal(terminal));
-                    }
-                    for (_, value) in &frame.parameter_overrides {
-                        self.enqueue(value);
-                    }
+            Kind::SubCharTable(table) => {
+                // alloc.c:mark_char_table skips the packed depth/min_char word.
+                for value in table.slots() {
+                    self.enqueue(&value);
+                }
+            }
+            Kind::Frame(frame) => {
+                self.enqueue(&frame.name.get());
+                let state = frame.borrow();
+                for window in [
+                    state.root_window,
+                    state.selected_window,
+                    state.minibuffer_window,
+                    state.old_selected_window,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    self.enqueue(&Value::Record(window));
+                }
+                if let Some(target) = state.focus_frame_id {
+                    self.enqueue(&Value::Frame(target));
+                }
+                if let Some(terminal) = state.terminal {
+                    self.enqueue(&Value::Terminal(terminal));
+                }
+                if let Some(table) = state.face_hash_table {
+                    self.enqueue(&table);
+                }
+                for (_, value) in state.parameter_overrides.iter().chain(&state.local_faces) {
+                    self.enqueue(value);
+                }
+            }
+            Kind::LispRecord(record) => {
+                for field in record.slots() {
+                    self.enqueue(&field);
                 }
             }
             Kind::Record(record) => {
-                // alloc.c's mark_vectorlike: the slots in place.
+                // The remaining host pseudovector adapter owns its slots.
                 let record: &RecordState = &record;
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
@@ -3705,9 +3612,7 @@ impl LispReachability<'_, '_> {
                     | ReaderForm::SubCharTable { fields }
                     | ReaderForm::Record { slots: fields }
                     | ReaderForm::Closure { slots: fields, .. } => fields,
-                    ReaderForm::CircularReference(_)
-                    | ReaderForm::BoolVector { .. }
-                    | ReaderForm::PositionedSymbol { .. } => &[],
+                    ReaderForm::CircularReference(_) | ReaderForm::BoolVector { .. } => &[],
                 };
                 for child in children {
                     self.enqueue(child);
@@ -3754,20 +3659,6 @@ pub(crate) fn initial_process_environment() -> &'static [(String, String)] {
 }
 
 impl Interpreter {
-    /// Mark Lisp objects from the interpreter's actual roots, then apply
-    /// GNU's iterative weak-hash rule.  Hash entries are deliberately not
-    /// roots of a weak table; an entry that survives one table can mark an
-    /// object which in turn makes an entry in another table survive, so the
-    /// pass repeats to a fixed point exactly like alloc.c.
-    #[cfg(test)]
-    pub(crate) fn weak_hash_reachability(
-        &self,
-        env: &Env,
-        native_roots: &[Value],
-    ) -> WeakHashReachability {
-        self.weak_hash_reachability_with_native(env, native_roots, None)
-    }
-
     /// pdumper.c:dump_roots for the interpreter's staticpro'd slots: the
     /// single-value fields the mark phase above starts from, then the
     /// root groups of `dump_roots.rs' (each the Lisp value GNU keeps for
@@ -3907,6 +3798,7 @@ impl Interpreter {
             self.equal_hash_tables.remove(&id);
             self.custom_hash_tables.remove(&id);
             self.immutable_hash_tables.remove(&id);
+            self.forget_keymap_public_view(id);
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
             // the tree-sitter parser, node and query states, a finished
@@ -3927,30 +3819,6 @@ impl Interpreter {
                 *slot = None;
             }
         }
-    }
-
-    /// Install a char-table with the id the image gave it.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_char_table(&mut self, state: CharTableState) {
-        self.next_char_table_id = self.next_char_table_id.max(state.id + 1);
-        self.category_context_generation += 1;
-        self.case_context_generation += 1;
-        let index = self.char_table_index_for(state.id);
-        self.char_tables[index] = state;
-    }
-
-    /// The table is indexed by id (`find_char_table'): the slot for ID,
-    /// with any gap below it filled by empty tables, as the image can
-    /// install tables out of id order and a remembered next id can
-    /// exceed the tables the image carried.
-    pub(crate) fn char_table_index_for(&mut self, id: u64) -> usize {
-        let index = usize::try_from(id - 1).expect("char-table id fits");
-        while self.char_tables.len() <= index {
-            let filler = self.char_tables.len() as u64 + 1;
-            self.char_tables
-                .push(CharTableState::new(filler, None, Value::Nil));
-        }
-        index
     }
 
     // ----- pdumper.c:dump_buffer and its neighbours: what the writer reads
@@ -4004,7 +3872,7 @@ impl Interpreter {
     }
 
     /// BVAR (b, syntax_table) when the buffer has set one.
-    pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<u64> {
+    pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_syntax_tables
             .iter()
             .rev()
@@ -4013,7 +3881,7 @@ impl Interpreter {
     }
 
     /// BVAR (b, case_table) when the buffer has set one.
-    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<u64> {
+    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_case_tables
             .iter()
             .rev()
@@ -4061,46 +3929,39 @@ impl Interpreter {
         self.finalizers.append(object);
     }
 
-    /// Install the dead frame a nilled frame pseudovector loads as: no
-    /// name, not live, nothing else.
-    #[cfg_attr(not(test), allow(dead_code))]
     /// A frame the image nilled (pdumper.c:dump_nilled_pseudovec): a dead
     /// frame object of its own, beside the live initial frame the new
     /// process made (frame.c:init_frame_once_for_pdumper).
-    pub(crate) fn install_dead_frame(&mut self) -> u64 {
-        let id = self
-            .frame_states
-            .iter()
-            .map(|frame| frame.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.frame_states.push(FrameState {
-            terminal: None,
-            face_hash_table: None,
-            root_window_id: 0,
-            selected_window_id: 0,
-            minibuffer_window_id: 0,
-            old_selected_window_id: None,
-            tty_sized: false,
-            id,
-            name: Value::Nil,
-            live: false,
-            width: 0,
-            height: 0,
-            text_height: 0,
-            parameter_width: 0,
-            parameter_height: 0,
-            parameter_overrides: Vec::new(),
-            focus_frame_id: None,
-            left: 0,
-            top: 0,
-            window_state_change: false,
-            after_make_frame: false,
-            pointer_invisible: false,
-            was_invisible: false,
-        });
-        id
+    pub(crate) fn install_dead_frame(&mut self) -> crate::lisp::types::FrameRef {
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
+        crate::lisp::types::FrameRef::new(
+            Value::Nil,
+            FrameState {
+                terminal: None,
+                face_hash_table: None,
+                local_faces: Vec::new(),
+                root_window: None,
+                selected_window: None,
+                minibuffer_window: None,
+                old_selected_window: None,
+                tty_sized: false,
+                id,
+                width: 0,
+                height: 0,
+                text_height: 0,
+                parameter_width: 0,
+                parameter_height: 0,
+                parameter_overrides: Vec::new(),
+                focus_frame_id: None,
+                left: 0,
+                top: 0,
+                window_state_change: false,
+                after_make_frame: false,
+                pointer_invisible: false,
+                was_invisible: false,
+            },
+        )
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -4111,7 +3972,7 @@ impl Interpreter {
         state.live = false;
         state.name.clear();
         state.keyboard_coding = None;
-        state.top_frame = 0;
+        state.top_frame = None;
         crate::lisp::types::TerminalRef::new(id, state)
     }
 
@@ -4132,29 +3993,27 @@ impl Interpreter {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: u64) {
+    pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
         self.buffer_syntax_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
         self.buffer_syntax_tables.push((id, table));
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: u64) {
+    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: CharTableRef) {
         self.buffer_case_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
         self.buffer_case_tables.push((id, table));
     }
 
-    pub(crate) fn weak_hash_reachability_with_native(
+    /// Mark actual roots, then iterate weak-table reachability to a fixed
+    /// point. Both native and interpreter roots enter this one graph walk.
+    pub(crate) fn weak_hash_reachability(
         &self,
         env: &Env,
         native_roots: &[Value],
-        native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
     ) -> WeakHashReachability {
-        let mut marked = LispReachability {
-            native,
-            ..LispReachability::default()
-        };
+        let mut marked = LispReachability::default();
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);
@@ -4188,9 +4047,7 @@ impl Interpreter {
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
             let mut other_marked = LispReachability::with_epoch(marked.epoch);
-            // These roots share the allocator and the collecting native
-            // heap. Keep their existing native edges in this same mark pass.
-            other_marked.native = marked.native.as_deref_mut();
+            // These roots share the allocator and this collection's epoch.
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
@@ -4295,11 +4152,6 @@ impl Interpreter {
                 mark(&Value::Record(record));
             }
         };
-        for frame in &self.frame_states {
-            if let Some(id) = frame.old_selected_window_id {
-                hold(id);
-            }
-        }
         hold(self.old_selected_window_id);
         if let Some(id) = self.minibuffer_selected_window_id {
             hold(id);
@@ -4320,7 +4172,7 @@ impl Interpreter {
     /// The staticpro'd roots of this state (pdumper.c:dump_roots' slots,
     /// eval.c's specpdl and the C-side object lists), marked into MARKED:
     /// the mark phase's own, and any other state alive in the process.
-    pub(crate) fn mark_static_roots_into(&self, marked: &mut LispReachability<'_, '_>) {
+    pub(crate) fn mark_static_roots_into(&self, marked: &mut LispReachability) {
         let mut mark = |value: &Value| {
             marked.mark(self, value);
         };
@@ -4403,8 +4255,21 @@ impl Interpreter {
         for terminal in &self.terminals {
             mark(&Value::Terminal(*terminal));
         }
-        for table in &self.char_tables {
-            mark(&Value::CharTable(table.id));
+        mark(&self.syntax_code_objects);
+        mark(&Value::CharTable(self.standard_syntax_table_id));
+        for table in self
+            .standard_category_table_id
+            .iter()
+            .chain(self.standard_case_table_id.iter())
+        {
+            mark(&Value::CharTable(*table));
+        }
+        for (_, table) in self
+            .buffer_syntax_tables
+            .iter()
+            .chain(self.buffer_case_tables.iter())
+        {
+            mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
             mark(value);
@@ -4430,10 +4295,10 @@ impl Interpreter {
             mark(value);
         }
         for frame in &self.frame_states {
-            if frame.live {
-                mark(&Value::Frame(frame.id));
-            }
+            mark(&Value::Frame(*frame));
         }
+        mark(&Value::Frame(self.selected_frame_id));
+        mark(&Value::Frame(self.old_selected_frame_id));
         for coding in &self.coding_systems {
             mark(&coding.plist);
             mark(&coding.charset_list);
@@ -4441,13 +4306,8 @@ impl Interpreter {
                 mark(argument);
             }
         }
-        for (_, function) in &self.functions {
+        for function in self.globals.function_values() {
             mark(function);
-        }
-        for frame in &self.frame_states {
-            if let Some(value) = &frame.face_hash_table {
-                mark(value);
-            }
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -4512,7 +4372,7 @@ impl Interpreter {
             }
         }
         for face in &self.lisp_face_states {
-            for value in face.global.iter().chain(face.frames.values()) {
+            if let Some(value) = &face.global {
                 mark(value);
             }
         }
@@ -4589,16 +4449,6 @@ impl Interpreter {
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
-
-        for frame in self.frame_states.iter().filter(|frame| frame.live) {
-            for id in [
-                frame.root_window_id,
-                frame.selected_window_id,
-                frame.minibuffer_window_id,
-            ] {
-                mark(&self.record_value(id));
-            }
-        }
     }
 
     /// The allocated state is a root set for every collection in the process
@@ -4644,18 +4494,6 @@ impl Interpreter {
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
         let allocated_buffers = crate::lisp::alloc::vectors::live_buffer_census();
-        let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        let char_table_slots = self
-            .char_tables
-            .iter()
-            .map(|table| GNU_CHAR_TABLE_VECTOR_SLOTS.saturating_add(table.extra_slots.len()))
-            .sum::<usize>();
-        vector_count = vector_count
-            .saturating_add(live_frames)
-            .saturating_add(self.char_tables.len());
-        vector_slots = vector_slots
-            .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
-            .saturating_add(char_table_slots);
         // The records are vectors of the sweep's count (alloc.c counts a
         // record among the vectors).
         let (record_count, record_slots) = crate::lisp::alloc::live_record_census();
@@ -4825,12 +4663,20 @@ impl Interpreter {
             }
             clone.frame_and_buffer_state = c.copy(&clone.frame_and_buffer_state.clone());
             for frame in &mut clone.frame_states {
-                if let Some(terminal) = frame.terminal {
-                    let Kind::Terminal(copied) = c.copy(&Value::Terminal(terminal)).kind() else {
-                        unreachable!("terminal copy");
-                    };
-                    frame.terminal = Some(copied);
-                }
+                let Kind::Frame(copied) = c.copy(&Value::Frame(*frame)).kind() else {
+                    unreachable!()
+                };
+                *frame = copied;
+            }
+            let clone_state = &mut *clone;
+            for frame in [
+                &mut clone_state.selected_frame_id,
+                &mut clone_state.old_selected_frame_id,
+            ] {
+                let Kind::Frame(copied) = c.copy(&Value::Frame(*frame)).kind() else {
+                    unreachable!()
+                };
+                *frame = copied;
             }
             for terminal in &mut clone.terminals {
                 let Kind::Terminal(copied) = c.copy(&Value::Terminal(*terminal)).kind() else {
@@ -4838,14 +4684,25 @@ impl Interpreter {
                 };
                 *terminal = copied;
             }
-            for table in &mut clone.char_tables {
-                table.default = c.copy(&table.default.clone());
-                for slot in &mut table.extra_slots {
-                    *slot = c.copy(slot);
-                }
-                for entry in &mut table.entries {
-                    entry.value = c.copy(&entry.value.clone());
-                }
+            let copy_table = |c: &mut ImageGraphCopier, table: CharTableRef| {
+                let Kind::CharTable(copy) = c.copy(&Value::CharTable(table)).kind() else {
+                    unreachable!()
+                };
+                copy
+            };
+            clone.syntax_code_objects = c.copy(&clone.syntax_code_objects);
+            clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
+            clone.standard_category_table_id = clone
+                .standard_category_table_id
+                .map(|table| copy_table(c, table));
+            clone.standard_case_table_id = clone
+                .standard_case_table_id
+                .map(|table| copy_table(c, table));
+            for (_, table) in clone.buffer_syntax_tables.iter_mut() {
+                *table = copy_table(c, *table);
+            }
+            for (_, table) in &mut clone.buffer_case_tables {
+                *table = copy_table(c, *table);
             }
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
@@ -4878,12 +4735,6 @@ impl Interpreter {
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
-            for frame in &mut clone.frame_states {
-                frame.name = c.copy(&frame.name.clone());
-                for (_, value) in &mut frame.parameter_overrides {
-                    *value = c.copy(value);
-                }
-            }
             for table in clone.equal_hash_tables.values_mut() {
                 for (key, value) in &mut table.entries {
                     *key = c.copy(key);
@@ -4895,17 +4746,6 @@ impl Interpreter {
                 coding.charset_list = c.copy(&coding.charset_list);
                 for argument in &mut coding.type_args {
                     *argument = c.copy(argument);
-                }
-            }
-            for (_, function) in &mut clone.functions {
-                *function = c.copy(function);
-            }
-            for function in clone.functions_index.values_mut() {
-                *function = c.copy(function);
-            }
-            for frame in &mut clone.frame_states {
-                if let Some(table) = &frame.face_hash_table {
-                    frame.face_hash_table = Some(c.copy(table));
                 }
             }
             clone.alternative_font_family_alist =
@@ -4981,9 +4821,6 @@ impl Interpreter {
                 if let Some(global) = &face.global {
                     face.global = Some(c.copy(global));
                 }
-                for value in face.frames.values_mut() {
-                    *value = c.copy(value);
-                }
             }
             for bitmap in &mut clone.fringe_bitmap_states {
                 if let Some(definition) = &bitmap.definition {
@@ -5038,7 +4875,6 @@ impl Interpreter {
         clone.keymap_bindings_cache.get_mut().clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
-        clone.syntax_table_mutable_entries_cache.get_mut().clear();
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
         clone.bc_live_programs.clear();
@@ -5351,19 +5187,16 @@ pub struct InterpreterState {
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
     /// Runtime keymaps keep stable record identity internally while exposing
-    /// GNU's mutable cons-list surface to Lisp.  This reverse index makes a
-    /// nested `setcar'/`setcdr' on that surface update its owning record at
-    /// the mutation door instead of requiring read-side rescans.
+    /// GNU's mutable cons-list surface to Lisp. This temporary reverse index
+    /// resolves public roots to their records. Ordinary field stores do not
+    /// consult it. It leaves with the remaining derived keymap records.
     keymap_public_cons_owners: HashMap<usize, Vec<u64>>,
     /// Forward half of `keymap_public_cons_owners', used to unregister one
     /// refreshed keymap without scanning every live public cons view.
     keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
-    /// Per keymap record, the mutation dependencies of its public view (the
-    /// spine and the binding pairs, the cells the owner index names): a
-    /// store through the Rust primitives reaches the record at the store,
-    /// but generated code stores into the canonical words of a cell it
-    /// reached through native pointers without crossing into Rust, and only
-    /// a check of those words finds it.  A record whose snapshot is not
+    /// Per keymap record, weak dependencies of its public view's spine and
+    /// binding pairs. Both ordinary and generated stores write the actual
+    /// words without notification. A record whose snapshot is not
     /// current (or missing) is rebuilt from its view before it is read.
     keymap_public_view_watch: HashMap<u64, crate::lisp::types::ConsMutationSnapshot>,
     /// The ID of the current buffer.
@@ -5382,12 +5215,12 @@ pub struct InterpreterState {
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
-    /// Opaque frame identities and their frame-local state.  The headless
-    /// runtime begins with one TTY frame; keeping its state keyed by identity
-    /// prevents frame objects from collapsing into an ordinary Lisp symbol.
-    pub(crate) frame_states: Vec<FrameState>,
-    pub(crate) selected_frame_id: u64,
-    pub(crate) old_selected_frame_id: u64,
+    /// frame.c's live frame list. A frame owns its state and graph; deleting
+    /// it removes this root, while escaped Lisp references retain the object.
+    pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
+    pub(crate) next_frame_id: u64,
+    pub(crate) selected_frame_id: crate::lisp::types::FrameRef,
+    pub(crate) old_selected_frame_id: crate::lisp::types::FrameRef,
     /// dispnew.c's internal frame/buffer menu state vector.
     frame_and_buffer_state: Value,
     pub(crate) terminals: Vec<crate::lisp::types::TerminalRef>,
@@ -5398,15 +5231,6 @@ pub struct InterpreterState {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
-    /// Char tables allocated by the interpreter.
-    char_tables: Vec<CharTableState>,
-    /// Write generations per kind of table, bumped by the character-table
-    /// mutation door (see find_char_table_mut) for the caches derived from
-    /// the category and the case tables.  Syntax renderings use none: they
-    /// key on the stamps of the tables in the chain they read
-    /// (`char_table_chain_signature').
-    category_context_generation: u64,
-    case_context_generation: u64,
     /// The rendered current-table syntax classes are expensive to derive and
     /// are reused by many different compiled patterns.  This small cache
     /// is stamped with the table identity and its chain signature; regexp
@@ -5414,11 +5238,6 @@ pub struct InterpreterState {
     /// entry objects whose in-place changes bypass the table mutation door.
     regexp_syntax_class_cache: RefCell<Vec<RegexpSyntaxClassCache>>,
     syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
-    /// Whether a syntax table chain holds entries whose in-place mutation
-    /// bypasses the table door (a cons or mutable string), per table id and
-    /// chain signature: the compiled-regexp cache keys a pattern on the
-    /// cons-mutation generation only for such a chain.
-    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, CharTableChainSignature, bool)>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -5488,26 +5307,20 @@ pub struct InterpreterState {
     pub(crate) safe_terminal_coding: Option<String>,
     input_interrupt_mode: bool,
     /// Shared standard category table.
-    standard_category_table_id: Option<u64>,
+    standard_category_table_id: Option<CharTableRef>,
     /// Shared standard case table.
-    standard_case_table_id: Option<u64>,
-    /// Case tables derived from GNU's ASCII-only case table.
-    ascii_case_table_ids: Vec<u64>,
+    standard_case_table_id: Option<CharTableRef>,
     /// Buffer-local case tables keyed by buffer id.
-    buffer_case_tables: Vec<(u64, u64)>,
-    /// Next char-table ID for identity tracking.
-    next_char_table_id: u64,
+    buffer_case_tables: Vec<(u64, CharTableRef)>,
     /// Allocated record objects.
     /// The records by id (`find_record'), a registry and not a root:
     /// a record the sweep frees leaves it (`purge_freed_records').
     records: Vec<Option<RecordRef>>,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
-    /// Live record IDs grouped by their current type tag.  Records remain in
-    /// dense ID order for identity lookup; this derived index avoids scanning
-    /// every byte-code function, hash table, and EIEIO object when a caller
-    /// needs one runtime class (notably windows during buffer teardown).
-    /// `create_record` and `retag_record` are the only mutation points.
+    /// Host pseudovector IDs grouped by their fixed type tags, principally
+    /// for window enumeration during buffer teardown. Generic Lisp records
+    /// do not enter this registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
     /// Record mark bits from the most recent real reachability pass.  Dense
     /// host storage keeps IDs stable, but dead records must not contribute to
@@ -5573,7 +5386,7 @@ pub struct InterpreterState {
     /// not scan every other live buffer's locals on each variable read.
     buffer_locals: BufferLocalBindings,
     /// Buffer-local syntax tables keyed by buffer id.
-    buffer_syntax_tables: Vec<(u64, u64)>,
+    buffer_syntax_tables: Vec<(u64, CharTableRef)>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -5583,34 +5396,14 @@ pub struct InterpreterState {
     indirect_buffers: Vec<(u64, u64)>,
     /// Prevent recursive before/after-change hook re-entry.
     change_hooks_running: usize,
-    /// User-defined functions in the function namespace.
-    functions: Vec<(String, Value)>,
-    /// Last-wins index over `functions` so the hot function-lookup path is
-    /// O(1); every mutation of `functions` keeps this in sync.
-    functions_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
-    /// The position in `functions` of each name's entry (one entry per
-    /// name), so a redefinition replaces it in place: finding it by a scan
-    /// and shifting the tail cost a load of org.el a tenth of its time.
-    functions_position: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
-    /// Bumped on every function/macro (re)definition, plist write and cons
-    /// mutation; validates the `not_macro_names' verdicts below, which a
-    /// `(macro . f)' cell changed in place would otherwise outlive.
-    definition_generation: u64,
     /// Bumped only when a function cell is bound, rebound or voided: what
     /// the funcall resolutions below depend on.  A cons mutation cannot
     /// change a resolution (the cached value shares the cell's object), so
-    /// it does not cost them, as it did when they shared the generation
-    /// above (cc-mode's constant `setcar's kept every call site cold).
+    /// it does not invalidate them.
     function_binding_generation: u64,
-    /// Names the macroexpansion probe determined are NOT macros, from
-    /// GLOBAL state only (no cl-flet frame involved), stamped with the
-    /// generation that verdict was computed at.  Skips the whole probe on
-    /// the hot per-form path while any definition change invalidates all
-    /// verdicts at once.
-    not_macro_names: HashMap<String, u64, crate::lisp::primitives::FnvBuildHasher>,
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
@@ -5684,7 +5477,8 @@ pub struct InterpreterState {
     /// `Snarf-documentation`, keyed by the canonical native function name.
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
-    standard_syntax_table_id: u64,
+    syntax_code_objects: Value,
+    standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
     load_path: Value,
@@ -5767,11 +5561,11 @@ fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
         ("move-beginning-of-line", "beginning-of-visual-line"),
         ("move-end-of-line", "end-of-visual-line"),
     ] {
-        let parts = vec!["<remap>".into(), format!("<{command}>")];
+        let parts = vec![Value::symbol("remap"), Value::symbol(command)];
         let _ = primitives::keymap_define_binding_with_placement(
             interp,
             &map,
-            &parts.join(" "),
+            &format!("<remap> <{command}>"),
             Some(parts),
             Value::Symbol(replacement.into()),
             true,
@@ -5824,7 +5618,9 @@ impl Interpreter {
             slots: vec![Value::Nil],
             kind: RecordKind::Obarray,
         });
-        let standard_syntax_table_id = 1u64;
+        let syntax_code_objects =
+            Value::vector((0..16).map(|code| Value::cons(Value::Integer(code), Value::Nil)));
+        let standard_syntax_table_id = initial_syntax_table(syntax_code_objects);
         let local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
@@ -5847,6 +5643,34 @@ impl Interpreter {
                 face: Value::Nil,
             })
             .collect();
+        let initial_frame = crate::lisp::types::FrameRef::new(
+            frame_name,
+            FrameState {
+                terminal: Some(initial_terminal),
+                face_hash_table: None,
+                local_faces: vec![("default".into(), tty_default_lisp_face_vector())],
+                root_window: None,
+                selected_window: None,
+                minibuffer_window: None,
+                old_selected_window: None,
+                tty_sized: false,
+                id: 1,
+                width: 80,
+                height: 25,
+                text_height: 25,
+                parameter_width: 80,
+                parameter_height: 25,
+                parameter_overrides: Vec::new(),
+                focus_frame_id: None,
+                left: 0,
+                top: 0,
+                window_state_change: false,
+                after_make_frame: true,
+                pointer_invisible: false,
+                was_invisible: false,
+            },
+        );
+        initial_terminal.borrow_mut().top_frame = Some(initial_frame);
         let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::default(),
@@ -6147,33 +5971,10 @@ impl Interpreter {
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
-            frame_states: vec![FrameState {
-                terminal: Some(initial_terminal),
-                face_hash_table: None,
-                root_window_id: 0,
-                selected_window_id: 0,
-                minibuffer_window_id: 0,
-                old_selected_window_id: None,
-                tty_sized: false,
-                id: 1,
-                name: frame_name,
-                live: true,
-                width: 80,
-                height: 25,
-                text_height: 25,
-                parameter_width: 80,
-                parameter_height: 25,
-                parameter_overrides: Vec::new(),
-                focus_frame_id: None,
-                left: 0,
-                top: 0,
-                window_state_change: false,
-                after_make_frame: true,
-                pointer_invisible: false,
-                was_invisible: false,
-            }],
-            selected_frame_id: 1,
-            old_selected_frame_id: 1,
+            frame_states: vec![initial_frame],
+            next_frame_id: 2,
+            selected_frame_id: initial_frame,
+            old_selected_frame_id: initial_frame,
             frame_and_buffer_state: Value::Nil,
             terminals: vec![initial_terminal],
             next_terminal_id: 1,
@@ -6186,70 +5987,8 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            char_tables: vec![
-                CharTableState::with_entries(
-                    standard_syntax_table_id,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    None,
-                    standard_syntax_table_entries(),
-                ),
-                // GNU text-mode-syntax-table: `"' and `\' are
-                // punctuation, `'' is a word constituent with the prefix
-                // flag (Bug#15014 hinges on `"' NOT being a string quote).
-                CharTableState::with_entries(
-                    2,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(standard_syntax_table_id),
-                    vec![
-                        CharTableEntry {
-                            start: '"' as u32,
-                            end: '"' as u32,
-                            value: Value::String(".".into()),
-                        },
-                        CharTableEntry {
-                            start: '\\' as u32,
-                            end: '\\' as u32,
-                            value: Value::String(".".into()),
-                        },
-                        CharTableEntry {
-                            start: '\'' as u32,
-                            end: '\'' as u32,
-                            value: Value::String("w p".into()),
-                        },
-                    ],
-                ),
-                // GNU lisp-data-mode-syntax-table.  Lisp symbols inherit its
-                // punctuation entries, including the generic `@' prefix.
-                CharTableState::with_entries(
-                    3,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(standard_syntax_table_id),
-                    lisp_data_syntax_table_entries(),
-                ),
-                // GNU emacs-lisp-mode-syntax-table is a child of the data
-                // table, but deliberately removes `@''s generic prefix flag:
-                // syntax-propertize adds it back only for the `,@' reader
-                // token (bug#24542).
-                CharTableState::with_entries(
-                    4,
-                    Some("syntax-table".into()),
-                    Value::Nil,
-                    Some(3),
-                    vec![CharTableEntry {
-                        start: '@' as u32,
-                        end: '@' as u32,
-                        value: syntax_spec_value("_"),
-                    }],
-                ),
-            ],
-            category_context_generation: 0,
-            case_context_generation: 0,
             regexp_syntax_class_cache: RefCell::new(Vec::new()),
             syntax_segment_cache: RefCell::new(None),
-            syntax_table_mutable_entries_cache: RefCell::new(Vec::new()),
             equal_hash_tables: HashMap::default(),
             custom_hash_tables: HashMap::default(),
             hash_tables_under_test: HashSet::default(),
@@ -6355,9 +6094,7 @@ impl Interpreter {
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_table_id: None,
-            ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 5,
             records: vec![Some(main_thread), Some(standard_obarray)],
             record_owner,
             record_ids_by_type_index: [
@@ -6392,13 +6129,8 @@ impl Interpreter {
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
-            functions: Vec::new(),
-            functions_index: HashMap::default(),
-            functions_position: HashMap::default(),
             network_connect_counter: 0,
-            definition_generation: 0,
             function_binding_generation: 0,
-            not_macro_names: HashMap::default(),
             provided_features: STARTUP_FEATURES
                 .iter()
                 .map(|feature| feature.name.to_string())
@@ -6431,7 +6163,6 @@ impl Interpreter {
                 name: "default".into(),
                 id: Some(0),
                 global: Some(empty_lisp_face_vector()),
-                frames: HashMap::from([(1, tty_default_lisp_face_vector())]),
             }],
             next_lisp_face_id: 1,
             font_selection_order: [
@@ -6451,6 +6182,7 @@ impl Interpreter {
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
+            syntax_code_objects,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -6502,6 +6234,22 @@ impl Interpreter {
             state: Some(InterpreterStateOwner::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
+        for (purpose, extras) in [
+            ("case-table", 3),
+            ("category-table", 2),
+            ("char-code-property-table", 5),
+            ("display-table", 6),
+            ("char-script-table", 1),
+            ("glyphless-char-display", 1),
+            ("translation-table", 2),
+            ("fontset", 8),
+            ("fontset-info", 1),
+            ("syntax-table", 0),
+            ("keymap", 0),
+        ] {
+            interp.put_symbol_property(purpose, "char-table-extra-slots", Value::Integer(extras));
+        }
+
         interp.register_state_as_root();
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         interp.symbol_properties_by_id.borrow_mut().clear();
@@ -6991,7 +6739,7 @@ impl Interpreter {
                     &mut interp,
                     &special_event_map,
                     &part,
-                    Some(vec![part.clone()]),
+                    Some(vec![Value::symbol(event)]),
                     Value::Symbol(command.into()),
                     true,
                 );
@@ -8064,3 +7812,6 @@ fn initial_default_file_modes() -> i64 {
         0o755
     }
 }
+
+#[cfg(test)]
+mod function_cell_tests;

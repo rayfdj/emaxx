@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 // coding.c `enum coding_category', in order.
@@ -994,28 +995,22 @@ impl Interpreter {
         self.input_interrupt_mode = enabled;
     }
 
-    pub fn ensure_standard_category_table(&mut self) -> u64 {
+    pub fn ensure_standard_category_table(&mut self) -> CharTableRef {
         if let Some(id) = self.standard_category_table_id {
             return id;
         }
-        let Kind::CharTable(id) = self
-            .make_char_table(
-                Some("category-table".into()),
-                Value::String(String::new().into()),
-            )
-            .kind()
-        else {
-            unreachable!("make_char_table returns a char-table");
-        };
+        let id = CharTableRef::new(Value::symbol("category-table"), Value::Nil, 2);
+        id.set_default(primitives::make_bool_vector_value(self, [false; 128]));
+        id.set_extra(0, Value::vector(std::iter::repeat_n(Value::Nil, 95)));
         self.standard_category_table_id = Some(id);
         id
     }
 
-    pub(crate) fn initialized_standard_category_table_id(&self) -> Option<u64> {
+    pub(crate) fn initialized_standard_category_table_id(&self) -> Option<CharTableRef> {
         self.standard_category_table_id
     }
 
-    pub(crate) fn initialized_current_category_table_id(&self) -> Option<u64> {
+    pub(crate) fn initialized_current_category_table_id(&self) -> Option<CharTableRef> {
         self.buffer_local_value_key(self.current_buffer_id(), cached_symbol!("category-table"))
             .and_then(|value| match value.kind() {
                 Kind::CharTable(id) => Some(id),
@@ -1024,7 +1019,7 @@ impl Interpreter {
             .or(self.standard_category_table_id)
     }
 
-    pub fn ensure_standard_case_table(&mut self) -> u64 {
+    pub fn ensure_standard_case_table(&mut self) -> CharTableRef {
         if let Some(id) = self.standard_case_table_id {
             return id;
         }
@@ -1068,12 +1063,12 @@ impl Interpreter {
         down_id
     }
 
-    pub fn current_case_table_id(&mut self) -> u64 {
+    pub fn current_case_table_id(&mut self) -> CharTableRef {
         self.initialized_current_case_table_id()
             .unwrap_or_else(|| self.ensure_standard_case_table())
     }
 
-    pub(crate) fn initialized_current_case_table_id(&self) -> Option<u64> {
+    pub(crate) fn initialized_current_case_table_id(&self) -> Option<CharTableRef> {
         if let Some((_, id)) = self
             .buffer_case_tables
             .iter()
@@ -1086,7 +1081,7 @@ impl Interpreter {
         }
     }
 
-    pub fn set_current_case_table(&mut self, id: u64) {
+    pub fn set_current_case_table(&mut self, id: CharTableRef) {
         let current_buffer_id = self.current_buffer_id();
         if let Some((_, slot)) = self
             .buffer_case_tables
@@ -1100,29 +1095,19 @@ impl Interpreter {
         }
     }
 
-    pub fn standard_case_table_id(&mut self) -> u64 {
+    pub fn standard_case_table_id(&mut self) -> CharTableRef {
         self.ensure_standard_case_table()
     }
 
-    pub fn set_standard_case_table(&mut self, id: u64) {
+    pub fn set_standard_case_table(&mut self, id: CharTableRef) {
         self.standard_case_table_id = Some(id);
     }
 
-    pub fn mark_ascii_case_table(&mut self, id: u64) {
-        if !self.ascii_case_table_ids.contains(&id) {
-            self.ascii_case_table_ids.push(id);
-        }
-    }
-
-    pub fn is_ascii_case_table(&self, id: u64) -> bool {
-        self.ascii_case_table_ids.contains(&id)
-    }
-
-    pub fn standard_syntax_table_id(&self) -> u64 {
+    pub fn standard_syntax_table_id(&self) -> CharTableRef {
         self.standard_syntax_table_id
     }
 
-    pub fn current_syntax_table_id(&self) -> u64 {
+    pub fn current_syntax_table_id(&self) -> CharTableRef {
         self.buffer_syntax_tables
             .iter()
             .rev()
@@ -1132,7 +1117,7 @@ impl Interpreter {
             .unwrap_or(self.standard_syntax_table_id())
     }
 
-    pub fn set_current_syntax_table(&mut self, id: u64) {
+    pub fn set_current_syntax_table(&mut self, id: CharTableRef) {
         let current_buffer_id = self.current_buffer_id();
         if let Some((_, table_id)) = self
             .buffer_syntax_tables
@@ -1160,29 +1145,35 @@ impl Interpreter {
         self.syntax_word_chars.contains(&code)
     }
 
-    pub fn category_docstring(&self, id: u64, category: u32) -> Option<String> {
-        self.find_char_table(id).and_then(|table| {
-            table
-                .category_docs
-                .iter()
-                .find(|(ch, _)| *ch == category)
-                .map(|(_, doc)| doc.clone())
-        })
+    pub fn category_docstring(&self, table: CharTableRef, category: u32) -> Value {
+        let Some(index) = category.checked_sub(32) else {
+            return Value::Nil;
+        };
+        let Some(Kind::Vector(docs)) = table.extra(0).map(Value::kind) else {
+            return Value::Nil;
+        };
+        docs.get(index as usize).unwrap_or(Value::Nil)
     }
 
     pub fn define_category(
         &mut self,
-        id: u64,
+        table: CharTableRef,
         category: u32,
-        doc: String,
+        doc: Value,
     ) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        if table.category_docs.iter().any(|(ch, _)| *ch == category) {
-            return Err(LispError::Signal("Category already defined".into()));
+        let Kind::Vector(docs) = table.extra(0).unwrap_or(Value::Nil).kind() else {
+            return Err(LispError::WrongTypeArgument(
+                "category-table-p".into(),
+                Value::CharTable(table),
+            ));
+        };
+        if !self.category_docstring(table, category).is_nil() {
+            return Err(LispError::Signal(format!(
+                "Category `{}' is already defined",
+                char::from_u32(category).unwrap_or('?')
+            )));
         }
-        table.category_docs.push((category, doc));
+        docs.set((category - 32) as usize, doc);
         Ok(())
     }
 

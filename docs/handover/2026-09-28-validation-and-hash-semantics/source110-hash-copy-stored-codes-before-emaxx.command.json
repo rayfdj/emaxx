@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (kind)\n   (let* ((key (cond ((eq kind 'string) (copy-sequence \"first-key\"))\n                     ((eq kind 'vector) (vector 102 105 114))\n                     (t (list 102 105 114))))\n          (table (make-hash-table :test 'equal :size 8)))\n     (puthash key 'kept table)\n     (if (eq kind 'list) (setcar key 120) (aset key 0 120))\n     (let* ((copy (copy-hash-table table))\n            (shared nil)\n            (misses (list (gethash key table 'absent)\n                          (gethash key copy 'absent))))\n       (maphash (lambda (stored _value) (setq shared (eq stored key))) copy)\n       (if (eq kind 'list) (setcar key 102) (aset key 0 102))\n       (append misses\n               (list (hash-table-count table) (hash-table-count copy)\n                     shared (gethash key table) (gethash key copy)\n                     (= (hash-table-size table) (hash-table-size copy)))))))\n '(string vector list))\n)"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "c26fc9277b9653c0e8e8cff07fafa170510cb1fb42a6acc1847bb0b548f79915",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "7b2db386c3cb13c05fade056562f32059ad4a1d7eb442805cd03bb58ca455a78",
+    "/private/tmp/emaxx-runtime-symbol-ownership/emaxx/tests/fixtures/hash-copy-stored-codes.el": "fe27a46723564297778bd880d8a6628277125da708bab246243d9c291f95df0f"
+  },
+  "scope": "Ordinary same-input control. GNU source matched; not frozen pin. Emaxx existing source108 production, unchanged through110."
+}

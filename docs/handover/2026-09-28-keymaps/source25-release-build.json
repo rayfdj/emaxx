@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "--all-features",
+    "--target-dir",
+    "target/runtime-resume-source25",
+    "--bin",
+    "emaxx",
+    "--bin",
+    "make-fingerprint",
+    "--bin",
+    "compat-harness"
+  ],
+  "exit_code": 0,
+  "seconds": 105.47565793991089,
+  "target_copy": "APFS dependency clone; emaxx package artifacts removed with cargo clean in alternate target only",
+  "source_manifest": "source25-manifest.json",
+  "original_source19_binary_sha256_before": "89e7493d08fb5db23f78ba87716c5fe464dc357bdb38fb9191eead3e7b31535a",
+  "original_source19_binary_sha256_after": "89e7493d08fb5db23f78ba87716c5fe464dc357bdb38fb9191eead3e7b31535a",
+  "source_unchanged": true
+}

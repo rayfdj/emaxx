@@ -1,0 +1,17 @@
+{
+  "command": [
+    "python3",
+    "tools/serial_grouped_gate.py",
+    "--scope",
+    "full",
+    "--artifact-root",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source65"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "commit": "5bb1cbbf758e85497b94b06325ea59f9fe7aabad",
+  "source_manifest": "source65-manifest.json",
+  "environment_override": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation"
+  },
+  "qualification": "Unmodified complete inventoried serial macOS gate; not frozen GNU or performance certification."
+}

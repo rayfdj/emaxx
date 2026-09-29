@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source32-debug-libtest",
+    "char_table_keymap_enumerators",
+    "char_table_keymap_callbacks",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_TEST_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "1d8fa8f7e6f990e21e91780fc0127a3fe631d275feba79bb1285033497db5965"
+}

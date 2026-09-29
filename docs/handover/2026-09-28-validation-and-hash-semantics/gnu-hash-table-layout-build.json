@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cc",
+    "-std=gnu17",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/src",
+    "-I/private/tmp/emaxx-runtime-gnu-20260928/lib",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c",
+    "-o",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout"
+  ],
+  "exit_code": 1,
+  "elapsed_seconds": 0.15814358299999998,
+  "input_sha256": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-hash-table-layout.c": "34a2696d48814e14b4aa85965e5b7e374323330899db5b85dd07a28dca2c63e7",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87"
+  },
+  "gnu_source_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd"
+}

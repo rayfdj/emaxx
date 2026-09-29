@@ -1,0 +1,15 @@
+(mapcar
+ (lambda (reader)
+   (mapcar
+    (lambda (codes)
+      (let* ((characters (append codes '(32 116 97 105 108)))
+             (stream (lambda (&optional character)
+                       (if character (push character characters)
+                         (pop characters))))
+             (form (funcall reader stream))
+             (name (symbol-name (bare-symbol form))))
+        (list (multibyte-string-p name) (string-to-list name)
+              (and (symbol-with-pos-p form) (symbol-with-pos-pos form))
+              characters)))
+    '((945) (233) (955 92 945) (35 58 945) (65 1048575))))
+ '(read read-positioning-symbols))

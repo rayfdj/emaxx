@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 ;;; -*- lexical-binding: t; -*-\n(let ((build\n       (lambda (values)\n         (let* ((chunks (mapcar (lambda (value)\n                                 (prin1-to-string (string 2 value 256))) values))\n                (depth2 (concat \"#^^[2 4096 \" (mapconcat #'identity chunks \" \")\n                                (apply #'concat (make-list (- 32 (length values)) \" nil\")) \"]\"))\n                (depth1 (concat \"#^^[1 0 nil \" depth2\n                                (apply #'concat (make-list 14 \" nil\")) \"]\")))\n           (read (concat \"#^[nil nil char-code-property-table nil \" depth1\n                         (apply #'concat (make-list 63 \" nil\"))\n                         \" nil nil nil nil nil]\"))))))\n  (mapcar (lambda (spec)\n            (let* ((table (funcall build (car spec)))\n                   (control (copy-sequence table))\n                   (value (char-table-range table (cadr spec))))\n              (list value\n                    (progn (aref control (nth 2 spec)) (equal table control))\n                    (progn (aref control (nth 3 spec)) (equal table control))\n                    (progn (aref control (nth 4 spec)) (equal table control)))))\n          '(((7 7 7) (4096 . 4479) 4096 4224 4352)\n            ((7 8 7) (4096 . 4479) 4096 4224 4352)\n            ((7 7 7) (4096 . 4096) 4096 4224 4352)\n            ((7 8 7) (4224 . 4096) 4224 4096 4352))))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.17760777473449707,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "e6844d7b71f3fae5a3b8b47cd8aef1f19697295d1aff55632c322466d575740d",
+  "stdout_sha256": "407a3b594741b88ad75d9b9078ca194b860fe13de0b954ccbc034c645c506bac",
+  "stdout_bytes": 57,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

@@ -1,0 +1,17 @@
+{
+  "group": "batch",
+  "command": [
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "batch::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 50,
+  "expected_ignored": 0,
+  "template": false,
+  "test_threads": 1,
+  "elapsed_seconds": 124.64000966699996,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source65/repeat-01-batch.log"
+}

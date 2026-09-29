@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/cons-runtime-mutation.el"
+  ],
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "9004ac5cfc67c60e33570025ada6e2507b9e25e4fa2b727936a6a787d189558a",
+  "classification": "source-matched diagnostic; not the pinned Darwin oracle",
+  "exit_code": 0,
+  "elapsed_seconds": 0.296368625
+}

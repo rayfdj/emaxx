@@ -1,0 +1,1 @@
+(let ((object (position-symbol 'positioned-type-probe 31))) (list (let ((symbols-with-pos-enabled nil)) (list (type-of object) (cl-type-of object))) (let ((symbols-with-pos-enabled t)) (list (type-of object) (cl-type-of object)))))

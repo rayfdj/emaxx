@@ -1,0 +1,6 @@
+{
+  "old_target": "/Users/nbmhqa186/projects/emacs",
+  "new_target": "/private/tmp/emaxx-runtime-gnu-20260928",
+  "reason": "Combined-source validation uses the pristine GNU configuration that matches the unchanged committed native ABI; no lock or selector changes. Ordinary probes will use the original build installation because native library paths in a dump are relative to it.",
+  "new_binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8"
+}

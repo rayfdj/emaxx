@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source96-native-identity-test",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-symbol-validation",
+    "CARGO_BUILD_JOBS": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  }
+}

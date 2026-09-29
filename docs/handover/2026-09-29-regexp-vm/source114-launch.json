@@ -1,0 +1,61 @@
+{
+  "commands": [
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "114",
+      "bytecode",
+      "handler_bind",
+      "handler_case",
+      "condition_case",
+      "catch",
+      "throw",
+      "unwind",
+      "wrong_number",
+      "arity",
+      "backtrace",
+      "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+      "dead_thread_results_are_rooted_only_through_reachable_thread_objects",
+      "hash",
+      "purecopy",
+      "lisp::primitives::pdumper::tests::",
+      "--static"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "114",
+      "bytecode",
+      "handler_bind",
+      "handler_case",
+      "condition_case",
+      "catch",
+      "throw",
+      "unwind",
+      "wrong_number",
+      "arity",
+      "backtrace",
+      "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+      "dead_thread_results_are_rooted_only_through_reachable_thread_objects",
+      "hash",
+      "purecopy",
+      "lisp::primitives::pdumper::tests::",
+      "--release"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "114",
+      "--ordinary"
+    ]
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Combinedpublishedhashsemantics +6VM/evaluatorerrorcopyremovals. Existingtestsunchanged. Originalnativehashlayoutprobe remains separatelypreservedunpublisheddraft; thiscandidate makesnoarchitecturecompletionclaim. Linuxretentionhypothesisrequiresverification."
+}

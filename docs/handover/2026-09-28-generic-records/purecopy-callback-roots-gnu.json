@@ -1,0 +1,54 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-nw",
+    "-Q",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-roots-tty.el"
+  ],
+  "environment_overrides": {
+    "EMAXX_RECORD_PROBE_REPORT": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-roots-gnu.report"
+  },
+  "working_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "identities": {
+    "/Users/nbmhqa186/projects/emacs/src/emacs": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "/Users/nbmhqa186/projects/emacs/src/emacs.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/purecopy-callback-roots-tty.el": "2e9b0066834cfc8dd9b74d7d1f31388df3c08fd198a02dbe82252e02e2f61b22",
+    "/Users/nbmhqa186/projects/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-record-purecopy-tty-v2.py": "cedabf7aa250b8d6c185cb8f2fda7d04b70db23282b0d46e9140296c3d59ab37"
+  },
+  "inputs_unchanged": true,
+  "wait_status": 6,
+  "exit_code": -6,
+  "elapsed_seconds": 2.819944042,
+  "error": null,
+  "report_exists": false,
+  "report_hex": null,
+  "screen": [
+    "record-purecopy-ready",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "-UUU:---  F1  *record-purecopy-ready*   All   L1     (Fundamental) -------------",
+    "Fatal error 11: Segmentation fault",
+    ""
+  ],
+  "qualification": "Focused ordinary TTY diagnostic with unchanged Lisp input; no full terminal or pinned-oracle claim."
+}

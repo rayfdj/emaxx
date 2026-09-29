@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source65-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((private (obarray-make))) (let ((obarray private) (symbols-with-pos-enabled nil)) (mapcar (lambda (name) (let* ((object (read-positioning-symbols name)) (bare (bare-symbol object))) (list name (symbol-with-pos-p object) (eq bare (intern name private)) (symbol-name bare)))) (list \"nil\" \"t\" \"reader-private-name\")))))"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.787318875,
+  "stdout": "((\"nil\" nil nil \"nil\") (\"t\" t nil \"t\") (\"reader-private-name\" t nil \"reader-private-name\"))",
+  "stderr": "",
+  "binary_sha256": "66737f4709695e254325af713a1c1f8be1c784b03b5d36b1bfc4517deab48e6f",
+  "image_sha256": "65de500d674d5c2af40d9accb0cd0fa4ad9a71b2ba9336e53283999b52724c56",
+  "qualification": "Source65 ordinary/source-matched diagnostic; not frozen or performance certification."
+}

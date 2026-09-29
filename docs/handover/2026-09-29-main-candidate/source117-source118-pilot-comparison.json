@@ -1,0 +1,80 @@
+{
+  "results": [
+    {
+      "source": 115,
+      "all_modes_match": true,
+      "certification_eligible": false,
+      "criterion_satisfied": false,
+      "ratios": {
+        "interpreted-lexical": 2.806184736538742,
+        "interpreted-dynamic": 2.2058543138749305,
+        "interpreted-calls": 3.387850685876671,
+        "bytecode-calls": 3.121892780620535,
+        "native-execution": 3.882589896868641,
+        "interpreted-to-native": 2.676960310782878,
+        "bytecode-to-native": 8.192463253578998,
+        "native-to-interpreted": 3.199709879711665,
+        "native-to-bytecode": 3.412704109526766,
+        "cons-allocation": 2.0162697411207424,
+        "list-traversal": 2.3241178226897445,
+        "mapcar": 2.2254992835849277,
+        "explicit-gc": 1.3315365912613215,
+        "upstream-sort": 4.863602561845041,
+        "upstream-undo": 10.322019232539445,
+        "upstream-bindat": 2.74276574108076
+      },
+      "allocation_counters_available": false
+    },
+    {
+      "source": 117,
+      "all_modes_match": true,
+      "certification_eligible": false,
+      "criterion_satisfied": false,
+      "ratios": {
+        "interpreted-lexical": 2.7925621848541913,
+        "interpreted-dynamic": 2.346039297004442,
+        "interpreted-calls": 3.398777703156481,
+        "bytecode-calls": 3.290201966672555,
+        "native-execution": 3.2815347165192192,
+        "interpreted-to-native": 2.6761590030895275,
+        "bytecode-to-native": 7.94350183056785,
+        "native-to-interpreted": 3.2013595445654044,
+        "native-to-bytecode": 3.4772771608120725,
+        "cons-allocation": 1.9807712851191113,
+        "list-traversal": 2.3680660794342363,
+        "mapcar": 2.233083048181243,
+        "explicit-gc": 1.3348009874539244,
+        "upstream-sort": 4.896473041805362,
+        "upstream-undo": 9.936519243178862,
+        "upstream-bindat": 2.7265228283938177
+      },
+      "allocation_counters_available": false
+    },
+    {
+      "source": 118,
+      "all_modes_match": true,
+      "certification_eligible": false,
+      "criterion_satisfied": false,
+      "ratios": {
+        "interpreted-lexical": 3.038580278143164,
+        "interpreted-dynamic": 2.218901175732712,
+        "interpreted-calls": 3.392746645683967,
+        "bytecode-calls": 3.7329215977739283,
+        "native-execution": 3.889895862763278,
+        "interpreted-to-native": 2.751551711150727,
+        "bytecode-to-native": 8.373387972410196,
+        "native-to-interpreted": 3.5270468513464124,
+        "native-to-bytecode": 3.98553077522193,
+        "cons-allocation": 2.021662867902091,
+        "list-traversal": 2.4787976959372324,
+        "mapcar": 2.1353126595875818,
+        "explicit-gc": 1.3971735804475014,
+        "upstream-sort": 4.777855032157135,
+        "upstream-undo": 5.666940400376339,
+        "upstream-bindat": 2.794363347808647
+      },
+      "allocation_counters_available": false
+    }
+  ],
+  "qualification": "Single diagnostic observations with concurrent correctness work. All processes/results/modes retained. Ratios show possible improvement in native execution and upstream undo but are not controlled repeated speedup estimates or parity certification. All regressions remain visible."
+}

@@ -46,6 +46,14 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
     (
+        "selected_frame_id",
+        "an actual FrameRef root; frame.c:init_frame_once_for_pdumper resets selected_frame, and the new process creates its initial live frame",
+    ),
+    (
+        "old_selected_frame_id",
+        "an actual FrameRef root, re-created with selected_frame_id after the old frame objects are nilled",
+    ),
+    (
         "terminals",
         "the terminal pseudovectors are nilled (pdumper.c:dump_vectorlike PVEC_TERMINAL); init_tty makes the initial terminal anew, its parameters, codings and keyboard with it",
     ),
@@ -106,10 +114,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "empty after Fdump_emacs_portable's collection loop; the writer refuses otherwise",
     ),
     (
-        "char_tables",
-        "the registry of char-table objects: each is written when a root or object reaches it, as GNU's heap objects are",
-    ),
-    (
         "globals",
         "the symbol cells: written per symbol from the obarray (dump_symbol)",
     ),
@@ -122,16 +126,16 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "written per symbol (dump_symbol's watchers)",
     ),
     (
-        "functions",
-        "written per symbol (dump_symbol's function cell)",
-    ),
-    (
         "buffer_locals",
         "written per buffer (dump_buffer's local_var_alist)",
     ),
     (
         "buffer_local_hooks",
         "written per buffer with the local bindings",
+    ),
+    (
+        "buffer_case_tables",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE slot and restored by load_buffer through install_buffer_case_table",
     ),
     (
         "standard_obarray_id",
@@ -247,24 +251,16 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "window state re-created with the initial frame",
     ),
     (
-        "selected_frame_id",
-        "frame.c:init_frame_once_for_pdumper resets selected_frame",
+        "next_frame_id",
+        "a process-local allocation counter, not frame identity: frame.c resets live frames at startup; install_dead_frame assigns each nilled image frame a fresh id and advances this counter",
     ),
-    ("old_selected_frame_id", "frame state, as selected_frame_id"),
     (
         "next_terminal_id",
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
-    ("category_context_generation", "a cache generation"),
-    ("case_context_generation", "a cache generation"),
     ("regexp_syntax_class_cache", "a cache"),
-    (
-        "functions_position",
-        "an index over functions, rebuilt as they are installed",
-    ),
     ("syntax_segment_cache", "a cache"),
-    ("syntax_table_mutable_entries_cache", "a cache"),
     ("equal_hash_tables", "thawed from the hash list"),
     (
         "custom_hash_tables",
@@ -283,8 +279,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "input_interrupt_mode",
         "keyboard.c's interrupt mode is set at terminal init",
     ),
-    ("buffer_case_tables", "written per buffer record"),
-    ("next_char_table_id", "carried in the remembered scalars"),
     ("records", "installed per record"),
     (
         "record_owner",
@@ -338,9 +332,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "network_connect_counter",
         "the running process's connections",
     ),
-    ("definition_generation", "a cache generation"),
     ("function_binding_generation", "a cache generation"),
-    ("not_macro_names", "a cache"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",
@@ -600,6 +592,7 @@ impl Interpreter {
         ));
         // buffer_defaults' BVARs (remembered data in GNU): the standard
         // syntax, category and case tables; casetab.c's ASCII tables.
+        groups.push((RootSlot::SyntaxCodeObjects, self.syntax_code_objects));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -613,14 +606,6 @@ impl Interpreter {
             RootSlot::StandardCaseTable,
             self.standard_case_table_id
                 .map_or(Value::Nil, Value::CharTable),
-        ));
-        groups.push((
-            RootSlot::AsciiCaseTables,
-            Value::vector(
-                self.ascii_case_table_ids
-                    .iter()
-                    .map(|id| Value::CharTable(*id)),
-            ),
         ));
         groups.push((
             RootSlot::SyntaxWordChars,
@@ -806,10 +791,6 @@ impl Interpreter {
                     Value::Integer(self.next_buffer_id as i64),
                 ),
                 pair(
-                    Value::symbol("next-char-table-id"),
-                    Value::Integer(self.next_char_table_id as i64),
-                ),
-                pair(
                     Value::symbol("next-record-id"),
                     Value::Integer(self.next_record_id as i64),
                 ),
@@ -920,7 +901,7 @@ mod install {
         }
     }
 
-    fn expect_char_table(value: &Value, what: &str) -> Result<u64, String> {
+    fn expect_char_table(value: &Value, what: &str) -> Result<CharTableRef, String> {
         match value.kind() {
             Kind::CharTable(id) => Ok(id),
             other => Err(format!("{what}: not a char-table: {other:?}")),
@@ -1107,6 +1088,12 @@ mod install {
                     }
                     self.ccl_programs = programs;
                 }
+                RootSlot::SyntaxCodeObjects => {
+                    if !matches!(value.kind(), Kind::Vector(codes) if codes.len() == 16) {
+                        return Err("invalid syntax code objects".into());
+                    }
+                    self.syntax_code_objects = *value;
+                }
                 RootSlot::StandardSyntaxTable => {
                     self.standard_syntax_table_id =
                         expect_char_table(value, "standard syntax table")?;
@@ -1118,13 +1105,6 @@ mod install {
                 RootSlot::StandardCaseTable => {
                     self.standard_case_table_id =
                         opt_of(value, |v| expect_char_table(v, "standard case table"))?;
-                }
-                RootSlot::AsciiCaseTables => {
-                    let mut ids = Vec::new();
-                    for entry in expect_vector(value, "ascii case tables")? {
-                        ids.push(expect_char_table(&entry, "ascii case table")?);
-                    }
-                    self.ascii_case_table_ids = ids;
                 }
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();
@@ -1206,7 +1186,6 @@ mod install {
                             name: expect_string(&fields[0], "face name")?,
                             id: opt_of(&fields[1], |v| expect_int(v, "face id"))?,
                             global: opt_of(&fields[2], |v| Ok(*v))?,
-                            frames: HashMap::new(),
                         });
                     }
                     self.lisp_face_states = faces;
@@ -1333,9 +1312,6 @@ mod install {
                             }
                             "next-buffer-id" => {
                                 self.next_buffer_id = self.next_buffer_id.max(id(&name)?)
-                            }
-                            "next-char-table-id" => {
-                                self.next_char_table_id = self.next_char_table_id.max(id(&name)?);
                             }
                             "next-record-id" => {
                                 self.next_record_id = self.next_record_id.max(id(&name)?)

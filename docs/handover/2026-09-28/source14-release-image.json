@@ -1,0 +1,10 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx",
+  "binary_sha256": "c84a1743603e9c865d7d58b9cd555f5355eb37a8be311f99c7095873827e13d7",
+  "image": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx.pdmp",
+  "image_sha256": "c3f8f3697a79c7d5788b37901c2e8209baef2769189aad48eae187b4ea4bc907",
+  "image_bytes": 19452328,
+  "fingerprint": "7461899eb795c8bedf8d2c208197a66f6231382759801580102581e1393d9bab",
+  "source_manifest": "source14-manifest.json",
+  "head": "1ac30ee886521d087cb5213c2c8ca79551b4c725"
+}

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((map (make-keymap)) (parent (make-keymap)))\n  (set-keymap-parent map parent)\n  (define-key map [97] 'plain)\n  (mapcar (lambda (bit)\n            (let* ((event (logior 97 (lsh 1 bit))) (key (vector event)))\n              (define-key parent key 'inherited)\n              (let ((before (lookup-key map key)))\n                (define-key map key 'modified)\n                (list bit before (lookup-key map key)\n                      (equal (where-is-internal 'modified map t) key)\n                      (progn (define-key map key nil t) (lookup-key map key))\n                      (lookup-key map [97]) (aref (cadr map) 97)))))\n          '(22 23 24 25 26 27)))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.7845511436462402,
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "1dae866e3cbe0b7d95872a8f6223afab9e28e190282fc3b45b84df77d7216a4c",
+  "stdout_sha256": "0172e39ff5b0e69392956e156903a7da91213ec7675bb42d6465dacb222a7bf2",
+  "stdout_bytes": 289,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

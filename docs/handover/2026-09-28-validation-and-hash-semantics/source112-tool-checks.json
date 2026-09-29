@@ -1,0 +1,54 @@
+{
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-B",
+        "tools/diagnose_rust_gate.py",
+        "--help"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.089507542,
+      "stdout": "source112-tool-check-1.stdout",
+      "stderr": "source112-tool-check-1.stderr"
+    },
+    {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools",
+        "-p",
+        "test_grouped_gate.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.391390334,
+      "stdout": "source112-tool-check-2.stdout",
+      "stderr": "source112-tool-check-2.stderr"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.042155000000000054,
+      "stdout": "source112-tool-check-3.stdout",
+      "stderr": "source112-tool-check-3.stderr"
+    },
+    {
+      "python_ast": "pass",
+      "python_version": "Python 3.9.6"
+    },
+    {
+      "bash_syntax": "pass",
+      "literal_run_steps": 7,
+      "yaml_parser_available": false
+    }
+  ],
+  "source_unchanged": true
+}

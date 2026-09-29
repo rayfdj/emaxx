@@ -1,0 +1,39 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+    "--eval",
+    "(setq native-comp-jit-compilation nil load-no-native t)",
+    "-L",
+    "/private/tmp/emaxx-runtime-gnu-20260928/test",
+    "--eval",
+    "(progn (require 'comp) (native-compile \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-native/source/comp-test-funcs.el\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-native/emaxx/comp-test-funcs.eln\"))"
+  ],
+  "environment": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-native/emaxx/home",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "timeout": false,
+  "startup_seconds": 0.6266930103302002,
+  "load_average_before": [
+    3.64599609375,
+    4.8154296875,
+    4.8076171875
+  ],
+  "exit": 0,
+  "total_seconds": 2.751409667,
+  "user_seconds": 1.984921,
+  "system_seconds": 0.152064,
+  "peak_rss_bytes": 262324224,
+  "load_average_after": [
+    3.64599609375,
+    4.8154296875,
+    4.8076171875
+  ]
+}

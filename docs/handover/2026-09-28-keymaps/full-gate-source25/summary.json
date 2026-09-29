@@ -1,0 +1,84 @@
+{
+  "artifact_root": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source25",
+  "cargo_stages": [],
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_BACKTRACE": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "error": "group did not pass: {'status': 'FAILED', 'passed': 508, 'failed': 12, 'ignored': 0, 'measured': 0, 'filtered_out': 2293, 'reported_seconds': 390.21}",
+  "execution_override": {
+    "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+    "script": "/Users/nbmhqa186/projects/emaxx/tools/serial_grouped_gate.py"
+  },
+  "format_version": 1,
+  "git": {
+    "dirty": false,
+    "head": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481"
+  },
+  "inventory": {
+    "groups": {
+      "batch": 50,
+      "compat_runtime": 84,
+      "eval_01": 385,
+      "eval_02": 295,
+      "eval_03": 320,
+      "eval_04": 254,
+      "eval_05": 351,
+      "lightweight": 496,
+      "primitives": 520,
+      "tty": 58
+    },
+    "ignored_tests": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "scheduled_tests": 2813,
+    "sha256": "a8714fe1318de4be8475686f52783b52d2768b80e62c63d6733ff3ad48cbae89",
+    "total_tests": 2813
+  },
+  "profile": "gate",
+  "repetitions": 1,
+  "runs": [],
+  "schedule": [
+    [
+      "eval_01"
+    ],
+    [
+      "eval_02"
+    ],
+    [
+      "eval_03"
+    ],
+    [
+      "eval_04"
+    ],
+    [
+      "eval_05"
+    ],
+    [
+      "primitives"
+    ],
+    [
+      "compat_runtime"
+    ],
+    [
+      "tty"
+    ],
+    [
+      "batch"
+    ],
+    [
+      "lightweight"
+    ]
+  ],
+  "scope": "full",
+  "status": "failed",
+  "test_binary": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/gate/deps/emaxx-2172bc5d2c1706ff",
+    "sha256": "f7b23000c40e813cf474ce8fa2578fc73b2459988aabddeebf023b7ed72b74ef"
+  },
+  "timeout_seconds": 3600
+}

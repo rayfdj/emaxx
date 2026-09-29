@@ -533,7 +533,7 @@ define_dispatch!(
             }
             "symbol-with-pos-p" => {
                 need_args(name, args, 1)?;
-                Ok(if symbol_with_pos_parts(interp, &args[0]).is_some() {
+                Ok(if matches!(args[0].kind(), Kind::SymbolWithPos(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -774,9 +774,7 @@ define_dispatch!(
             "recordp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0].kind(), Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record|
-                            record.kind == crate::lisp::eval::RecordKind::Record))
+                    if matches!(args[0].kind(), Kind::LispRecord(_))
                         || record_literal_items(&args[0]).is_some()
                     {
                         Value::T

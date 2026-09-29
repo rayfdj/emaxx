@@ -1,0 +1,96 @@
+{
+  "scope": "Selected library tests directly; not a full gate or performance run",
+  "git": {
+    "head": "968bf33b43df990b3eb6b816e7a644654c646d98",
+    "dirty": false
+  },
+  "filter": "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+  "prelude_filter": "lisp::eval::tests::eval_01::a_store_into_a_full_keymaps_list_keeps_its_character_prefixes",
+  "timeout_seconds": 3600,
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "EMAXX_IMAGE_TEMPLATE": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/home/runner/work/emaxx/emaxx/emaxx/target/grouped-gate/fixture-images",
+    "CARGO_PROFILE_GATE_DEBUG": null,
+    "EMAXX_GC_VERIFY": null
+  },
+  "status": "selected diagnostic passed",
+  "fixture_images_before": [],
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5b7a78b11db80ab648ef5b0c7c70bb619a8461ca0b3248e1cdc2e6263a422fbe",
+    "artifact": "libtest"
+  },
+  "ignored_tests": [],
+  "total_tests": 2904,
+  "prelude": {
+    "command": [
+      "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+      "lisp::eval::tests::eval_01::a_store_into_a_full_keymaps_list_keeps_its_character_prefixes",
+      "--test-threads",
+      "1"
+    ],
+    "expected_tests": [
+      "lisp::eval::tests::eval_01::a_store_into_a_full_keymaps_list_keeps_its_character_prefixes"
+    ],
+    "ignored_tests": [],
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 27.019126417999985,
+    "executed_tests": [
+      "lisp::eval::tests::eval_01::a_store_into_a_full_keymaps_list_keeps_its_character_prefixes"
+    ],
+    "result": {
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 2903,
+      "reported_seconds": 26.97
+    },
+    "status": "passed"
+  },
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+    "--test-threads",
+    "1"
+  ],
+  "test_command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+    "--test-threads",
+    "1"
+  ],
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 0.6653714289999471,
+  "source_after": {
+    "head": "968bf33b43df990b3eb6b816e7a644654c646d98",
+    "dirty": false
+  },
+  "result": {
+    "status": "ok",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 2903,
+    "reported_seconds": 0.63
+  },
+  "fixture_images": [
+    {
+      "source": "/home/runner/work/emaxx/emaxx/emaxx/target/grouped-gate/fixture-images/loadup-5b7a78b1-988ea42f.pdmp",
+      "artifact": "fixture-images/loadup-5b7a78b1-988ea42f.pdmp",
+      "sha256": "b85b9e2689f3228d4dbfb628810838659d20acd5cae15511ccfa665646c35d9b",
+      "bytes": 23477800
+    }
+  ],
+  "run_url": "https://github.com/rayfdj/emaxx/actions/runs/36501023482",
+  "qualification": "First full-gate eval selector plus original GC test only, both pass; does not reproduce or clear full failure on prior114. Full115 still running."
+}

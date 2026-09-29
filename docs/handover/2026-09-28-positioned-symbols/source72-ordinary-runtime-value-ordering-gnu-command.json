@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let* ((original (current-buffer))\n       (late (get-buffer-create \" value-order-zeta\"))\n       (early (get-buffer-create \" value-order-alpha\"))\n       (late-marker (make-marker))\n       (early-marker (make-marker))\n       (free-one (make-marker))\n       (free-two (make-marker))\n       results)\n  (unwind-protect\n      (progn\n        (set-buffer late)\n        (insert \"abcdefghijklmnopqrst\")\n        (set-buffer early)\n        (insert \"ABCDEFGHIJKLMNOPQRST\")\n        (set-marker late-marker 13 late)\n        (set-marker early-marker 12 early)\n        (setq results\n              (list (list (value< early late) (value< late early)\n                          (value< early-marker late-marker)\n                          (value< free-one early-marker)\n                          (value< early-marker free-one)\n                          (value< (vector free-one 1) (vector free-two 2)))))\n        (set-buffer late)\n        (rename-buffer \" value-order-00-renamed\")\n        (setq results\n              (cons (list (value< late early) (value< late-marker early-marker))\n                    results))\n        (kill-buffer late)\n        (setq results\n              (cons (list (value< late early)\n                          (value< late-marker early-marker)\n                          (value< early-marker late-marker))\n                    results))\n        (kill-buffer early)\n        (cons (list (value< late early) (value< early late)\n                    (value< (vector late 1) (vector early 2)))\n              results))\n    (set-buffer original)\n    (kill-buffer late)\n    (kill-buffer early)))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "artifact": {
+    "path": "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8"
+  },
+  "fixture": "tests/fixtures/runtime-value-ordering.el",
+  "fixture_sha256": "08b3bc729e3c810544b25c6544e8fe952531daab8e5d0d0e62c21e8ed5e68897",
+  "expected": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+  "qualification": "Source-matched diagnostic; GNU binary differs from pinned Darwin oracle."
+}

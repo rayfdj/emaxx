@@ -368,6 +368,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         _ => false,
     }
 }
@@ -378,7 +379,9 @@ pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
         Kind::Vector(vector) => Some((4, vector.identity())),
         Kind::StringObject(state) => Some((1, state.identity())),
         Kind::Record(id) => Some((2, id.identity())),
-        Kind::CharTable(id) => Some((3, id as usize)),
+        Kind::LispRecord(record) => Some((4, record.identity())),
+        Kind::CharTable(id) => Some((3, id.identity())),
+        Kind::SubCharTable(id) => Some((5, id.identity())),
         _ => None,
     }
 }
@@ -445,6 +448,15 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
+        Kind::LispRecord(record) => {
+            for index in 0..record.len() {
+                let current = record.get(index).expect("in-range record field");
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                record.set(index, updated);
+            }
+            Ok(*subtree)
+        }
         Kind::Record(id) => {
             let slot_count = interp
                 .find_record(id)
@@ -465,38 +477,21 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        Kind::CharTable(id) => {
-            let (default, extra_slots, entries) = match interp.find_char_table(id) {
-                Some(table) => (
-                    table.default,
-                    table.extra_slots.clone(),
-                    table.entries.clone(),
-                ),
-                None => return Ok(*subtree),
-            };
-
-            let default = substitute_object_recurse(interp, object, placeholder, &default, seen)?;
-            let mut updated_slots = Vec::with_capacity(extra_slots.len());
-            for slot in extra_slots {
-                updated_slots.push(substitute_object_recurse(
-                    interp,
-                    object,
-                    placeholder,
-                    &slot,
-                    seen,
-                )?);
+        Kind::CharTable(table) => {
+            for (index, value) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    substitute_object_recurse(interp, object, placeholder, &value, seen)?,
+                );
             }
-            let mut updated_entries = Vec::with_capacity(entries.len());
-            for mut entry in entries {
-                entry.value =
-                    substitute_object_recurse(interp, object, placeholder, &entry.value, seen)?;
-                updated_entries.push(entry);
-            }
-
-            if let Some(table) = interp.find_char_table_mut(id) {
-                table.default = default;
-                table.extra_slots = updated_slots;
-                table.replace_entries(updated_entries);
+            Ok(*subtree)
+        }
+        Kind::SubCharTable(table) => {
+            for (index, value) in table.slots().enumerate() {
+                table.set_slot(
+                    index,
+                    substitute_object_recurse(interp, object, placeholder, &value, seen)?,
+                );
             }
             Ok(*subtree)
         }

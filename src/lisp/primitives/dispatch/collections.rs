@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
@@ -66,7 +67,7 @@ fn delete_from_list(
     }
 }
 
-fn current_category_table_id(interp: &mut Interpreter) -> u64 {
+fn current_category_table_id(interp: &mut Interpreter) -> CharTableRef {
     interp
         .buffer_local_value(interp.current_buffer_id(), "category-table")
         .and_then(|value| match value.kind() {
@@ -80,7 +81,7 @@ fn category_table_arg(
     interp: &mut Interpreter,
     value: Option<&Value>,
     default_to_standard: bool,
-) -> Result<u64, LispError> {
+) -> Result<CharTableRef, LispError> {
     let id = match value.map(|v| v.kind()) {
         Some(Kind::CharTable(id)) => id,
         Some(Kind::Nil) | None if default_to_standard => interp.ensure_standard_category_table(),
@@ -92,7 +93,7 @@ fn category_table_arg(
             ));
         }
     };
-    if interp.char_table_subtype(id).flatten().as_deref() != Some("category-table") {
+    if !id.has_purpose("category-table") {
         return Err(LispError::TypeError(
             "category-table".into(),
             "char-table".into(),
@@ -101,55 +102,304 @@ fn category_table_arg(
     Ok(id)
 }
 
-fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
-    let checked = |code: i64| {
-        // GNU category tables cover Emacs's complete internal character
-        // space, including legacy/raw character identities above Unicode.
-        // The table stores integer ranges, so it must not inherit Rust
-        // `char's narrower scalar ceiling.
-        if (0..=0x3f_ffff).contains(&code) {
-            Ok(code as u32)
-        } else {
-            Err(LispError::Signal("Args out of range".into()))
-        }
-    };
+fn category_arg(value: &Value) -> Result<u32, LispError> {
     match value.kind() {
-        Kind::Integer(code) => checked(code).map(|code| (code, code)),
-        Kind::Cons(cell) => Ok((
-            checked(cell.car.get().as_integer()?)?,
-            checked(cell.cdr.get().as_integer()?)?,
-        )),
-        other => Err(LispError::TypeError(
-            "character-or-cons".into(),
-            other.value().type_name(),
-        )),
+        Kind::Integer(code) if (32..=126).contains(&code) => Ok(code as u32),
+        _ => Err(LispError::WrongTypeArgument("categoryp".into(), *value)),
     }
+}
+
+fn category_set_bits(interp: &Interpreter, value: &Value) -> Result<Vec<bool>, LispError> {
+    bool_vector_bits(interp, value)
+        .ok()
+        .filter(|bits| bits.len() == 128)
+        .ok_or_else(|| LispError::WrongTypeArgument("categorysetp".into(), *value))
+}
+
+fn table_character(value: &Value) -> Result<u32, LispError> {
+    match value.kind() {
+        Kind::Integer(code) if (0..=0x3f_ffff).contains(&code) => Ok(code as u32),
+        _ => Err(LispError::WrongTypeArgument("characterp".into(), *value)),
+    }
+}
+
+fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
+    if matches!(value.kind(), Kind::Integer(_)) {
+        let character = table_character(value)?;
+        return Ok((character, character));
+    }
+    let Kind::Cons(cell) = value.kind() else {
+        return Err(LispError::WrongTypeArgument("consp".into(), *value));
+    };
+    Ok((
+        table_character(&cell.car.get())?,
+        table_character(&cell.cdr.get())?,
+    ))
 }
 
 /// Boundaries at which the effective value of a char table can change.
 ///
 /// Splitting a category update at every current boundary preserves earlier
 /// per-range values without walking every Unicode scalar in a large GNU
-/// category range.  Each table's lazily maintained range index has already
-/// discarded boundaries hidden by newer writes.
-fn char_table_change_boundaries(
-    interp: &Interpreter,
-    table_id: u64,
-    start: u32,
-    end: u32,
-) -> Vec<u32> {
+/// category range. Only radix nodes intersecting the update are visited.
+fn char_table_change_boundaries(table_id: CharTableRef, start: u32, end: u32) -> Vec<u32> {
     let mut boundaries = vec![start];
     let mut next_table = Some(table_id);
     while let Some(id) = next_table {
-        let Some(table) = interp.find_char_table(id) else {
-            break;
-        };
+        let table = id;
         table.append_change_boundaries(start, end, &mut boundaries);
-        next_table = table.parent;
+        next_table = table.parent();
     }
     boundaries.sort_unstable();
     boundaries.dedup();
     boundaries
+}
+
+// chartab.c:optimize_sub_char_table. Root each active node and the first
+// value across user predicates, including predicates that detach that node.
+fn optimize_sub_char_table(
+    interp: &mut Interpreter,
+    table: crate::lisp::types::SubCharTableRef,
+    test: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.with_lisp_stack_roots(&Value::SubCharTable(table), |interp| {
+        let mut first = table.slot(0);
+        if let Kind::SubCharTable(child) = first.kind() {
+            first = optimize_sub_char_table(interp, child, test, env)?;
+            table.set_slot(0, first);
+        }
+        interp.with_lisp_stack_roots(&first, |interp| {
+            let mut optimizable = !matches!(first.kind(), Kind::SubCharTable(_));
+            for index in 1..table.slots().len() {
+                let mut value = table.slot(index);
+                if let Kind::SubCharTable(child) = value.kind() {
+                    value = optimize_sub_char_table(interp, child, test, env)?;
+                    table.set_slot(index, value);
+                }
+                if optimizable {
+                    optimizable = if test.is_nil() {
+                        values_equal_in_env(interp, &value, &first, env)
+                    } else if test.eq_value(Value::symbol("eq")) {
+                        value.eq_value(first)
+                    } else {
+                        call_function_value(interp, &test, &[value, first], env)?.is_truthy()
+                    };
+                }
+            }
+            Ok(if optimizable {
+                first
+            } else {
+                Value::SubCharTable(table)
+            })
+        })
+    })
+}
+
+fn optimize_char_table(
+    interp: &mut Interpreter,
+    table: CharTableRef,
+    test: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp.with_lisp_stack_roots(&Value::CharTable(table), |interp| {
+        for index in 4..68 {
+            if let Kind::SubCharTable(child) = table.slot(index).kind() {
+                table.set_slot(index, optimize_sub_char_table(interp, child, test, env)?);
+            }
+        }
+        table.refresh_ascii();
+        Ok(())
+    })
+}
+
+// chartab.c:map_char_table reuses one range cons and reads each node as the
+// walk reaches it. A snapshot of effective ranges loses callback mutations.
+type CharTableCallback<'a> = dyn FnMut(&mut Interpreter, Value, Value, CharTableRef, bool, &mut Env) -> Result<(), LispError>
+    + 'a;
+
+fn map_char_table_emit(
+    interp: &mut Interpreter,
+    function: &mut CharTableCallback<'_>,
+    range: Value,
+    value: Value,
+    top: CharTableRef,
+    decode: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let key = if range.car()?.eq_value(range.cdr()?) {
+        range.car()?
+    } else {
+        range
+    };
+    function(interp, key, value, top, decode, env)
+}
+
+fn map_char_table_node(
+    interp: &mut Interpreter,
+    function: &mut CharTableCallback<'_>,
+    node: Value,
+    mut value: Value,
+    range: Value,
+    top: CharTableRef,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.with_lisp_stack_roots(&vec![node, Value::CharTable(top), range, value], |interp| {
+        let (depth, minimum, mut maximum) = match node.kind() {
+            Kind::CharTable(_) => (0, 0, 0x3fffff),
+            Kind::SubCharTable(table) => {
+                let depth = table.depth();
+                let minimum = i64::from(table.min_char());
+                (depth, minimum, minimum + [65536, 4096, 128][depth - 1] - 1)
+            }
+            _ => unreachable!("character table node"),
+        };
+        let width = [65536, 4096, 128, 1][depth];
+        let mut from = range.car()?.as_integer()?;
+        let to = range.cdr()?.as_integer()?;
+        maximum = maximum.min(to);
+        let mut index = if from <= minimum {
+            0
+        } else {
+            (from - minimum) / width
+        };
+        let mut character = minimum + index * width;
+        let uniprop = top.is_uniprop();
+        let decode = uniprop && top.extra(1) == Some(Value::Integer(0));
+        while character <= maximum {
+            let mut this = match node.kind() {
+                Kind::CharTable(table) => table.slot(4 + index as usize),
+                Kind::SubCharTable(table) => table.child(index as usize, uniprop),
+                _ => unreachable!(),
+            };
+            let next = character + width;
+            if matches!(this.kind(), Kind::SubCharTable(_)) {
+                if to >= next {
+                    range.set_cdr(Value::Integer(next - 1))?;
+                }
+                value = map_char_table_node(interp, function, this, value, range, top, env)?;
+            } else {
+                if this.is_nil() {
+                    this = top.default();
+                }
+                if !value.eq_value(this) {
+                    interp.with_lisp_stack_roots(&this, |interp| -> Result<(), LispError> {
+                        let mut different = true;
+                        if value.is_nil()
+                            && let Some(parent) = top.parent()
+                        {
+                            // The GNU temporary parent=nil operation cannot call
+                            // Lisp. Resolve the same local value without a store.
+                            value = parent.explicit_get(from as u32);
+                            if value.is_nil() {
+                                value = parent.default();
+                            }
+                            range.set_cdr(Value::Integer(character - 1))?;
+                            value = map_char_table_node(
+                                interp,
+                                function,
+                                Value::CharTable(parent),
+                                value,
+                                range,
+                                parent,
+                                env,
+                            )?;
+                            if value.eq_value(this) {
+                                different = false;
+                            }
+                        }
+                        if !value.is_nil() && different {
+                            range.set_cdr(Value::Integer(character - 1))?;
+                            map_char_table_emit(interp, function, range, value, top, decode, env)?;
+                        }
+                        Ok(())
+                    })?;
+                    value = this;
+                    from = character;
+                    range.set_car(Value::Integer(character))?;
+                }
+            }
+            range.set_cdr(Value::Integer(to))?;
+            index += 1;
+            character = next;
+        }
+        Ok(value)
+    })
+}
+
+pub(in crate::lisp::primitives) fn map_char_table_with(
+    interp: &mut Interpreter,
+    function: &mut CharTableCallback<'_>,
+    mut table: CharTableRef,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let range = Value::cons(Value::Integer(0), Value::Integer(0x3fffff));
+    let decode = table.is_uniprop() && table.extra(1) == Some(Value::Integer(0));
+    interp.with_lisp_stack_roots(&vec![range, Value::CharTable(table)], |interp| {
+        let value = table.explicit_get(0);
+        let mut value = map_char_table_node(
+            interp,
+            function,
+            Value::CharTable(table),
+            value,
+            range,
+            table,
+            env,
+        )?;
+        while value.is_nil()
+            && let Some(parent) = table.parent()
+        {
+            let from = range.car()?.as_integer()? as u32;
+            value = parent.explicit_get(from);
+            if value.is_nil() {
+                value = parent.default();
+            }
+            value = map_char_table_node(
+                interp,
+                function,
+                Value::CharTable(parent),
+                value,
+                range,
+                parent,
+                env,
+            )?;
+            table = parent;
+        }
+        if !value.is_nil() {
+            map_char_table_emit(interp, function, range, value, table, decode, env)?;
+        }
+        Ok(Value::Nil)
+    })
+}
+
+fn map_char_table(
+    interp: &mut Interpreter,
+    function: Value,
+    table: CharTableRef,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.with_lisp_stack_roots(&function, |interp| {
+        map_char_table_with(
+            interp,
+            &mut |interp, key, mut value, top, decode, env| {
+                // chartab.c decodes Unicode properties for a Lisp callback,
+                // but leaves the stored value intact for a C callback.
+                if decode && let Some(Kind::Vector(values)) = top.extra(4).map(|value| value.kind())
+                {
+                    let index = value.as_integer()?;
+                    if let Ok(index) = usize::try_from(index)
+                        && let Some(decoded) = values.get(index)
+                    {
+                        value = decoded;
+                    }
+                }
+                call_function_value(interp, &function, &[key, value], env)?;
+                Ok(())
+            },
+            table,
+            env,
+        )
+    })
 }
 
 define_dispatch!(
@@ -462,17 +712,24 @@ define_dispatch!(
                 let readable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Record
-                        | crate::lisp::eval::RecordKind::Closure
+                    crate::lisp::eval::RecordKind::Closure
                         | crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0].kind(), Kind::Lambda(_) | Kind::CharTable(_))
+                    && !matches!(
+                        args[0].kind(),
+                        Kind::Lambda(_) | Kind::CharTable(_) | Kind::LispRecord(_)
+                    )
                     && !readable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
+                }
+                if matches!(args[0].kind(), Kind::CharTable(_))
+                    && !(0..=0x3f_ffff).contains(&raw_idx)
+                {
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -496,12 +753,11 @@ define_dispatch!(
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::CharTable(id) => {
                         let key = raw_idx as u32;
-                        Ok(syntax::char_table_public_value(
-                            interp,
-                            id,
-                            interp.char_table_get(id, key).unwrap_or(Value::Nil),
-                        ))
+                        Ok(id.get(key))
                     }
+                    Kind::LispRecord(record) => record
+                        .get(idx)
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::Record(id) => {
                         let record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
@@ -524,15 +780,7 @@ define_dispatch!(
                                 .cloned()
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
-                        if idx == 0 {
-                            Ok(record.type_tag)
-                        } else {
-                            record
-                                .slots
-                                .get(idx - 1)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
-                        }
+                        unreachable!("array check admitted only closure and bool-vector adapters")
                     }
                     _ => {
                         if is_vector_value(&args[0]) {
@@ -552,15 +800,19 @@ define_dispatch!(
                 let writable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Record
-                        | crate::lisp::eval::RecordKind::BoolVector
+                    crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if !args[0].is_string()
                     && !is_vector_value(&args[0])
-                    && !matches!(args[0].kind(), Kind::CharTable(_))
+                    && !matches!(args[0].kind(), Kind::CharTable(_) | Kind::LispRecord(_))
                     && !writable_record
                 {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), args[0]));
+                }
+                if matches!(args[0].kind(), Kind::CharTable(_))
+                    && !(0..=0x3f_ffff).contains(&raw_idx)
+                {
+                    return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
                 }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
@@ -585,21 +837,10 @@ define_dispatch!(
                         aset_string_value(&args[0], idx, &args[2])?;
                         Ok(args[2])
                     }
-                    Kind::Record(id) => {
-                        // GNU records are asettable; index 0 is the type tag
-                        // (eieio's `make-instance' downgrades the class-object
-                        // tag to the class symbol this way).
-                        if idx == 0 {
-                            interp.retag_record(id.id, args[2])?;
-                            return Ok(args[2]);
-                        }
-                        let record = interp
-                            .find_record_mut(id)
-                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]))?;
-                        let Some(slot) = record.slots.get_mut(idx - 1) else {
+                    Kind::LispRecord(record) => {
+                        if !record.set(idx, args[2]) {
                             return Err(args_out_of_range(&args[0], &args[1]));
-                        };
-                        *slot = args[2];
+                        }
                         Ok(args[2])
                     }
                     _ => Err(LispError::WrongTypeArgument("arrayp".into(), args[0])),
@@ -665,11 +906,11 @@ define_dispatch!(
                         Ok(args[0])
                     }
                     Kind::CharTable(id) => {
-                        let table = interp.find_char_table_mut(id).ok_or_else(|| {
-                            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-                        })?;
-                        table.default = args[1];
-                        table.clear_entries();
+                        // fns.c:Ffillarray writes contents/default; it leaves the ASCII field alone.
+                        for index in 4..68 {
+                            id.set_slot(index, args[1]);
+                        }
+                        id.set_default(args[1]);
                         Ok(args[0])
                     }
                     other => Err(LispError::WrongTypeArgument("arrayp".into(), other.value())),
@@ -827,18 +1068,10 @@ define_dispatch!(
 
             "make-char-table" => {
                 need_args(name, args, 1)?;
-                let subtype = match args[0].kind() {
-                    Kind::Nil => None,
-                    Kind::Symbol(symbol) => Some(symbol.to_string()),
-                    other => {
-                        return Err(LispError::WrongTypeArgument(
-                            "symbolp".into(),
-                            other.value(),
-                        ));
-                    }
-                };
-                let default = args.get(1).cloned().unwrap_or(Value::Nil);
-                Ok(interp.make_char_table(subtype, default))
+                interp.make_char_table_for_purpose(
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
 
             "char-table-p" => {
@@ -854,7 +1087,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Ok(Value::Nil);
                 };
-                if interp.char_table_purpose(id) != Some("case-table") {
+                if !id.has_purpose("case-table") {
                     return Ok(Value::Nil);
                 }
                 let up = interp.char_table_extra_slot(id, 0).unwrap_or(Value::Nil);
@@ -870,7 +1103,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let valid = matches!(
                     args[0].kind(),
-                    Kind::CharTable(id) if interp.char_table_purpose(id) == Some("syntax-table")
+                    Kind::CharTable(id) if id.has_purpose("syntax-table")
                 );
                 Ok(if valid { Value::T } else { Value::Nil })
             }
@@ -880,11 +1113,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                Ok(interp
-                    .char_table_subtype(id)
-                    .flatten()
-                    .map(|value| Value::Symbol(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(id.purpose())
             }
 
             "char-table-parent" => {
@@ -892,15 +1121,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                Ok(interp
-                    .char_table_parent(id)
-                    .flatten()
-                    .and_then(|parent_id| {
-                        interp
-                            .find_char_table(parent_id)
-                            .map(|_| Value::CharTable(parent_id))
-                    })
-                    .unwrap_or(Value::Nil))
+                Ok(id.parent().map_or(Value::Nil, Value::CharTable))
             }
 
             "set-char-table-parent" => {
@@ -927,8 +1148,11 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                let slot = args[1].as_integer()?.max(0) as usize;
-                Ok(interp.char_table_extra_slot(id, slot).unwrap_or(Value::Nil))
+                let slot = fixnum_index_arg(&args[1])?;
+                usize::try_from(slot)
+                    .ok()
+                    .and_then(|slot| id.extra(slot))
+                    .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
             }
 
             "set-char-table-extra-slot" => {
@@ -936,8 +1160,10 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                let slot = args[1].as_integer()?.max(0) as usize;
-                interp.set_char_table_extra_slot(id, slot, args[2])?;
+                let slot = fixnum_index_arg(&args[1])?;
+                if !usize::try_from(slot).is_ok_and(|slot| id.set_extra(slot, args[2])) {
+                    return Err(args_out_of_range(&args[0], &args[1]));
+                }
                 Ok(args[2])
             }
 
@@ -946,23 +1172,12 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                match char_table_range_spec(&args[1])? {
-                    None => Ok(interp
-                        .find_char_table(id)
-                        .map(|table| table.default)
-                        .unwrap_or(Value::Nil)),
-                    Some((start, end)) if start == end => Ok(syntax::char_table_public_value(
-                        interp,
-                        id,
-                        interp.char_table_get(id, start).unwrap_or(Value::Nil),
-                    )),
-                    Some((start, end)) => Ok(syntax::char_table_public_value(
-                        interp,
-                        id,
-                        interp
-                            .char_table_range(id, start, end)
-                            .unwrap_or(Value::Nil),
-                    )),
+                match char_table_range_spec(&args[1], name)? {
+                    None => Ok(id.default()),
+                    Some((start, end)) if matches!(args[1].kind(), Kind::Cons(_)) => {
+                        Ok(id.range_value(start, end))
+                    }
+                    Some((start, _)) => Ok(id.get(start)),
                 }
             }
 
@@ -971,20 +1186,24 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                match char_table_range_spec(&args[1])? {
-                    None => interp.char_table_set_default(id, args[2])?,
-                    Some((start, end)) => interp.char_table_set_range(id, start, end, args[2])?,
+                if args[1].eq_value(Value::T) {
+                    id.set_all(args[2]);
+                } else {
+                    let range = char_table_range_spec(&args[1], name)?;
+                    match range {
+                        None => id.set_default(args[2]),
+                        Some((start, end)) => id.set_range(start, end, args[2]),
+                    }
                 }
                 Ok(args[2])
             }
             "optimize-char-table" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(args[0].kind(), Kind::CharTable(_)) {
+                let Kind::CharTable(table) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
-                }
-                // Emaxx stores ranges directly instead of allocating GNU's
-                // nested sub-char-tables, so there is no structural compaction
-                // to perform at this abstraction boundary.
+                };
+                let test = args.get(1).copied().unwrap_or(Value::Nil);
+                optimize_char_table(interp, table, test, env)?;
                 Ok(Value::Nil)
             }
 
@@ -993,27 +1212,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[1].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[1]));
                 };
-                let effective = interp
-                    .char_table_effective_ranges(id)
-                    .ok_or_else(|| LispError::WrongTypeArgument("char-table-p".into(), args[1]))?;
-                for entry in effective {
-                    let key = if entry.start == entry.end {
-                        Value::Integer(entry.start as i64)
-                    } else {
-                        Value::cons(
-                            Value::Integer(entry.start as i64),
-                            Value::Integer(entry.end as i64),
-                        )
-                    };
-                    let value = if interp.char_table_purpose(id) == Some("char-code-property-table")
-                    {
-                        super::strings::decode_unicode_property_value(interp, id, entry.value)?
-                    } else {
-                        syntax::char_table_public_value(interp, id, entry.value)
-                    };
-                    call_function_value(interp, &args[0], &[key, value], env)?;
-                }
-                Ok(Value::Nil)
+                map_char_table(interp, args[0], id, env)
             }
 
             "current-case-table" => Ok(Value::CharTable(interp.current_case_table_id())),
@@ -1052,7 +1251,7 @@ define_dispatch!(
                         ));
                     }
                 };
-                if interp.char_table_purpose(source) != Some("syntax-table") {
+                if !source.has_purpose("syntax-table") {
                     return Err(LispError::TypeError(
                         "syntax-table".into(),
                         "char-table".into(),
@@ -1081,27 +1280,17 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let (start, end) = match args[0].kind() {
-                    Kind::Cons(_) => {
-                        let start = u32::try_from(args[0].car()?.as_integer()?)
-                            .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                        let end = u32::try_from(args[0].cdr()?.as_integer()?)
-                            .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                        (start, end)
-                    }
-                    _ => {
-                        let code = u32::try_from(args[0].as_integer()?)
-                            .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                        (code, code)
-                    }
+                let (start, end) = if matches!(args[0].kind(), Kind::Cons(_)) {
+                    category_character_range(&args[0])?
+                } else {
+                    let code = table_character(&args[0])?;
+                    (code, code)
                 };
                 let syntax = string_text(&args[1])?;
-                if syntax::parse_syntax_spec(&syntax).is_none() {
+                let entry = syntax::parse_syntax_spec(&syntax).ok_or_else(|| {
                     let letter = syntax.chars().next().unwrap_or('\0');
-                    return Err(LispError::Signal(format!(
-                        "Invalid syntax description letter: {letter}"
-                    )));
-                }
+                    LispError::Signal(format!("Invalid syntax description letter: {letter}"))
+                })?;
                 let table_id = match args.get(2).map(|v| v.kind()) {
                     Some(Kind::CharTable(id)) => id,
                     // syntax.c:Fmodify_syntax_entry uses the current table
@@ -1118,7 +1307,7 @@ define_dispatch!(
                     table_id,
                     start,
                     end,
-                    Value::String(syntax.clone().into()),
+                    syntax::syntax_entry_value(interp, entry),
                 )?;
                 if table_id == interp.standard_syntax_table_id()
                     || table_id == interp.current_syntax_table_id()
@@ -1135,20 +1324,20 @@ define_dispatch!(
 
             "setcar" => direct_setcar(interp, args, env),
             "setcdr" => direct_setcdr(interp, args, env),
-            "make-category-table" => Ok(interp.make_char_table(
-                Some("category-table".into()),
-                Value::String(String::new().into()),
-            )),
+            "make-category-table" => {
+                let table = CharTableRef::new(Value::symbol("category-table"), Value::Nil, 2);
+                table.set_default(make_bool_vector_value(interp, [false; 128]));
+                for index in 4..68 {
+                    table.set_slot(index, make_bool_vector_value(interp, [false; 128]));
+                }
+                table.set_extra(0, Value::vector(std::iter::repeat_n(Value::Nil, 95)));
+                Ok(Value::CharTable(table))
+            }
 
             "category-table-p" => {
                 need_args(name, args, 1)?;
                 Ok(match args[0].kind() {
-                    Kind::CharTable(id)
-                        if interp.char_table_subtype(id).flatten().as_deref()
-                            == Some("category-table") =>
-                    {
-                        Value::T
-                    }
+                    Kind::CharTable(id) if id.has_purpose("category-table") => Value::T,
                     _ => Value::Nil,
                 })
             }
@@ -1168,21 +1357,18 @@ define_dispatch!(
 
             "define-category" => {
                 need_arg_range(name, args, 2, 3)?;
-                let category = args[0].as_integer()?;
-                let doc = string_text(&args[1])?;
+                let category = category_arg(&args[0])?;
+                string_text(&args[1])?;
                 let table = category_table_arg(interp, args.get(2), false)?;
-                interp.define_category(table, category as u32, doc)?;
+                interp.define_category(table, category, args[1])?;
                 Ok(Value::Nil)
             }
 
             "category-docstring" => {
                 need_arg_range(name, args, 1, 2)?;
-                let category = args[0].as_integer()? as u32;
+                let category = category_arg(&args[0])?;
                 let table = category_table_arg(interp, args.get(1), false)?;
-                Ok(interp
-                    .category_docstring(table, category)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.category_docstring(table, category))
             }
 
             "get-unused-category" => {
@@ -1192,7 +1378,7 @@ define_dispatch!(
                     .find(|category| {
                         interp
                             .category_docstring(table, u32::from(*category))
-                            .is_none()
+                            .is_nil()
                     })
                     .map(|category| Value::Integer(i64::from(category)))
                     .unwrap_or(Value::Nil))
@@ -1200,104 +1386,96 @@ define_dispatch!(
 
             "make-category-set" => {
                 need_args(name, args, 1)?;
-                let text = string_text(&args[0])?;
-                Ok(Value::String(normalize_category_set(&text).into()))
+                let string = string_like(&args[0])
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                if string.multibyte {
+                    return Err(LispError::Signal(
+                        "Multibyte string in `make-category-set'".into(),
+                    ));
+                }
+                let mut bits = [false; 128];
+                for ch in string.text.chars() {
+                    bits[category_arg(&Value::Integer(ch as i64))? as usize] = true;
+                }
+                Ok(make_bool_vector_value(interp, bits))
             }
 
             "category-set-mnemonics" => {
                 need_args(name, args, 1)?;
-                // GNU's CHECK_CATEGORY_SET accepts the 128-slot bool-vector
-                // that `char-category-set' returns; the internal string form
-                // remains accepted for entries stored as mnemonic strings.
-                if let Kind::Record(id) = args[0].kind()
-                    && let Some(record) = interp.find_record(id)
-                    && record.kind == crate::lisp::eval::RecordKind::BoolVector
-                {
-                    let text: String = record
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, slot)| slot.is_truthy())
-                        .filter_map(|(index, _)| char::from_u32(index as u32))
-                        .collect();
-                    return Ok(Value::String(normalize_category_set(&text).into()));
-                }
-                let text = string_text(&args[0])?;
-                Ok(Value::String(normalize_category_set(&text).into()))
+                let bits = category_set_bits(interp, &args[0])?;
+                let text: String = (32u8..127)
+                    .filter(|i| bits[*i as usize])
+                    .map(char::from)
+                    .collect();
+                Ok(Value::String(text.into()))
             }
 
             "modify-category-entry" => {
                 need_arg_range(name, args, 2, 4)?;
                 let (start, end) = category_character_range(&args[0])?;
-                let category = args[1].as_integer()? as u32;
-                if !(32..=126).contains(&category) {
-                    return Err(LispError::Signal("Invalid category".into()));
-                }
+                let category = category_arg(&args[1])?;
                 let table = category_table_arg(interp, args.get(2), false)?;
-                let reset = args.get(3).is_some_and(Value::is_truthy);
+                if interp.category_docstring(table, category).is_nil() {
+                    return Err(LispError::Signal(format!(
+                        "Undefined category: {}",
+                        char::from(category as u8)
+                    )));
+                }
+                let set = !args.get(3).is_some_and(Value::is_truthy);
                 if start > end {
                     return Ok(Value::Nil);
                 }
-                let category_char = char::from_u32(category).expect("ASCII category is a scalar");
-                let boundaries = char_table_change_boundaries(interp, table, start, end);
+                let boundaries = char_table_change_boundaries(table, start, end);
                 for (index, segment_start) in boundaries.iter().copied().enumerate() {
-                    let segment_end = boundaries
-                        .get(index + 1)
-                        .map_or(end, |next| next.saturating_sub(1));
-                    let current = interp
-                        .char_table_get(table, segment_start)
-                        .and_then(|value| string_like(&value).map(|s| s.text))
-                        .unwrap_or_default();
-                    let mut chars: Vec<char> = current.chars().collect();
-                    if reset {
-                        chars.retain(|existing| *existing != category_char);
-                    } else if !chars.contains(&category_char) {
-                        chars.push(category_char);
+                    let segment_end = boundaries.get(index + 1).map_or(end, |next| next - 1);
+                    let mut bits = category_set_bits(interp, &table.get(segment_start))?;
+                    if bits[category as usize] == set {
+                        continue;
                     }
-                    chars.sort_unstable();
-                    chars.dedup();
-                    interp.char_table_set_range(
-                        table,
-                        segment_start,
-                        segment_end,
-                        Value::String(chars.into_iter().collect()),
-                    )?;
+                    bits[category as usize] = set;
+                    let mut value = make_bool_vector_value(interp, bits);
+                    let mut hash = table.extra(1).unwrap_or(Value::Nil);
+                    if hash.is_nil() {
+                        hash = json::make_hash_table(interp, "equal", Vec::new());
+                        table.set_extra(1, hash);
+                    }
+                    let Kind::Record(id) = hash.kind() else {
+                        return Err(LispError::WrongTypeArgument("hash-table-p".into(), hash));
+                    };
+                    if let Some(key) = interp.equal_hash_lookup_key(id.id, &value, env) {
+                        value = key;
+                    } else {
+                        interp.equal_hash_put(id.id, value, Value::Nil, env);
+                    }
+                    table.set_range(segment_start, segment_end, value);
                 }
                 Ok(Value::Nil)
             }
 
             "char-category-set" => {
                 need_args(name, args, 1)?;
-                let character = args[0].as_integer()? as u32;
-                let table_id = current_category_table_id(interp);
-                // GNU returns a 128-slot bool-vector category set; entries
-                // may be stored as category-character strings.
-                let entry = interp.char_table_get(table_id, character);
-                let mut slots = vec![Value::Nil; 128];
-                if let Some(value) = entry {
-                    match value.kind() {
-                        Kind::String(text) => {
-                            for ch in text.chars() {
-                                if (ch as usize) < 128 {
-                                    slots[ch as usize] = Value::T;
-                                }
-                            }
-                        }
-                        Kind::Record(_) => return Ok(value),
-                        _ => {}
-                    }
-                }
-                Ok(interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::BoolVector,
-                    "bool-vector",
-                    slots,
-                ))
+                let character = table_character(&args[0])?;
+                Ok(current_category_table_id(interp).get(character))
             }
 
             "copy-category-table" => {
                 need_arg_range(name, args, 0, 1)?;
-                let id = category_table_arg(interp, args.first(), true)?;
-                interp.clone_char_table(id)
+                let copy = category_table_arg(interp, args.first(), true)?.copy();
+                copy.set_default(copy_sequence_value(interp, &copy.default())?);
+                copy.set_extra(
+                    0,
+                    copy_sequence_value(interp, &copy.extra(0).unwrap_or(Value::Nil))?,
+                );
+                for entry in copy.effective_ranges() {
+                    if !entry.value.is_nil() {
+                        copy.set_range(
+                            entry.start,
+                            entry.end,
+                            copy_sequence_value(interp, &entry.value)?,
+                        );
+                    }
+                }
+                Ok(Value::CharTable(copy))
             }
 
             "translate-region-internal" => {
@@ -1310,7 +1488,7 @@ define_dispatch!(
                         return Err(LispError::WrongTypeArgument("char-table-p".into(), args[2]));
                     }
                 };
-                if interp.char_table_purpose(table_id) != Some("translation-table") {
+                if !table_id.has_purpose("translation-table") {
                     return Err(LispError::Signal("Not a translation table".into()));
                 }
                 translate_region_with_table(interp, from, to, table_id)
@@ -1439,47 +1617,22 @@ define_dispatch!(
 
 /// The `setcar' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_setcar(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let name = "setcar";
-    need_args(name, args, 2)?;
-    let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(args[0].kind(), Kind::Cons(_)) {
-        args[0].set_car(args[1])?;
-    } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-        view.set_car(args[1])?;
-    } else {
-        return Err(wrong_type_argument("consp", args[0]));
-    }
-    for owner in owners {
-        sync_runtime_keymap_from_public_view(interp, owner)?;
-    }
-    // A cons may be the live plist cell of a symbol.  Conservatively
-    // invalidate macro metadata caches for arbitrary cons mutation;
-    // GNU exposes no detached copy at `symbol-plist'.
-    interp.note_definition_changed();
+    need_args("setcar", args, 2)?;
+    args[0].set_car(args[1])?;
     Ok(args[1])
 }
 
 /// The `setcdr' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_setcdr(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let name = "setcdr";
-    need_args(name, args, 2)?;
-    let owners = interp.keymap_public_cons_owner_ids(&args[0]);
-    if matches!(args[0].kind(), Kind::Cons(_)) {
-        args[0].set_cdr(args[1])?;
-    } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
-        return Err(wrong_type_argument("consp", args[0]));
-    }
-    for owner in owners {
-        sync_runtime_keymap_from_public_view(interp, owner)?;
-    }
-    interp.note_definition_changed();
+    need_args("setcdr", args, 2)?;
+    args[0].set_cdr(args[1])?;
     Ok(args[1])
 }

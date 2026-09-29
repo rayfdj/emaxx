@@ -1,0 +1,23 @@
+{
+  "command": [
+    "tools/ttydiff.py",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "/private/tmp/emaxx-runtime-gnu-20260928/lisp",
+    "package-menu-install-refresh-remove"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-package-diagnostic-home",
+    "EMAXX_TTYDIFF_REQUIRE": "1"
+  },
+  "inputs": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "c26fc9277b9653c0e8e8cff07fafa170510cb1fb42a6acc1847bb0b548f79915",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "7b2db386c3cb13c05fade056562f32059ad4a1d7eb442805cd03bb58ca455a78",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/diagnose-source108-package-tty.py": "35efab755144e8d0fe3b400b7426a0635ab5bb8dcb21586303b1f00bc73cd59e"
+  },
+  "scope": "Observational wrapper over unchanged selected scenario; original actions/timing/comparisons. Saves full checkpoint screens. On failure only, sample and late screen are post-failure diagnostics; never counted as a pass. The prior full 223-scenario failure remains."
+}

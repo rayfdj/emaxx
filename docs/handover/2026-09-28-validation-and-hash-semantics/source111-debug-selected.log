@@ -1,0 +1,103 @@
+
+running 63 tests
+test lisp::eval::tests::eval_01::custom_hash_table_hash_functions_cannot_mutate_their_table ... ok
+test lisp::eval::tests::eval_01::custom_hash_table_tests_are_registered_and_used_for_lookup ... ok
+test lisp::eval::tests::eval_01::equal_hash_tables_match_positioned_and_bare_keys_while_enabled ... ok
+test lisp::eval::tests::eval_01::hash_table_copy_and_clear_string_cover_password_cache_cases ... ok
+test lisp::eval::tests::eval_01::hash_table_eq_test_uses_cons_identity ... ok
+test lisp::eval::tests::eval_01::hash_table_iteration_and_mutation_primitives_cover_ert_cases ... ok
+test lisp::eval::tests::eval_01::read_positioning_symbols_materializes_hash_literals_before_macroexpansion ... ok
+test lisp::eval::tests::eval_02::read_from_string_materializes_persisted_records_with_nested_hash_tables ... ok
+test lisp::eval::tests::eval_02::weak_hash_controls_release_setup_roots_before_collection ... ok
+test lisp::eval::tests::eval_03::interpreted_closure_equality_and_hash_include_every_public_slot ... ok
+test lisp::eval::tests::eval_03::native_printer_continuous_numbering_uses_the_public_hash_table ... ok
+test lisp::eval::tests::eval_03::read_materializes_hash_table_literals ... ok
+test lisp::eval::tests::eval_04::secure_hash_supports_core_algorithms_and_iv_auto ... ok
+test lisp::eval::tests::eval_04::sha1_and_buffer_hash_match_for_ascii_buffer_contents ... ok
+test lisp::eval::tests::eval_05::comment_region_wraps_c_style_and_prefixes_hash_comments ... ok
+test lisp::eval::tests::eval_05::sxhash_eql_matches_equal_bignums ... ok
+test lisp::eval::tests::eval_05::syntax_ppss_reports_hash_comment_start ... Can’t guess python-indent-offset, using defaults: 4
+ok
+test lisp::eval::tests::gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary ... ok
+test lisp::eval::tests::gnu_hash_storage_layout_and_growth_match_fns_c ... ok
+test lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array ... 
+thread 'lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array' (2049583) panicked at src/lisp/native_comp/runtime.rs:9960:9:
+assertion `left == right` failed: GNU PVEC_HASH_TABLE
+  left: 34
+ right: 14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test lisp::native_comp::runtime::tests::native_maphash_calls_each_live_slot_through_funcall ... ok
+test lisp::primitives::ccl::tests::symbolic_hash_operand_resolves_when_the_table_is_defined ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::sxhash_equal_matches_structured_runtime_values ... ok
+test lisp::primitives::hash_insert::tests::overlay_collection_follows_buffer_and_lisp_ownership ... ok
+test lisp::primitives::hash_insert::tests::weak_key_collection_uses_reachability ... ok
+test lisp::primitives::pdumper::tests::closure_slot_graphs_survive_interpreter_cloning_and_dump_restoration ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_freezes_and_thaws_hash_tables_as_pdumper_c_does ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_keeps_a_private_obarray_symbol_apart_from_its_namesake ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_nilled_frames_preserve_address_identity_and_shared_references ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_records_symbol_cells_from_the_interpreter ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_refuses_buffers_with_overlays_as_gnu_does ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_refuses_hash_tables_with_user_defined_tests_as_gnu_does ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_refuses_pending_transient_state_it_cannot_carry ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_round_trips_buffers_markers_finalizers_and_nilled_frames ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_round_trips_closures_char_tables_records_and_bool_vectors ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::image_round_trips_sharing_cycles_and_every_supported_object_kind ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::load_refuses_what_pdumper_load_refuses ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+desired fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+found fingerprint: f013acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::positioned_symbols_are_rejected_as_in_gnu_dump_vectorlike ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::queue_order_writes_referents_after_their_referrer_and_each_object_once ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::supported_image_starts_in_a_fresh_process_with_new_process_values ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::pdumper::tests::voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration ... Dumping fingerprint: 0f13acecc72cc9de4ed8bb8f429152e1c237f985119ed9389c1ef9a9274aa288
+ok
+test lisp::primitives::purecopy::tests::purecopy_keeps_vectors_vectorlike_and_hash_conses_equal_copies ... ok
+test lisp::primitives::tests::equal_hash_table_answers_survive_removals_and_slot_reuse ... ok
+test lisp::primitives::tests::equal_string_hash_tables_scale_without_losing_public_semantics ... ok
+test lisp::primitives::tests::equal_structured_hash_tables_use_structural_buckets ... ok
+test lisp::primitives::tests::generic_record_constructors_reader_and_purecopy_match_gnu ... Dropping text-properties while making string ‘text’ pure
+ok
+test lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state ... Dropping text-properties while making string 'text-103' pure
+ok
+test lisp::primitives::tests::hash_captured_functions_survive_redefinition_copy_and_gc ... ok
+test lisp::primitives::tests::hash_captured_symbols_keep_dynamic_function_resolution ... ok
+test lisp::primitives::tests::hash_copy_preserves_stored_codes_after_key_mutation ... ok
+test lisp::primitives::tests::native_comp_source_names_hash_canonical_paths_and_real_contents ... ok
+test lisp::primitives::tests::native_gnutls_digest_catalog_and_hashing_use_rustcrypto ... ok
+test lisp::primitives::tests::purecopy_callbacks_observe_current_purify_flag ... ok
+test lisp::primitives::tests::purecopy_callbacks_preserve_vector_and_record_source_snapshots ... ok
+test lisp::primitives::tests::purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds ... ok
+test lisp::primitives::tests::subr_frontier_recordp_does_not_expose_hash_table_runtime_storage ... ok
+test lisp::reader::tests::hash_dispatch_edge_cases ... ok
+test lisp::reader::tests::reads_hash_radix_integers ... ok
+test lisp::reader::tests::reads_hash_table_structure_syntax_as_self_evaluating_literal ... ok
+test lisp::reader::tests::reads_strings_with_text_properties_from_hash_syntax ... ok
+
+failures:
+
+failures:
+    lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array
+
+test result: FAILED. 62 passed; 1 failed; 0 ignored; 0 measured; 2833 filtered out; finished in 76.00s
+

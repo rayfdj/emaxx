@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((symbols-with-pos-enabled nil)\n      (describe (lambda (form)\n                  (mapcar (lambda (object)\n                            (if (symbol-with-pos-p object)\n                                (list (symbol-name (bare-symbol object))\n                                      (symbol-with-pos-pos object))\n                              object)) form))))\n  (list (funcall describe (read-positioning-symbols \"(\u03b1 t nil)\"))\n        (with-temp-buffer\n          (insert \"skip (\u03b1 t nil)\")\n          (goto-char 6)\n          (let ((form (read-positioning-symbols (current-buffer))))\n            (list (funcall describe form) (point))))\n        (with-temp-buffer\n          (insert \"skip (\u03b1 t nil)\")\n          (let* ((marker (copy-marker 6))\n                 (form (read-positioning-symbols marker)))\n            (list (funcall describe form) (marker-position marker))))\n        (let ((chars (string-to-list \"(omega t nil)\")))\n          (funcall describe\n                   (read-positioning-symbols\n                    (lambda (&optional char)\n                      (if char (push char chars) (pop chars))))))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.6956795,
+  "stdout_hex": "28282822ceb1222031292028227422203329206e696c292028282822ceb1222037292028227422203929206e696c29203135292028282822ceb1222037292028227422203929206e696c292031352920286f6d6567612074206e696c2929",
+  "stderr_hex": "",
+  "artifact": {
+    "binary": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+    "image": "28f5a21137d4f18d93d761308d1eeca548676cc87643d0b4b2d035574a33d22e"
+  },
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Source-matched ordinary reader diagnostics. Failed comparisons remain failed. GNU is not the pinned Darwin executable. No frozen or performance claim."
+}

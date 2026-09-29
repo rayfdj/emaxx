@@ -10,7 +10,7 @@
 
 use super::super::*;
 use super::image::*;
-use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
+use crate::lisp::eval::{RecordKind, RecordState};
 use crate::lisp::types::{ConsCell, Kind, SymbolName};
 use std::collections::{HashMap, VecDeque};
 
@@ -28,6 +28,7 @@ pub(crate) enum ObjectKey {
     String(usize),
     StringObject(usize),
     Symbol(u32),
+    SymbolWithPos(usize),
     Vector(usize),
     Float(usize),
     Bignum(usize),
@@ -41,10 +42,12 @@ pub(crate) enum ObjectKey {
     Buffer(u64),
     Marker(usize),
     Overlay(usize),
-    CharTable(u64),
-    Frame(u64),
+    CharTable(usize),
+    SubCharTable(usize),
+    Frame(usize),
     Terminal(usize),
     Record(u64),
+    LispRecord(usize),
     Finalizer(usize),
     ReaderForm(usize),
 }
@@ -61,6 +64,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::Symbol(name.id())
         }
         Kind::Vector(vector) => ObjectKey::Vector(vector.identity()),
+        Kind::SymbolWithPos(object) => ObjectKey::SymbolWithPos(object.identity()),
         Kind::Float(float) => ObjectKey::Float(float.identity_ptr()),
         Kind::BigInteger(integer) => ObjectKey::Bignum(integer.identity_ptr()),
         Kind::Integer(integer) => {
@@ -77,10 +81,12 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
-        Kind::CharTable(id) => ObjectKey::CharTable(id),
-        Kind::Frame(id) => ObjectKey::Frame(id),
+        Kind::CharTable(table) => ObjectKey::CharTable(table.identity()),
+        Kind::SubCharTable(table) => ObjectKey::SubCharTable(table.identity()),
+        Kind::Frame(id) => ObjectKey::Frame(id.identity()),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
+        Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
         Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
@@ -104,11 +110,9 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
-        RecordKind::Record => 1,
         RecordKind::BoolVector => 2,
         RecordKind::Closure => 3,
         RecordKind::Font => 4,
-        RecordKind::SymbolWithPos => 5,
         RecordKind::Process => 6,
         RecordKind::HashTable => 7,
         RecordKind::Obarray => 8,
@@ -132,11 +136,11 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
-        1 => RecordKind::Record,
+        // Former generic record code 1 used a detached host payload.
         2 => RecordKind::BoolVector,
         3 => RecordKind::Closure,
         4 => RecordKind::Font,
-        5 => RecordKind::SymbolWithPos,
+        // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
         7 => RecordKind::HashTable,
         8 => RecordKind::Obarray,
@@ -539,11 +543,13 @@ impl DumpContext {
             Kind::StringObject(_) => DumpType::StringObject,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
+            Kind::LispRecord(_) => DumpType::LispRecord,
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
             Kind::Lambda(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
+            Kind::SubCharTable(_) => DumpType::SubCharTable,
             Kind::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
             Kind::Buffer(_) => DumpType::Buffer,
             Kind::Marker(_) => DumpType::Marker,
@@ -1042,11 +1048,10 @@ impl DumpContext {
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
             Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
-            Kind::CharTable(id) => (
-                self.dump_char_table(interp, id, object)?,
-                DumpType::CharTable,
-            ),
+            Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
+            Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
+            Kind::LispRecord(record) => (self.dump_lisp_record(record)?, DumpType::LispRecord),
             Kind::Nil | Kind::T | Kind::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
@@ -1058,10 +1063,10 @@ impl DumpContext {
             Kind::Overlay(overlay) => (self.dump_overlay(overlay)?, DumpType::Overlay),
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
             // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
-            Kind::Frame(id) => (self.dump_nilled_pseudovec(id)?, DumpType::Frame),
-            Kind::Terminal(terminal) => {
-                (self.dump_nilled_pseudovec(terminal.id)?, DumpType::Terminal)
-            }
+            Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
+            Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
+            // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
+            Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
@@ -1229,6 +1234,21 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
+    /// pdumper.c:dump_vectorlike_generic writes every inline record field,
+    /// including a descriptor in slot zero, through normal relocations.
+    fn dump_lisp_record(
+        &mut self,
+        record: crate::lisp::types::LispRecordRef,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = vec![0; record.len() + 1];
+        words[0] = record.len() as u64;
+        for (index, field) in record.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 1, &field, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
     /// dump_float: the IEEE word, in the cold section.
     fn dump_float(&mut self, value: f64) -> Result<u32, DumpError> {
         assert!(self.header.cold_start != 0);
@@ -1283,11 +1303,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Record
-            | RecordKind::Closure
-            | RecordKind::Font
-            | RecordKind::SymbolWithPos
-            | RecordKind::Keymap => {
+            RecordKind::Closure | RecordKind::Font | RecordKind::Keymap => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }
@@ -1514,56 +1530,31 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// A char-table as Emaxx keeps it: id, subtype, default, parent,
-    /// extra slots, the range entries in their log order, and the
-    /// category docstrings.  GNU's is a tree of sub-char-tables; the
-    /// observable table is the same.
+    /// Canonical root slots, including the ASCII alias and actual purpose.
     fn dump_char_table(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
+        table: crate::lisp::types::CharTableRef,
     ) -> Result<u32, DumpError> {
-        let Some(table) = interp.find_char_table(id) else {
-            return Err(self.unsupported(object, "char-table without an object"));
-        };
-        let subtype = table.subtype.clone();
-        let default = table.default;
-        let parent = table.parent;
-        let extra_slots = table.extra_slots.clone();
-        let entries = table
-            .entries
-            .iter()
-            .map(|entry| (entry.start, entry.end, entry.value))
-            .collect::<Vec<_>>();
-        let category_docs = table.category_docs.clone();
         let start = self.object_start()?;
-        let mut words = vec![id, WORD_UNBOUND, 0, parent.unwrap_or(u64::MAX)];
-        let mut fields = Vec::new();
-        if let Some(subtype) = subtype {
-            fields.push((1, Value::symbol(&subtype)));
+        let mut words = vec![0; 1 + table.slot_count()];
+        words[0] = table.slot_count() as u64;
+        for (index, value) in table.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 1, &value, WEIGHT_STRONG);
         }
-        fields.push((2, default));
-        words.push(extra_slots.len() as u64);
-        for slot in extra_slots {
-            fields.push((words.len(), slot));
-            words.push(0);
-        }
-        words.push(entries.len() as u64);
-        for (range_start, range_end, value) in entries {
-            words.push(u64::from(range_start));
-            words.push(u64::from(range_end));
-            fields.push((words.len(), value));
-            words.push(0);
-        }
-        words.push(category_docs.len() as u64);
-        for (character, doc) in category_docs {
-            words.push(u64::from(character));
-            fields.push((words.len(), Value::string(&doc)));
-            words.push(0);
-        }
-        for (index, value) in fields {
-            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        self.object_finish(&words)
+    }
+
+    /// The packed non-Lisp word is separate from the relocated Lisp slots.
+    fn dump_sub_char_table(
+        &mut self,
+        table: crate::lisp::types::SubCharTableRef,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = vec![0; 2 + table.slots().len()];
+        words[0] = table.depth() as u64;
+        words[1] = u64::from(table.min_char());
+        for (index, value) in table.slots().enumerate() {
+            self.field_lv(start, &mut words, index + 2, &value, WEIGHT_STRONG);
         }
         self.object_finish(&words)
     }
@@ -1599,6 +1590,7 @@ impl DumpContext {
                 BUFFER_MARK_MARKER,
                 BUFFER_SYNTAX_TABLE,
                 BUFFER_CASE_TABLE,
+                BUFFER_TEXT_CONVERSION_STYLE,
             ] {
                 self.field_lv(
                     start,
@@ -1642,6 +1634,10 @@ impl DumpContext {
             (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
             (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
             (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
+            (
+                parts.text_conversion_style_is_local,
+                BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE,
+            ),
             (
                 parts.visited_file_modtime.is_some(),
                 BUFFER_FLAG_HAS_MODTIME,
@@ -1727,6 +1723,11 @@ impl DumpContext {
             (
                 BUFFER_CASE_TABLE as usize,
                 case_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_TEXT_CONVERSION_STYLE as usize,
+                parts.text_conversion_style,
                 WEIGHT_STRONG,
             ),
         ];
@@ -1847,10 +1848,12 @@ impl DumpContext {
     }
 
     /// dump_nilled_pseudovec: every Lisp field nil, nothing else kept;
-    /// the record is the object's id alone.
-    fn dump_nilled_pseudovec(&mut self, id: u64) -> Result<u32, DumpError> {
+    /// the record has one reserved zero word for format compatibility.
+    fn dump_nilled_pseudovec(&mut self) -> Result<u32, DumpError> {
         self.object_start()?;
-        self.object_finish(&[id])
+        // Identity is the dump object's offset. No address or process-local
+        // label belongs in a frame/terminal whose state is nilled on load.
+        self.object_finish(&[0])
     }
 
     // ----- Queues -----
@@ -2345,31 +2348,6 @@ pub(crate) fn record_state_for_load(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn char_table_state_for_load(
-    id: u64,
-    subtype: Option<String>,
-    default: Value,
-    parent: Option<u64>,
-    entries: Vec<(u32, u32, Value)>,
-    extra_slots: Vec<Value>,
-    category_docs: Vec<(u32, String)>,
-) -> CharTableState {
-    let mut table = CharTableState::with_entries(
-        id,
-        subtype,
-        default,
-        parent,
-        entries
-            .into_iter()
-            .map(|(start, end, value)| crate::lisp::eval::CharTableEntry { start, end, value })
-            .collect(),
-    );
-    table.extra_slots = extra_slots;
-    table.category_docs = category_docs;
-    table
-}
-
 /// The string's bytes as GNU stores them: the internal multibyte form for
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
@@ -2454,7 +2432,8 @@ pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
 pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
 pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
 /// The variable part: the local bindings, the markers, the undo entries.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 25;
+pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 25;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 26;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;
@@ -2465,6 +2444,7 @@ pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
 pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
 /// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
 pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
+pub(crate) const BUFFER_FLAG_LOCAL_TEXT_CONVERSION_STYLE: u64 = 256;
 /// An absent position.
 pub(crate) const NO_POSITION: u64 = u64::MAX;
 // The kinds of an undo entry.

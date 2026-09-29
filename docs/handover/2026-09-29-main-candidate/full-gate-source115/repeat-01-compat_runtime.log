@@ -1,0 +1,94 @@
+
+running 86 tests
+test lisp::primitives::compat_runtime_tests::compat_01::buffer_positions_accept_integer_values_independent_of_internal_width ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::collation_functions_fall_back_to_lexicographic_comparison ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::compare_strings_matches_fns_expectations ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::concat_matches_upstream_sequence_and_multibyte_cases ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::detect_eol_type_preserves_embedded_cr_in_unix_files ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::directory_files_and_attributes_reports_entries_and_arity ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::discard_input_clears_pending_events_and_keyboard_macro_definition ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::display_buffer_honors_inhibit_same_window_and_action_function_returns ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::file_modes_reads_permissions_and_reports_arity ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::file_system_info_reports_host_capacity_and_missing_paths ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::file_writable_p_is_nil_for_missing_files_in_unwritable_directories ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::file_writable_p_is_true_for_creatable_missing_files ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::fillarray_mutates_supported_sequences ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::find_operation_coding_system_accepts_file_buffer_cons ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::forward_char_treats_nil_as_default_step ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::forward_line_treats_nil_as_default_step ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::get_buffer_window_only_reports_selected_buffer ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::insert_file_contents_preserves_embedded_cr_in_unix_files ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::jka_compr_sniffs_compression_info_from_file_suffixes ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::length_equals_matches_sequence_lengths ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::libxml_available_p_tracks_builtin_xml_parser ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_counts_from_the_accessible_region_unless_absolute ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_treats_nil_as_point_and_checks_bounds ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::modify_syntax_entry_accepts_character_ranges ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::nthcdr_handles_circular_lists_with_large_counts ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::nthcdr_value_reduces_large_counts_on_cycles ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::plist_defaults_to_eq_and_honors_equal_test_functions ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::plist_member_preserves_tails_and_structural_errors ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::plist_put_appends_absent_property_in_place ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::random_accepts_bignum_limits ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::random_matches_emacs_limit_and_seed_behavior ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::reverse_and_nreverse_preserve_vector_types ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::reverse_and_vconcat_support_bool_vectors ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::selected_window_is_a_record_and_tracks_window_start ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::skeleton_insert_inserts_strings_and_places_point_at_the_interesting_spot ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::special_mode_sets_major_mode_read_only_and_its_keymap ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::string_distance_matches_upstream_multibyte_cases ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::string_multibyte_conversion_helpers_match_fns_expectations ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::string_to_unibyte_roundtrips_raw_bytes_and_rejects_multibyte_chars ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::sxhash_equal_matches_structured_runtime_values ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::syntax_table_aref_and_range_return_encoded_entries ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::take_and_ntake_match_upstream_edge_cases ... ok
+test lisp::primitives::compat_runtime_tests::compat_01::vconcat_and_append_preserve_multibyte_raw_byte8_elements ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::advice_add_supports_after_function ... C-c C-z is undefined
+Defining kbd macro...
+Keyboard macro defined
+ok
+test lisp::primitives::compat_runtime_tests::compat_02::apply_format_message_from_lambda ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::apply_format_message_top_level ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::buffer_stale_default_detects_clean_file_modtime_changes ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::coding_system_get_reports_for_unibyte_for_raw_text ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::decode_coding_region_inserts_into_destination_buffer ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::decode_coding_region_reports_the_detected_eol_variant ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::define_coding_system_internal_derives_public_utf8_attributes_like_coding_c ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::direct_format_message_top_level ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::eq_and_equal_match_emacs_for_symbols_with_position ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::eq_uses_identity_for_copied_sequences ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::extracted_strings_preserve_the_buffer_multibyte_mode ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::file_name_extension_helpers_match_archive_usage ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::file_regular_p_distinguishes_files_from_directories ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::funcall_message_builtin_from_lambda ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::get_byte_reads_unibyte_buffer_positions ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::make_temp_file_creates_a_file_for_relative_prefix ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::member_ignore_case_matches_strings_case_insensitively_on_the_image ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::obarray_make_accepts_explicit_nil_as_the_default_size ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::process_coding_alist_overrides_the_default_for_synchronous_output ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::rename_visited_file_moves_disk_file_and_updates_buffer_path ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::revert_buffer_honors_buffer_local_revert_function ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::revert_buffer_reloads_non_utf8_file_as_raw_text ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::save_buffer_skips_unmodified_and_unchanged_files ... File emaxx-save-unmodified-evxoe0 is write-protected; try to save anyway? (yes or no) ok
+test lisp::primitives::compat_runtime_tests::compat_02::set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::unicode_property_registry_uses_the_c_owned_symbol_value_cell ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_buffers_and_markers_follow_names_liveness_and_renames ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_selected_upstream_ordered_cases_match_emacs ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_selected_upstream_type_mismatch_cases_match_emacs ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_selected_upstream_unordered_cases_match_emacs ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_uses_buffer_objects_across_overlapping_owner_ids ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::value_less_vectors_break_ties_after_equal_prefix_values ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_process_output_accepts_a_shared_string_buffer_name ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_process_output_decodes_with_the_default_process_coding_system ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_process_output_merges_stderr_for_t_cons_destination ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_process_output_supports_stdout_buffer_and_stderr_file ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_region_checks_supersession_when_lockfile_creation_is_disabled ... ok
+test lisp::primitives::compat_runtime_tests::compat_02::write_region_reports_output_errors_as_file_error ... ok
+test lisp::primitives::compat_runtime_tests::compat_03::func_arity_matches_upstream_core_cases ... ok
+test lisp::primitives::compat_runtime_tests::compat_03::string_version_lessp_matches_upstream_cases ... ok
+
+test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 2810 filtered out; finished in 16.20s
+

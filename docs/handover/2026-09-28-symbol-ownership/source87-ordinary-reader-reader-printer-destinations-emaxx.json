@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((results nil))\n  (dolist (destination '(buffer marker))\n    (dolist (fail '(nil t))\n      (let ((source (current-buffer))\n            (target (generate-new-buffer \" *printer-destination*\")))\n        (unwind-protect\n            (let ((marker nil) (seen nil)\n                  (print-escape-nonascii nil) (print-escape-multibyte nil))\n              (with-current-buffer target\n                (insert \"abc\")\n                (goto-char 3)\n                (setq marker (copy-marker 2))\n                (add-hook 'before-change-functions\n                          (lambda (start end)\n                            (push (list (eq (current-buffer) target) start end\n                                        print-escape-nonascii print-escape-multibyte)\n                                  seen)\n                            (when fail (error \"printer-hook\"))) nil t))\n              (let ((outcome (condition-case err\n                                 (progn (prin1 (unibyte-string 177)\n                                               (if (eq destination 'buffer) target marker))\n                                        'ok)\n                               (error (car err)))))\n                (push (list destination fail outcome (eq source (current-buffer))\n                            (nreverse seen) (marker-position marker)\n                            (with-current-buffer target\n                              (list (point) (buffer-string)))\n                            print-escape-nonascii print-escape-multibyte)\n                      results)))\n          (kill-buffer target)))))\n  (nreverse results))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "input_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/reader-printer-destinations.el",
+  "input_sha256": "a0705518634f2c8080d7cc9814108f18a363d6cbd29f6d005e07e535102b3140",
+  "exit_code": 0,
+  "elapsed_seconds": 0.7833097499999999,
+  "stdout_hex": "2828627566666572206e696c206f6b207420282874203320332074206e696c29292032202839202261625c225c5c3236315c22632229206e696c206e696c2920286275666665722074206572726f72207420282874203320332074206e696c2929203220283320226162632229206e696c206e696c2920286d61726b6572206e696c206f6b207420282874203220322074206e696c292920382028392022615c225c5c3236315c2262632229206e696c206e696c2920286d61726b65722074206572726f72207420282874203220322074206e696c2929203220283220226162632229206e696c206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "18e9b74c211126f198f118de052bb23a29e21ea6dd7039c35495e0102957336a",
+  "image_sha256": "70b0261e5d0ef595f18cf6d2ce72f4e1f2a7de8e314af2aa796fa66d2c33cf65",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. GNU executable differs from the pinned Darwin oracle. No frozen or performance claim."
+}

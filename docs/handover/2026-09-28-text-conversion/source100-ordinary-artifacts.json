@@ -1,0 +1,6 @@
+{
+  "binary": "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+  "binary_sha256": "5ba57d05946ba789f42c09fe331e3f9025cded07ef83408ff74cd0ad8843dd90",
+  "image": "/private/tmp/emaxx-runtime-audit-validation/release/emaxx.pdmp",
+  "image_sha256": "0caae6ab8f6dbce1bd3f96973e9adf038fa96860e9d056e7554fbb4924085851"
+}

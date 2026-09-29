@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source102-debug-libtest",
+    "purecopy_callbacks_preserve_vector_and_record_source_snapshots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-stream-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "02842e9ea5b03832aa0bc20319db3439956f2dfaf8f6f8a94e8d79b97b2d742e"
+}

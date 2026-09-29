@@ -1,0 +1,74 @@
+[
+  {
+    "style": "relative",
+    "editor": "gnu",
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((default-directory temporary-file-directory)) (prin1 (list (locate-library \"format-spec\") (condition-case err (progn (require 'org) 'loaded) (error err)))))"
+    ],
+    "environment_overrides": {
+      "EMACSLOADPATH": "../emacs/lisp:../emacs/lisp/calc:../emacs/lisp/calendar:../emacs/lisp/cedet:../emacs/lisp/emacs-lisp:../emacs/lisp/emulation:../emacs/lisp/erc:../emacs/lisp/eshell:../emacs/lisp/gnus:../emacs/lisp/image:../emacs/lisp/international:../emacs/lisp/language:../emacs/lisp/leim:../emacs/lisp/mail:../emacs/lisp/mh-e:../emacs/lisp/net:../emacs/lisp/nxml:../emacs/lisp/obsolete:../emacs/lisp/org:../emacs/lisp/play:../emacs/lisp/progmodes:../emacs/lisp/term:../emacs/lisp/textmodes:../emacs/lisp/url:../emacs/lisp/use-package:../emacs/lisp/vc",
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+    },
+    "exit_code": 0,
+    "stdout": "(nil (file-missing \"Cannot open load file\" \"No such file or directory\" \"org\"))",
+    "stderr": ""
+  },
+  {
+    "style": "relative",
+    "editor": "emaxx",
+    "command": [
+      "target/runtime-resume-source25/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((default-directory temporary-file-directory)) (prin1 (list (locate-library \"format-spec\") (condition-case err (progn (require 'org) 'loaded) (error err)))))"
+    ],
+    "environment_overrides": {
+      "EMACSLOADPATH": "../emacs/lisp:../emacs/lisp/calc:../emacs/lisp/calendar:../emacs/lisp/cedet:../emacs/lisp/emacs-lisp:../emacs/lisp/emulation:../emacs/lisp/erc:../emacs/lisp/eshell:../emacs/lisp/gnus:../emacs/lisp/image:../emacs/lisp/international:../emacs/lisp/language:../emacs/lisp/leim:../emacs/lisp/mail:../emacs/lisp/mh-e:../emacs/lisp/net:../emacs/lisp/nxml:../emacs/lisp/obsolete:../emacs/lisp/org:../emacs/lisp/play:../emacs/lisp/progmodes:../emacs/lisp/term:../emacs/lisp/textmodes:../emacs/lisp/url:../emacs/lisp/use-package:../emacs/lisp/vc",
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+    },
+    "exit_code": 0,
+    "stdout": "(nil (file-missing \"Cannot open load file\" \"No such file or directory\" \"format-spec\"))",
+    "stderr": ""
+  },
+  {
+    "style": "absolute",
+    "editor": "gnu",
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((default-directory temporary-file-directory)) (prin1 (list (locate-library \"format-spec\") (condition-case err (progn (require 'org) 'loaded) (error err)))))"
+    ],
+    "environment_overrides": {
+      "EMACSLOADPATH": "/Users/nbmhqa186/projects/emacs/lisp:/Users/nbmhqa186/projects/emacs/lisp/calc:/Users/nbmhqa186/projects/emacs/lisp/calendar:/Users/nbmhqa186/projects/emacs/lisp/cedet:/Users/nbmhqa186/projects/emacs/lisp/emacs-lisp:/Users/nbmhqa186/projects/emacs/lisp/emulation:/Users/nbmhqa186/projects/emacs/lisp/erc:/Users/nbmhqa186/projects/emacs/lisp/eshell:/Users/nbmhqa186/projects/emacs/lisp/gnus:/Users/nbmhqa186/projects/emacs/lisp/image:/Users/nbmhqa186/projects/emacs/lisp/international:/Users/nbmhqa186/projects/emacs/lisp/language:/Users/nbmhqa186/projects/emacs/lisp/leim:/Users/nbmhqa186/projects/emacs/lisp/mail:/Users/nbmhqa186/projects/emacs/lisp/mh-e:/Users/nbmhqa186/projects/emacs/lisp/net:/Users/nbmhqa186/projects/emacs/lisp/nxml:/Users/nbmhqa186/projects/emacs/lisp/obsolete:/Users/nbmhqa186/projects/emacs/lisp/org:/Users/nbmhqa186/projects/emacs/lisp/play:/Users/nbmhqa186/projects/emacs/lisp/progmodes:/Users/nbmhqa186/projects/emacs/lisp/term:/Users/nbmhqa186/projects/emacs/lisp/textmodes:/Users/nbmhqa186/projects/emacs/lisp/url:/Users/nbmhqa186/projects/emacs/lisp/use-package:/Users/nbmhqa186/projects/emacs/lisp/vc",
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+    },
+    "exit_code": 0,
+    "stdout": "(\"/Users/nbmhqa186/projects/emacs/lisp/format-spec.elc\" loaded)",
+    "stderr": ""
+  },
+  {
+    "style": "absolute",
+    "editor": "emaxx",
+    "command": [
+      "target/runtime-resume-source25/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((default-directory temporary-file-directory)) (prin1 (list (locate-library \"format-spec\") (condition-case err (progn (require 'org) 'loaded) (error err)))))"
+    ],
+    "environment_overrides": {
+      "EMACSLOADPATH": "/Users/nbmhqa186/projects/emacs/lisp:/Users/nbmhqa186/projects/emacs/lisp/calc:/Users/nbmhqa186/projects/emacs/lisp/calendar:/Users/nbmhqa186/projects/emacs/lisp/cedet:/Users/nbmhqa186/projects/emacs/lisp/emacs-lisp:/Users/nbmhqa186/projects/emacs/lisp/emulation:/Users/nbmhqa186/projects/emacs/lisp/erc:/Users/nbmhqa186/projects/emacs/lisp/eshell:/Users/nbmhqa186/projects/emacs/lisp/gnus:/Users/nbmhqa186/projects/emacs/lisp/image:/Users/nbmhqa186/projects/emacs/lisp/international:/Users/nbmhqa186/projects/emacs/lisp/language:/Users/nbmhqa186/projects/emacs/lisp/leim:/Users/nbmhqa186/projects/emacs/lisp/mail:/Users/nbmhqa186/projects/emacs/lisp/mh-e:/Users/nbmhqa186/projects/emacs/lisp/net:/Users/nbmhqa186/projects/emacs/lisp/nxml:/Users/nbmhqa186/projects/emacs/lisp/obsolete:/Users/nbmhqa186/projects/emacs/lisp/org:/Users/nbmhqa186/projects/emacs/lisp/play:/Users/nbmhqa186/projects/emacs/lisp/progmodes:/Users/nbmhqa186/projects/emacs/lisp/term:/Users/nbmhqa186/projects/emacs/lisp/textmodes:/Users/nbmhqa186/projects/emacs/lisp/url:/Users/nbmhqa186/projects/emacs/lisp/use-package:/Users/nbmhqa186/projects/emacs/lisp/vc",
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+    },
+    "exit_code": 0,
+    "stdout": "(\"/Users/nbmhqa186/projects/emacs/lisp/format-spec.elc\" loaded)",
+    "stderr": ""
+  }
+]

@@ -384,8 +384,7 @@ pub(crate) fn set_internal_symbol(
     // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
     // the watcher must receive the caller's original object.
     let stored = interp.prepare_variable_assignment_symbol(&resolved, value)?;
-    let buffer_id = interp.assignment_buffer_id_symbol(&resolved);
-    interp.notify_variable_watchers(resolved.as_str(), value, "set", buffer_id, env)?;
+    interp.notify_assignment_symbol(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved.id() == symbol.id() {
         interp.learn_plain_store(symbol);
@@ -402,18 +401,29 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Reader ──
-            "read" => {
-                need_args(name, args, 1)?;
-                read_from_lisp_source(interp, &args[0], env)
-            }
-            "read-positioning-symbols" => {
+            "read" | "read-positioning-symbols" => {
                 need_arg_range(name, args, 0, 1)?;
                 let source = args
                     .first()
+                    .filter(|source| !source.is_nil())
                     .cloned()
                     .or_else(|| interp.lookup_var("standard-input", env))
                     .unwrap_or(Value::Nil);
-                read_positioning_symbols_from_lisp_source(interp, &source, env)
+                // lread.c:Fread and Fread_positioning_symbols share these
+                // defaults and resolve read-minibuffer through its cell.
+                if matches!(source.kind(), Kind::T) || source.as_symbol().ok() == Some("read-char")
+                {
+                    call_named_function(
+                        interp,
+                        "read-minibuffer",
+                        &[Value::string("Lisp expression: ")],
+                        env,
+                    )
+                } else if name == "read-positioning-symbols" {
+                    read_positioning_symbols_from_lisp_source(interp, &source, env)
+                } else {
+                    read_from_lisp_source(interp, &source, env)
+                }
             }
             "read-from-string" => {
                 if args.is_empty() || args.len() > 3 {
@@ -1093,10 +1103,11 @@ define_dispatch!(
                 // local_if_set symbol without a cell, outside a let made for
                 // this buffer, gets a new void cell.  The default is
                 // untouched either way.
-                let localized_store = interp.has_buffer_local_binding(buffer_id, &symbol)
-                    || (interp.is_auto_buffer_local(&symbol)
-                        && !interp.is_per_buffer_special(&symbol)
-                        && !interp.let_shadows_buffer_binding(&symbol));
+                let localized_store = !interp.has_native_text_conversion_style(&symbol)
+                    && (interp.has_buffer_local_binding(buffer_id, &symbol)
+                        || (interp.is_auto_buffer_local(&symbol)
+                            && !interp.is_per_buffer_special(&symbol)
+                            && !interp.let_shadows_buffer_binding(&symbol)));
                 if localized_store {
                     interp.notify_variable_watchers(
                         &symbol,
@@ -1127,7 +1138,26 @@ define_dispatch!(
                     // Keep only a detachment marker for them: retaining a
                     // snapshot here would falsely root an old object after
                     // C independently overwrites its slot.
-                    let slot_value = if interp.forwarded_eval_cell_value(&symbol).is_some() {
+                    let slot_value = if interp.has_native_text_conversion_style(&symbol) {
+                        if !interp.buffer.borrow().text_conversion_style_is_local {
+                            if interp.let_shadows_buffer_binding(&symbol) {
+                                // set_internal first changes the C default
+                                // under LET_DEFAULT, then disconnects the
+                                // symbol without overwriting the C field.
+                                interp.notify_variable_watchers(
+                                    &symbol,
+                                    Value::Unbound,
+                                    "set",
+                                    None,
+                                    env,
+                                )?;
+                                interp.set_global_binding(&symbol, Value::Unbound);
+                            } else {
+                                interp.buffer.borrow_mut().text_conversion_style_is_local = true;
+                            }
+                        }
+                        interp.native_text_conversion_style_default()
+                    } else if interp.forwarded_eval_cell_value(&symbol).is_some() {
                         Value::Nil
                     } else {
                         interp.forwarded_c_value(&symbol, env).unwrap_or(Value::Nil)

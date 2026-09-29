@@ -1,0 +1,8 @@
+{
+  "source115": "d4950cf44016d32c016839429e26caebc970758f",
+  "main_candidate": "968bf33b43df990b3eb6b816e7a644654c646d98",
+  "manifest": "source115-manifest.json",
+  "runtime_and_test_files": 297,
+  "all_unchanged": true,
+  "excluded_changes": "441d830b adds Python diagnostic replay/prelude/image retention and its controls; 968bf33b adds documents and evidence. Full Rust gate script is unchanged."
+}

@@ -1,0 +1,6 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-ownership-integration",
+  "binary_sha256": "33f84dfca6a3291718038b2df9bcfbf7bbc6f5d04e0e3d7dd124599e2c3d22d4",
+  "binary_unchanged": true,
+  "qualification": "Existing complete public-runtime integration inventory, GC verifier enabled; no full/frozen/performance claim."
+}

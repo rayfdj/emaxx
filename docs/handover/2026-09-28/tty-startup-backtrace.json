@@ -1,0 +1,40 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx",
+    "-Q",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-startup-probe.txt"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-smoke-isolated-home",
+    "EMACSLOADPATH": "/Users/nbmhqa186/projects/emacs/lisp:/Users/nbmhqa186/projects/emacs/lisp/calc:/Users/nbmhqa186/projects/emacs/lisp/calendar:/Users/nbmhqa186/projects/emacs/lisp/cedet:/Users/nbmhqa186/projects/emacs/lisp/emacs-lisp:/Users/nbmhqa186/projects/emacs/lisp/emulation:/Users/nbmhqa186/projects/emacs/lisp/erc:/Users/nbmhqa186/projects/emacs/lisp/eshell:/Users/nbmhqa186/projects/emacs/lisp/gnus:/Users/nbmhqa186/projects/emacs/lisp/image:/Users/nbmhqa186/projects/emacs/lisp/international:/Users/nbmhqa186/projects/emacs/lisp/language:/Users/nbmhqa186/projects/emacs/lisp/leim:/Users/nbmhqa186/projects/emacs/lisp/mail:/Users/nbmhqa186/projects/emacs/lisp/mh-e:/Users/nbmhqa186/projects/emacs/lisp/net:/Users/nbmhqa186/projects/emacs/lisp/nxml:/Users/nbmhqa186/projects/emacs/lisp/obsolete:/Users/nbmhqa186/projects/emacs/lisp/org:/Users/nbmhqa186/projects/emacs/lisp/play:/Users/nbmhqa186/projects/emacs/lisp/progmodes:/Users/nbmhqa186/projects/emacs/lisp/term:/Users/nbmhqa186/projects/emacs/lisp/textmodes:/Users/nbmhqa186/projects/emacs/lisp/url:/Users/nbmhqa186/projects/emacs/lisp/use-package:/Users/nbmhqa186/projects/emacs/lisp/vc",
+    "RUST_BACKTRACE": "1"
+  },
+  "wait_status": null,
+  "bytes": 3555,
+  "screen": [
+    "maxx::lisp::bytecode::vm::run_frames::{closure#0}                          19: e",
+    "::run                                              20: emaxx::lisp::bytecode::vm",
+    "lisp::eval::Interpreter>::execute_bytecode_record_named::{closure#0}>>, <emaxx::",
+    "x::lisp::eval::Interpreter>::execute_bytecode_record_named             22: <emax",
+    "al::Interpreter>::call_function_value_inner                 23: <emaxx::lisp::ev",
+    "frames::{closure#0}                          24: emaxx::lisp::bytecode::vm::run_",
+    "                     25: emaxx::lisp::bytecode::vm::run",
+    "ute_bytecode_record_named::{closure#0}>>, <emaxx::lisp::eval::Interpreter>::exec",
+    "xecute_bytecode_record_named             27: <emaxx::lisp::eval::Interpreter>::e",
+    "n_value_inner                 28: <emaxx::lisp::eval::Interpreter>::call_functio",
+    "               29: emaxx::lisp::bytecode::vm::run_frames::{closure#0}",
+    "::lisp::bytecode::vm::run                                              30: emaxx",
+    "osure#0}>>, <emaxx::lisp::eval::Interpreter>::execute_bytecode_record_named::{cl",
+    "           32: <emaxx::lisp::eval::Interpreter>::execute_bytecode_record_named",
+    "33: <emaxx::lisp::eval::Interpreter>::call_function_value_inner",
+    "p::eval::Interpreter>::finish_eval_call                          34: <emaxx::lis",
+    "val_call                                 35: <emaxx::lisp::eval::Interpreter>::e",
+    "          36: <emaxx::lisp::eval::Interpreter>::eval",
+    "s::loading::eval_impl                                 37: emaxx::lisp::primitive",
+    "                       38: emaxx::batch::run_startup_top_level",
+    "run::{closure#0}                                                39: emaxx::tty::",
+    "                  40: emaxx::main_status",
+    " `RUST_BACKTRACE=full` for a verbose backtrace.ome details are omitted, run with",
+    ""
+  ]
+}

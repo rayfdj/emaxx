@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
 pub(crate) const RAW_BYTE8_BASE: u32 = 0x3FFF00;
@@ -128,10 +129,10 @@ pub(crate) fn simple_upcase_char(code: u32) -> u32 {
 /// leaves a table nil when the operation cannot use it.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct CasingContext {
-    titlecase: Option<u64>,
-    special_upcase: Option<u64>,
-    special_downcase: Option<u64>,
-    special_titlecase: Option<u64>,
+    titlecase: Option<CharTableRef>,
+    special_upcase: Option<CharTableRef>,
+    special_downcase: Option<CharTableRef>,
+    special_titlecase: Option<CharTableRef>,
 }
 
 impl CasingContext {
@@ -178,7 +179,9 @@ impl CasingContext {
     }
 }
 
-pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u64), LispError> {
+pub(crate) fn current_case_table_ids(
+    interp: &mut Interpreter,
+) -> Result<(CharTableRef, CharTableRef), LispError> {
     let down = interp.current_case_table_id();
     let up = match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
         Some(Kind::CharTable(id)) => id,
@@ -187,7 +190,11 @@ pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u
     Ok((down, up))
 }
 
-pub(crate) fn case_table_mapping(interp: &Interpreter, table_id: u64, code: u32) -> Option<u32> {
+pub(crate) fn case_table_mapping(
+    interp: &Interpreter,
+    table_id: CharTableRef,
+    code: u32,
+) -> Option<u32> {
     for candidate in [Some(code), alternate_case_key(code)].into_iter().flatten() {
         let Some(Kind::Integer(mapped)) = interp
             .char_table_explicit_get(table_id, candidate)
@@ -236,7 +243,7 @@ pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_wor
 pub(crate) fn full_upcase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    up_table: u64,
+    up_table: CharTableRef,
     ch: char,
 ) -> String {
     let code = ch as u32;
@@ -254,7 +261,7 @@ pub(crate) fn full_upcase_string(
 pub(crate) fn full_downcase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    down_table: u64,
+    down_table: CharTableRef,
     ch: char,
     final_sigma: bool,
 ) -> String {
@@ -278,7 +285,7 @@ pub(crate) fn full_downcase_string(
 pub(crate) fn full_titlecase_string(
     interp: &Interpreter,
     context: &CasingContext,
-    up_table: u64,
+    up_table: CharTableRef,
     ch: char,
 ) -> String {
     let code = ch as u32;
@@ -301,8 +308,8 @@ pub(crate) fn full_titlecase_string(
 pub(crate) fn simple_case_char_for_action(
     interp: &Interpreter,
     context: &CasingContext,
-    down_table: u64,
-    up_table: u64,
+    down_table: CharTableRef,
+    up_table: CharTableRef,
     code: u32,
     action: CaseAction,
 ) -> u32 {
@@ -327,6 +334,16 @@ pub(crate) fn casify_string(
 ) -> Result<String, LispError> {
     // GNU prepares the casing context once per operation, never per character.
     let context = CasingContext::prepare(interp, action, env);
+    casify_string_with_context(interp, input, action, env, &context)
+}
+
+fn casify_string_with_context(
+    interp: &mut Interpreter,
+    input: &str,
+    action: CaseAction,
+    env: &mut Env,
+    context: &CasingContext,
+) -> Result<String, LispError> {
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let (down_table, up_table) = current_case_table_ids(interp)?;
     let chars: Vec<char> = input.chars().collect();
@@ -339,20 +356,20 @@ pub(crate) fn casify_string(
             .copied()
             .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
         let piece = match action {
-            CaseAction::Up => full_upcase_string(interp, &context, up_table, ch),
+            CaseAction::Up => full_upcase_string(interp, context, up_table, ch),
             CaseAction::Down => {
-                full_downcase_string(interp, &context, down_table, ch, in_word && !next_is_word)
+                full_downcase_string(interp, context, down_table, ch, in_word && !next_is_word)
             }
             CaseAction::Capitalize => {
                 if is_word && !in_word {
-                    full_titlecase_string(interp, &context, up_table, ch)
+                    full_titlecase_string(interp, context, up_table, ch)
                 } else {
-                    full_downcase_string(interp, &context, down_table, ch, in_word && !next_is_word)
+                    full_downcase_string(interp, context, down_table, ch, in_word && !next_is_word)
                 }
             }
             CaseAction::UpcaseInitials => {
                 if is_word && !in_word {
-                    full_titlecase_string(interp, &context, up_table, ch)
+                    full_titlecase_string(interp, context, up_table, ch)
                 } else {
                     ch.to_string()
                 }
@@ -370,19 +387,39 @@ pub(crate) fn casify_value(
     action: CaseAction,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Ok(integer) = value.as_integer() {
-        let code = u32::try_from(integer)
-            .map_err(|_| LispError::Signal(format!("Invalid character: {integer}")))?;
-        let context = CasingContext::prepare(interp, action, env);
+    let context = CasingContext::prepare(interp, action, env);
+    if let Kind::Integer(integer) = value.kind()
+        && integer >= 0
+    {
+        // casefiddle.c:do_casify_natnum narrows to C int, strips the six
+        // event modifier bits before lookup, and restores them only when
+        // casing changes the character. Higher bits otherwise preserve OBJ.
+        const FLAG_BITS: u32 = 0x0fc0_0000;
+        let character = integer as i32;
+        if !(0..=FLAG_BITS as i32).contains(&character) {
+            return Ok(*value);
+        }
+        let flags = character as u32 & FLAG_BITS;
+        let mut code = character as u32 & !FLAG_BITS;
+        let multibyte = code >= 256 || interp.buffer.borrow().is_multibyte();
+        if !multibyte && code >= 128 {
+            code += RAW_BYTE8_BASE;
+        }
         let (down_table, up_table) = current_case_table_ids(interp)?;
-        return Ok(Value::Integer(simple_case_char_for_action(
-            interp, &context, down_table, up_table, code, action,
-        ) as i64));
+        let mut mapped =
+            simple_case_char_for_action(interp, &context, down_table, up_table, code, action);
+        if mapped == code {
+            return Ok(*value);
+        }
+        if !multibyte {
+            mapped &= 0xff;
+        }
+        return Ok(Value::Integer(i64::from(mapped | flags)));
     }
-    let input =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
+    let input = string_like(value)
+        .ok_or_else(|| LispError::WrongTypeArgument("char-or-string-p".into(), *value))?;
     let input_len = input.text.chars().count();
-    let output = casify_string(interp, &input.text, action, env)?;
+    let output = casify_string_with_context(interp, &input.text, action, env, &context)?;
     // casefiddle.c copies intervals while casing can stay in the source
     // string's character footprint.  A full Unicode mapping that changes
     // the character count (for example, sharp-s -> "SS") takes GNU's

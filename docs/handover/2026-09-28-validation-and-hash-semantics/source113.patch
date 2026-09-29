@@ -1,0 +1,124 @@
+diff --git a/src/lisp/bytecode/vm.rs b/src/lisp/bytecode/vm.rs
+index 49ad3519..b466b794 100644
+--- a/src/lisp/bytecode/vm.rs
++++ b/src/lisp/bytecode/vm.rs
+@@ -1337,18 +1337,15 @@ fn run_frames(
+                     // Fsymbol_value's CHECK_SYMBOL path.
+                     let name = program.constant(index);
+                     let value = match name.kind() {
+-                        Kind::Symbol(symbol) => match interp
+-                            .symbol_value_cell_symbol(&symbol)
+-                            .map_err(LispError::into_kind)
+-                        {
++                        Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
+                             Ok(value) => value,
+-                            Err(LispErrorKind::Void(_)) => {
++                            Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
+                                 return Err(LispError::SignalValue(Value::list([
+                                     Value::symbol("void-variable"),
+                                     name,
+                                 ])));
+                             }
+-                            Err(error) => return Err(LispError::from(error)),
++                            Err(error) => return Err(error),
+                         },
+                         _ => prim(interp, "symbol-value", &[name], env)?,
+                     };
+@@ -1468,13 +1465,19 @@ fn run_frames(
+                     let value =
+                         interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
+                             match interp.eval(&body, env) {
+-                                Err(error) => match error.into_kind() {
+-                                    LispErrorKind::Throw(thrown, thrown_value)
+-                                        if prim(interp, "eq", &[tag, thrown], env)?.is_truthy() =>
+-                                    {
+-                                        Ok(thrown_value)
++                                Err(error) => match error.kind() {
++                                    LispErrorKind::Throw(thrown, thrown_value) => {
++                                        let matched = interp
++                                            .with_lisp_stack_roots(&error, |interp| {
++                                                prim(interp, "eq", &[tag, *thrown], env)
++                                            })?;
++                                        if matched.is_truthy() {
++                                            Ok(*thrown_value)
++                                        } else {
++                                            Err(error)
++                                        }
+                                     }
+-                                    other => Err(LispError::from(other)),
++                                    _ => Err(error),
+                                 },
+                                 ok => ok,
+                             }
+@@ -2324,11 +2327,20 @@ fn run_frames(
+     // the subject started executing GNU's compiled Lisp.  A condition-case
+     // inside this frame has already had its chance above, so anything still
+     // propagating belongs to an outer handler.
+-    match result.map_err(LispError::into_kind) {
+-        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+-            Err(LispError::from(error))
++    // Keep the error in its box. Unpacking LispErrorKind reserves its large
++    // payload in this long-lived VM frame even on successful bytecode paths;
++    // inactive stack words can then retain Lisp objects under conservative GC.
++    // GNU dispatches the error without introducing this extra payload copy.
++    match result {
++        Err(error)
++            if matches!(
++                error.kind(),
++                LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
++            ) =>
++        {
++            Err(error)
+         }
+-        Err(error) => interp.dispatch_handler_bindings(LispError::from(error), env),
++        Err(error) => interp.dispatch_handler_bindings(error, env),
+         Ok(value) => Ok(value),
+     }
+ }
+diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
+index b83031a6..87ccdcd6 100644
+--- a/src/lisp/eval/core.rs
++++ b/src/lisp/eval/core.rs
+@@ -1167,11 +1167,11 @@ impl Interpreter {
+     // reports the source callee instead. Translate before signaling to
+     // handler-bind, while the callee's backtrace frame is still live.
+     fn builtin_call_error(name: &str, nargs: usize, funcall: bool, error: LispError) -> LispError {
+-        match error.into_kind() {
+-            LispErrorKind::WrongNumberOfArgs(ref failed_name, count)
++        match error.kind() {
++            LispErrorKind::WrongNumberOfArgs(failed_name, count)
+                 if funcall
+                     && failed_name == name
+-                    && count == nargs
++                    && *count == nargs
+                     && primitives::GNU_C_PRIMITIVES
+                         .binary_search_by_key(&name, |contract| contract.name)
+                         .ok()
+@@ -1183,10 +1183,10 @@ impl Interpreter {
+                 LispError::SignalValue(Value::list([
+                     Value::symbol("wrong-number-of-arguments"),
+                     Value::BuiltinFunc(name.into()),
+-                    Value::Integer(count as i64),
++                    Value::Integer(*count as i64),
+                 ]))
+             }
+-            error => LispError::from(error),
++            _ => error,
+         }
+     }
+ 
+@@ -1222,11 +1222,9 @@ impl Interpreter {
+         error: LispError,
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+-        let result = match error.into_kind() {
+-            error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)) => {
+-                Err(LispError::from(error))
+-            }
+-            error => self.dispatch_handler_bindings(LispError::from(error), env),
++        let result = match error.kind() {
++            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_) => Err(error),
++            _ => self.dispatch_handler_bindings(error, env),
+         };
+         if let Err(error) = &result {
+             self.capture_batch_error_backtrace(error, env);

@@ -1545,11 +1545,7 @@ define_dispatch!(
                             )
                         })?,
                 };
-                Ok(interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::SymbolWithPos,
-                    "symbol-with-pos",
-                    vec![bare, Value::Integer(position)],
-                ))
+                Ok(Value::positioned_symbol(bare, Value::Integer(position)))
             }
             "symbol-with-pos-pos" => {
                 need_args(name, args, 1)?;

@@ -3,7 +3,7 @@ use crate::lisp::types::Kind;
 use regex::Regex;
 use std::sync::OnceLock;
 
-fn frame_value(id: u64) -> Value {
+fn frame_value(id: crate::lisp::types::FrameRef) -> Value {
     Value::Frame(id)
 }
 
@@ -12,11 +12,11 @@ fn decode_frame(
     value: Option<&Value>,
     nil_defaults_to_selected: bool,
     require_live: bool,
-) -> Result<u64, LispError> {
+) -> Result<crate::lisp::types::FrameRef, LispError> {
     let value = value.unwrap_or(&Value::Nil);
     let id = match value.kind() {
         Kind::Nil if nil_defaults_to_selected => interp.selected_frame_id,
-        Kind::Frame(id) if interp.frame_state(id).is_some() => id,
+        Kind::Frame(id) => id,
         _ => {
             return Err(wrong_type_argument(
                 if require_live {
@@ -38,14 +38,15 @@ pub(super) fn decode_live_frame(
     interp: &Interpreter,
     value: Option<&Value>,
     nil_defaults_to_selected: bool,
-) -> Result<u64, LispError> {
+) -> Result<crate::lisp::types::FrameRef, LispError> {
     decode_frame(interp, value, nil_defaults_to_selected, true)
 }
 
-fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value)> {
-    let frame = interp
-        .frame_state(id)
-        .expect("a decoded frame identity must have state");
+fn default_frame_parameters(
+    interp: &Interpreter,
+    id: crate::lisp::types::FrameRef,
+) -> Vec<(String, Value)> {
+    let frame = id.borrow();
     let buffers = Value::list(
         interp
             .buffer_list
@@ -64,7 +65,7 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
             "height".into(),
             Value::Integer(frame.parameter_height.max(1)),
         ),
-        ("name".into(), frame.name),
+        ("name".into(), id.name.get()),
         ("font".into(), Value::string("tty")),
         ("background-color".into(), Value::string("unspecified-bg")),
         ("foreground-color".into(), Value::string("unspecified-fg")),
@@ -75,10 +76,15 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
     ]
 }
 
-fn frame_parameter_value(interp: &Interpreter, id: u64, parameter: &str) -> Value {
-    let frame = interp
-        .frame_state(id)
-        .expect("a decoded frame identity must have state");
+fn frame_parameter_value(
+    interp: &Interpreter,
+    id: crate::lisp::types::FrameRef,
+    parameter: &str,
+) -> Value {
+    if parameter == "name" {
+        return id.name.get();
+    }
+    let frame = id.borrow();
     frame
         .parameter_overrides
         .iter()
@@ -93,7 +99,12 @@ fn frame_parameter_value(interp: &Interpreter, id: u64, parameter: &str) -> Valu
         .unwrap_or(Value::Nil)
 }
 
-fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, value: Value) {
+fn store_frame_parameter(
+    interp: &mut Interpreter,
+    id: crate::lisp::types::FrameRef,
+    parameter: String,
+    value: Value,
+) {
     if matches!(parameter.as_str(), "width" | "height") {
         // GNU's live TTY frame ignores width/height frame-parameter changes;
         // the native set-frame-{width,height,size} operations own geometry.
@@ -118,11 +129,9 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         }
     }
     let menu_bar_lines_changed = matches!(parameter.as_str(), "menu-bar-lines" | "tab-bar-lines");
-    let Some(frame) = interp.frame_state_mut(id) else {
-        return;
-    };
+    let mut frame = id.borrow_mut();
     if parameter == "name" {
-        frame.name = value;
+        id.name.set(value);
     }
     if let Some((_, current)) = frame
         .parameter_overrides
@@ -149,15 +158,19 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
             .unwrap_or(0)
             .clamp(0, 1);
         frame.text_height = frame.height - menu - tab;
+        drop(frame);
         interp.resize_frame_window_records_for(id);
     }
 }
 
-fn frame_parameters_value(interp: &Interpreter, id: u64) -> Value {
-    let frame = interp
-        .frame_state(id)
-        .expect("a decoded frame identity must have state");
+fn frame_parameters_value(interp: &Interpreter, id: crate::lisp::types::FrameRef) -> Value {
+    let frame = id.borrow();
     let mut parameters = frame.parameter_overrides.clone();
+    for (name, value) in &mut parameters {
+        if name == "name" {
+            *value = id.name.get();
+        }
+    }
     parameters.extend(
         default_frame_parameters(interp, id)
             .into_iter()
@@ -223,8 +236,8 @@ fn selected_frame_list(interp: &Interpreter) -> Value {
         interp
             .frame_states
             .iter()
-            .filter(|frame| interp.frame_is_live(frame.id))
-            .map(|frame| frame_value(frame.id)),
+            .filter(|frame| frame.is_live())
+            .map(|frame| frame_value(*frame)),
     )
 }
 
@@ -251,7 +264,7 @@ define_dispatch!(
             "framep" => {
                 need_args(name, args, 1)?;
                 Ok(match args[0].kind() {
-                    Kind::Frame(id) if interp.frame_state(id).is_some() => Value::T,
+                    Kind::Frame(_) => Value::T,
                     _ => Value::Nil,
                 })
             }
@@ -336,25 +349,19 @@ define_dispatch!(
             "frame-native-width" | "frame-text-width" | "frame-text-cols" | "frame-total-cols" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                let frame = interp
-                    .frame_state(id)
-                    .expect("a decoded frame identity must have state");
+                let frame = id.borrow();
                 Ok(Value::Integer(frame.width.max(1)))
             }
             "frame-native-height" | "frame-total-lines" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                let frame = interp
-                    .frame_state(id)
-                    .expect("a decoded frame identity must have state");
+                let frame = id.borrow();
                 Ok(Value::Integer(frame.height.max(1)))
             }
             "frame-text-height" | "frame-text-lines" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                let frame = interp
-                    .frame_state(id)
-                    .expect("a decoded frame identity must have state");
+                let frame = id.borrow();
                 Ok(Value::Integer(frame.text_height.max(1)))
             }
             "frame-internal-border-width"
@@ -373,17 +380,14 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let size = check_frame_size(&args[1])?;
-                if interp
-                    .frame_state(id)
-                    .expect("decoded frame has state")
-                    .tty_sized
-                {
-                    let frame = interp.frame_state(id).expect("decoded frame has state");
+                if id.borrow().tty_sized {
+                    let frame = id.borrow();
                     let (width, height) = if name == "set-frame-width" {
                         (size, frame.height)
                     } else {
                         (frame.width, size)
                     };
+                    drop(frame);
                     interp.resize_terminal_frames(id, width, height);
                 } else if id == interp.selected_frame_id {
                     if name == "set-frame-width" {
@@ -399,11 +403,7 @@ define_dispatch!(
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let width = check_frame_size(&args[1])?;
                 let height = check_frame_size(&args[2])?;
-                if interp
-                    .frame_state(id)
-                    .expect("decoded frame has state")
-                    .tty_sized
-                {
+                if id.borrow().tty_sized {
                     interp.resize_terminal_frames(id, width, height);
                 } else if id == interp.selected_frame_id {
                     interp.set_frame_width(width);
@@ -414,9 +414,7 @@ define_dispatch!(
             "frame-position" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                let frame = interp
-                    .frame_state(id)
-                    .expect("a decoded frame identity must have state");
+                let frame = id.borrow();
                 Ok(Value::cons(
                     Value::Integer(frame.left),
                     Value::Integer(frame.top),
@@ -449,20 +447,15 @@ define_dispatch!(
             "next-frame" | "previous-frame" => {
                 need_arg_range(name, args, 0, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                let terminal = interp
-                    .frame_state(id)
-                    .expect("decoded frame has state")
-                    .terminal
-                    .expect("live frame terminal")
-                    .id;
+                let terminal = id.borrow().terminal.expect("live frame terminal").id;
                 let mut ids: Vec<_> = interp
                     .frame_states
                     .iter()
                     .filter(|frame| {
-                        interp.frame_is_live(frame.id)
-                            && frame.terminal.expect("live frame terminal").id == terminal
+                        frame.is_live()
+                            && frame.borrow().terminal.expect("live frame terminal").id == terminal
                     })
-                    .map(|frame| frame.id)
+                    .copied()
                     .collect();
                 if name == "previous-frame" {
                     ids.reverse();
@@ -480,11 +473,7 @@ define_dispatch!(
                         frame_parameter_value(interp, *candidate, "no-other-frame").is_nil()
                             && match args.get(1).map(|v| v.kind()) {
                                 Some(Kind::Record(window)) => {
-                                    interp
-                                        .frame_state(*candidate)
-                                        .expect("decoded frame has state")
-                                        .minibuffer_window_id
-                                        == window.id
+                                    candidate.borrow().minibuffer_window_id() == window.id
                                         || interp.window_frame_id(window.id) == Some(*candidate)
                                 }
                                 _ => true,
@@ -563,18 +552,15 @@ define_dispatch!(
                     None | Some(Kind::Nil) => None,
                     Some(value) => Some(decode_live_frame(interp, Some(&value.value()), false)?),
                 };
-                interp
-                    .frame_state_mut(id)
-                    .expect("a decoded frame identity must have state")
-                    .focus_frame_id = focus;
+                id.borrow_mut().focus_frame_id = focus;
                 Ok(Value::Nil)
             }
             "frame-focus" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                Ok(interp
-                    .frame_state(id)
-                    .and_then(|frame| frame.focus_frame_id)
+                Ok(id
+                    .borrow()
+                    .focus_frame_id
                     .map(frame_value)
                     .unwrap_or(Value::Nil))
             }
@@ -614,58 +600,39 @@ define_dispatch!(
             "frame-after-make-frame" => {
                 need_args(name, args, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                interp
-                    .frame_state_mut(id)
-                    .expect("a decoded frame identity must have state")
-                    .after_make_frame = args[1].is_truthy();
+                id.borrow_mut().after_make_frame = args[1].is_truthy();
                 Ok(args[1])
             }
             "frame-window-state-change" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                Ok(
-                    if interp
-                        .frame_state(id)
-                        .is_some_and(|frame| frame.window_state_change)
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if id.borrow().window_state_change {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "set-frame-window-state-change" => {
                 need_arg_range(name, args, 0, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let state = args.get(1).is_some_and(Value::is_truthy);
-                interp
-                    .frame_state_mut(id)
-                    .expect("a decoded frame identity must have state")
-                    .window_state_change = state;
+                id.borrow_mut().window_state_change = state;
                 Ok(if state { Value::T } else { Value::Nil })
             }
             "frame-pointer-visible-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                Ok(
-                    if interp
-                        .frame_state(id)
-                        .is_some_and(|frame| frame.pointer_invisible)
-                    {
-                        Value::Nil
-                    } else {
-                        Value::T
-                    },
-                )
+                Ok(if id.borrow().pointer_invisible {
+                    Value::Nil
+                } else {
+                    Value::T
+                })
             }
             "frame--set-was-invisible" => {
                 need_args(name, args, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let state = args[1].is_truthy();
-                interp
-                    .frame_state_mut(id)
-                    .expect("a decoded frame identity must have state")
-                    .was_invisible = state;
+                id.borrow_mut().was_invisible = state;
                 Ok(if state { Value::T } else { Value::Nil })
             }
             "reconsider-frame-fonts" => {
@@ -756,17 +723,14 @@ fn make_terminal_frame(
 
 pub(super) fn select_frame(
     interp: &mut Interpreter,
-    id: u64,
+    id: crate::lisp::types::FrameRef,
     norecord: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
     if id == interp.selected_frame_id {
         return Ok(());
     }
-    let window = interp
-        .frame_state(id)
-        .expect("decoded frame has state")
-        .selected_window_id;
+    let window = id.borrow().selected_window_id();
     super::call(
         interp,
         "select-window",
@@ -796,12 +760,12 @@ pub(super) fn deletion_hook(
 
 pub(super) fn delete_frame(
     interp: &mut Interpreter,
-    id: u64,
+    id: crate::lisp::types::FrameRef,
     force: bool,
     noelisp: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if !interp.frame_state(id).is_some_and(|frame| frame.live) {
+    if !id.is_live() {
         return Ok(());
     }
     let check = |interp: &Interpreter| {
@@ -809,7 +773,7 @@ pub(super) fn delete_frame(
             && !interp
                 .frame_states
                 .iter()
-                .any(|frame| frame.id != id && interp.frame_is_live(frame.id))
+                .any(|frame| *frame != id && frame.is_live())
         {
             Err(LispError::Signal(
                 if force {
@@ -833,23 +797,20 @@ pub(super) fn delete_frame(
     } else {
         deletion_hook(interp, "delete-frame-functions", Value::Frame(id), env)?;
     }
-    if !interp.frame_state(id).is_some_and(|frame| frame.live) {
+    if !id.is_live() {
         return Ok(());
     }
     check(interp)?;
-    let terminal = interp
-        .frame_state(id)
-        .expect("decoded frame has state")
-        .terminal
-        .expect("live frame terminal");
+    let terminal = id.borrow().terminal.expect("live frame terminal");
     if id == interp.selected_frame_id {
         let replacement = interp
             .frame_states
             .iter()
             .find(|frame| {
-                frame.id != id
-                    && interp.frame_is_live(frame.id)
+                **frame != id
+                    && frame.is_live()
                     && frame
+                        .borrow()
                         .terminal
                         .is_some_and(|object| object.ptr_eq(&terminal))
             })
@@ -857,9 +818,9 @@ pub(super) fn delete_frame(
                 interp
                     .frame_states
                     .iter()
-                    .find(|frame| frame.id != id && interp.frame_is_live(frame.id))
+                    .find(|frame| **frame != id && frame.is_live())
             })
-            .map(|frame| frame.id);
+            .copied();
         if let Some(replacement) = replacement {
             select_frame(interp, replacement, false, env)?;
         }
@@ -867,8 +828,9 @@ pub(super) fn delete_frame(
     interp.retire_frame(id);
     if !noelisp
         && !interp.frame_states.iter().any(|frame| {
-            frame.live
+            frame.is_live()
                 && frame
+                    .borrow()
                     .terminal
                     .is_some_and(|object| object.ptr_eq(&terminal))
         })

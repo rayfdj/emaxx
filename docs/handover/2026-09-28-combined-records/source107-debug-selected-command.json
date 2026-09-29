@@ -1,0 +1,36 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source107-debug-libtest",
+    "purecopy_callbacks",
+    "message_callback_bindings",
+    "generic_record",
+    "restored_process",
+    "text_quoting",
+    "purecopy::tests",
+    "text_conversion",
+    "killed_buffer_releases",
+    "lisp::primitives::pdumper::tests",
+    "lisp::eval::function_cell_tests",
+    "lisp::eval::symbol_cells",
+    "lisp::eval::roots::tests",
+    "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "char_table",
+    "case_table",
+    "regexp",
+    "syntax_table",
+    "case_fold",
+    "eager_macroexpand",
+    "ert_source_diagnostic",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-stream-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "387c6b177c6554a36bed98315742e8f4bd647a4e0de9ae6d5597b1153bb46f77"
+}

@@ -371,10 +371,10 @@ impl Interpreter {
         // of making unrelated dynamic per-buffer bindings leak at lookup.
         let inherited_directory = self.lookup_var("default-directory", &Env::new());
         let id = self.alloc_buffer_id();
-        self.inactive_buffers.push((
-            id,
-            crate::lisp::types::BufferRef::new(id, crate::buffer::Buffer::new(name)),
-        ));
+        let mut buffer = crate::buffer::Buffer::new(name);
+        buffer.text_conversion_style = self.native_text_conversion_style_default();
+        self.inactive_buffers
+            .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
         if let Some(directory) = inherited_directory {
             self.set_buffer_local_value(id, "default-directory", directory);
@@ -495,43 +495,35 @@ impl Interpreter {
 
     pub(crate) fn set_selected_window_id(&mut self, id: u64) {
         self.selected_window_id = id;
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .selected_window_id = id;
+        self.selected_frame_id.borrow_mut().selected_window = self.record_ref(id);
     }
 
     pub(crate) fn root_window_value(&self) -> Value {
-        self.record_value(
-            self.selected_frame_state()
-                .expect("decoded frame has state")
-                .root_window_id,
-        )
+        self.selected_frame_id
+            .borrow()
+            .root_window
+            .map(Value::Record)
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_root_window_id(&mut self, id: u64) {
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .root_window_id = id;
+        self.selected_frame_id.borrow_mut().root_window = self.record_ref(id);
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.selected_frame_state()
-            .expect("decoded frame has state")
-            .minibuffer_window_id
+        self.selected_frame_id.borrow().minibuffer_window_id()
     }
 
     pub(crate) fn minibuffer_window_value(&self) -> Value {
-        self.record_value(
-            self.selected_frame_state()
-                .expect("decoded frame has state")
-                .minibuffer_window_id,
-        )
+        self.selected_frame_id
+            .borrow()
+            .minibuffer_window
+            .map(Value::Record)
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .minibuffer_window_id = id;
+        self.selected_frame_id.borrow_mut().minibuffer_window = self.record_ref(id);
     }
 
     pub(crate) fn minibuffer_selected_window_id(&self) -> Option<u64> {
@@ -662,64 +654,36 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn frame_state(&self, id: u64) -> Option<&super::FrameState> {
-        self.frame_states.iter().find(|frame| frame.id == id)
-    }
-
-    pub(crate) fn frame_state_mut(&mut self, id: u64) -> Option<&mut super::FrameState> {
-        self.frame_states.iter_mut().find(|frame| frame.id == id)
-    }
-
-    pub(crate) fn selected_frame_state(&self) -> Option<&super::FrameState> {
-        self.frame_state(self.selected_frame_id)
-    }
-
-    pub(crate) fn selected_frame_state_mut(&mut self) -> Option<&mut super::FrameState> {
-        self.frame_state_mut(self.selected_frame_id)
-    }
-
     pub(crate) fn selected_frame_value(&self) -> Value {
         Value::Frame(self.selected_frame_id)
     }
-
     pub(crate) fn old_selected_frame_value(&self) -> Value {
         Value::Frame(self.old_selected_frame_id)
     }
-
-    pub(crate) fn frame_is_live(&self, id: u64) -> bool {
-        self.frame_state(id).is_some_and(|frame| {
-            frame.live
-                && frame
-                    .terminal
-                    .is_some_and(|terminal| terminal.borrow().live)
-        })
+    pub(crate) fn frame_is_live(&self, frame: crate::lisp::types::FrameRef) -> bool {
+        frame.is_live()
     }
-
     pub fn frame_width(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.width)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().width.max(1)
     }
 
     pub fn set_frame_width(&mut self, width: i64) {
         let width = width.max(1);
-        if let Some(frame) = self.selected_frame_state_mut() {
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.width = width;
         }
         self.resize_frame_window_records();
     }
 
     pub fn frame_height(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.height)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().height.max(1)
     }
 
     pub fn set_frame_height(&mut self, height: i64) {
         let text_height = height.max(1);
-        if let Some(frame) = self.selected_frame_state_mut() {
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.text_height = text_height;
             frame.height = text_height.saturating_add(1);
         }
@@ -797,10 +761,9 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(0, 1)
             .min(height - 2);
-        self.selected_frame_state_mut()
-            .expect("decoded frame has state")
-            .tty_sized = true;
-        if let Some(frame) = self.selected_frame_state_mut() {
+        self.selected_frame_id.borrow_mut().tty_sized = true;
+        {
+            let mut frame = self.selected_frame_id.borrow_mut();
             frame.width = width;
             frame.height = height;
             frame.text_height = height - menu_bar_lines;
@@ -811,10 +774,7 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_text_height(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.text_height)
-            .unwrap_or(1)
-            .max(1)
+        self.selected_frame_id.borrow().text_height.max(1)
     }
 
     fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
@@ -938,15 +898,16 @@ impl Interpreter {
         self.resize_frame_window_records_for(self.selected_frame_id);
     }
 
-    pub(crate) fn resize_frame_window_records_for(&mut self, id: u64) {
-        let frame = self.frame_state(id).expect("decoded frame has state");
+    pub(crate) fn resize_frame_window_records_for(&mut self, id: crate::lisp::types::FrameRef) {
+        let frame = id.borrow();
         let (width, total_height, text_height, root, minibuffer) = (
             frame.width,
             frame.height,
             frame.text_height,
-            frame.root_window_id,
-            frame.minibuffer_window_id,
+            frame.root_window_id(),
+            frame.minibuffer_window_id(),
         );
+        drop(frame);
         let top_margin = total_height.saturating_sub(text_height);
         let root_height = text_height.saturating_sub(1).max(1);
         if self.find_record(root).is_some() {
@@ -968,7 +929,8 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
-        self.selected_frame_state()?
+        self.selected_frame_id
+            .borrow()
             .parameter_overrides
             .iter()
             .find(|(parameter, _)| parameter == name)
@@ -976,9 +938,7 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_name_value(&self) -> Value {
-        self.selected_frame_state()
-            .map(|frame| frame.name)
-            .unwrap_or(Value::Nil)
+        self.selected_frame_id.name.get()
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
@@ -993,15 +953,18 @@ impl Interpreter {
         self.snapshot_frame_window_configuration(self.selected_frame_id)
     }
 
-    fn snapshot_frame_window_configuration(&self, frame_id: u64) -> WindowConfigurationSnapshot {
-        let frame = self.frame_state(frame_id).expect("decoded frame has state");
+    fn snapshot_frame_window_configuration(
+        &self,
+        frame_id: crate::lisp::types::FrameRef,
+    ) -> WindowConfigurationSnapshot {
+        let frame = frame_id.borrow();
         WindowConfigurationSnapshot {
             frame_id,
             selected_frame_id: self.selected_frame_id,
             current_buffer_id: self.current_buffer_id(),
-            selected_window_id: frame.selected_window_id,
+            selected_window_id: frame.selected_window_id(),
             selected_window_slots: self
-                .find_record(frame.selected_window_id)
+                .find_record(frame.selected_window_id())
                 .map(|record| record.slots.clone())
                 .unwrap_or_default(),
             window_records: self
@@ -1014,13 +977,16 @@ impl Interpreter {
                 })
                 .map(|record| (record.id, record.slots.clone()))
                 .collect(),
-            root_window_id: frame.root_window_id,
+            root_window_id: frame.root_window_id(),
             frame_width: frame.width,
             frame_height: frame.height,
         }
     }
 
-    pub(crate) fn window_configuration_value(&mut self, frame_id: u64) -> Value {
+    pub(crate) fn window_configuration_value(
+        &mut self,
+        frame_id: crate::lisp::types::FrameRef,
+    ) -> Value {
         let snapshot = self.snapshot_frame_window_configuration(frame_id);
         self.create_pseudovector(
             RecordKind::WindowConfiguration,
@@ -1206,9 +1172,7 @@ impl Interpreter {
                 }
             }
         }
-        self.frame_state_mut(snapshot.frame_id)
-            .expect("decoded frame has state")
-            .root_window_id = snapshot.root_window_id;
+        snapshot.frame_id.borrow_mut().root_window = self.record_ref(snapshot.root_window_id);
         self.note_selected_frame(snapshot.frame_id);
         self.set_selected_window_id(snapshot.selected_window_id);
         // GNU records frame dimensions for configuration equality, but
@@ -1217,10 +1181,7 @@ impl Interpreter {
         self.resize_frame_window_records();
         if self.frame_is_live(snapshot.selected_frame_id) {
             self.note_selected_frame(snapshot.selected_frame_id);
-            let selected_window = self
-                .selected_frame_state()
-                .expect("decoded frame has state")
-                .selected_window_id;
+            let selected_window = self.selected_frame_id.borrow().selected_window_id();
             self.set_selected_window_id(selected_window);
         }
         if self.has_buffer_id(snapshot.current_buffer_id) {
@@ -1347,10 +1308,7 @@ impl Interpreter {
     }
 
     /// alloc.c:mark_finalizer_list retains both the object and its callback.
-    pub(crate) fn mark_doomed_finalizers(
-        &self,
-        marked: &mut crate::lisp::eval::LispReachability<'_, '_>,
-    ) {
+    pub(crate) fn mark_doomed_finalizers(&self, marked: &mut crate::lisp::eval::LispReachability) {
         // SAFETY: tracing changes marks, never links, and invokes no Lisp.
         for object in unsafe { self.doomed_finalizers.iter() } {
             marked.mark(self, &Value::Finalizer(object));
@@ -1478,12 +1436,41 @@ impl Interpreter {
         Ok(Value::Marker(marker))
     }
 
-    pub fn make_char_table(&mut self, subtype: Option<String>, default: Value) -> Value {
-        let id = self.next_char_table_id;
-        self.next_char_table_id += 1;
-        let index = self.char_table_index_for(id);
-        self.char_tables[index] = CharTableState::new(id, subtype, default);
-        Value::CharTable(id)
+    pub fn make_char_table(&mut self, subtype: Option<String>, initial: Value) -> Value {
+        let purpose = subtype.as_deref().map_or(Value::Nil, Value::symbol);
+        self.make_char_table_for_purpose(purpose, initial)
+            .expect("internal character table purpose")
+    }
+
+    pub(crate) fn make_char_table_for_purpose(
+        &self,
+        purpose: Value,
+        initial: Value,
+    ) -> Result<Value, LispError> {
+        let name = match purpose.kind() {
+            Kind::Nil => "nil",
+            Kind::T => "t",
+            Kind::Symbol(name) => name.as_str(),
+            _ => return Err(LispError::WrongTypeArgument("symbolp".into(), purpose)),
+        };
+        let extra = self
+            .get_symbol_property(name, "char-table-extra-slots")
+            .unwrap_or(Value::Nil);
+        let extras = match extra.kind() {
+            Kind::Nil => 0,
+            Kind::Integer(n) if (0..=10).contains(&n) => n as usize,
+            Kind::Integer(n) if n > 10 => {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("args-out-of-range"),
+                    extra,
+                    Value::Nil,
+                ])));
+            }
+            _ => return Err(LispError::WrongTypeArgument("wholenump".into(), extra)),
+        };
+        Ok(Value::CharTable(CharTableRef::new(
+            purpose, initial, extras,
+        )))
     }
 
     pub fn replace_hash_table_runtime_entries(
@@ -1858,6 +1845,15 @@ impl Interpreter {
     }
 
     pub fn equal_hash_lookup(&self, id: u64, key: &Value, env: &Env) -> Option<Option<Value>> {
+        self.equal_hash_entry(id, key, env)
+            .map(|entry| entry.map(|(_, value)| value))
+    }
+
+    pub(crate) fn equal_hash_lookup_key(&self, id: u64, key: &Value, env: &Env) -> Option<Value> {
+        self.equal_hash_entry(id, key, env)?.map(|(key, _)| key)
+    }
+
+    fn equal_hash_entry(&self, id: u64, key: &Value, env: &Env) -> Option<Option<(Value, Value)>> {
         let state = self.equal_hash_tables.get(&id)?;
         // `equal' dynamically treats a symbol-with-position as its bare
         // symbol while this byte-compiler switch is enabled.  Scan the
@@ -1874,7 +1870,7 @@ impl Interpreter {
                     .find(|(existing, _)| {
                         self.runtime_hash_keys_match(state.test, existing, key, env)
                     })
-                    .map(|(_, value)| *value),
+                    .copied(),
             );
         }
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
@@ -1883,7 +1879,7 @@ impl Interpreter {
                 .bucket_entry(hash, |existing| {
                     self.runtime_hash_keys_match(state.test, existing, key, env)
                 })
-                .map(|index| state.entries[index].1),
+                .map(|index| state.entries[index]),
         )
     }
 
@@ -1956,153 +1952,53 @@ impl Interpreter {
         Some(true)
     }
 
-    pub fn find_char_table(&self, id: u64) -> Option<&CharTableState> {
-        let index = usize::try_from(id.checked_sub(1)?).ok()?;
-        self.char_tables.get(index).filter(|table| table.id == id)
+    #[inline]
+    /// The current canonical graph, including mutable descriptors. Unlike a
+    /// Rust mutation stamp this observes raw native stores as well. The regex
+    /// backend compiles tables into classes, so its derived caches must compare
+    /// their actual inputs; ordinary table lookup never pays for this walk.
+    pub(crate) fn char_table_chain_signature(
+        &self,
+        table: CharTableRef,
+    ) -> CharTableChainSignature {
+        CharTableChainSignature::capture(table)
     }
 
-    pub fn find_char_table_mut(&mut self, id: u64) -> Option<&mut CharTableState> {
-        let index = usize::try_from(id.checked_sub(1)?).ok()?;
-        if self
-            .char_tables
-            .get(index)
-            .is_none_or(|table| table.id != id)
-        {
-            return None;
-        }
-        // This is the sole native door to mutable table contents, so a
-        // derived view cannot survive a write through an otherwise
-        // unrelated public operation.
-        // The derived caches key on what they read: a syntax rendering on
-        // the stamps of the tables in its parent chain (each table takes a
-        // fresh stamp here), a `\\c' pattern on the category table
-        // generation (characters.el writes that table two hundred thousand
-        // times, so syntax renderings must not observe it), a case-folded
-        // pattern on the case tables only.
-        match self.char_tables[index].subtype.as_deref() {
-            Some("syntax-table") => {}
-            Some("category-table") => {
-                self.category_context_generation = self.category_context_generation.wrapping_add(1);
-            }
-            // The case tables: a `case-table' (set-case-table checks the
-            // purpose), the `case-table-up' the standard table's upcase
-            // slot is made with, or a table without a purpose (casetab.c
-            // accepts any char-table as an extra slot).  A write to a
-            // table of another named purpose (`regexp-opt-charset',
-            // `char-script-table', a keymap's, a display table) is not a
-            // case-table write and recompiled every case-folded pattern
-            // (cperl-mode-tests: `regexp-opt' builds its charset table
-            // between searches).
-            Some("case-table") | Some("case-table-up") | None => {
-                self.case_context_generation = self.case_context_generation.wrapping_add(1);
-            }
-            Some(_) => {}
-        }
-        let table = &mut self.char_tables[index];
-        table.note_written();
-        Some(table)
-    }
-
-    /// The (id, stamp) of TABLE_ID and of every table it inherits from,
-    /// the table first: the identity of everything an inherited lookup of
-    /// the table reads. A write to any of them, including a change of a
-    /// parent link, passes through `find_char_table_mut' and changes the
-    /// stamp of the table written.  A missing table contributes a stamp of
-    /// zero, which no live table ever carries.
-    pub(crate) fn char_table_chain_signature(&self, table_id: u64) -> CharTableChainSignature {
-        let mut chain = CharTableChainSignature::with_capacity(2);
-        let mut current = Some(table_id);
-        while let Some(id) = current {
-            if chain.iter().any(|(seen, _)| *seen == id) {
-                break;
-            }
-            let Some(table) = self.find_char_table(id) else {
-                chain.push((id, 0));
-                break;
-            };
-            chain.push((id, table.generation()));
-            current = table.parent;
-        }
-        chain
-    }
-
-    pub(crate) fn cached_regexp_syntax_classes(&self, table_id: u64) -> Option<[String; 16]> {
-        let chain = self.char_table_chain_signature(table_id);
+    pub(crate) fn cached_regexp_syntax_classes(
+        &self,
+        table_id: CharTableRef,
+    ) -> Option<[String; 16]> {
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain == chain)
+            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.rendered.clone())
     }
 
     /// The hash of the table's sixteen class renderings as cached: what a
     /// syntax-dependent pattern's translation reads from the table.
-    pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: u64) -> Option<u64> {
-        let chain = self.char_table_chain_signature(table_id);
+    pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: CharTableRef) -> Option<u64> {
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain == chain)
+            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.rendered_hash)
-    }
-
-    /// Whether TABLE_ID or a table it inherits from holds an entry (or
-    /// default) that is a cons or a mutable string: an object whose in-place
-    /// mutation no table write observes.  Answered once per table and chain
-    /// signature; a change of what a table holds passes through the table
-    /// door and so changes that signature.
-    pub(crate) fn syntax_table_chain_has_mutable_entries(&self, table_id: u64) -> bool {
-        let chain = self.char_table_chain_signature(table_id);
-        if let Some((_, _, answer)) = self
-            .syntax_table_mutable_entries_cache
-            .borrow()
-            .iter()
-            .find(|(id, cached_chain, _)| *id == table_id && *cached_chain == chain)
-        {
-            return *answer;
-        }
-        let mutable = |value: &Value| matches!(value.kind(), Kind::Cons(_) | Kind::StringObject(_));
-        let mut answer = false;
-        let mut current = Some(table_id);
-        let mut seen = HashSet::new();
-        while let Some(id) = current {
-            if !seen.insert(id) {
-                break;
-            }
-            let Some(table) = self.find_char_table(id) else {
-                answer = true;
-                break;
-            };
-            if mutable(&table.default) || table.entries.iter().any(|entry| mutable(&entry.value)) {
-                answer = true;
-                break;
-            }
-            current = table.parent;
-        }
-        let mut cache = self.syntax_table_mutable_entries_cache.borrow_mut();
-        cache.retain(|(id, _, _)| *id != table_id);
-        if cache.len() >= 16 {
-            cache.remove(0);
-        }
-        cache.push((table_id, chain, answer));
-        answer
     }
 
     pub(crate) fn cached_syntax_segments(
         &self,
-        table_id: u64,
+        table_id: CharTableRef,
     ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
-        let chain = self.char_table_chain_signature(table_id);
         self.syntax_segment_cache
             .borrow()
             .as_ref()
-            .filter(|cache| cache.table_id == table_id && cache.chain == chain)
+            .filter(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
             .map(|cache| cache.segments.clone())
     }
 
     pub(crate) fn cache_syntax_segments(
         &self,
-        table_id: u64,
+        table_id: CharTableRef,
         segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
     ) {
         *self.syntax_segment_cache.borrow_mut() = Some(crate::lisp::eval::SyntaxSegmentCache {
@@ -2112,7 +2008,11 @@ impl Interpreter {
         });
     }
 
-    pub(crate) fn cache_regexp_syntax_classes(&self, table_id: u64, rendered: [String; 16]) {
+    pub(crate) fn cache_regexp_syntax_classes(
+        &self,
+        table_id: CharTableRef,
+        rendered: [String; 16],
+    ) {
         // A few tables at a time: a mode that swaps its syntax table around
         // a scan (cc-mode's `c-with-syntax-table') keeps both renderings.
         let chain = self.char_table_chain_signature(table_id);
@@ -2132,224 +2032,105 @@ impl Interpreter {
         });
     }
 
-    pub fn char_table_set(&mut self, id: u64, key: u32, value: Value) -> Result<(), LispError> {
-        self.char_table_set_range(id, key, key, value)
+    #[inline]
+    pub fn char_table_set(
+        &mut self,
+        table: CharTableRef,
+        key: u32,
+        value: Value,
+    ) -> Result<(), LispError> {
+        table.set(key, value);
+        Ok(())
     }
 
     pub fn char_table_set_range(
         &mut self,
-        id: u64,
+        table: CharTableRef,
         start: u32,
         end: u32,
         value: Value,
     ) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        table.push_entry(CharTableEntry {
-            start: start.min(end),
-            end: start.max(end),
-            value,
-        });
+        table.set_range(start, end, value);
         Ok(())
     }
 
-    pub fn char_table_set_default(&mut self, id: u64, value: Value) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        table.default = value;
-        Ok(())
+    #[inline]
+    pub fn char_table_get(&self, table: CharTableRef, key: u32) -> Option<Value> {
+        Some(table.get(key))
     }
 
-    pub(crate) fn category_context_generation(&self) -> u64 {
-        self.category_context_generation
-    }
-
-    /// The generation of the tables case folding reads (the case tables
-    /// among every table that is neither a syntax nor a category table).
-    pub(crate) fn case_context_generation(&self) -> u64 {
-        self.case_context_generation
-    }
-
-    pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
-        let table = self.find_char_table(id)?;
-        if let Some(entry) = table.explicit_entry(key) {
-            return Some(entry.value);
-        }
-        if let Some(parent_id) = table.parent
-            && let Some(value) = self.char_table_get(parent_id, key)
-        {
-            return Some(value);
-        }
-        if table.id == self.standard_syntax_table_id
-            && table.default.is_nil()
-            && let Some(value) = primitives::standard_syntax_table_default_value(key)
-        {
-            return Some(value);
-        }
-        Some(table.default)
-    }
-
-    /// Resolve the first explicit entry in a character-table parent chain
-    /// without cloning its Lisp value.  When no entry applies, return the
-    /// terminal table whose default owns the result.  Subsystems that need a
-    /// native view (notably syntax scanning) can thereby avoid constructing a
-    /// public Lisp descriptor merely to decode it again.
-    pub(crate) fn char_table_explicit_or_terminal(
+    pub(crate) fn char_table_effective_ranges(
         &self,
-        mut id: u64,
-        key: u32,
-    ) -> Option<(Option<&Value>, &CharTableState)> {
-        for _ in 0..=self.char_tables.len() {
-            let table = self.find_char_table(id)?;
-            if let Some(entry) = table.explicit_entry(key) {
-                return Some((Some(&entry.value), table));
+        table: CharTableRef,
+    ) -> Option<Vec<CharTableEntry>> {
+        Some(table.effective_ranges())
+    }
+
+    pub fn char_table_explicit_get(&self, mut table: CharTableRef, key: u32) -> Option<Value> {
+        loop {
+            let value = table.explicit_get(key);
+            if !value.is_nil() {
+                return Some(value);
             }
-            let Some(parent_id) = table.parent else {
-                return Some((None, table));
-            };
-            if self.find_char_table(parent_id).is_none() {
-                return Some((None, table));
-            }
-            id = parent_id;
+            table = table.parent()?;
         }
-        None
     }
 
-    pub fn char_table_range(&self, id: u64, start: u32, end: u32) -> Option<Value> {
-        let table = self.find_char_table(id)?;
-        if let Some(entry) = table
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| entry.start == start.min(end) && entry.end == start.max(end))
-        {
-            return Some(entry.value);
-        }
-        if let Some(parent_id) = table.parent
-            && let Some(value) = self.char_table_range(parent_id, start, end)
-        {
-            return Some(value);
-        }
-        Some(table.default)
-    }
-
-    /// Enumerate the effective explicit ranges in an append-only character
-    /// table.  Newer writes mask older ones; nil writes mask without being
-    /// reported as values.
-    pub(crate) fn char_table_effective_ranges(&self, id: u64) -> Option<Vec<CharTableEntry>> {
-        Some(self.find_char_table(id)?.effective_ranges())
-    }
-
-    /// The raw write log of char-table ID, in order; `equal' compares two
-    /// tables entry by entry, so a copy that must stay `equal' to its
-    /// original rewrites values through `char_table_replace_entries'
-    /// rather than appending.
-    pub(crate) fn char_table_entries(&self, id: u64) -> Option<Vec<CharTableEntry>> {
-        Some(self.find_char_table(id)?.entries.clone())
-    }
-
-    pub(crate) fn char_table_replace_entries(
+    pub fn set_char_table_parent(
         &mut self,
-        id: u64,
-        entries: Vec<CharTableEntry>,
+        table: CharTableRef,
+        parent: Option<CharTableRef>,
     ) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        table.replace_entries(entries);
+        let mut next = parent;
+        while let Some(current) = next {
+            if current == table {
+                return Err(LispError::Signal(
+                    "Attempt to make a chartable be its own parent".into(),
+                ));
+            }
+            next = current.parent();
+        }
+        table.set_parent(parent);
         Ok(())
     }
 
-    pub fn char_table_subtype(&self, id: u64) -> Option<Option<String>> {
-        self.find_char_table(id).map(|table| table.subtype.clone())
-    }
-
-    pub fn char_table_parent(&self, id: u64) -> Option<Option<u64>> {
-        self.find_char_table(id).map(|table| table.parent)
-    }
-
-    pub fn char_table_explicit_get(&self, id: u64, key: u32) -> Option<Value> {
-        let table = self.find_char_table(id)?;
-        if let Some(entry) = table.explicit_entry(key) {
-            return Some(entry.value);
-        }
-        if let Some(parent_id) = table.parent {
-            return self.char_table_explicit_get(parent_id, key);
-        }
-        None
-    }
-
-    pub fn set_char_table_parent(&mut self, id: u64, parent: Option<u64>) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        table.parent = parent;
-        Ok(())
-    }
-
-    pub fn char_table_extra_slot(&self, id: u64, slot: usize) -> Option<Value> {
-        self.find_char_table(id)
-            .and_then(|table| table.extra_slots.get(slot).cloned())
+    pub fn char_table_extra_slot(&self, table: CharTableRef, slot: usize) -> Option<Value> {
+        table.extra(slot)
     }
 
     pub fn set_char_table_extra_slot(
         &mut self,
-        id: u64,
+        table: CharTableRef,
         slot: usize,
         value: Value,
     ) -> Result<(), LispError> {
-        let table = self.find_char_table_mut(id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        while table.extra_slots.len() <= slot {
-            table.extra_slots.push(Value::Nil);
+        if table.set_extra(slot, value) {
+            Ok(())
+        } else {
+            Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::CharTable(table),
+                Value::Integer(slot as i64),
+            ])))
         }
-        table.extra_slots[slot] = value;
-        Ok(())
     }
 
-    pub fn char_table_purpose(&self, id: u64) -> Option<&str> {
-        self.find_char_table(id)
-            .and_then(|table| table.subtype.as_deref())
+    pub fn clone_char_table(&mut self, table: CharTableRef) -> Result<Value, LispError> {
+        Ok(Value::CharTable(table.copy()))
     }
 
-    pub fn clone_char_table(&mut self, id: u64) -> Result<Value, LispError> {
-        let source = self.find_char_table(id).cloned().ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
-        })?;
-        let new_id = self.next_char_table_id;
-        self.next_char_table_id += 1;
-        let index = self.char_table_index_for(new_id);
-        let mut copy = CharTableState {
-            id: new_id,
-            ..source
+    pub(crate) fn syntax_code_object(&self, code: usize) -> Value {
+        let Kind::Vector(codes) = self.syntax_code_objects.kind() else {
+            unreachable!()
         };
-        copy.note_written();
-        self.char_tables[index] = copy;
-        if self.is_ascii_case_table(id) {
-            self.mark_ascii_case_table(new_id);
-        }
-        Ok(Value::CharTable(new_id))
+        codes.get(code).expect("syntax code")
     }
 
-    /// Copy a syntax table with GNU's syntax-specific default and parent
-    /// rules.  A raw character-table clone is not sufficient: only the
-    /// standard syntax table owns a root default, while every copy inherits
-    /// from the standard table when its source had no parent.
-    pub fn copy_syntax_table(&mut self, id: u64) -> Result<Value, LispError> {
-        let copy = self.clone_char_table(id)?;
-        let Kind::CharTable(copy_id) = copy.kind() else {
-            unreachable!("clone_char_table returns a character table")
-        };
-        let standard_id = self.standard_syntax_table_id;
-        let table = self.find_char_table_mut(copy_id).ok_or_else(|| {
-            LispError::TypeError("char-table".into(), format!("char-table<{copy_id}>"))
-        })?;
-        table.default = Value::Nil;
-        table.parent.get_or_insert(standard_id);
-        Ok(Value::CharTable(copy_id))
+    pub fn copy_syntax_table(&mut self, table: CharTableRef) -> Result<Value, LispError> {
+        let copy = table.copy();
+        copy.set_default(Value::Nil);
+        copy.set_parent(copy.parent().or(Some(self.standard_syntax_table_id)));
+        Ok(Value::CharTable(copy))
     }
 
     #[cfg(test)]
@@ -2358,7 +2139,7 @@ impl Interpreter {
     }
 
     pub fn create_record_with_type(&mut self, type_tag: Value, slots: Vec<Value>) -> Value {
-        self.create_record_with_kind(type_tag, slots, RecordKind::Record)
+        Value::LispRecord(LispRecordRef::new(type_tag, &slots))
     }
 
     pub(crate) fn create_pseudovector(
@@ -2371,7 +2152,6 @@ impl Interpreter {
             slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
             slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
         }
-        debug_assert_ne!(kind, RecordKind::Record);
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
 
@@ -2487,7 +2267,7 @@ impl Interpreter {
         Some(unsafe { &mut *record.as_ptr() })
     }
 
-    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+    pub(crate) fn forget_keymap_public_view(&mut self, keymap_id: u64) {
         if let Some(old_ids) = self.keymap_public_cons_ids.remove(&keymap_id) {
             for cell_id in old_ids {
                 let mut remove = false;
@@ -2500,9 +2280,23 @@ impl Interpreter {
                 }
             }
         }
+        self.keymap_public_view_watch.remove(&keymap_id);
+    }
 
+    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+        self.forget_keymap_public_view(keymap_id);
+        let Kind::Cons(root) = view.kind() else {
+            return;
+        };
+        let root_id = crate::lisp::types::ConsCell::identity(&root);
+        // Only root identity needs a reverse index. Field stores never
+        // look up an owner; the derived binding view checks its own inputs.
+        self.keymap_public_cons_owners
+            .entry(root_id)
+            .or_default()
+            .push(keymap_id);
+        self.keymap_public_cons_ids.insert(keymap_id, vec![root_id]);
         let mut seen = std::collections::HashSet::new();
-        let mut owned_ids = Vec::new();
         let mut watched_cells = Vec::new();
         let mut tail = *view;
         while let Kind::Cons(cell) = tail.kind() {
@@ -2512,20 +2306,12 @@ impl Interpreter {
             }
             // The parent's list is spliced in as the tail (its first cell
             // carries the `keymap' symbol); its cells are the parent's own.
-            let Kind::Cons(root) = view.kind() else {
-                break;
-            };
-            if cell_id != crate::lisp::types::ConsCell::identity(&root)
+            if cell_id != root_id
                 && matches!(cell.car.get().kind(), Kind::Symbol(name) if name == "keymap")
             {
                 break;
             }
-            owned_ids.push(cell_id);
             watched_cells.push(cell);
-            self.keymap_public_cons_owners
-                .entry(cell_id)
-                .or_default()
-                .push(keymap_id);
 
             // A binding pair is itself mutable keymap structure.  Do not
             // claim arbitrary binding definitions or included keymap roots;
@@ -2534,24 +2320,16 @@ impl Interpreter {
             if let Kind::Cons(entry_cell) = entry.kind()
                 && !matches!(entry.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "keymap")
             {
-                let entry_id = crate::lisp::types::ConsCell::identity(&entry_cell);
-                owned_ids.push(entry_id);
                 watched_cells.push(entry_cell);
-                self.keymap_public_cons_owners
-                    .entry(entry_id)
-                    .or_default()
-                    .push(keymap_id);
             }
             tail = cell.cdr.get();
         }
-        self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
         let watch = crate::lisp::types::ConsMutationSnapshot::cells(watched_cells.iter());
         self.keymap_public_view_watch.insert(keymap_id, watch);
     }
 
     /// Whether the record of keymap KEYMAP_ID still describes its public
-    /// view: no watched cell stored through Rust, and no canonical word of
-    /// a cell generated code can reach changed since the record was built
+    /// view: no canonical word of a cell changed since the record was built
     /// from the view.  A record without a snapshot (a loaded or copied one)
     /// is not current until it is rebuilt once.
     pub(crate) fn runtime_keymap_view_is_current(&self, keymap_id: u64) -> bool {
@@ -2582,25 +2360,23 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn keymap_public_cons_owner_ids(&self, value: &Value) -> Vec<u64> {
-        value
-            .cons_id()
-            .and_then(|id| self.keymap_public_cons_owners.get(&id))
-            .cloned()
-            .unwrap_or_default()
-    }
-
     pub(crate) fn keymap_public_root_owner_id(&self, value: &Value) -> Option<u64> {
+        if !matches!(value.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
+            return None;
+        }
         let root = value.cons_id()?;
         self.keymap_public_cons_owners
             .get(&root)?
             .iter()
             .copied()
             .find(|owner| {
-                self.keymap_public_cons_ids
-                    .get(owner)
-                    .and_then(|ids| ids.first())
-                    .is_some_and(|id| *id == root)
+                self.find_record(*owner)
+                    .and_then(|record| {
+                        record
+                            .slots
+                            .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)
+                    })
+                    .is_some_and(|view| view.word() == value.word())
             })
     }
 
@@ -2735,48 +2511,6 @@ impl Interpreter {
             }
         }
         Ok(copy)
-    }
-
-    // `aset' on a record's type slot stores the Lisp object verbatim.  GNU
-    // permits both symbols and arbitrary type descriptors here.
-    pub(crate) fn retag_record(&mut self, id: u64, type_tag: Value) -> Result<(), LispError> {
-        let Some((record_kind, previous_type_name)) = self
-            .find_record(id)
-            .map(|record| (record.kind, record.symbol_type_name().map(str::to_owned)))
-        else {
-            return Err(LispError::TypeError(
-                "record".into(),
-                format!("record<{id}>"),
-            ));
-        };
-        if record_kind != RecordKind::Record {
-            return Err(LispError::TypeError(
-                "record".into(),
-                format!("record<{id}>"),
-            ));
-        }
-        if let Some(previous_type_name) = previous_type_name {
-            let remove_previous_type = self
-                .record_ids_by_type_index
-                .get_mut(&previous_type_name)
-                .is_some_and(|ids| {
-                    ids.remove(&id);
-                    ids.is_empty()
-                });
-            if remove_previous_type {
-                self.record_ids_by_type_index.remove(&previous_type_name);
-            }
-        }
-        if let Ok(type_name) = type_tag.as_symbol() {
-            self.record_ids_by_type_index
-                .entry(type_name.to_string())
-                .or_default()
-                .insert(id);
-        }
-        self.find_record_mut(id)
-            .expect("record identity was validated before retagging")
-            .type_tag = type_tag;
-        Ok(())
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
@@ -2984,7 +2718,7 @@ impl Interpreter {
     // Whether NAME has an interpreted (Lisp-defined) function binding,
     // as opposed to only a native dispatch arm.
     pub(crate) fn has_lisp_function(&self, name: &str) -> bool {
-        self.functions_index.contains_key(name)
+        self.globals.function_definition_by_name(name).is_some()
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {
@@ -3032,23 +2766,24 @@ impl Interpreter {
 impl Interpreter {
     /// frame.c:change_frame_size propagates a text terminal's dimensions to
     /// every frame displayed on that device, preserving each window tree.
-    pub(crate) fn resize_terminal_frames(&mut self, id: u64, width: i64, height: i64) {
-        let terminal = self
-            .frame_state(id)
-            .expect("decoded frame has state")
-            .terminal
-            .expect("live frame terminal")
-            .id;
+    pub(crate) fn resize_terminal_frames(
+        &mut self,
+        id: crate::lisp::types::FrameRef,
+        width: i64,
+        height: i64,
+    ) {
+        let terminal = id.borrow().terminal.expect("live frame terminal").id;
         let ids: Vec<_> = self
             .frame_states
             .iter()
             .filter(|frame| {
-                frame.live && frame.terminal.expect("live frame terminal").id == terminal
+                frame.is_live()
+                    && frame.borrow().terminal.expect("live frame terminal").id == terminal
             })
-            .map(|frame| frame.id)
+            .copied()
             .collect();
         for id in ids {
-            let frame = self.frame_state_mut(id).expect("decoded frame has state");
+            let mut frame = id.borrow_mut();
             let margin: i64 = ["menu-bar-lines", "tab-bar-lines"]
                 .iter()
                 .map(|name| {
@@ -3066,6 +2801,7 @@ impl Interpreter {
             frame.text_height = frame.height - margin;
             frame.parameter_width = frame.width;
             frame.parameter_height = frame.height;
+            drop(frame);
             self.resize_frame_window_records_for(id);
         }
     }
@@ -3119,11 +2855,11 @@ impl Interpreter {
 
 #[cfg(test)]
 mod runtime_index_tests {
-    use super::{CharTableEntry, Interpreter, Value};
+    use super::{Interpreter, Value};
     use crate::lisp::types::Kind;
 
     #[test]
-    fn dense_char_table_ids_resolve_their_own_slots() {
+    fn canonical_char_tables_resolve_their_own_slots() {
         let mut interp = Interpreter::new();
         let Kind::CharTable(first_id) = interp
             .make_char_table(Some("first".into()), Value::Integer(11))
@@ -3146,12 +2882,12 @@ mod runtime_index_tests {
             interp.char_table_get(second_id, 'x' as u32),
             Some(Value::Integer(22))
         );
-        assert!(interp.find_char_table(0).is_none());
-        assert!(interp.find_char_table(second_id + 1).is_none());
+        assert_ne!(first_id, second_id);
+        assert_eq!(Value::CharTable(first_id).word(), first_id.identity() | 5);
     }
 
     #[test]
-    fn ascii_char_table_index_preserves_overrides_inheritance_and_mutation() {
+    fn char_table_radix_preserves_overrides_inheritance_and_mutation() {
         let mut interp = Interpreter::new();
         let Kind::CharTable(parent_id) = interp
             .make_char_table(Some("parent".into()), Value::Integer(10))
@@ -3184,7 +2920,7 @@ mod runtime_index_tests {
 
         assert_eq!(
             interp.char_table_get(child_id, 'a' as u32),
-            Some(Value::Integer(20))
+            Some(Value::Integer(30))
         );
         assert_eq!(
             interp.char_table_get(child_id, 'm' as u32),
@@ -3192,16 +2928,16 @@ mod runtime_index_tests {
         );
         assert_eq!(
             interp.char_table_get(child_id, 'x' as u32),
-            Some(Value::Nil)
+            Some(Value::Integer(30))
         );
 
-        // Inherited results are deliberately not cached in the child.
+        // Initialized content survives writes to the parent.
         interp
             .char_table_set(parent_id, 'a' as u32, Value::Integer(21))
             .expect("parent character must remain writable");
         assert_eq!(
             interp.char_table_get(child_id, 'a' as u32),
-            Some(Value::Integer(21))
+            Some(Value::Integer(30))
         );
 
         let Kind::CharTable(clone_id) = interp
@@ -3220,10 +2956,10 @@ mod runtime_index_tests {
         );
         assert_eq!(
             interp.char_table_get(clone_id, 'x' as u32),
-            Some(Value::Nil)
+            Some(Value::Integer(30))
         );
 
-        // Non-ASCII characters retain the authoritative reverse range scan.
+        // Non-ASCII ranges use the same authoritative radix leaves.
         interp
             .char_table_set_range(child_id, 0x100, 0x200, Value::Integer(60))
             .expect("non-ASCII range must be writable");
@@ -3235,70 +2971,66 @@ mod runtime_index_tests {
             Some(Value::Integer(61))
         );
 
-        // Whole-vector replacement and clearing rebuild the derived index.
-        interp
-            .find_char_table_mut(child_id)
-            .expect("child table must remain live")
-            .replace_entries(vec![CharTableEntry {
-                start: 'q' as u32,
-                end: 'q' as u32,
-                value: Value::Integer(70),
-            }]);
+        // A full-range store replaces the contents without changing default.
+        child_id.set_all(Value::Nil);
+        child_id.set('q' as u32, Value::Integer(70));
         assert_eq!(
             interp.char_table_get(child_id, 'q' as u32),
             Some(Value::Integer(70))
         );
         assert_eq!(
             interp.char_table_get(child_id, 'x' as u32),
-            Some(Value::Integer(20))
+            Some(Value::Integer(30))
         );
-        interp
-            .find_char_table_mut(child_id)
-            .expect("child table must remain live")
-            .clear_entries();
+        child_id.set_all(Value::Nil);
         assert_eq!(
             interp.char_table_get(child_id, 'q' as u32),
-            Some(Value::Integer(20))
+            Some(Value::Integer(30))
         );
+        child_id.set_default(Value::Nil);
+        assert_eq!(child_id.get('a' as u32), Value::Integer(21));
+        assert_eq!(child_id.get('q' as u32), Value::Integer(20));
     }
 
     #[test]
     fn record_type_index_tracks_creation_and_retagging() {
         let mut interp = Interpreter::new();
-        let Kind::Record(first_id) = interp.create_record("before", Vec::new()).kind() else {
-            unreachable!("create_record must return a record")
+        // The old index included every generic record. It now belongs only
+        // to host pseudovectors; real type-slot changes are direct stores.
+        let before_records = interp.records.len();
+        let Kind::LispRecord(first) = interp.create_record("before", Vec::new()).kind() else {
+            unreachable!("inline record")
         };
-        let Kind::Record(second_id) = interp.create_record("before", Vec::new()).kind() else {
-            unreachable!("create_record must return a record")
+        let Kind::LispRecord(second) = interp.create_record("before", Vec::new()).kind() else {
+            unreachable!("inline record")
         };
-
-        assert_eq!(
-            interp.record_ids_by_type("before"),
-            vec![first_id.id, second_id.id]
-        );
-        interp
-            .retag_record(first_id.id, Value::symbol("after"))
-            .expect("record must remain live");
-        assert_eq!(interp.record_ids_by_type("before"), vec![second_id.id]);
-        assert_eq!(interp.record_ids_by_type("after"), vec![first_id.id]);
-
-        interp
-            .retag_record(second_id.id, Value::symbol("after"))
-            .expect("record must remain live");
+        assert!(!first.ptr_eq(&second));
+        assert_eq!(first.type_tag(), Value::symbol("before"));
+        assert_eq!(second.type_tag(), Value::symbol("before"));
         assert!(interp.record_ids_by_type("before").is_empty());
-        assert_eq!(
-            interp.record_ids_by_type("after"),
-            vec![first_id.id, second_id.id]
-        );
-
+        first.set(0, Value::symbol("after"));
+        assert_eq!(first.type_tag(), Value::symbol("after"));
+        assert_eq!(second.type_tag(), Value::symbol("before"));
+        second.set(0, Value::symbol("after"));
+        assert_eq!(second.type_tag(), first.type_tag());
+        assert!(interp.record_ids_by_type("after").is_empty());
         let descriptor = interp.create_record("descriptor", vec![Value::symbol("public-type")]);
-        interp
-            .retag_record(first_id.id, descriptor)
-            .expect("record must accept an arbitrary Lisp type descriptor");
-        assert_eq!(interp.record_ids_by_type("after"), vec![second_id.id]);
+        first.set(0, descriptor);
+        assert_eq!(first.type_tag(), descriptor);
         assert_eq!(
-            interp.find_record(first_id).map(|record| &record.type_tag),
-            Some(&descriptor)
+            interp.records.len(),
+            before_records,
+            "generic records allocate no host ids"
+        );
+        let Kind::Record(host) = interp
+            .create_pseudovector(super::RecordKind::Window, "index-host-window", Vec::new())
+            .kind()
+        else {
+            unreachable!("host window")
+        };
+        assert_eq!(
+            interp.record_ids_by_type("index-host-window"),
+            vec![host.id]
         );
     }
 

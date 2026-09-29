@@ -1,0 +1,15 @@
+{
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "command": [
+    "python3",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot.py",
+    "90",
+    "generic_record_slots_are_the_public_native_payload_and_gc_edges",
+    "generic_record_size_limits_include_the_type_slot"
+  ],
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "qualification": "Only new tests and a GNU-grounded record boundary fixture added to unchanged production9f000b24. Generic record migration not started."
+}

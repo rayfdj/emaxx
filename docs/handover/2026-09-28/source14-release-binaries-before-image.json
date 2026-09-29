@@ -1,0 +1,21 @@
+{
+  "source_manifest": "source14-manifest.json",
+  "source_unchanged_after_build": true,
+  "artifacts": [
+    {
+      "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/emaxx",
+      "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source14-release-emaxx",
+      "sha256": "7461899eb795c8bedf8d2c208197a66f6231382759801580102581e1393d9bab"
+    },
+    {
+      "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/make-fingerprint",
+      "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source14-release-make-fingerprint",
+      "sha256": "a8f61dc986c0576e0898199ceab74f5d345b8fe70c544d3d2b741ef3249955f6"
+    },
+    {
+      "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/release/compat-harness",
+      "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source14-release-compat-harness",
+      "sha256": "aa50a69d08f14755b669a5e7f3379d52f530e47afde441256f15a02c6a2391b4"
+    }
+  ]
+}

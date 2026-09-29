@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 0.16299162500000008,
+  "stdout": "((\"nil\" t t \"nil\") (\"t\" t t \"t\") (\"reader-private-name\" t t \"reader-private-name\"))",
+  "matches_expected": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true
+}

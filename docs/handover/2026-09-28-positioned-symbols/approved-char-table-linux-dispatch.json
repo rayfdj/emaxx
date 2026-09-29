@@ -1,0 +1,19 @@
+{
+  "command": [
+    "gh",
+    "workflow",
+    "run",
+    "frozen-run.yml",
+    "--repo",
+    "rayfdj/emaxx",
+    "--ref",
+    "runtime-char-tables",
+    "--field",
+    "validation=rust"
+  ],
+  "commit": "803e4326a16b7bfe13bb0b757ee85c8b02ac3998",
+  "started_unix": 1790552125.193384,
+  "exit_code": 0,
+  "elapsed_seconds": 2.212132215499878,
+  "output": "https://github.com/rayfdj/emaxx/actions/runs/36359209336\n"
+}

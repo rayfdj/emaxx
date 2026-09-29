@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((symbols-with-pos-enabled nil)\n      (read-symbol-shorthands '((\"s-\" . \"expanded-\"))))\n  (let* ((form (read-positioning-symbols\n                \"([s-\u03b1 #_s-raw t nil] #1=(s-\u03b2 . #1#) #s(tag s-value) 's-quote)\"))\n         (vector (nth 0 form))\n         (cycle (nth 1 form))\n         (record (nth 2 form))\n         (quoted (nth 3 form))\n         (describe (lambda (object)\n                     (if (symbol-with-pos-p object)\n                         (list (symbol-name (bare-symbol object))\n                               (symbol-with-pos-pos object))\n                       object)))\n         (private (obarray-make))\n         (bare (intern \"reader-private-name\" private))\n         (positioned (let ((obarray private))\n                       (read-positioning-symbols \"reader-private-name\"))))\n    (list (mapcar describe (append vector nil))\n          (list (funcall describe (car cycle)) (eq cycle (cdr cycle)))\n          (list (recordp record) (funcall describe (aref record 0))\n                (funcall describe (aref record 1)))\n          (list (car quoted) (funcall describe (cadr quoted)))\n          (list (eq (bare-symbol positioned) bare)\n                (symbol-with-pos-pos positioned)\n                (eq (intern-soft \"reader-private-name\" private) bare)))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "artifact": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+    "image_sha256": "28f5a21137d4f18d93d761308d1eeca548676cc87643d0b4b2d035574a33d22e"
+  },
+  "fixture": "tests/fixtures/shared-positioned-reader.el",
+  "fixture_sha256": "363cb803d47301814e2aae83eb6492214bd7ca1d35a070efc829b67488d91a07",
+  "expected": "(((\"expanded-\u03b1\" 2) (\"s-raw\" 8) (\"t\" 14) nil) ((\"expanded-\u03b2\" 25) t) (t tag expanded-value) '(\"expanded-quote\" 53) (t 0 t))",
+  "qualification": "Source-matched diagnostic; GNU binary differs from pinned Darwin oracle."
+}

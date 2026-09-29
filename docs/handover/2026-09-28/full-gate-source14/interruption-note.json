@@ -1,0 +1,14 @@
+{
+  "actor": "assistant",
+  "reason": "Confirmed release terminal startup panic: modified key event passed to CharTableRef::get by keymap_lookup_binding_exact_parts_bounded. Stopped superseded full gate to repair caller and retain a fresh-source run.",
+  "completed_groups": {
+    "eval_01": {
+      "passed": 385,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "partial_group": "eval_02",
+  "full_gate_pass": false,
+  "runner_message_note": "interrupted by user is generic runner text; the user did not request this stop."
+}

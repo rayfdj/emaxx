@@ -1,0 +1,62 @@
+{
+  "scope": "Selected library tests directly; not a full gate or performance run",
+  "git": {
+    "head": "b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be",
+    "dirty": false
+  },
+  "filter": "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+  "timeout_seconds": 3600,
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "EMAXX_IMAGE_TEMPLATE": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/home/runner/work/emaxx/emaxx/emaxx/target/grouped-gate/fixture-images",
+    "CARGO_PROFILE_GATE_DEBUG": null,
+    "EMAXX_GC_VERIFY": null
+  },
+  "status": "selected diagnostic passed",
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5287effe3d3b10a7b7da10ec89117c030bb157373b3f2c32a006309a082bb873",
+    "artifact": "libtest"
+  },
+  "expected_tests": [
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots"
+  ],
+  "ignored_tests": [],
+  "total_tests": 2900,
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+    "--test-threads",
+    "1"
+  ],
+  "test_command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+    "--test-threads",
+    "1"
+  ],
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 28.141864208000015,
+  "executed_tests": [
+    "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots"
+  ],
+  "source_after": {
+    "head": "b588d5a8d1ea4ff9e85dc3af30e5bd8f202666be",
+    "dirty": false
+  },
+  "result": {
+    "status": "ok",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 2899,
+    "reported_seconds": 28.11
+  }
+}

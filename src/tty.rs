@@ -45,12 +45,14 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Show)?;
+        crate::lisp::eval::terminal::activate_frame_route();
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        crate::lisp::eval::terminal::clear_frame_route();
         let _ = execute!(io::stdout(), terminal::LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
     }
@@ -319,41 +321,17 @@ fn run_owned(
     batch::initialize_initial_frame_faces(&mut interpreter)?;
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
+    interpreter.note_selected_frame(interpreter.selected_frame_id);
     let queue = SharedEventQueue::default();
     let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
     crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(
         queue.clone(),
         std::rc::Rc::clone(&state),
     )));
-    // The polling companion: one short wait per call, `None' inner value
-    // when the terminal stays quiet — blocking reads pump ripe timers
-    // between polls, GNU read_char's timer_check.
-    crate::lisp::primitives::set_tty_event_poller(Some(Box::new({
-        let queue = queue.clone();
-        let state = std::rc::Rc::clone(&state);
-        move || {
-            draw_echo_row(&state);
-            match queue.try_next_event() {
-                Err(()) => None,
-                Ok(Some(QueuedInput::Mouse(_))) => {
-                    if let Ok(mut state) = state.try_borrow_mut() {
-                        state.note_input();
-                    }
-                    Some(None)
-                }
-                Ok(Some(QueuedInput::Lisp(event))) => {
-                    if let Ok(mut state) = state.try_borrow_mut() {
-                        state.note_input();
-                    }
-                    Some(Some(event))
-                }
-                Ok(None) => {
-                    let _ = event::poll(std::time::Duration::from_millis(50));
-                    Some(None)
-                }
-            }
-        }
-    })));
+    crate::lisp::primitives::set_tty_event_poller(Some(make_event_poller(
+        queue.clone(),
+        std::rc::Rc::clone(&state),
+    )));
     // Command code that reads events itself (the minibuffer) repaints the
     // frame through this hook, so window-configuration changes made
     // mid-read — a *Completions* pop-up — reach the glass immediately.
@@ -427,6 +405,18 @@ enum QueuedInput {
     Mouse(RawMouseInput),
 }
 
+impl QueuedInput {
+    /// keyboard.c:make_lispy_event is shared by command-loop reads and
+    /// Lisp read-event/read-char. A timer's timed read must receive the
+    /// same click so sit-for can put it back on unread-command-events.
+    fn into_lisp(self, interpreter: &mut Interpreter) -> Option<Value> {
+        match self {
+            Self::Lisp(event) => Some(event),
+            Self::Mouse(raw) => synthesize_mouse_event(interpreter, raw),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RawMouseInput {
     button: i64,
@@ -465,13 +455,12 @@ impl SharedEventQueue {
                     if events.is_empty() {
                         continue;
                     }
-                    if crate::lisp::eval::terminal::secondary_output_active() {
+                    if crate::lisp::eval::terminal::secondary_output_active()
+                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+                    {
                         events.insert(
                             0,
-                            Value::list([
-                                Value::symbol("switch-frame"),
-                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
-                            ]),
+                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
                         );
                     }
                     let first = events.remove(0);
@@ -507,13 +496,12 @@ impl SharedEventQueue {
                     if events.is_empty() {
                         continue;
                     }
-                    if crate::lisp::eval::terminal::secondary_output_active() {
+                    if crate::lisp::eval::terminal::secondary_output_active()
+                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+                    {
                         events.insert(
                             0,
-                            Value::list([
-                                Value::symbol("switch-frame"),
-                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
-                            ]),
+                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
                         );
                     }
                     let first = events.remove(0);
@@ -541,23 +529,42 @@ impl SharedEventQueue {
 fn make_event_reader(
     queue: SharedEventQueue,
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> Box<dyn FnMut() -> Option<Value>> {
-    Box::new(move || {
+) -> crate::lisp::primitives::TtyEventReader {
+    Box::new(move |interpreter| {
         draw_echo_row(&state);
-        let event = loop {
-            // Typed mouse input is command-loop currency; a blocking
-            // Lisp reader never sees it.
-            if let QueuedInput::Lisp(event) = queue.next_event()? {
-                break event;
+        loop {
+            let input = queue.next_event()?;
+            if let Ok(mut state) = state.try_borrow_mut() {
+                state.note_input();
             }
-        };
-        if let Ok(mut state) = state.try_borrow_mut() {
-            state.note_input();
+            if let Some(event) = input.into_lisp(interpreter) {
+                return (event != Value::Integer(7)).then_some(event);
+            }
         }
-        if event == Value::Integer(7) {
-            return None;
+    })
+}
+
+/// The polling companion waits briefly when the terminal is quiet so Lisp
+/// readers can service timers between polls.
+fn make_event_poller(
+    queue: SharedEventQueue,
+    state: std::rc::Rc<std::cell::RefCell<TtyState>>,
+) -> crate::lisp::primitives::TtyEventPoller {
+    Box::new(move |interpreter| {
+        draw_echo_row(&state);
+        match queue.try_next_event() {
+            Err(()) => None,
+            Ok(Some(input)) => {
+                if let Ok(mut state) = state.try_borrow_mut() {
+                    state.note_input();
+                }
+                Some(input.into_lisp(interpreter))
+            }
+            Ok(None) => {
+                let _ = event::poll(std::time::Duration::from_millis(50));
+                Some(None)
+            }
         }
-        Some(event)
     })
 }
 
@@ -948,12 +955,8 @@ fn command_loop(
         shared_state.borrow_mut().note_input();
         // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
-        let event = match event {
-            QueuedInput::Mouse(raw) => match synthesize_mouse_event(interpreter, env, raw) {
-                Some(event) => event,
-                None => continue,
-            },
-            QueuedInput::Lisp(event) => event,
+        let Some(event) = event.into_lisp(interpreter) else {
+            continue;
         };
         // read_char wipes a lingering message the moment any input event
         // arrives — sequences and silently-discarded button-downs
@@ -1223,11 +1226,7 @@ fn encode_mouse(mouse: event::MouseEvent) -> Option<RawMouseInput> {
 /// has no per-cell buffer-position map yet, and the mouse consumers the
 /// frontend drives (menu-bar-open-mouse, keymap popups) read only the
 /// coordinates.
-fn synthesize_mouse_event(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    raw: RawMouseInput,
-) -> Option<Value> {
+fn synthesize_mouse_event(interpreter: &mut Interpreter, raw: RawMouseInput) -> Option<Value> {
     let button = raw.button;
     let modifier_bits = raw.modifiers;
     let col = raw.column as i64;
@@ -1248,12 +1247,12 @@ fn synthesize_mouse_event(
     }
     name.push_str(&format!("mouse-{button}"));
 
-    let (_, rows) = crate::lisp::eval::terminal::output_size().ok()?;
-    let menu_bar_rows = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1);
+    // Classify the click against the frame geometry used by its window
+    // tree, including while a Lisp reader owns the terminal input loop.
+    let menu_bar_rows = (interpreter.frame_height() - interpreter.frame_text_height()).clamp(0, 1);
     let posn = if menu_bar_rows > 0 && row == 0 {
         // xt-mouse builds the menu-bar posn with a nil window slot —
         // menu-bar-open-mouse refuses events that sit inside a window.
-        let _ = env;
         Value::list([
             Value::Nil,
             Value::Symbol("menu-bar".into()),
@@ -1713,7 +1712,7 @@ impl GlyphlessDisplayMethod {
 
 struct GlyphlessDisplayContext<'a> {
     interpreter: &'a Interpreter,
-    table_id: Option<u64>,
+    table_id: Option<crate::lisp::types::CharTableRef>,
     terminal_coding: String,
 }
 
@@ -4953,6 +4952,74 @@ mod tests {
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn tty_lisp_readers_preserve_mouse_events_and_keyboard_order() {
+        use crate::lisp::primitives::{set_tty_event_poller, set_tty_event_reader};
+        for mode in ["blocking", "polling", "timed"] {
+            let mut interpreter = Interpreter::new();
+            let mut env = Env::new();
+            interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+            interpreter.set_tty_frame_size(80, 24);
+            let queue = SharedEventQueue::default();
+            queue.0.borrow_mut().extend([
+                QueuedInput::Mouse(RawMouseInput {
+                    button: 1,
+                    modifiers: 0,
+                    column: 5,
+                    row: 0,
+                    press: true,
+                }),
+                QueuedInput::Mouse(RawMouseInput {
+                    button: 1,
+                    modifiers: 0,
+                    column: 5,
+                    row: 0,
+                    press: false,
+                }),
+                QueuedInput::Lisp(Value::Integer(97)),
+                // Sentinels make the broken reader fail without blocking.
+                QueuedInput::Lisp(Value::Integer(98)),
+                QueuedInput::Lisp(Value::Integer(99)),
+            ]);
+            let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
+            set_tty_event_reader(Some(make_event_reader(
+                queue.clone(),
+                std::rc::Rc::clone(&state),
+            )));
+            if mode != "blocking" {
+                set_tty_event_poller(Some(make_event_poller(queue.clone(), state)));
+            }
+            let args = if mode == "timed" {
+                vec![Value::Nil, Value::Nil, Value::Integer(0)]
+            } else {
+                Vec::new()
+            };
+            let observed: Vec<_> = (0..3)
+                .map(|_| {
+                    crate::lisp::primitives::call(&mut interpreter, "read-event", &args, &mut env)
+                })
+                .collect();
+            set_tty_event_reader(None);
+            set_tty_event_poller(None);
+            let observed: Vec<_> = observed
+                .into_iter()
+                .map(|event| event.expect("read queued terminal event").to_string())
+                .collect();
+            // GNU lread.c:read_filtered_event returns parameterized mouse
+            // events unchanged when ASCII_REQUIRED is false (read-event).
+            assert_eq!(
+                observed,
+                [
+                    "(down-mouse-1 (nil menu-bar (5 . 0) 0))",
+                    "(mouse-1 (nil menu-bar (5 . 0) 0))",
+                    "97",
+                ],
+                "mode={mode}"
+            );
+            assert_eq!(queue.0.borrow().len(), 2);
+        }
     }
 
     fn test_visual_line(line: &str) -> VisualLine {

@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((input \"(list\\n (let ((map (make-sparse-keymap)) (branch (make-sparse-keymap))\\n       (leaf (make-sparse-keymap)))\\n   (define-key leaf [113] 'shared-command)\\n   (define-key branch [122] leaf)\\n   (define-key map [97] branch)\\n   (define-key map [98] branch)\\n   (define-key branch [99] map)\\n   (list (mapcar #'car (accessible-keymaps map))\\n         (where-is-internal 'shared-command (list map))))\\n (let ((map (make-keymap)) (parent (make-sparse-keymap))\\n       (branch (make-sparse-keymap)))\\n   (define-key branch [120] 'parent-command)\\n   (define-key parent [80] branch)\\n   (set-keymap-parent map parent)\\n   (list (mapcar #'car (accessible-keymaps map))\\n         (where-is-internal 'parent-command (list map))))\\n (let ((map (make-sparse-keymap)) (esc (make-keymap))\\n       (first (make-sparse-keymap)) (second (make-sparse-keymap)))\\n   (define-key first [120] 'meta-command)\\n   (define-key second [121] 'meta-command)\\n   (define-key esc [97] first)\\n   (define-key esc [98] second)\\n   (define-key map [27] esc)\\n   (define-key map [102] 'meta-command)\\n   (list (mapcar #'car (accessible-keymaps map))\\n         (mapcar #'car (accessible-keymaps map [27]))\\n         (where-is-internal 'meta-command (list map))))\\n (let ((first (make-sparse-keymap)) (second (make-sparse-keymap)))\\n   (define-key first [97 98] 'map-order-command)\\n   (define-key second [120] 'map-order-command)\\n   (where-is-internal 'map-order-command (list first second)))\\n (let ((map (make-sparse-keymap)))\\n   (define-key map [134217759] 'preferred-command)\\n   (define-key map [67108927] 'preferred-command)\\n   (define-key map [menu-bar sample item] '(menu-item \\\"Item\\\" preferred-command))\\n   (list (where-is-internal 'preferred-command (list map))\\n         (where-is-internal 'preferred-command (list map) t))))\\n\") (read (read-from-string input))) (prin1 (list (equal (string-trim (substring input (cdr read))) \"\") (eval (car read) t))))"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.393778833,
+  "stdout": "(t ((([] [98] [97] [98 122] [97 122]) ([98 122 113] [97 122 113])) (([] [80]) ([80 120])) (([] [27] [134217826] [134217825]) ([27] [27 97] [27 98]) ([102] [134217826 121] [134217825 120])) ([97 98] [120]) (([67108927] [134217759] [menu-bar sample item]) [134217759])))",
+  "stderr": "",
+  "fixture_sha256": "a7e76f834586c739b4374f11efdbd165948915204616dbe3bcded3d0b290615a"
+}

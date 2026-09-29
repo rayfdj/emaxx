@@ -1,0 +1,12 @@
+{
+  "source": 106,
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "driver": "validate-frame-snapshot-v2.py",
+  "change": "Only mutable graph objects enter cycle-detection set. Scalar words are still retained in the exact snapshot order. Existing behavior controls preserved; no selectors/expected outcomes changed."
+}

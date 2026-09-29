@@ -14,7 +14,7 @@ pub(crate) struct TerminalState {
     pub keyboard_coding: Option<String>,
     pub keyboard: std::collections::HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     pub pending_input: Vec<u8>,
-    pub top_frame: u64,
+    pub top_frame: Option<crate::lisp::types::FrameRef>,
     pub device: Option<Arc<TtyDevice>>,
 }
 
@@ -29,7 +29,7 @@ impl TerminalState {
             keyboard_coding: Some("no-conversion".into()),
             keyboard: Default::default(),
             pending_input: Vec::new(),
-            top_frame: 1,
+            top_frame: None,
             device: None,
         }
     }
@@ -421,16 +421,17 @@ impl Interpreter {
     }
 
     pub(crate) fn selected_terminal_id(&self) -> u64 {
-        self.selected_frame_state()
-            .and_then(|frame| frame.terminal)
+        self.selected_frame_id
+            .borrow()
+            .terminal
             .map_or(0, |terminal| terminal.id)
     }
 
     pub(crate) fn decode_terminal(&self, value: &Value) -> Option<TerminalRef> {
         let terminal = match value.kind() {
-            Kind::Nil => self.selected_frame_state()?.terminal?,
+            Kind::Nil => self.selected_frame_id.borrow().terminal?,
             Kind::Terminal(terminal) => terminal,
-            Kind::Frame(id) => self.frame_state(id)?.terminal?,
+            Kind::Frame(id) => id.borrow().terminal?,
             _ => return None,
         };
         terminal.borrow().live.then_some(terminal)
@@ -442,7 +443,7 @@ impl Interpreter {
 
     /// window.c stores the owning frame on every window, including internal
     /// and deleted windows. It must survive a frame switch and frame deletion.
-    pub(crate) fn window_frame_id(&self, id: u64) -> Option<u64> {
+    pub(crate) fn window_frame_id(&self, id: u64) -> Option<crate::lisp::types::FrameRef> {
         self.find_record(id)?
             .slots
             .get(crate::lisp::primitives::WINDOW_FRAME_SLOT)
@@ -531,7 +532,7 @@ impl Interpreter {
                     keyboard_coding: Some("no-conversion".into()),
                     keyboard,
                     pending_input: Vec::new(),
-                    top_frame: 0,
+                    top_frame: None,
                     device: Some(device),
                 },
             );
@@ -540,7 +541,10 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn new_terminal_frame(&mut self, object: TerminalRef) -> u64 {
+    pub(crate) fn new_terminal_frame(
+        &mut self,
+        object: TerminalRef,
+    ) -> crate::lisp::types::FrameRef {
         use crate::lisp::primitives as p;
         let terminal = object.borrow();
         let (width, height) = terminal
@@ -550,13 +554,8 @@ impl Interpreter {
                 (device.width, device.height)
             });
         drop(terminal);
-        let id = self
-            .frame_states
-            .iter()
-            .map(|frame| frame.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
         let buffer_id = self.selected_window_buffer_id();
         let point = self
             .get_buffer_by_id(buffer_id)
@@ -585,9 +584,6 @@ impl Interpreter {
             else {
                 unreachable!()
             };
-            self.find_record_mut(window_id)
-                .expect("allocated window has a record")
-                .slots[p::WINDOW_FRAME_SLOT] = Value::Frame(id);
             window_id
         };
         let root = make_window(
@@ -602,19 +598,18 @@ impl Interpreter {
             Value::symbol(p::MINIBUFFER_WINDOW_KIND),
             (width, 1, 0, height - 1),
         );
-        self.frame_states.insert(
-            0,
+        let frame = crate::lisp::types::FrameRef::new(
+            Value::string(&format!("F{id}")),
             super::FrameState {
                 id,
                 terminal: Some(object),
                 face_hash_table: None,
-                root_window_id: root.id,
-                selected_window_id: root.id,
-                minibuffer_window_id: mini.id,
-                old_selected_window_id: None,
+                local_faces: Vec::new(),
+                root_window: Some(root),
+                selected_window: Some(root),
+                minibuffer_window: Some(mini),
+                old_selected_window: None,
                 tty_sized: true,
-                name: Value::string(&format!("F{id}")),
-                live: true,
                 width,
                 height,
                 text_height: height - margin,
@@ -633,38 +628,42 @@ impl Interpreter {
                 was_invisible: false,
             },
         );
-        self.copy_frame_faces(self.selected_frame_id, id);
-        object.borrow_mut().top_frame = id;
-        if object.id == 0 {
-            PRIMARY_TOP_FRAME.set(id);
+        self.frame_states.insert(0, frame);
+        for window in [root, mini] {
+            self.find_record_mut(window)
+                .expect("allocated window has state")
+                .slots[p::WINDOW_FRAME_SLOT] = Value::Frame(frame);
         }
-        id
+        self.copy_frame_faces(self.selected_frame_id, frame);
+        object.borrow_mut().top_frame = Some(frame);
+        if object.id == 0 && TTY_ROUTE_ACTIVE.get() {
+            PRIMARY_TOP_FRAME.set(Some(frame));
+        }
+        frame
     }
 
-    pub(crate) fn note_selected_frame(&mut self, id: u64) {
+    pub(crate) fn note_selected_frame(&mut self, id: crate::lisp::types::FrameRef) {
         if id != self.selected_frame_id {
             self.old_selected_frame_id = self.selected_frame_id;
             self.selected_frame_id = id;
         }
-        let terminal = self
-            .frame_state(id)
-            .expect("decoded frame has state")
-            .terminal
-            .expect("live frame terminal");
+        let terminal = id.borrow().terminal.expect("live frame terminal");
         let mut state = terminal.borrow_mut();
-        state.top_frame = id;
-        if terminal.id == 0 {
-            PRIMARY_TOP_FRAME.set(id);
+        state.top_frame = Some(id);
+        if terminal.id == 0 && TTY_ROUTE_ACTIVE.get() {
+            PRIMARY_TOP_FRAME.set(Some(id));
         }
         let device = state
             .device
             .as_ref()
             .map(Arc::downgrade)
             .unwrap_or_default();
-        OUTPUT_DEVICE.with_borrow_mut(|output| *output = device);
+        if TTY_ROUTE_ACTIVE.get() {
+            OUTPUT_DEVICE.with_borrow_mut(|output| *output = device);
+        }
     }
 
-    pub(crate) fn retire_frame(&mut self, id: u64) {
+    pub(crate) fn retire_frame(&mut self, id: crate::lisp::types::FrameRef) {
         use crate::lisp::primitives as p;
         let windows = self.records_of_kind(super::RecordKind::Window, |record| {
             record.slots.get(p::WINDOW_FRAME_SLOT) == Some(&Value::Frame(id))
@@ -684,27 +683,27 @@ impl Interpreter {
                 record.slots[slot] = Value::Nil;
             }
         }
-        let frame = self.frame_state_mut(id).expect("decoded frame has state");
-        frame.live = false;
-        frame.root_window_id = 0;
+        let mut frame = id.borrow_mut();
+        frame.root_window = None;
         let terminal = frame.terminal.take().expect("live frame terminal");
-        if let Some(replacement) = self
+        drop(frame);
+        self.frame_states.retain(|object| *object != id);
+        let replacement = self
             .frame_states
             .iter()
             .find(|frame| {
-                frame.live
+                frame.is_live()
                     && frame
+                        .borrow()
                         .terminal
                         .is_some_and(|object| object.ptr_eq(&terminal))
             })
-            .map(|frame| frame.id)
-        {
-            let mut state = terminal.borrow_mut();
-            if state.top_frame == id {
-                state.top_frame = replacement;
-                if terminal.id == 0 {
-                    PRIMARY_TOP_FRAME.set(replacement);
-                }
+            .copied();
+        let mut state = terminal.borrow_mut();
+        if state.top_frame == Some(id) {
+            state.top_frame = replacement;
+            if terminal.id == 0 && TTY_ROUTE_ACTIVE.get() {
+                PRIMARY_TOP_FRAME.set(replacement);
             }
         }
     }
@@ -712,6 +711,7 @@ impl Interpreter {
     pub(crate) fn retire_terminal(&mut self, terminal: TerminalRef) {
         let mut state = terminal.borrow_mut();
         state.live = false;
+        state.top_frame = None;
         state.name.clear();
         state.keyboard.clear();
         state.pending_input = Vec::new();
@@ -883,7 +883,7 @@ impl Interpreter {
             let decoded = crate::lisp::primitives::decode_text_bytes(self, &bytes, &coding)?;
             events.push(Value::list([
                 Value::symbol("switch-frame"),
-                Value::Frame(frame),
+                frame.map(Value::Frame).unwrap_or(Value::Nil),
             ]));
             let string = crate::lisp::primitives::string_like(&Value::string(&decoded))
                 .expect("decoded text is a Lisp string");
@@ -911,11 +911,28 @@ thread_local! {
     // A non-owning route for the existing renderer and its nested echo/menu
     // callbacks. The terminal record remains the sole descriptor owner.
     static OUTPUT_DEVICE: std::cell::RefCell<std::sync::Weak<TtyDevice>> = const { std::cell::RefCell::new(std::sync::Weak::new()) };
-    static PRIMARY_TOP_FRAME: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    static TTY_ROUTE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PRIMARY_TOP_FRAME: std::cell::Cell<Option<crate::lisp::types::FrameRef>> = const { std::cell::Cell::new(None) };
 }
 
-pub(crate) fn primary_top_frame() -> u64 {
+pub(crate) fn primary_top_frame() -> Option<crate::lisp::types::FrameRef> {
     PRIMARY_TOP_FRAME.get()
+}
+
+pub(crate) fn mark_frame_route(mark: &mut dyn FnMut(&Value)) {
+    if let Some(frame) = PRIMARY_TOP_FRAME.get() {
+        mark(&Value::Frame(frame));
+    }
+}
+
+pub(crate) fn activate_frame_route() {
+    TTY_ROUTE_ACTIVE.set(true);
+}
+
+pub(crate) fn clear_frame_route() {
+    TTY_ROUTE_ACTIVE.set(false);
+    PRIMARY_TOP_FRAME.set(None);
+    OUTPUT_DEVICE.with_borrow_mut(|output| *output = std::sync::Weak::new());
 }
 
 pub(crate) fn output() -> std::io::Result<Box<dyn std::io::Write>> {

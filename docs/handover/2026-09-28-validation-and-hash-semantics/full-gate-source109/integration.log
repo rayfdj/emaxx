@@ -1,0 +1,98 @@
+   Compiling emaxx v30.2.0 (/private/tmp/emaxx-runtime-audit-followup/emaxx)
+    Finished `gate` profile [optimized] target(s) in 6m 17s
+     Running tests/cli.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/cli-5bec10908f93e56a)
+
+running 20 tests
+test batch_accepts_gnu_quick_and_long_load_options ... ok
+test batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b ... ok
+test batch_child_load_path_ignores_the_test_directory_like_lread ... ok
+test batch_eval_error_uses_gnu_stderr_and_exit_status ... ok
+test batch_eval_interns_the_symbols_it_reads_like_gnu ... ok
+test batch_exit_and_restart_preserve_a_childs_ignored_hangup_like_gnu ... ok
+test batch_exit_terminates_owned_children_like_gnu ... ok
+test batch_funcall_receives_remaining_file_arguments ... ok
+test batch_kill_emacs_runs_hooks_and_exits_without_lisp_unwinding ... ok
+test batch_large_lists_complete_and_release_without_exhausting_the_stack ... ok
+test batch_load_propagates_kill_emacs_instead_of_reporting_a_load_error ... ok
+test batch_preserves_eval_and_load_action_order ... ok
+test batch_read_string_consumes_a_line_from_piped_stdin ... ok
+test batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor ... ok
+test batch_symbol_readers_answer_piped_stdin_like_gnu ... ok
+test dump_file_process_round_trip_or_explicit_native_image_limit ... ok
+test empty_batch_invocation_succeeds_like_gnu_emacs ... ok
+test make_fingerprint_replaces_the_default_pattern_with_the_file_s_digest ... ok
+test sigusr_events_follow_gnu_special_event_map_semantics ... ok
+test startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 34.87s
+
+     Running tests/cli_parity.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/cli_parity-55f9c3d52de71aa6)
+
+running 6 tests
+test c_owned_switches_and_startup_arguments_agree_with_gnu ... ok
+test dumped_fingerprint_survives_copying_and_resigning_the_executable ... ok
+test fingerprint_is_the_executable_s_own ... ok
+test help_text_is_emacs_c_usage_message ... ok
+test script_with_equals_rewrites_the_argument_before_it_like_emacs_c ... ok
+test version_report_is_emacs_c_main_s ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.88s
+
+     Running tests/ert_runner.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/ert_runner-c1ddb246bfbfa635)
+
+running 3 tests
+test ert_buffer_tests ... a message
+a message
+ok
+test ert_cmds_tests ... ok
+test ert_editfns_tests ... 
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.36s
+
+     Running tests/native_comp_identity.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/native_comp_identity-9c8d4c10c16f1b61)
+
+running 1 test
+test unchanged_gnu_sources_produce_identical_native_artifacts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 89.31s
+
+     Running tests/native_thread_continuations.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/native_thread_continuations-07153a4a03a2646a)
+
+running 1 test
+test thread_suspension_and_signals_match_gnu_with_real_native_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+     Running tests/package_lifecycle.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/package_lifecycle-043e4d0eefe4ea8e)
+
+running 5 tests
+test local_package_archive_lifecycle_matches_gnu_across_restarts_and_failures ... ok
+test local_package_vc_failures_match_gnu_without_activation_state ... ok
+test local_package_vc_lifecycle_matches_gnu_across_restarts_and_deletion ... ok
+test local_package_vc_upgrade_matches_gnu_and_survives_restart ... ok
+test local_use_package_workflows_match_gnu_across_defer_and_failure ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 114.65s
+
+     Running tests/runtime_ownership.rs (/private/tmp/emaxx-runtime-audit-validation/gate/deps/runtime_ownership-ca1a88a7f7feb9f7)
+
+running 3 tests
+test public_editor_calls_serialize_allocation_collection_and_shutdown ... Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+Bare impure Emacs (standard Lisp code not loaded)
+ok
+test public_ert_entry_preserves_complete_inventory_and_unexpected_failures ... ok
+test public_ert_entry_reports_top_level_errors_as_owned_host_data ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.28s
+

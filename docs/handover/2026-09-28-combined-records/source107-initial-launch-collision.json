@@ -1,0 +1,15 @@
+{
+  "failure": "release and ordinary validation drivers exited1 before launching Cargo: AssertionError source107-base.json already exists. Three driver processes raced at first snapshot creation.",
+  "exit_codes": {
+    "release": 1,
+    "ordinary": 1
+  },
+  "repair": "Wait for initial snapshot creation, verify all immutable inputs, then relaunch the unstarted stages. No software change and no test failure suppressed.",
+  "checks": {
+    "manifest_matches_source": true,
+    "patch_matches": true,
+    "fixture_copy_matches": true,
+    "release_not_started": true,
+    "ordinary_not_started": true
+  }
+}

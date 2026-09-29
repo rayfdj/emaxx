@@ -166,6 +166,11 @@ pub struct Buffer {
     /// When true, suppress creation/kill buffer hooks for this buffer.
     pub inhibit_hooks: bool,
 
+    /// buffer.h's Lisp field and independent per-buffer local flag.
+    /// A C bset changes the field without creating a Lisp local binding.
+    pub(crate) text_conversion_style: Value,
+    pub(crate) text_conversion_style_is_local: bool,
+
     /// Whether positions in this buffer are interpreted as multibyte character positions.
     multibyte: bool,
 }
@@ -204,6 +209,8 @@ impl Clone for Buffer {
             text_properties: self.text_properties.clone(),
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
+            text_conversion_style: self.text_conversion_style,
+            text_conversion_style_is_local: self.text_conversion_style_is_local,
             multibyte: self.multibyte,
         }
     }
@@ -386,6 +393,8 @@ pub(crate) struct BufferImage {
     pub(crate) text_properties: Vec<TextPropertySpan>,
     pub(crate) extended_chars: Vec<(usize, u32)>,
     pub(crate) inhibit_hooks: bool,
+    pub(crate) text_conversion_style: Value,
+    pub(crate) text_conversion_style_is_local: bool,
     pub(crate) multibyte: bool,
 }
 
@@ -465,6 +474,8 @@ impl Buffer {
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
             inhibit_hooks: false,
+            text_conversion_style: Value::Nil,
+            text_conversion_style_is_local: false,
             multibyte: true,
         }
     }
@@ -503,6 +514,8 @@ impl Buffer {
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
             inhibit_hooks: false,
+            text_conversion_style: Value::Nil,
+            text_conversion_style_is_local: false,
             multibyte: true,
         }
     }
@@ -1202,6 +1215,7 @@ impl Buffer {
     /// The undo-list view cache holds a materialized Lisp value built from
     /// template cells, so it is dropped rather than rewritten.
     pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
+        self.text_conversion_style = copy(&self.text_conversion_style);
         for span in &mut self.text_properties {
             for (_, value) in &mut span.props {
                 *value = copy(value);
@@ -1243,6 +1257,7 @@ impl Buffer {
     /// positions and file metadata are native data, while properties, undo
     /// payloads and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        visit(&self.text_conversion_style);
         if let Some(marker) = self.mark_object() {
             visit(&Value::Marker(marker));
         }
@@ -2013,6 +2028,8 @@ impl Buffer {
         self.undo_disabled = false;
         self.point_before_last_boundary = None;
         self.text_properties = Vec::new();
+        self.text_conversion_style = Value::Nil;
+        self.text_conversion_style_is_local = false;
         self.extended_chars = Vec::new();
         self.overlays.clear();
         // Fkill_buffer detaches only markers whose buffer is dying. Its
@@ -2065,6 +2082,8 @@ impl Buffer {
             text_properties: self.text_properties.clone(),
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
+            text_conversion_style: self.text_conversion_style,
+            text_conversion_style_is_local: self.text_conversion_style_is_local,
             multibyte: self.multibyte,
         }
     }
@@ -2103,6 +2122,8 @@ impl Buffer {
             text_properties: parts.text_properties,
             extended_chars: parts.extended_chars,
             inhibit_hooks: parts.inhibit_hooks,
+            text_conversion_style: parts.text_conversion_style,
+            text_conversion_style_is_local: parts.text_conversion_style_is_local,
             multibyte: parts.multibyte,
         }
     }
@@ -2882,11 +2903,13 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right)) => left == right,
         (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),
-        (Kind::CharTable(left), Kind::CharTable(right))
-        | (Kind::Frame(left), Kind::Frame(right)) => left == right,
+        (Kind::CharTable(left), Kind::CharTable(right)) => left == right,
+        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
+        (Kind::Frame(left), Kind::Frame(right)) => left == right,
         (Kind::Terminal(left), Kind::Terminal(right)) => left.ptr_eq(&right),
         (Kind::Finalizer(left), Kind::Finalizer(right)) => left == right,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         (Kind::Unbound, Kind::Unbound) => true,
         _ => false,
     }

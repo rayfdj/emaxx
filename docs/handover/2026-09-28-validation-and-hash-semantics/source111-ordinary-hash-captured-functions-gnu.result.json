@@ -1,0 +1,10 @@
+{
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 0.19726995900000022,
+  "stdout_hex": "286f6c642d76616c756520616273656e74206f6c642d76616c75652074207420636f706965642d76616c756520302031203129",
+  "stderr_hex": "",
+  "expected_match": true,
+  "artifacts_unchanged": true,
+  "source_unchanged": true
+}

@@ -240,7 +240,7 @@ impl Interpreter {
                 let binding = cell.car.get();
                 tail = cell.cdr.get();
                 let symbol = binding.is_symbol()
-                    || (matches!(binding.kind(), Kind::Record(_))
+                    || (matches!(binding.kind(), Kind::SymbolWithPos(_))
                         && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                         && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                             .is_some());
@@ -268,7 +268,7 @@ impl Interpreter {
                 let binding = cell.car.get();
                 tail = cell.cdr.get();
                 let symbol = binding.is_symbol()
-                    || (matches!(binding.kind(), Kind::Record(_))
+                    || (matches!(binding.kind(), Kind::SymbolWithPos(_))
                         && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                         && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                             .is_some());
@@ -329,7 +329,7 @@ impl Interpreter {
             while let Kind::Cons(cell) = tail.kind() {
                 let binding = cell.car.get();
                 let symbol = binding.is_symbol()
-                    || (matches!(binding.kind(), Kind::Record(_))
+                    || (matches!(binding.kind(), Kind::SymbolWithPos(_))
                         && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                         && crate::lisp::primitives::symbol_with_pos_parts(self, &binding)
                             .is_some());

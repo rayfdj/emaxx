@@ -1,0 +1,3 @@
+lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots: test
+
+1 test, 0 benchmarks

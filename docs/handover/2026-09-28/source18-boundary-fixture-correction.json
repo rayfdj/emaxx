@@ -1,0 +1,15 @@
+{
+  "reason": "Remove one unmatched trailing close parenthesis from the new fixture. GNU --eval read only the first expression in earlier probes; the strict in-process test reader correctly rejected unread trailing text. The tested expression, cases, and expected output are unchanged.",
+  "before_sha256": "1fdd0bd1f8378621dc07b573a30b92eff7b2d3521c100766b710e2c2c446ada8",
+  "after_sha256": "4fbe769a336802eae90a85250e25549bcd63199b263dc3dbdbc2fe10604bb6c8",
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((source \"(mapcar (lambda (key) (let ((map (make-keymap))) (define-key map key 'binding) (list (lookup-key map key) (where-is-internal 'binding map 'non-ascii)))) '([27 27] [27 9] [27 67108961] [134217755] [201326689] [4194303] [1099511627873] [M-C-f9] [f9 27 27]))\\n\") (read (read-from-string source))) (prin1 (list (equal (string-trim (substring source (cdr read))) \"\") (eval (car read)))))"
+  ],
+  "exit_code": 0,
+  "stdout": "(t ((binding [134217755]) (binding [134217737]) (binding [201326689]) (binding [134217755]) (binding [201326689]) (binding [4194303]) (binding [97]) (binding [C-M-f9]) (binding [f9 134217755])))",
+  "stderr": ""
+}

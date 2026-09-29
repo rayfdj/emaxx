@@ -1,0 +1,22 @@
+{
+  "command": [
+    "python3",
+    "tools/core_runtime_perf.py",
+    "pilot",
+    "--source",
+    "/private/tmp/emaxx-runtime-gnu-20260928",
+    "--oracle",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "--emaxx",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx",
+    "--output",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source117-core-pilot-all",
+    "--diagnostic",
+    "--native-dir",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source117-core-native",
+    "--pilot-runner",
+    "both"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "qualification": "All 16 locked cases through normal editor entry points. One pilot sample each, no warmup; diagnostic only, unavailable counters remain unavailable. Full115macOS gate and source118 validation run concurrently; elapsed times diagnostic only, not the repeated parity certification."
+}

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar (lambda (event) (let ((map (make-keymap))) (define-key map (vector event) 'binding) (list (lookup-key map (vector event)) (lookup-key map (vector (car event))) (where-is-internal 'binding map 'non-ascii) (mapcar 'car (cddr map))))) '((4194304 . 97) (-1 . 97) (134217825 . 97))))"
+  ],
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "exit_code": 0,
+  "stdout": "((binding binding [4194304] (4194304)) (nil nil nil (268435455)) (nil nil nil (134217825)))",
+  "stderr": ""
+}

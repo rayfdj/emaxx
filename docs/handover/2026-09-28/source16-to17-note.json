@@ -1,0 +1,8 @@
+{
+  "time": "2026-09-27T18:19:34.781273+00:00",
+  "change": "Remove needless & from an already borrowed key argument after strict Clippy failure. No tests, fixtures, selectors, or expectations changed.",
+  "source16_build_finished_before_edit": true,
+  "source16_selected_binary": "source16-libtest",
+  "source16_selected_run_still_in_progress": true,
+  "source16_run_is_not_final_source17_evidence": true
+}

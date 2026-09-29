@@ -1,0 +1,22 @@
+(let ((symbols-with-pos-enabled nil))
+  (mapcar
+   (lambda (reader)
+     (mapcar
+      (lambda (text)
+        (let* ((characters (string-to-list text))
+               (events nil)
+               (stream (lambda (&optional character)
+                         (if character
+                             (progn (push (list 'unread character) events)
+                                    (push character characters))
+                           (let ((next (pop characters)))
+                             (push (list 'read next) events)
+                             next))))
+               (form (funcall reader stream)))
+          (list (if (symbol-with-pos-p form)
+                    (list (symbol-name (bare-symbol form))
+                          (symbol-with-pos-pos form))
+                  (if (symbolp form) (symbol-name form) form))
+                characters (nreverse events))))
+      '("alpha omega" "(17 29) tail" "\"α\" tail" "?x tail")))
+   '(read read-positioning-symbols)))

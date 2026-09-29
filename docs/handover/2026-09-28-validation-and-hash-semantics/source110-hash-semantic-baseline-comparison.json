@@ -1,0 +1,26 @@
+[
+  {
+    "fixture": "hash-copy-stored-codes",
+    "gnu_stdout": "((absent absent 1 1 t kept kept t) (absent absent 1 1 t kept kept t) (absent absent 1 1 t kept kept t))",
+    "gnu_exit": 0,
+    "emaxx_exit": 0,
+    "exact_stdout_match": false,
+    "source_and_artifacts_unchanged": true
+  },
+  {
+    "fixture": "hash-captured-functions",
+    "gnu_stdout": "(old-value absent old-value t t copied-value 0 1 1)",
+    "gnu_exit": 0,
+    "emaxx_exit": 255,
+    "exact_stdout_match": false,
+    "source_and_artifacts_unchanged": true
+  },
+  {
+    "fixture": "hash-captured-symbol-functions",
+    "gnu_stdout": "(kept absent absent kept 1)",
+    "gnu_exit": 0,
+    "emaxx_exit": 255,
+    "exact_stdout_match": false,
+    "source_and_artifacts_unchanged": true
+  }
+]

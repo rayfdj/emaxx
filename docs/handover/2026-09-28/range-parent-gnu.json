@@ -1,0 +1,12 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let* ((p (make-char-table nil 'parent)) (c (make-char-table nil nil))) (set-char-table-parent c p) (list (aref c 65) (char-table-range c 65) (char-table-range c '(65 . 66)) (char-table-range c '(65 . 64)) (let ((s (make-symbol \"bounds\"))) (put s 'char-table-extra-slots 11) (condition-case e (make-char-table s) (error e))))))"
+  ],
+  "exit_code": 0,
+  "stdout": "(parent parent nil nil (args-out-of-range 11 nil))",
+  "stderr": ""
+}

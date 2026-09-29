@@ -8,22 +8,12 @@ fn purify_table(interp: &Interpreter, env: &Env) -> Option<u64> {
     json::is_hash_table(interp, &Value::Record(id)).then_some(id.id)
 }
 
-fn hash_cons_lookup(
-    interp: &Interpreter,
-    table: Option<u64>,
-    value: &Value,
-    env: &Env,
-) -> Option<Value> {
-    table.and_then(|id| interp.equal_hash_lookup(id, value, env).flatten())
+fn hash_cons_lookup(interp: &Interpreter, value: &Value, env: &Env) -> Option<Value> {
+    purify_table(interp, env).and_then(|id| interp.equal_hash_lookup(id, value, env).flatten())
 }
 
-fn hash_cons_insert(
-    interp: &mut Interpreter,
-    table: Option<u64>,
-    value: Value,
-    env: &Env,
-) -> Value {
-    if let Some(id) = table {
+fn hash_cons_insert(interp: &mut Interpreter, value: Value, env: &Env) -> Value {
+    if let Some(id) = purify_table(interp, env) {
         interp.equal_hash_put(id, value, value, env);
     }
     value
@@ -32,29 +22,35 @@ fn hash_cons_insert(
 fn purecopy_cons_chain(
     interp: &mut Interpreter,
     value: &Value,
-    table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if is_vector_value(value) && vector_items(value)?.is_empty() {
         return Ok(*value);
     }
 
-    let mut source_cells = Vec::new();
+    let mut copied_cars = Vec::new();
     let mut cursor = *value;
     let tail = loop {
-        if let Some(cached) = hash_cons_lookup(interp, table, &cursor, env) {
+        if let Some(cached) = hash_cons_lookup(interp, &cursor, env) {
             break cached;
         }
         let Some((car, cdr)) = cursor.cons_values() else {
-            break purecopy_inner(interp, &cursor, table, env)?;
+            break interp.with_lisp_stack_roots(&copied_cars, |interp| {
+                purecopy_inner(interp, &cursor, env)
+            })?;
         };
-        source_cells.push((cursor, purecopy_inner(interp, &car, table, env)?));
+        // pure_cons captures both fields before copying either. The saved
+        // cdr and earlier copied cars must survive a message callback's GC.
+        let copied_car = interp.with_lisp_stack_roots(&(&copied_cars, cdr), |interp| {
+            purecopy_inner(interp, &car, env)
+        })?;
+        copied_cars.push(copied_car);
         cursor = cdr;
     };
 
     let mut copied_tail = tail;
-    for (_, copied_car) in source_cells.into_iter().rev() {
-        copied_tail = hash_cons_insert(interp, table, Value::cons(copied_car, copied_tail), env);
+    for copied_car in copied_cars.into_iter().rev() {
+        copied_tail = hash_cons_insert(interp, Value::cons(copied_car, copied_tail), env);
     }
     Ok(copied_tail)
 }
@@ -62,7 +58,6 @@ fn purecopy_cons_chain(
 fn purecopy_vector(
     interp: &mut Interpreter,
     value: &Value,
-    table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let items = vector_items(value)?;
@@ -71,18 +66,24 @@ fn purecopy_vector(
         // alloc.c:purecopy return it unchanged.
         return Ok(*value);
     }
-    let mut copied = Vec::with_capacity(items.len() + 1);
-    copied.push(Value::symbol("vector-literal"));
-    for item in items {
-        copied.push(purecopy_inner(interp, &item, table, env)?);
-    }
-    Ok(hash_cons_insert(interp, table, Value::list(copied), env))
+    // alloc.c:purecopy snapshots all fields with memcpy before recursively
+    // copying any of them. Our destination is still GC storage, so root it
+    // across callbacks; its fields keep both copied and pending values live.
+    let copied = Value::vector(items);
+    let Kind::Vector(vector) = copied.kind() else {
+        unreachable!("Value::vector creates an ordinary vector")
+    };
+    interp.with_lisp_stack_roots(&copied, |interp| {
+        for (index, item) in vector.slots().enumerate() {
+            vector.set(index, purecopy_inner(interp, &item, env)?);
+        }
+        Ok(hash_cons_insert(interp, copied, env))
+    })
 }
 
 fn purecopy_hash_table(
     interp: &mut Interpreter,
     id: u64,
-    table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let source = interp.record_value(id);
@@ -95,18 +96,22 @@ fn purecopy_hash_table(
     if weakness.is_truthy() || !copy_to_pure {
         return Ok(source);
     }
-    if let Some(cached) = hash_cons_lookup(interp, table, &source, env) {
+    if let Some(cached) = hash_cons_lookup(interp, &source, env) {
         return Ok(cached);
     }
 
     let (_, entries) = json::hash_table_entries(interp, &source)
         .ok_or_else(|| LispError::TypeError("hash-table".into(), format!("record<{id}>")))?;
     let mut copied_entries = Vec::with_capacity(entries.len());
-    for (key, value) in entries {
-        copied_entries.push((
-            purecopy_inner(interp, &key, table, env)?,
-            purecopy_inner(interp, &value, table, env)?,
-        ));
+    for (key, value) in &entries {
+        let copied_key = interp.with_lisp_stack_roots(&(&entries, &copied_entries), |interp| {
+            purecopy_inner(interp, key, env)
+        })?;
+        let copied_value = interp
+            .with_lisp_stack_roots(&((&entries, &copied_entries), copied_key), |interp| {
+                purecopy_inner(interp, value, env)
+            })?;
+        copied_entries.push((copied_key, copied_value));
     }
 
     let copied = interp.copy_record(id)?;
@@ -115,22 +120,12 @@ fn purecopy_hash_table(
         unreachable!("copy_record preserves the hash-table representation")
     };
     interp.mark_hash_table_immutable(copied_id.id);
-    Ok(hash_cons_insert(
-        interp,
-        table,
-        Value::Record(copied_id),
-        env,
-    ))
+    Ok(hash_cons_insert(interp, Value::Record(copied_id), env))
 }
 
-fn purecopy_record(
-    interp: &mut Interpreter,
-    id: u64,
-    table: Option<u64>,
-    env: &mut Env,
-) -> Result<Value, LispError> {
+fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<Value, LispError> {
     let source = interp.record_value(id);
-    if let Some(cached) = hash_cons_lookup(interp, table, &source, env) {
+    if let Some(cached) = hash_cons_lookup(interp, &source, env) {
         return Ok(cached);
     }
     let record = interp
@@ -138,12 +133,9 @@ fn purecopy_record(
         .cloned()
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
     if record.kind == crate::lisp::eval::RecordKind::HashTable {
-        return purecopy_hash_table(interp, id, table, env);
+        return purecopy_hash_table(interp, id, env);
     }
-    if !matches!(
-        record.kind,
-        crate::lisp::eval::RecordKind::Record | crate::lisp::eval::RecordKind::Closure
-    ) {
+    if record.kind != crate::lisp::eval::RecordKind::Closure {
         return Err(LispError::Signal(format!(
             "Don't know how to purify: {} ({:?}, {:?})",
             source.type_name(),
@@ -152,41 +144,30 @@ fn purecopy_record(
         )));
     }
 
-    let type_tag = purecopy_inner(interp, &record.type_tag, table, env)?;
     let mut slots = Vec::with_capacity(record.slots.len());
-    for slot in record.slots {
-        slots.push(purecopy_inner(interp, &slot, table, env)?);
+    for slot in &record.slots {
+        let copied = interp.with_lisp_stack_roots(&(&record.slots, &slots), |interp| {
+            purecopy_inner(interp, slot, env)
+        })?;
+        slots.push(copied);
     }
     let copied = interp.copy_record(id)?;
     let Kind::Record(copied_id) = copied.kind() else {
         unreachable!("copy_record preserves the record representation")
     };
-    if record.kind == crate::lisp::eval::RecordKind::Record {
-        interp.retag_record(copied_id.id, type_tag)?;
-    }
     interp
         .find_record_mut(copied_id)
         .expect("copied record remains live")
         .slots = slots;
-    Ok(hash_cons_insert(
-        interp,
-        table,
-        Value::Record(copied_id),
-        env,
-    ))
+    Ok(hash_cons_insert(interp, Value::Record(copied_id), env))
 }
 
 fn purecopy_inner(
     interp: &mut Interpreter,
     value: &Value,
-    table: Option<u64>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record|
-            record.kind == crate::lisp::eval::RecordKind::SymbolWithPos))
-        && symbols_with_pos_enabled(interp, env)
-    {
+    if matches!(value.kind(), Kind::SymbolWithPos(_)) && symbols_with_pos_enabled(interp, env) {
         // SYMBOLP includes PVEC_SYMBOL_WITH_POS while this flag is active,
         // so alloc.c:Fpurecopy returns it unchanged with ordinary symbols.
         return Ok(*value);
@@ -209,7 +190,19 @@ fn purecopy_inner(
         | Kind::Overlay(_) => return Ok(*value),
         _ => {}
     }
-    if let Some(cached) = hash_cons_lookup(interp, table, value, env) {
+    if matches!(value.kind(), Kind::StringObject(state) if !state.borrow().props.is_empty()) {
+        // A callback may detach this string from the original graph before
+        // collecting. The message's formatted string is a different object.
+        interp.with_lisp_stack_roots(value, |interp| {
+            super::dispatch::display::message_with_string(
+                interp,
+                "Dropping text-properties while making string `%s' pure",
+                *value,
+                env,
+            )
+        })?;
+    }
+    if let Some(cached) = hash_cons_lookup(interp, value, env) {
         return Ok(cached);
     }
 
@@ -230,24 +223,43 @@ fn purecopy_inner(
                 )
             }
         }
-        Kind::Vector(_) => return purecopy_vector(interp, value, table, env),
+        Kind::Vector(_) => return purecopy_vector(interp, value, env),
         Kind::Cons(_) if is_vector_value(value) => {
-            return purecopy_vector(interp, value, table, env);
+            return purecopy_vector(interp, value, env);
         }
-        Kind::Cons(_) => return purecopy_cons_chain(interp, value, table, env),
+        Kind::Cons(_) => return purecopy_cons_chain(interp, value, env),
         Kind::Lambda(lambda) => {
             let slots = interp.interpreted_closure_slots(&lambda);
             let mut copied_slots = Vec::with_capacity(slots.len());
-            for slot in slots {
-                copied_slots.push(purecopy_inner(interp, &slot, table, env)?);
+            for slot in &slots {
+                let copied = interp.with_lisp_stack_roots(&(&slots, &copied_slots), |interp| {
+                    purecopy_inner(interp, slot, env)
+                })?;
+                copied_slots.push(copied);
             }
             interp.make_interpreted_closure_value(&copied_slots)?
         }
-        Kind::Record(id) => return purecopy_record(interp, id.id, table, env),
+        Kind::LispRecord(record) => {
+            let copy = record.shallow_copy();
+            // As for vectors, snapshot before callbacks and keep every
+            // copied or pending field live in our collectable destination.
+            interp.with_lisp_stack_roots(&Value::LispRecord(copy), |interp| {
+                for (index, field) in copy.slots().enumerate() {
+                    copy.set(index, purecopy_inner(interp, &field, env)?);
+                }
+                Ok::<Value, LispError>(Value::LispRecord(copy))
+            })?
+        }
+        Kind::Record(id) => {
+            return interp
+                .with_lisp_stack_roots(value, |interp| purecopy_record(interp, id.id, env));
+        }
         Kind::Buffer(_)
         | Kind::CharTable(_)
+        | Kind::SubCharTable(_)
         | Kind::Frame(_)
         | Kind::Terminal(_)
+        | Kind::SymbolWithPos(_)
         | Kind::Finalizer(_)
         | Kind::ReaderForm(_)
         | Kind::Unbound => {
@@ -264,7 +276,7 @@ fn purecopy_inner(
         | Kind::Marker(_)
         | Kind::Overlay(_) => unreachable!("returned before hash-cons lookup"),
     };
-    Ok(hash_cons_insert(interp, table, copied, env))
+    Ok(hash_cons_insert(interp, copied, env))
 }
 
 /// alloc.c:Fpurecopy.  GNU enables this while constructing the dumped Lisp
@@ -278,7 +290,9 @@ pub(crate) fn purecopy_value(
     if purify.is_nil() {
         return Ok(*value);
     }
-    purecopy_inner(interp, value, purify_table(interp, env), env)
+    // GNU reads Vpurify_flag again at each hash lookup and insertion. A
+    // redisplay callback can enable, disable or replace hash consing midway.
+    interp.with_lisp_stack_roots(value, |interp| purecopy_inner(interp, value, env))
 }
 
 #[cfg(test)]

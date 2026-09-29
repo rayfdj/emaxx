@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "seconds": 3602.724489212036,
+  "commit_before": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "commit_after": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "source_unchanged_after_execution": true
+}

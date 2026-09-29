@@ -1,0 +1,20 @@
+(mapcar
+ (lambda (reader)
+   (mapcar
+    (lambda (kind)
+      (let* ((chars (string-to-list (if (eq kind 'syntax) "?xy rest" "ab rest")))
+             (count 0)
+             (source (lambda (&optional character)
+                       (if character
+                           (if (eq kind 'unread)
+                               (signal 'file-error '("unread fault" 79))
+                             (push character chars))
+                         (setq count (1+ count))
+                         (when (and (eq kind 'read) (= count 3))
+                           (signal 'file-error '("read fault" 37)))
+                         (pop chars))))
+             (caught (condition-case error (funcall reader source)
+                       (error (if (eq kind 'syntax) (car error) error)))))
+        (list caught (concat chars) count)))
+    '(read unread syntax)))
+ '(read read-positioning-symbols))

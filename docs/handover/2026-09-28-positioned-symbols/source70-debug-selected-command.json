@@ -1,0 +1,25 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source70-debug-libtest",
+    "lisp::native_comp::runtime::tests::",
+    "lisp::bytecode::",
+    "lisp::reader::",
+    "positioned",
+    "positioning",
+    "symbol_with_pos",
+    "position_aware",
+    "lisp::primitives::pdumper::",
+    "value_ordering",
+    "byte_code_hot_loop",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-positioned-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "7ec354006ed1d9d6bea0223f395ff7b28efd8639fcdaf57f8f36f6a6dc55f5c8"
+}

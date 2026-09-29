@@ -94,8 +94,7 @@ pub(crate) fn run_pending_user_signal_events(
         let keymap = interp
             .lookup_var("special-event-map", env)
             .unwrap_or(Value::Nil);
-        let binding =
-            keymap_lookup_binding_exact_parts(interp, &keymap, std::slice::from_ref(&name))?;
+        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[Value::symbol(&name)])?;
         interp.set_variable("last-input-event", event, env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;
@@ -252,15 +251,11 @@ pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value.kind(), Kind::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
-pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
-    let Kind::Record(id) = value.kind() else {
+pub(crate) fn symbol_with_pos_parts(_interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
+    let Kind::SymbolWithPos(object) = value.kind() else {
         return None;
     };
-    let record = interp.find_record(id)?;
-    if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos || record.slots.len() < 2 {
-        return None;
-    }
-    Some((record.slots[0], record.slots[1].as_integer().ok()?))
+    Some((object.symbol(), object.position().as_fixnum().ok()?))
 }
 
 #[cfg(test)]
@@ -757,14 +752,14 @@ pub(crate) fn parse_interactive_string(
 
 // Terminal-driven event input, installed by the tty frontend for the
 // duration of an interactive session.  The reader blocks on the terminal
-// and returns one key event, or `None' for C-g; without a reader the
+// and returns one event, or `None' for C-g; without a reader the
 // queued-events contract below is unchanged.
 thread_local! {
     static TTY_EVENT_READER: std::cell::RefCell<Option<TtyEventReader>> =
         const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) type TtyEventReader = Box<dyn FnMut() -> Option<Value>>;
+pub(crate) type TtyEventReader = Box<dyn FnMut(&mut Interpreter) -> Option<Value>>;
 
 // A non-blocking companion to the reader: wait briefly for one event and
 // answer None when the terminal stays quiet.  Blocking reads poll
@@ -778,7 +773,7 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-pub(crate) type TtyEventPoller = Box<dyn FnMut() -> Option<Option<Value>>>;
+pub(crate) type TtyEventPoller = Box<dyn FnMut(&mut Interpreter) -> Option<Option<Value>>>;
 
 pub(crate) fn set_tty_event_reader(reader: Option<TtyEventReader>) {
     TTY_EVENT_READER.with_borrow_mut(|slot| *slot = reader);
@@ -788,16 +783,24 @@ pub(crate) fn set_tty_event_poller(poller: Option<TtyEventPoller>) {
     TTY_EVENT_POLLER.with_borrow_mut(|slot| *slot = poller);
 }
 
-fn read_via_tty_event_reader(cursor_in_echo_area: bool) -> Option<Option<Value>> {
+fn read_via_tty_event_reader(
+    interp: &mut Interpreter,
+    cursor_in_echo_area: bool,
+) -> Option<Option<Value>> {
     TTY_CURSOR_IN_ECHO_AREA.set(cursor_in_echo_area);
-    let result = TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()));
+    let result =
+        TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader(interp)));
     TTY_CURSOR_IN_ECHO_AREA.set(false);
     result
 }
 
-fn poll_via_tty_event_poller(cursor_in_echo_area: bool) -> Option<Option<Option<Value>>> {
+fn poll_via_tty_event_poller(
+    interp: &mut Interpreter,
+    cursor_in_echo_area: bool,
+) -> Option<Option<Option<Value>>> {
     TTY_CURSOR_IN_ECHO_AREA.set(cursor_in_echo_area);
-    let result = TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller()));
+    let result =
+        TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller(interp)));
     TTY_CURSOR_IN_ECHO_AREA.set(false);
     result
 }
@@ -1466,10 +1469,7 @@ pub(crate) fn command_error_echo_text(
                 std::slice::from_ref(&data),
             )
             .ok()
-            .and_then(|value| match value.kind() {
-                Kind::String(text) => Some(text.to_string()),
-                _ => None,
-            })
+            .and_then(|value| string_like(&value).map(|text| text.text))
             .unwrap_or_else(|| format!("{data}"))
         }
         LispErrorKind::Signal(text) => text.clone(),
@@ -1550,7 +1550,7 @@ pub(crate) fn pop_unread_command_event_value(
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
-        while let Some(step) = poll_via_tty_event_poller(cursor_in_echo_area) {
+        while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
             match step {
                 None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
                 Some(Some(event)) => {
@@ -1593,7 +1593,7 @@ pub(crate) fn pop_unread_command_event_value(
                 }
             }
         }
-        if let Some(read) = read_via_tty_event_reader(cursor_in_echo_area) {
+        if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
             return match read {
                 Some(event) => {
                     record_external_input_event(interp, &event, env);
@@ -1922,7 +1922,7 @@ pub(crate) fn read_key_sequence_event(
         if is_mouse_down_event(&event) {
             let event_name =
                 input_event_symbol(&event).expect("mouse-down events have a symbolic head");
-            let key_parts = vec![event_name];
+            let key_parts = vec![Value::symbol(&event_name)];
             let mut binding = Value::Nil;
             for map in active_command_keymaps(interp, env)? {
                 binding = keymap_lookup_sequence_value_with_default(
@@ -1935,7 +1935,7 @@ pub(crate) fn read_key_sequence_event(
             // bindings.el installs this in GNU's dumped global map.  Keep
             // the file-less bootstrap fallback aligned without treating all
             // mouse-down events as bound.
-            if binding.is_nil() && key_parts == ["down-mouse-1"] {
+            if binding.is_nil() && key_parts == [Value::symbol("down-mouse-1")] {
                 binding = Value::Symbol("mouse-drag-region".into());
             }
             if binding.is_nil() {
@@ -2341,7 +2341,7 @@ pub(crate) fn read_tty_event_with_timeout(
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
-        let Some(step) = poll_via_tty_event_poller(cursor_in_echo_area) else {
+        let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) else {
             return Ok(None);
         };
         match step {
@@ -2511,49 +2511,23 @@ pub(crate) fn tty_menu_pane_from_keymap(
     let mut items = Vec::new();
     let mut width = 0usize;
     for (key, caption, def, enabled) in raw {
-        // parse_menu_item's equivalent-key hint: the first non-menu
-        // binding of the command, through the real where-is machinery
-        // (a [menu-bar ...] or [open]-style menu path is not a key).
+        // keyboard.c:parse_menu_item requests FIRSTONLY=t. That applies
+        // the preferred-modifier rules and rejects menu paths; taking
+        // the first entry of the complete binding list is different.
         let hint = if matches!(def.kind(), Kind::Symbol(_)) {
-            super::call(interp, "where-is-internal", std::slice::from_ref(&def), env)
-                .ok()
-                .and_then(|keys| keys.to_vec().ok())
-                .and_then(|keys| {
-                    // GNU prefers a typed key sequence (its where-is
-                    // sorts ASCII sequences first) and never shows a
-                    // menu path as the equivalent key.
-                    let event_kinds = |key: &Value| {
-                        key.to_vec()
-                            .ok()
-                            .map(|events| events.iter().skip(1).cloned().collect::<Vec<_>>())
-                            .unwrap_or_default()
-                    };
-                    let is_menu_path = |key: &Value| {
-                        matches!(
-                            event_kinds(key).first().map(|v| v.kind()),
-                            Some(Kind::Symbol(head))
-                                if head == "menu-bar"
-                                    || head == "tool-bar"
-                                    || head == "tab-bar"
-                                    || head == "mode-line"
-                        )
-                    };
-                    let typed = keys.iter().find(|key| {
-                        event_kinds(key)
-                            .first()
-                            .is_some_and(|event| matches!(event.kind(), Kind::Integer(_)))
-                    });
-                    typed
-                        .or_else(|| keys.iter().find(|key| !is_menu_path(key)))
-                        .cloned()
-                })
-                .and_then(|key| {
-                    super::call(interp, "key-description", &[key], env)
-                        .ok()
-                        .and_then(|description| {
-                            crate::lisp::primitives::string_text(&description).ok()
-                        })
-                })
+            super::call(
+                interp,
+                "where-is-internal",
+                &[def, Value::Nil, Value::T],
+                env,
+            )
+            .ok()
+            .filter(|key| !key.is_nil())
+            .and_then(|key| {
+                super::call(interp, "key-description", &[key], env)
+                    .ok()
+                    .and_then(|description| crate::lisp::primitives::string_text(&description).ok())
+            })
         } else {
             None
         };

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (mapcar\n    (lambda (codes)\n      (let* ((characters (append codes '(32 116 97 105 108)))\n             (stream (lambda (&optional character)\n                       (if character (push character characters)\n                         (pop characters))))\n             (form (funcall reader stream))\n             (name (symbol-name (bare-symbol form))))\n        (list (multibyte-string-p name) (string-to-list name)\n              (and (symbol-with-pos-p form) (symbol-with-pos-pos form))\n              characters)))\n    '((945) (233) (955 92 945) (35 58 945) (65 1048575))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.7150158339999999,
+  "input_sha256": "41cd0e8afa59ea5e8ae1d120688ecc00ff041860378305eebe446a397e933c4e",
+  "binary_sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+  "stdout_hex": "28282874202839343529206e696c206e696c29202874202832333329206e696c206e696c2920287420283935352039343529206e696c206e696c29202874202839343529206e696c206e696c2920287420283635203130343835373529206e696c206e696c292920282874202839343529206e696c206e696c29202874202832333329206e696c206e696c2920287420283935352039343529206e696c206e696c29202874202839343529206e696c206e696c2920287420283635203130343835373529206e696c206e696c292929",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source72. GNU source-matched diagnostics only, not pinned or frozen."
+}

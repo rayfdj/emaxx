@@ -1,0 +1,13 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list (where-is-internal 'undo-redo nil t) (mapcar #'key-description (where-is-internal 'undo-redo)) (key-description [134217759]) (key-description [67108927]) (lookup-key global-map [134217759]) (lookup-key global-map [67108927])))"
+  ],
+  "exit_code": 0,
+  "stdout": "([134217759] (\"C-?\" \"C-M-_\" \"<menu-bar> <edit> <undo-redo>\") \"C-M-_\" \"C-?\" undo-redo undo-redo)",
+  "stderr": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+}

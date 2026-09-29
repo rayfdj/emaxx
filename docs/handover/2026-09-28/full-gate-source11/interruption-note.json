@@ -1,0 +1,8 @@
+{
+  "actor": "assistant",
+  "reason": "GNU char_table_ref_and_range scans adjacent nodes and exposes lazy decompression via structural equality. The source11 value-only shortcut failed to perform this work. Stop obsolete gate before new regression and repair.",
+  "completed_groups": [],
+  "interrupted_group": "eval_01",
+  "is_full_pass": false,
+  "raw_summary_note": "The runner uses generic interrupted by user text; no user requested this interruption."
+}

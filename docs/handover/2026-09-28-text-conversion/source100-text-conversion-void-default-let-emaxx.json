@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source100-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let (states)\n  (set-default 'text-conversion-style '(default-263))\n  (with-temp-buffer\n    (let ((text-conversion-style '(temporary-269)))\n      (makunbound 'text-conversion-style)\n      (push (list 'void (boundp 'text-conversion-style)\n                  (default-boundp 'text-conversion-style)\n                  (local-variable-p 'text-conversion-style)\n                  (assq 'text-conversion-style (buffer-local-variables))) states))\n    (push (list 'restored text-conversion-style\n                (default-value 'text-conversion-style)\n                (local-variable-p 'text-conversion-style)\n                (local-variable-if-set-p 'text-conversion-style)\n                (assq 'text-conversion-style (buffer-local-variables))) states))\n  (nreverse states))\n)"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "input_identities": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source100-ordinary-emaxx": "5ba57d05946ba789f42c09fe331e3f9025cded07ef83408ff74cd0ad8843dd90",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source100-ordinary-emaxx.pdmp": "0caae6ab8f6dbce1bd3f96973e9adf038fa96860e9d056e7554fbb4924085851",
+    "/private/tmp/emaxx-runtime-audit-followup/emaxx/tests/fixtures/text-conversion-void-default-let.el": "f9844bc09708a7dba268407b67a045cc4e62415ece8340d2e804083062c23d65",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-text-conversion-state.py": "c5712c169b95aee1540458f175c9a6e60b98060585d67658dd7d3c85542cd73e"
+  },
+  "inputs_unchanged": true,
+  "exit_code": 0,
+  "elapsed_seconds": 0.9554978749999999,
+  "stdout_hex": "2828766f6964206e696c206e696c206e696c206e696c292028726573746f726564202864656661756c742d32363329202864656661756c742d32363329206e696c206e696c206e696c2929",
+  "stderr_hex": "",
+  "qualification": "Focused ordinary CLI diagnostic. Local GNU is source matched, not the frozen binary. Exact bytes retained."
+}

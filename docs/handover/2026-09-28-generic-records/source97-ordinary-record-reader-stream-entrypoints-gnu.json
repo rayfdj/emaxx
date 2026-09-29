@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (progn\n  (require 'cl-lib)\n  (let ((print-symbols-bare t))\n    (mapcar\n     (lambda (reader)\n       (let ((standard-input \"entry-token tail\"))\n         (list\n          (condition-case error (prin1-to-string (funcall reader))\n            (error (car error)))\n          (condition-case error (prin1-to-string (funcall reader nil))\n            (error (car error)))\n          (condition-case error (funcall reader 17) (error error))\n          (condition-case error (funcall reader 'missing-reader-callback)\n            (error error))\n          (cl-letf (((symbol-function 'read-minibuffer)\n                     (lambda (prompt) (list 'minibuffer prompt))))\n            (mapcar (lambda (stream)\n                      (condition-case error (funcall reader stream)\n                        (error (car error))))\n                    '(t read-char))))))\n     '(read read-positioning-symbols))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-stream-entrypoints.el",
+  "input_sha256": "9980625f4ef8ac2985b93c73a91794726393c2c88cab6296891e7d88461af578",
+  "exit_code": 0,
+  "elapsed_seconds": 0.2548799580000036,
+  "stdout_hex": "282822656e7472792d746f6b656e222022656e7472792d746f6b656e222028696e76616c69642d66756e6374696f6e203137292028766f69642d66756e6374696f6e206d697373696e672d7265616465722d63616c6c6261636b292028286d696e6962756666657220224c6973702065787072657373696f6e3a20222920286d696e6962756666657220224c6973702065787072657373696f6e3a2022292929202822656e7472792d746f6b656e222022656e7472792d746f6b656e222028696e76616c69642d66756e6374696f6e203137292028766f69642d66756e6374696f6e206d697373696e672d7265616465722d63616c6c6261636b292028286d696e6962756666657220224c6973702065787072657373696f6e3a20222920286d696e6962756666657220224c6973702065787072657373696f6e3a202229292929",
+  "stderr_hex": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

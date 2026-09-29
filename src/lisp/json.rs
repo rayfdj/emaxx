@@ -626,6 +626,12 @@ pub(crate) fn make_hash_table_with_capacity(
     crate::lisp::native_comp::note_lisp_allocation(
         crate::lisp::eval::gnu_hash_table_storage_bytes(capacity),
     );
+    let (user_compare, user_hash) = if matches!(test, "eq" | "eql" | "equal") {
+        (Value::Nil, Value::Nil)
+    } else {
+        crate::lisp::primitives::hash_table_user_test_functions(interp, test)
+            .unwrap_or((Value::Nil, Value::Nil))
+    };
     let table = interp.create_pseudovector(
         crate::lisp::eval::RecordKind::HashTable,
         HASH_TABLE_RECORD_TYPE,
@@ -636,8 +642,11 @@ pub(crate) fn make_hash_table_with_capacity(
             // that would invent live Lisp objects and distort GC accounting.
             Value::Nil,
             Value::Integer(requested_capacity as i64),
-            Value::Nil,
-            Value::Nil,
+            // fns.c:make_hash_table owns the selected test descriptor.
+            // These existing slots retain its Lisp functions across GC and
+            // copy-hash-table; operations never reread the symbol property.
+            user_compare,
+            user_hash,
             Value::Nil,
             Value::Nil,
         ],

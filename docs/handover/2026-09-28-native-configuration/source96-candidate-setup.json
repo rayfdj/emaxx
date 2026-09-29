@@ -1,0 +1,14 @@
+{
+  "previous_gnu_symlink": "/Users/nbmhqa186/projects/emacs",
+  "candidate": "/private/tmp/emaxx-runtime-gnu-20260928",
+  "input_identities": {
+    "/Users/nbmhqa186/projects/emacs/src/emacs": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "/Users/nbmhqa186/projects/emacs/src/emacs.pdmp": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "/private/tmp/emaxx-runtime-symbol-ownership/emaxx/compat/oracle.lock.json": "6bbb6816a16cd32112e4d5fb512e87510ed9fed1d78aafcac183b1137172b0e7",
+    "/private/tmp/emaxx-runtime-symbol-ownership/emaxx/src/lisp/native_comp/generated_native_subrs_aarch64_apple_darwin.rs": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-gnu256-native.py": "3b4803402791513f41a70038cf754ac6897d7b7db907ef7d0031169b21c208b3"
+  },
+  "qualification": "Committed Emaxx function-cell source with the freshly built pristine GNU candidate. The complete formatted native ABI matches the committed table. Candidate executable differs from the frozen pin; no pin/table/source edits and no frozen certification."
+}

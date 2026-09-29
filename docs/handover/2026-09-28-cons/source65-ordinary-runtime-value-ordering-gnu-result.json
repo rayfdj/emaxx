@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 0.16039012499999994,
+  "stdout": "((nil nil t) (t t nil) (t t) (t nil t t nil t))",
+  "matches_expected": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true
+}

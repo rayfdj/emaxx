@@ -1,0 +1,93 @@
+{
+  "exit_code": 1,
+  "elapsed_seconds": 2221.094870375,
+  "source_unchanged": true,
+  "summary": {
+    "artifact_root": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source105",
+    "cargo_stages": [],
+    "environment": {
+      "LANG": "C",
+      "LC_ALL": "C",
+      "RUST_BACKTRACE": "1",
+      "RUST_MIN_STACK": "134217728",
+      "RUST_TEST_THREADS": "1"
+    },
+    "error": "eval_03 exited with -15: expected exactly one libtest result line, found 0",
+    "execution_override": {
+      "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+      "script": "/private/tmp/emaxx-runtime-audit-followup/emaxx/tools/serial_grouped_gate.py"
+    },
+    "format_version": 1,
+    "git": {
+      "dirty": false,
+      "head": "1ed63a559bef9304cadf29afce4f4345d4020150"
+    },
+    "inventory": {
+      "groups": {
+        "batch": 50,
+        "compat_runtime": 86,
+        "eval_01": 385,
+        "eval_02": 295,
+        "eval_03": 320,
+        "eval_04": 254,
+        "eval_05": 351,
+        "lightweight": 530,
+        "primitives": 561,
+        "tty": 59
+      },
+      "ignored_tests": [
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "scheduled_tests": 2891,
+      "sha256": "947a0f09ae71458bc9fa53901d91ccfe974966394223997abd6d3201e9108f83",
+      "total_tests": 2891
+    },
+    "profile": "gate",
+    "repetitions": 1,
+    "runs": [],
+    "schedule": [
+      [
+        "eval_01"
+      ],
+      [
+        "eval_02"
+      ],
+      [
+        "eval_03"
+      ],
+      [
+        "eval_04"
+      ],
+      [
+        "eval_05"
+      ],
+      [
+        "primitives"
+      ],
+      [
+        "compat_runtime"
+      ],
+      [
+        "tty"
+      ],
+      [
+        "batch"
+      ],
+      [
+        "lightweight"
+      ]
+    ],
+    "scope": "full",
+    "status": "failed",
+    "test_binary": {
+      "path": "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+      "sha256": "68f9d232b15d15633de575724ba9730d79932944b1abdc9c0e9140d66d411df6"
+    },
+    "timeout_seconds": 3600
+  },
+  "immutable_binary": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source105-gate-libtest",
+    "sha256": "68f9d232b15d15633de575724ba9730d79932944b1abdc9c0e9140d66d411df6"
+  }
+}

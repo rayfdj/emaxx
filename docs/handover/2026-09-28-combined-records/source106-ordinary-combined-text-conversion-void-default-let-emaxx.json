@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let (states)\n  (set-default 'text-conversion-style '(default-263))\n  (with-temp-buffer\n    (let ((text-conversion-style '(temporary-269)))\n      (makunbound 'text-conversion-style)\n      (push (list 'void (boundp 'text-conversion-style)\n                  (default-boundp 'text-conversion-style)\n                  (local-variable-p 'text-conversion-style)\n                  (assq 'text-conversion-style (buffer-local-variables))) states))\n    (push (list 'restored text-conversion-style\n                (default-value 'text-conversion-style)\n                (local-variable-p 'text-conversion-style)\n                (local-variable-if-set-p 'text-conversion-style)\n                (assq 'text-conversion-style (buffer-local-variables))) states))\n  (nreverse states))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/text-conversion-void-default-let.el",
+  "input_sha256": "f9844bc09708a7dba268407b67a045cc4e62415ece8340d2e804083062c23d65",
+  "exit_code": 0,
+  "elapsed_seconds": 0.37469429100000085,
+  "stdout_hex": "2828766f6964206e696c206e696c206e696c206e696c292028726573746f726564202864656661756c742d32363329202864656661756c742d32363329206e696c206e696c206e696c2929",
+  "stderr_hex": "",
+  "binary_sha256": "e54fdd555878f11beba7a8da2b204bd465dc4266f6788f90134bd27c643e727b",
+  "image_sha256": "ff51d636174e3fbf74799f4f13d82786e6ab1c395ec4147b9193121f5d559163",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

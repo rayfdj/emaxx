@@ -1,0 +1,28 @@
+{
+  "commands": [
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "111",
+      "hash",
+      "purecopy",
+      "lisp::primitives::pdumper::tests::",
+      "--release"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "111",
+      "--ordinary"
+    ]
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-symbol-ownership/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Both stages run independently. Native architecture baseline is intentionally included and remains an ordinary failure until repaired. Semantic fixes require ordinary executable validation."
+}

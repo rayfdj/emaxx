@@ -1,0 +1,9 @@
+{
+  "source": "968bf33b43df990b3eb6b816e7a644654c646d98",
+  "prelude_run": "https://github.com/rayfdj/emaxx/actions/runs/36501023482",
+  "full_run": "https://github.com/rayfdj/emaxx/actions/runs/36501085147",
+  "prelude_filter": "lisp::eval::tests::eval_01::a_store_into_a_full_keymaps_list_keeps_its_character_prefixes",
+  "filter": "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+  "full_scope": "rust",
+  "scope": "Unchanged runtime115; diagnostic tool116. Not finalsource/performance certification."
+}

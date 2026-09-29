@@ -1,0 +1,17 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/debug/deps/emaxx-062fd247b26fb761",
+  "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/range-uniprop-before-libtest",
+  "sha256": "523f2c94e24008878b99fd927c27bf3b1a98429f51c77f446d8ea993797a0b4e",
+  "source_manifest": "range-uniprop-before-manifest.json",
+  "source_unchanged_after_build": true,
+  "test_state": "Running; no source edits until completed build and this hash capture. The binary contains its fixture via include_str.",
+  "result": {
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "exit_code": 101,
+    "seconds": 96.29
+  },
+  "actual": "((7 t nil nil) (7 t nil nil) (7 t nil nil) (8 t nil nil))",
+  "expected": "((7 nil nil t) (7 nil t nil) (7 t nil nil) (8 t nil nil))"
+}

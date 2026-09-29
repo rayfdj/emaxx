@@ -1,18 +1,18 @@
 #![allow(dead_code)]
 
+pub use crate::lisp::alloc::vectors::{CharTableRef, SubCharTableRef};
 pub use crate::lisp::native_comp::abi::BuiltinRef;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
     borrow::Borrow,
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::Deref,
     path::Path,
-    rc::{Rc, Weak},
 };
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
@@ -22,11 +22,6 @@ const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 const UNINTERNED_SYMBOL_MARKER_CHAR: char = '\u{1F}';
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 const OBARRAY_SYMBOL_MARKER_CHAR: char = '\u{1E}';
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsMutationEpoch(u64);
-
-const CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT: usize = 1 << 20;
 
 /// Hashes an object address or identity word for the bridge's index maps.
 ///
@@ -64,389 +59,108 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-#[derive(Debug, Default)]
-pub(crate) struct ConsMutationQueue {
-    dirty: RefCell<HashSet<usize, IdentityBuildHasher>>,
-    native_heap: Cell<*mut std::ffi::c_void>,
-}
-
-impl ConsMutationQueue {
-    pub(crate) fn set_native_heap_owner(&self, owner: *mut std::ffi::c_void) {
-        self.native_heap.set(owner);
-    }
-
-    pub(crate) fn dirty_keys(&self) -> Vec<usize> {
-        self.dirty.borrow().iter().copied().collect()
-    }
-
-    fn insert(&self, key: usize) {
-        self.dirty.borrow_mut().insert(key);
-    }
-
-    pub(crate) fn contains(&self, key: usize) -> bool {
-        self.dirty.borrow().contains(&key)
-    }
-
-    pub(crate) fn remove(&self, key: usize) {
-        self.dirty.borrow_mut().remove(&key);
-    }
-}
-
-#[derive(Debug)]
-struct ConsMutationWatch {
-    valid: Cell<bool>,
-}
-
-thread_local! {
-    static NATIVE_CONS_MUTATION_QUEUES: RefCell<IdentityMap<Weak<ConsMutationQueue>>> =
-        RefCell::new(IdentityMap::default());
-}
-
-type IdentityMap<T> = HashMap<usize, T, IdentityBuildHasher>;
-
-/// The existing registration ties a canonical cons to its live native heap.
-/// Keep the owner once per queue, without enlarging every Lisp cons.
-pub(crate) fn native_cons_heap_owner(address: usize) -> *mut std::ffi::c_void {
-    NATIVE_CONS_MUTATION_QUEUES.with_borrow(|queues| {
-        queues
-            .get(&address)
-            .and_then(Weak::upgrade)
-            .map_or(std::ptr::null_mut(), |queue| queue.native_heap.get())
-    })
-}
-
-#[derive(Debug)]
-pub(crate) struct NativeConsMutationRegistration {
-    key: usize,
-    queue: Weak<ConsMutationQueue>,
-}
-
-impl NativeConsMutationRegistration {
-    pub(crate) fn new(key: usize, queue: &Rc<ConsMutationQueue>) -> Self {
-        let queue = Rc::downgrade(queue);
-        NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
-            queues.insert(key, queue.clone());
-        });
-        Self { key, queue }
-    }
-
-    pub(crate) fn is_current(&self) -> bool {
-        self.queue
-            .upgrade()
-            .is_none_or(|queue| !queue.contains(self.key))
-    }
-
-    pub(crate) fn mark_current(&self) {
-        if let Some(queue) = self.queue.upgrade() {
-            queue.remove(self.key);
-        }
-    }
-}
-
-impl Drop for NativeConsMutationRegistration {
-    fn drop(&mut self) {
-        if let Some(queue) = self.queue.upgrade() {
-            queue.remove(self.key);
-        }
-        NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
-            if queues
-                .get(&self.key)
-                .is_some_and(|queue| Weak::ptr_eq(queue, &self.queue))
-            {
-                queues.remove(&self.key);
-            }
-        });
-    }
-}
-
-fn note_native_cons_mutation(key: usize) {
-    NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
-        let Some(queue) = queues.get(&key) else {
-            return;
-        };
-        let Some(queue) = queue.upgrade() else {
-            queues.remove(&key);
-            return;
-        };
-        queue.insert(key);
-    });
-}
-
-type ConsMutationWatchers = HashMap<usize, Vec<Weak<ConsMutationWatch>>, IdentityBuildHasher>;
-
-/// 256 Kibit Bloom filter over watched field addresses, allocated on first
-/// registration.  Mutation of an unwatched field is by far the common case
-/// (every `aset', `setcar', and buffer-local write lands here), so the
-/// watcher-map probe must cost nothing for fields no cache depends on.
-/// Stale bits from dead watchers only cause harmless extra probes; the
-/// filter resets whenever the watcher map is observed empty and is rebuilt
-/// when dead watcher keys are compacted.
-const CONS_MUTATION_BLOOM_WORDS: usize = 4096;
-
-type ConsMutationBloom = Option<Box<[u64; CONS_MUTATION_BLOOM_WORDS]>>;
-
-fn cons_mutation_bloom_slot(field_id: usize) -> (usize, u64) {
-    let mixed = (field_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let bit = (mixed >> 46) as usize;
-    (bit >> 6, 1u64 << (bit & 63))
-}
-
-thread_local! {
-    static CONS_MUTATION_EPOCH: Cell<ConsMutationEpoch> =
-        const { Cell::new(ConsMutationEpoch(0)) };
-    static CONS_MUTATION_WATCHERS: RefCell<ConsMutationWatchers> =
-        RefCell::new(ConsMutationWatchers::default());
-    static CONS_MUTATION_WATCH_BLOOM: RefCell<ConsMutationBloom> = const { RefCell::new(None) };
-    static CONS_MUTATION_WATCH_NEXT_KEY_LIMIT: Cell<usize> =
-        const { Cell::new(CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT) };
-}
-
-pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
-    CONS_MUTATION_EPOCH.get()
-}
-
-fn note_cons_mutation(field_id: usize) {
-    let current = cons_mutation_epoch();
-    CONS_MUTATION_EPOCH.set(ConsMutationEpoch(current.0.wrapping_add(1)));
-    let watched = CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| {
-        bloom.as_ref().is_some_and(|bloom| {
-            let (word, bit) = cons_mutation_bloom_slot(field_id);
-            bloom[word] & bit != 0
-        })
-    });
-    if !watched {
-        return;
-    }
-    let emptied = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-        let mut remove = false;
-        if let Some(tokens) = watchers.get_mut(&field_id) {
-            tokens.retain(|watch| {
-                let Some(watch) = watch.upgrade() else {
-                    return false;
-                };
-                watch.valid.set(false);
-                true
-            });
-            remove = tokens.is_empty();
-        }
-        if remove {
-            watchers.remove(&field_id);
-        }
-        watchers.is_empty()
-    });
-    if emptied {
-        CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
-            if let Some(bloom) = bloom.as_mut() {
-                bloom.fill(0);
-            }
-        });
-    }
-}
-
-fn retain_live_cons_mutation_watchers(watchers: &mut ConsMutationWatchers) {
-    watchers.retain(|_, watches| {
-        watches.retain(|watch| watch.strong_count() != 0);
-        !watches.is_empty()
-    });
-}
-
-/// The process is exiting: the watcher table's entries (a weak count per
-/// watched cons, touched one by one on a drop) are left to the kernel,
-/// as exit() leaves C's heap.
-pub(crate) fn forget_cons_mutation_watchers_for_exit() {
-    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-        std::mem::forget(std::mem::take(watchers));
-    });
-    CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
-        std::mem::forget(bloom.take());
-    });
-}
-
-fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationWatch>) {
-    if field_ids.is_empty() {
-        return;
-    }
-    let rebuilt_field_ids = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-        let compact =
-            CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| watchers.len() >= limit.get());
-        if compact {
-            retain_live_cons_mutation_watchers(watchers);
-            CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| {
-                limit.set(
-                    watchers
-                        .len()
-                        .saturating_mul(2)
-                        .max(CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT),
-                );
-            });
-        }
-        let weak = Rc::downgrade(watch);
-        for field_id in field_ids {
-            watchers.entry(*field_id).or_default().push(weak.clone());
-        }
-        compact.then(|| watchers.keys().copied().collect::<Vec<_>>())
-    });
-    CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
-        let bloom = bloom.get_or_insert_with(|| Box::new([0u64; CONS_MUTATION_BLOOM_WORDS]));
-        let bloom_field_ids = if let Some(rebuilt_field_ids) = &rebuilt_field_ids {
-            bloom.fill(0);
-            rebuilt_field_ids.as_slice()
-        } else {
-            field_ids
-        };
-        for field_id in bloom_field_ids {
-            let (word, bit) = cons_mutation_bloom_slot(*field_id);
-            bloom[word] |= bit;
-        }
-    });
-}
-
-/// Mutation dependencies for one derived view of a cons graph.
-///
-/// Each dependency registers a weak invalidation token with the one mutation
-/// hook used by both cons fields. Rust-only dependencies need one boolean
-/// check. For cells exposed to generated code, also check the canonical words:
-/// native stores bypass the Rust mutation hook. Only this cache's native
-/// dependencies are inspected, never unrelated conses.
-#[derive(Debug, Clone)]
+/// Temporary derived-cache validation for keymap and syntax views. Snapshot
+/// actual words: native code and the interpreter can mutate any cons directly,
+/// without a mutation epoch, watcher registration or store barrier. These weak
+/// snapshots never retain an otherwise unreachable Lisp graph. Their scan cost
+/// belongs to the remaining derived views, not to ordinary cons operations.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ConsMutationSnapshot {
-    watch: Rc<ConsMutationWatch>,
-    field_ids: Vec<usize>,
-    native_cells: Vec<WeakConsRef>,
+    cells: Vec<(WeakConsRef, [usize; 2])>,
 }
 
 impl ConsMutationSnapshot {
     pub(crate) fn cell(cell: &SharedCons) -> Self {
-        let mut snapshot = Self::from_field_ids(ConsCell::mutation_field_ids(cell).to_vec());
-        snapshot.track_native_cell(cell);
+        Self::cells(std::iter::once(cell))
+    }
+
+    pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
+        let mut snapshot = Self {
+            cells: cells
+                .into_iter()
+                .map(|cell| {
+                    (
+                        cell.downgrade(),
+                        [cell.car.get().word(), cell.cdr.get().word()],
+                    )
+                })
+                .collect(),
+        };
+        snapshot
+            .cells
+            .sort_unstable_by_key(|(cell, _)| cell.identity());
+        snapshot.cells.dedup_by_key(|(cell, _)| cell.identity());
         snapshot
     }
 
     pub(crate) fn list_spine(value: &Value) -> Self {
-        let mut field_ids = Vec::new();
-        let mut native_cells = Vec::new();
+        let mut cells = Vec::new();
         let mut seen = HashSet::new();
-        let mut current = *value;
-        while let Kind::Cons(cell) = current.kind() {
-            let cell_id = ConsCell::identity(&cell);
-            if !seen.insert(cell_id) {
+        let mut value = *value;
+        while let Kind::Cons(cell) = value.kind() {
+            if !seen.insert(ConsCell::identity(&cell)) {
                 break;
             }
-            field_ids.extend(ConsCell::mutation_field_ids(&cell));
-            if cell.attached_native_address().is_some() {
-                native_cells.push(cell.downgrade());
-            }
-            current = cell.cdr.get();
+            cells.push(cell);
+            value = cell.cdr.get();
         }
-        let mut snapshot = Self::from_field_ids(field_ids);
-        snapshot.native_cells = native_cells;
-        snapshot
+        Self::cells(&cells)
     }
 
     pub(crate) fn tree(value: &Value) -> Self {
-        let mut snapshot = Self::from_field_ids(Vec::new());
+        let mut snapshot = Self::default();
         snapshot.include_tree(value);
         snapshot
     }
 
-    /// A snapshot over CELLS at once: one sort of the field ids and one
-    /// registration, where adding the cells one by one sorted the ids
-    /// after each (a keymap view of a thousand cells snapshotted on every
-    /// `define-key' spent its time there: mwheel-tests 25x GNU).
-    pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
-        let mut field_ids = Vec::new();
-        let mut native_cells = Vec::new();
-        for cell in cells {
-            field_ids.extend(ConsCell::mutation_field_ids(cell));
-            if cell.attached_native_address().is_some() {
-                native_cells.push(cell.downgrade());
-            }
-        }
-        let mut snapshot = Self::from_field_ids(field_ids);
-        snapshot.native_cells = native_cells;
-        snapshot
-    }
-
-    /// Add one cell's two fields (and its canonical words, when generated
-    /// code can reach it) to the dependencies.
     pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
-        let fields = ConsCell::mutation_field_ids(cell);
-        if self.field_ids.binary_search(&fields[0]).is_ok() {
-            return;
+        if let Err(index) = self
+            .cells
+            .binary_search_by_key(&ConsCell::identity(cell), |(cell, _)| cell.identity())
+        {
+            self.cells.insert(
+                index,
+                (
+                    cell.downgrade(),
+                    [cell.car.get().word(), cell.cdr.get().word()],
+                ),
+            );
         }
-        self.track_native_cell(cell);
-        register_cons_mutation_watchers(&fields, &self.watch);
-        self.field_ids.extend(fields);
-        self.field_ids.sort_unstable();
     }
 
     pub(crate) fn include_tree(&mut self, value: &Value) {
+        let existing_len = self.cells.len();
         let mut seen = HashSet::new();
         let mut pending = vec![*value];
-        let mut added = Vec::new();
         while let Some(value) = pending.pop() {
             let Kind::Cons(cell) = value.kind() else {
                 continue;
             };
-            if !seen.insert(ConsCell::identity(&cell)) {
+            let id = ConsCell::identity(&cell);
+            if !seen.insert(id) {
                 continue;
             }
-            let fields = ConsCell::mutation_field_ids(&cell);
-            if self.field_ids.binary_search(&fields[0]).is_err() {
-                self.track_native_cell(&cell);
+            if self.cells[..existing_len]
+                .binary_search_by_key(&id, |(cell, _)| cell.identity())
+                .is_err()
+            {
+                self.cells.push((
+                    cell.downgrade(),
+                    [cell.car.get().word(), cell.cdr.get().word()],
+                ));
             }
-            added.extend(fields);
             pending.push(cell.car.get());
             pending.push(cell.cdr.get());
         }
-        added.sort_unstable();
-        added.dedup();
-        added.retain(|field_id| self.field_ids.binary_search(field_id).is_err());
-        register_cons_mutation_watchers(&added, &self.watch);
-        self.field_ids.extend(added);
-        self.field_ids.sort_unstable();
-    }
-
-    fn from_field_ids(mut field_ids: Vec<usize>) -> Self {
-        field_ids.sort_unstable();
-        field_ids.dedup();
-        let watch = Rc::new(ConsMutationWatch {
-            valid: Cell::new(true),
-        });
-        register_cons_mutation_watchers(&field_ids, &watch);
-        Self {
-            watch,
-            field_ids,
-            native_cells: Vec::new(),
-        }
-    }
-
-    fn track_native_cell(&mut self, cell: &SharedCons) {
-        if cell.attached_native_address().is_some() {
-            self.native_cells.push(cell.downgrade());
-        }
+        self.cells.sort_unstable_by_key(|(cell, _)| cell.identity());
+        self.cells.dedup_by_key(|(cell, _)| cell.identity());
     }
 
     pub(crate) fn is_current(&self) -> bool {
-        if !self.watch.valid.get() {
-            return false;
-        }
-        for cell in &self.native_cells {
-            let Some(cell) = cell.upgrade() else {
-                self.watch.valid.set(false);
-                return false;
-            };
-            cell.car.synchronize_native_write();
-            cell.cdr.synchronize_native_write();
-            if !self.watch.valid.get() {
-                return false;
-            }
-        }
-        self.watch.valid.get()
-    }
-
-    pub(crate) fn mark_current(&self) {
-        self.watch.valid.set(true);
+        self.cells.iter().all(|(cell, words)| {
+            cell.upgrade()
+                .is_some_and(|cell| [cell.car.get().word(), cell.cdr.get().word()] == *words)
+        })
     }
 }
 
@@ -758,17 +472,15 @@ static INTERNED_SYMBOL_NAMES: ProcessTable<
     HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
 > = ProcessTable::new();
 
-thread_local! {
-    /// Live uninterned states by their private internal text.  Two
-    /// `SymbolName's with equal internal text compare equal, so a text
-    /// that names a live uninterned symbol must resolve to that very
-    /// state: otherwise a name-keyed caller (`set' through `&str') and the
-    /// symbol object would disagree about which cell they address.
-    /// The live uninterned symbols by their key text (identity by text
-    /// is the pre-representation deviation the ledger records); the
-    /// sweep removes a freed cell's entry, so an entry is always live.
-    static UNINTERNED_SYMBOL_BOOK: RefCell<HashMap<String, SymbolName>> = RefCell::new(HashMap::new());
-}
+/// Live uninterned states by their private internal text. Name-keyed
+/// callers must resolve a live key to the existing symbol allocation.
+/// This weak table belongs to the process-wide heap, just like the interned
+/// table above. A later serialized host entry can run on another OS thread;
+/// its sweep must retire entries made by every previous thread.
+/// Access uses the existing runtime ownership boundary, without a second
+/// lock on lookup/allocation. Entries are not GC roots and are removed by
+/// sweep_symbol_cells before the corresponding allocation is released.
+static UNINTERNED_SYMBOL_BOOK: ProcessTable<HashMap<String, SymbolName>> = ProcessTable::new();
 
 /// Symbol ids are process-wide: the same internal text carries the same id
 /// on every thread, so an interpreter built on one thread (the test image
@@ -1392,6 +1104,58 @@ pub struct BufferValue {
     pub(crate) state: RefCell<crate::buffer::Buffer>,
 }
 
+/// One allocated frame object. The native boundary reads its GNU
+/// pseudovector header and leading name slot; the terminal backend owns
+/// the rest of the state in this allocation rather than an ID proxy.
+#[repr(C)]
+pub struct FrameValue {
+    pub(crate) name: Cell<Value>,
+    pub(crate) state: RefCell<crate::lisp::eval::FrameState>,
+}
+
+impl FrameRef {
+    pub(crate) fn new(name: Value, state: crate::lisp::eval::FrameState) -> Self {
+        Self::allocate(FrameValue {
+            name: Cell::new(name),
+            state: RefCell::new(state),
+        })
+    }
+
+    pub(crate) fn borrow(&self) -> std::cell::Ref<'_, crate::lisp::eval::FrameState> {
+        self.state.borrow()
+    }
+
+    pub(crate) fn borrow_mut(&self) -> std::cell::RefMut<'_, crate::lisp::eval::FrameState> {
+        self.state.borrow_mut()
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        // frame.h:FRAME_LIVE_P. Terminal teardown clears its device first,
+        // then deletes every frame that still has this terminal pointer.
+        self.borrow().terminal.is_some()
+    }
+}
+
+impl std::fmt::Debug for FrameValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameValue")
+            .field("id", &self.state.try_borrow().ok().map(|s| s.id))
+            .finish()
+    }
+}
+impl std::hash::Hash for FrameRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
+impl PartialEq for FrameRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr_eq(other)
+    }
+}
+impl Eq for FrameRef {}
+
 /// terminal.c's object owns its Lisp slots and the terminal device state.
 /// The four leading Lisp fields follow termhooks.h's struct terminal.
 #[repr(C)]
@@ -1436,8 +1200,12 @@ impl TerminalRef {
         ] {
             visit(&slot.get());
         }
-        for value in self.borrow().keyboard.values() {
+        let state = self.borrow();
+        for value in state.keyboard.values() {
             visit(value);
+        }
+        if let Some(frame) = state.top_frame {
+            visit(&Value::Frame(frame));
         }
     }
 }
@@ -1494,187 +1262,38 @@ pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 mod marker;
 pub use crate::overlay::{OverlayRef, OverlayValue};
 pub use marker::{MarkerRef, MarkerValue};
+pub type FrameRef = crate::lisp::alloc::VectorlikeRef<FrameValue>;
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
+pub use crate::lisp::alloc::vectors::{LispRecordRef, SymbolWithPosRef};
 
-/// The two tagged Lisp words generated code reads and writes directly.
-///
-/// This is the Rust representation of GNU `struct Lisp_Cons`'s live fields.
-/// It is the first field of `ConsCell`, so a cons allocated for the Rust
-/// evaluator has the same address and field offsets at the native boundary.
-#[repr(C, align(8))]
-#[derive(Debug)]
-pub(crate) struct ConsWords {
-    car: UnsafeCell<usize>,
-    cdr: UnsafeCell<usize>,
-}
-
-impl ConsWords {
-    pub(crate) fn new(car: usize, cdr: usize) -> Self {
-        Self {
-            car: UnsafeCell::new(car),
-            cdr: UnsafeCell::new(cdr),
-        }
-    }
-
-    pub(crate) fn car(&self) -> usize {
-        unsafe { *self.car.get() }
-    }
-
-    pub(crate) fn cdr(&self) -> usize {
-        unsafe { *self.cdr.get() }
-    }
-
-    pub(crate) fn set_car(&self, value: usize) {
-        unsafe { *self.car.get() = value };
-    }
-
-    pub(crate) fn set_cdr(&self, value: usize) {
-        unsafe { *self.cdr.get() = value };
-    }
-}
-
-/// The mutable payload of one Lisp cons.
-///
-/// GNU allocates the car and cdr together as one `Lisp_Cons`.  Keeping the
-/// same ownership shape halves the allocation and reference-count traffic of
-/// Emaxx's former two-`Rc` representation while retaining independent field
-/// borrows for `setcar`, `setcdr`, reader fixups, and vector element slots.
+/// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
+/// write these same two Lisp words. Allocator metadata is in the containing
+/// block, with no read barrier, mirror, agreement check or per-store notice.
 #[repr(C, align(8))]
 #[derive(Debug)]
 pub struct ConsCell {
-    words: ConsWords,
-    pub(crate) car: ConsValueCell,
-    pub(crate) cdr: ConsValueCell,
-    pub(crate) mark: MarkBit,
-    /// The allocation's serial (`WeakConsRef' tells a later cell in the
-    /// same slot apart by it); written by the allocator.
-    pub(crate) serial: u64,
+    pub(crate) car: Cell<Value>,
+    pub(crate) cdr: Cell<Value>,
 }
 
-/// One tracked field of a cons cell.
-///
-/// Every mutable borrow advances the single mutation epoch used to validate
-/// all derived source-form caches.  A field that has crossed the native ABI
-/// also keeps the address and last-agreed value of its GNU `Lisp_Object`
-/// word.  Ordinary reads can therefore detect the overwhelmingly common
-/// unchanged case without entering the native heap's lookup tables.
-#[derive(Debug)]
-pub(crate) struct ConsValueCell {
-    /// The field's word (`XCAR'/`XCDR' read it, `XSETCAR'/`XSETCDR'
-    /// write it: a plain load and a plain store, no borrow count).
-    value: Cell<Value>,
-    /// Low bit distinguishes cdr from car; native Lisp words are eight-byte
-    /// aligned, so the tag does not consume pointer information.
-    native_word: Cell<*const usize>,
-    native_agreed: Cell<usize>,
-}
-
-impl ConsValueCell {
-    fn new(value: Value) -> Self {
-        Self {
-            value: Cell::new(value),
-            native_word: Cell::new(std::ptr::null()),
-            native_agreed: Cell::new(0),
-        }
-    }
-
-    fn attach_native_word(&self, native_word: *const usize, agreed: usize, cdr: bool) {
-        self.native_agreed.set(agreed);
-        self.native_word
-            .set(((native_word as usize) | usize::from(cdr)) as *const usize);
-    }
-
-    fn native_word_pointer(&self) -> *const usize {
-        ((self.native_word.get() as usize) & !1) as *const usize
-    }
-
-    fn native_cons_key(&self) -> Option<usize> {
-        let tagged = self.native_word.get() as usize;
-        if tagged == 0 {
-            return None;
-        }
-        let word = tagged & !1;
-        Some(if tagged & 1 == 0 {
-            word
-        } else {
-            word - std::mem::size_of::<usize>()
-        })
-    }
-
-    fn detach_native_word(&self, native_word: *const usize) {
-        if self.native_word_pointer() == native_word {
-            self.native_word.set(std::ptr::null());
-        }
-    }
-
-    fn set_native_agreed(&self, agreed: usize) {
-        self.native_agreed.set(agreed);
-    }
-
-    fn native_agreed(&self) -> usize {
-        self.native_agreed.get()
-    }
-
-    #[inline(always)]
-    fn synchronize_native_write(&self) {
-        let native_word = self.native_word_pointer();
-        if !native_word.is_null() && unsafe { *native_word } != self.native_agreed.get() {
-            crate::lisp::native_comp::synchronize_cons_read(
-                self.native_cons_key()
-                    .expect("an attached native word has a cons address"),
-            );
-        }
-    }
-
-    /// `XCAR'/`XCDR': the word, after any write generated code left in
-    /// the native view is brought over.
-    #[inline]
-    pub(crate) fn get(&self) -> Value {
-        self.synchronize_native_write();
-        self.value.get()
-    }
-
-    /// The Rust field as stored, for the heap check: no native
-    /// synchronization, no mutation notice.
-    pub(crate) fn value_in_place(&self) -> Value {
-        self.value.get()
-    }
-
-    /// The image loader's relocation store into a cell it created an
-    /// instant ago: no watcher, generated code or native word has seen
-    /// the cell, so there is no mutation to note (pdumper.c writes the
-    /// relocated word in place).
-    pub(crate) fn initialize(&self, value: Value) {
-        self.value.set(value);
-    }
-
-    /// `XSETCAR'/`XSETCDR': the store, noted for the caches keyed on
-    /// the cell and for the native view.
-    #[inline]
-    pub(crate) fn set(&self, value: Value) {
-        self.synchronize_native_write();
-        note_cons_mutation(self as *const Self as usize);
-        if let Some(key) = self.native_cons_key() {
-            note_native_cons_mutation(key);
-        }
-        self.value.set(value);
-    }
-}
+const _: () = {
+    assert!(std::mem::size_of::<ConsCell>() == 16);
+    assert!(std::mem::offset_of!(ConsCell, car) == 0);
+    assert!(std::mem::offset_of!(ConsCell, cdr) == 8);
+};
 
 // ===== Live-object accounting (finding 110) =====
 //
 // GNU's `garbage-collect' numbers come from allocator bookkeeping, not a
-// heap walk; these are emaxx's equivalent books.  Every Lisp value lives
-// on one thread (Rc is !Send), so plain thread-locals are exact and each
-// test interpreter thread keeps its own books.  Cons cells are counted at
-// construction and un-counted in Drop -- Rust ownership is the sweep.
-// Strings register a Weak handle at allocation; the census upgrades each
-// handle and prunes the dead ones, which is the lazy equivalent of GNU's
-// sweep visiting every string block.
+// heap walk; these are emaxx's equivalent books. The process-wide block
+// allocator increments object counts on allocation and recomputes them
+// during sweeping. A copied Value neither allocates nor retains an object
+// independently of GC. Runtime serialization is required by that allocator;
+// running tests serially does not itself establish public API soundness.
 pub(crate) fn note_string_allocation(bytes: usize) {
     // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
     // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
@@ -1755,74 +1374,39 @@ pub(crate) fn census_live_vectors() -> VectorCensus {
 
 impl ConsCell {
     fn new(car: Value, cdr: Value) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(16);
-        Self::new_representation(car, cdr)
-    }
-
-    fn new_representation(car: Value, cdr: Value) -> Self {
+        crate::lisp::native_comp::note_lisp_allocation(std::mem::size_of::<Self>());
         Self {
-            words: ConsWords::new(0, 0),
-            car: ConsValueCell::new(car),
-            cdr: ConsValueCell::new(cdr),
-            mark: MarkBit::default(),
-            serial: 0,
+            car: Cell::new(car),
+            cdr: Cell::new(cdr),
         }
-    }
-
-    pub(crate) fn from_native_words(car: usize, cdr: usize) -> SharedCons {
-        crate::lisp::alloc::allocate_cons(Self {
-            words: ConsWords::new(car, cdr),
-            car: ConsValueCell::new(Value::Nil),
-            cdr: ConsValueCell::new(Value::Nil),
-            mark: MarkBit::default(),
-            serial: 0,
-        })
     }
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
         cell.as_ptr() as usize
     }
 
-    pub(crate) fn native_words(cell: &SharedCons) -> *mut ConsWords {
-        std::ptr::from_ref(&cell.words).cast_mut()
+    #[inline]
+    pub(crate) fn car(&self) -> usize {
+        self.car.get().word()
     }
 
-    /// Attach the Rust value cache to the two words generated code accesses:
-    /// this cell's own prefix, whether Rust or generated code allocated it.
-    pub(crate) unsafe fn attach_native_words(&self, native: *mut ConsWords, agreed: [usize; 2]) {
-        // Snapshots made before this crossing only watch Rust stores. Retire
-        // them once so their replacements also watch the canonical words.
-        note_cons_mutation(&self.car as *const ConsValueCell as usize);
-        note_cons_mutation(&self.cdr as *const ConsValueCell as usize);
-        self.car
-            .attach_native_word(unsafe { (*native).car.get() }, agreed[0], false);
-        self.cdr
-            .attach_native_word(unsafe { (*native).cdr.get() }, agreed[1], true);
+    #[inline]
+    pub(crate) fn cdr(&self) -> usize {
+        self.cdr.get().word()
     }
 
-    pub(crate) unsafe fn detach_native_words(&self, native: *mut ConsWords) {
-        self.car.detach_native_word(unsafe { (*native).car.get() });
-        self.cdr.detach_native_word(unsafe { (*native).cdr.get() });
+    /// # Safety
+    /// VALUE is a valid, live Lisp_Object word, as for generated XSETCAR.
+    #[inline]
+    pub(crate) unsafe fn set_car(&self, value: usize) {
+        self.car.set(unsafe { Value::from_word(value) });
     }
 
-    pub(crate) fn set_native_words_agreed(&self, agreed: [usize; 2]) {
-        self.car.set_native_agreed(agreed[0]);
-        self.cdr.set_native_agreed(agreed[1]);
-    }
-
-    pub(crate) fn native_words_agreed(&self) -> [usize; 2] {
-        [self.car.native_agreed(), self.cdr.native_agreed()]
-    }
-
-    pub(crate) fn attached_native_address(&self) -> Option<usize> {
-        self.car.native_cons_key()
-    }
-
-    pub(crate) fn mutation_field_ids(cell: &SharedCons) -> [usize; 2] {
-        [
-            &cell.car as *const ConsValueCell as usize,
-            &cell.cdr as *const ConsValueCell as usize,
-        ]
+    /// # Safety
+    /// VALUE is a valid, live Lisp_Object word, as for generated XSETCDR.
+    #[inline]
+    pub(crate) unsafe fn set_cdr(&self, value: usize) {
+        self.cdr.set(unsafe { Value::from_word(value) });
     }
 }
 
@@ -2012,14 +1596,6 @@ pub enum ReaderForm {
     BoolVector {
         bits: Vec<bool>,
     },
-    /// A symbol occurrence read with `read-positioning-symbols': lread.c's
-    /// read0 wraps every symbol it reads in a `symbol-with-pos' when
-    /// LOCATE_SYMS is set.  The reader has no Interpreter to allocate the
-    /// pseudovector in, so the name and character position wait here.
-    PositionedSymbol {
-        name: String,
-        pos: i64,
-    },
 }
 
 /// lisp.h's `Lisp_Object': one machine word, the object's address or an
@@ -2037,17 +1613,11 @@ pub struct Value(usize, std::marker::PhantomData<*mut ()>);
 
 const TAG_MASK: usize = 7;
 const TAG_SYMBOL: usize = 0;
-const TAG_SPECIAL: usize = 1;
 const TAG_INT0: usize = 2;
 const TAG_CONS: usize = 3;
 const TAG_STRING: usize = 4;
 const TAG_VECTORLIKE: usize = 5;
 const TAG_FLOAT: usize = 7;
-/// The kinds under `TAG_SPECIAL', in bits 3 to 7.
-const SUB_CHAR_TABLE: usize = 5;
-const SUB_FRAME: usize = 6;
-const SUB_SHIFT: u32 = 3;
-const PAYLOAD_SHIFT: u32 = 8;
 
 /// A tag no value carries: a panic in a debug build, and in a release
 /// build the optimizer's licence to drop the arm (lisp.h reads a
@@ -2066,10 +1636,6 @@ unsafe fn impossible_tag(what: &'static str) -> ! {
     unsafe { std::hint::unreachable_unchecked() }
 }
 
-const fn special(sub: usize, payload: usize) -> usize {
-    (payload << PAYLOAD_SHIFT) | (sub << SUB_SHIFT) | TAG_SPECIAL
-}
-
 /// What a `Value' names, as `XTYPE' and the pseudovector header tell
 /// it: the object's handle or the immediate.  Read with `Value::kind';
 /// the variants carry the same handles `Value''s constructors take.
@@ -2083,6 +1649,8 @@ pub enum Kind {
     String(SharedText),
     StringObject(StringObjectRef),
     Symbol(SymbolName),
+    /// GNU PVEC_SYMBOL_WITH_POS: the symbol and position in the allocation.
+    SymbolWithPos(SymbolWithPosRef),
     Cons(SharedCons),
     /// An ordinary vector with GNU vector identity and contiguous slots.
     Vector(VectorRef),
@@ -2096,15 +1664,18 @@ pub enum Kind {
     Marker(MarkerRef),
     /// The canonical GNU-layout overlay allocation.
     Overlay(OverlayRef),
-    /// A char-table object, identified by unique id.
-    CharTable(u64),
-    /// An opaque frame object, identified by unique id.
-    Frame(u64),
-    /// An opaque terminal object, identified by unique id.
+    /// The canonical GNU char-table and internal radix nodes.
+    CharTable(CharTableRef),
+    SubCharTable(SubCharTableRef),
+    /// An allocated frame with address identity and directly owned state.
+    Frame(FrameRef),
+    /// An allocated terminal with address identity and directly owned state.
     Terminal(TerminalRef),
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
     Record(RecordRef),
+    /// GNU PVEC_RECORD with its type and data slots inline.
+    LispRecord(LispRecordRef),
     /// GNU PVEC_FINALIZER: the object containing its callback and list links.
     Finalizer(crate::lisp::alloc::FinalizerRef),
     /// Typed reader state awaiting Interpreter-owned object allocation.
@@ -2172,6 +1743,10 @@ impl Value {
         Value::from_bits(cell.as_ptr() as usize | TAG_CONS)
     }
     #[inline]
+    pub fn SymbolWithPos(object: SymbolWithPosRef) -> Value {
+        Value::from_bits(object.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
     pub fn Vector(vector: VectorRef) -> Value {
         Value::from_bits(vector.identity() | TAG_VECTORLIKE)
     }
@@ -2196,16 +1771,24 @@ impl Value {
         Value::from_bits(overlay.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn CharTable(id: u64) -> Value {
-        Value::from_bits(special(SUB_CHAR_TABLE, id as usize))
+    pub fn CharTable(table: CharTableRef) -> Value {
+        Value::from_bits(table.identity() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Frame(id: u64) -> Value {
-        Value::from_bits(special(SUB_FRAME, id as usize))
+    pub fn SubCharTable(table: SubCharTableRef) -> Value {
+        Value::from_bits(table.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn Frame(frame: FrameRef) -> Value {
+        Value::from_bits(frame.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Terminal(terminal: TerminalRef) -> Value {
         Value::from_bits(terminal.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn LispRecord(record: LispRecordRef) -> Value {
+        Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Record(record: RecordRef) -> Value {
@@ -2304,6 +1887,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Finalizer => {
                             Kind::Finalizer(crate::lisp::alloc::FinalizerRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::SymbolWithPos => {
+                            Kind::SymbolWithPos(SymbolWithPosRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Subr => {
                             Kind::BuiltinFunc(BuiltinRef::from_raw(header as usize))
                         }
@@ -2316,8 +1902,17 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Overlay => {
                             Kind::Overlay(OverlayRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Frame => {
+                            Kind::Frame(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::CharTable => {
+                            Kind::CharTable(CharTableRef::from_raw(header))
+                        }
+                        crate::lisp::alloc::VectorTag::SubCharTable => {
+                            Kind::SubCharTable(SubCharTableRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
@@ -2329,7 +1924,13 @@ impl Value {
                             Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Record => {
-                            Kind::Record(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            if crate::lisp::alloc::vectors::generic_records::record_has_inline_slots(
+                                header,
+                            ) {
+                                Kind::LispRecord(LispRecordRef::from_raw(header))
+                            } else {
+                                Kind::Record(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                            }
                         }
                         // SAFETY: a value names no free vector (the
                         // collector's contract); C reads the header's
@@ -2341,16 +1942,8 @@ impl Value {
                     }
                 }
             }
-            _ => {
-                let payload = (word >> PAYLOAD_SHIFT) as u64;
-                match (word >> SUB_SHIFT) & 31 {
-                    SUB_CHAR_TABLE => Kind::CharTable(payload),
-                    SUB_FRAME => Kind::Frame(payload),
-                    // SAFETY: every word this implementation makes has
-                    // one of the sub-tags above.
-                    _ => unsafe { impossible_tag("a value with an unknown tag") },
-                }
-            }
+            // All supported values use their GNU tag and allocated address.
+            _ => unsafe { impossible_tag("a value with an unknown tag") },
         }
     }
 
@@ -2414,9 +2007,12 @@ impl Kind {
             Kind::Marker(v) => Value::Marker(v),
             Kind::Overlay(v) => Value::Overlay(v),
             Kind::CharTable(v) => Value::CharTable(v),
+            Kind::SubCharTable(v) => Value::SubCharTable(v),
             Kind::Frame(v) => Value::Frame(v),
             Kind::Terminal(v) => Value::Terminal(v),
+            Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
+            Kind::LispRecord(v) => Value::LispRecord(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
             Kind::ReaderForm(v) => Value::ReaderForm(v),
         }
@@ -2782,6 +2378,10 @@ impl Value {
         Value::Cons(crate::lisp::alloc::allocate_cons(ConsCell::new(car, cdr)))
     }
 
+    pub(crate) fn positioned_symbol(symbol: Value, position: Value) -> Self {
+        Self::SymbolWithPos(SymbolWithPosRef::allocate(symbol, position))
+    }
+
     pub fn vector(items: impl IntoIterator<Item = Value>) -> Self {
         let slots = items.into_iter().collect::<Vec<_>>();
         if !slots.is_empty() {
@@ -3034,9 +2634,12 @@ impl Value {
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::CharTable(id) => format!("char-table<{}>", id),
-            Kind::Frame(id) => format!("frame<{}>", id),
+            Kind::SubCharTable(id) => format!("sub-char-table<{:x}>", id.identity()),
+            Kind::Frame(id) => format!("frame<{}>", id.borrow().id),
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
+            Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
+            Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
             Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
@@ -3139,10 +2742,38 @@ fn values_equal_recursive(
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => a == b,
         (Kind::Overlay(a), Kind::Overlay(b)) => a == b,
-        (Kind::CharTable(a), Kind::CharTable(b)) => a == b,
+        (Kind::CharTable(a), Kind::CharTable(b)) => {
+            if a == b
+                || !seen
+                    .get_or_insert_with(HashSet::new)
+                    .insert((a.identity(), b.identity()))
+            {
+                return true;
+            }
+            a.slot_count() == b.slot_count()
+                && a.slots()
+                    .zip(b.slots())
+                    .all(|(a, b)| values_equal_recursive(&a, &b, seen))
+        }
+        (Kind::SubCharTable(a), Kind::SubCharTable(b)) => {
+            if a == b
+                || !seen
+                    .get_or_insert_with(HashSet::new)
+                    .insert((a.identity(), b.identity()))
+            {
+                return true;
+            }
+            a.depth() == b.depth()
+                && a.min_char() == b.min_char()
+                && a.slots()
+                    .zip(b.slots())
+                    .all(|(a, b)| values_equal_recursive(&a, &b, seen))
+        }
         (Kind::Frame(a), Kind::Frame(b)) => a == b,
         (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
+        (Kind::SymbolWithPos(a), Kind::SymbolWithPos(b)) => a.ptr_eq(&b),
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
+        (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
         (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
         (Kind::Unbound, Kind::Unbound) => true,
@@ -3244,10 +2875,15 @@ fn format_value(
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
-        Kind::CharTable(id) => write!(f, "#<char-table id:{}>", id),
-        Kind::Frame(id) => write!(f, "#<frame id:{}>", id),
+        Kind::CharTable(id) => write!(f, "#<char-table {id}>"),
+        Kind::SubCharTable(id) => write!(f, "#<sub-char-table {:x}>", id.identity()),
+        Kind::Frame(id) => write!(f, "#<frame id:{}>", id.borrow().id),
         Kind::Terminal(terminal) => write!(f, "#<terminal id:{}>", terminal.id),
+        Kind::SymbolWithPos(object) => {
+            write!(f, "#<symbol {} at {}>", object.symbol(), object.position())
+        }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
+        Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),
         Kind::ReaderForm(_) => write!(f, "#<reader-form>"),
@@ -3652,7 +3288,6 @@ mod tests {
         census_live_floats, census_live_vectors, environment_declares_special,
         make_uninterned_symbol_name,
     };
-    use std::rc::Rc;
 
     #[test]
     fn result_of_value_is_two_machine_words() {
@@ -4067,15 +3702,16 @@ mod tests {
 
     #[test]
     fn every_cons_field_mutation_advances_the_shared_epoch() {
+        // Historical selector retained: current words, not a write epoch,
+        // now validate each field's derived dependencies.
         let pair = Value::cons(Value::Integer(1), Value::Integer(2));
-        let before_car = super::cons_mutation_epoch();
+        let before_car = super::ConsMutationSnapshot::list_spine(&pair);
         pair.set_car(Value::Integer(3)).expect("set car");
-        assert_ne!(super::cons_mutation_epoch(), before_car);
-
-        let (_, cdr) = pair.cons_cells().expect("constructed cons");
-        let before_cdr = super::cons_mutation_epoch();
+        assert!(!before_car.is_current());
+        let before_cdr = super::ConsMutationSnapshot::list_spine(&pair);
+        let (_, cdr) = pair.cons_cells().expect("cons");
         cdr.set(Value::Integer(4));
-        assert_ne!(super::cons_mutation_epoch(), before_cdr);
+        assert!(!before_cdr.is_current());
     }
 
     #[test]
@@ -4099,94 +3735,52 @@ mod tests {
 
     #[test]
     fn watcher_compaction_preserves_live_mutation_subscriptions() {
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
-        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
-        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT
-            .with(|limit| limit.set(super::CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT));
-
+        // Historical selector: dropping another snapshot must not discard
+        // a live dependency. There is no longer a global watcher table.
         let source = Value::cons(Value::Integer(1), Value::Nil);
-        let Kind::Cons(cell) = source.kind() else {
-            unreachable!("constructed cons")
-        };
-        let snapshot = super::ConsMutationSnapshot::cell(&cell);
-        let field_ids = super::ConsCell::mutation_field_ids(&cell);
-        let dead_owner = Rc::new(super::ConsMutationWatch {
-            valid: std::cell::Cell::new(true),
-        });
-        let dead = Rc::downgrade(&dead_owner);
-        drop(dead_owner);
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-            watchers.insert(usize::MAX, vec![dead]);
-        });
-        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| limit.set(1));
-        let other = Value::cons(Value::Integer(3), Value::Nil);
-        let Kind::Cons(other_cell) = other.kind() else {
-            unreachable!("constructed cons")
-        };
-        let _other_snapshot = super::ConsMutationSnapshot::cell(&other_cell);
-        super::CONS_MUTATION_WATCHERS.with_borrow(|watchers| {
-            assert!(!watchers.contains_key(&usize::MAX));
-            assert!(field_ids.iter().all(|field| watchers.contains_key(field)));
-        });
-
+        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let other = snapshot.clone();
+        drop(snapshot);
+        for _ in 0..1_024 {
+            drop(super::ConsMutationSnapshot::list_spine(&source));
+        }
+        assert!(other.is_current());
         source
             .set_car(Value::Integer(2))
-            .expect("mutate watched cons");
-        assert!(!snapshot.is_current());
-
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
-        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
-        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT
-            .with(|limit| limit.set(super::CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT));
+            .expect("mutate dependency");
+        assert!(!other.is_current());
     }
 
     #[test]
     fn cons_mutation_bloom_collisions_only_probe_the_authoritative_watcher_map() {
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
-        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
-
-        let watched = 1_usize;
-        let slot = super::cons_mutation_bloom_slot(watched);
-        let collision = (watched + 1..)
-            .find(|candidate| super::cons_mutation_bloom_slot(*candidate) == slot)
-            .expect("the finite Bloom filter must have an address collision");
-        let snapshot = super::ConsMutationSnapshot::from_field_ids(vec![watched]);
-
-        super::note_cons_mutation(collision);
-        assert!(
-            snapshot.is_current(),
-            "a Bloom collision must not invalidate an unrelated dependency"
-        );
-        super::note_cons_mutation(watched);
+        // Historical selector: exact word dependencies replace the Bloom
+        // filter. Native stores need no prior crossing or notification.
+        let source = Value::cons(Value::Integer(1), Value::Nil);
+        let other = Value::cons(Value::Integer(3), Value::Nil);
+        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        unsafe {
+            *((other.word() & !7) as *mut usize) = Value::Integer(7).word();
+        }
+        assert!(snapshot.is_current());
+        unsafe {
+            *((source.word() & !7) as *mut usize) = Value::Integer(9).word();
+        }
         assert!(!snapshot.is_current());
-
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
-        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
     }
 
     #[test]
     fn cons_mutation_bloom_resets_after_the_last_dead_watcher_is_drained() {
-        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
-        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
-
+        // Historical selector: snapshot disposal leaves no registration on
+        // a cell, and a fresh snapshot describes the current fields.
         let source = Value::cons(Value::Integer(1), Value::Integer(2));
-        let Kind::Cons(cell) = source.kind() else {
-            unreachable!("constructed cons")
-        };
-        let field_ids = super::ConsCell::mutation_field_ids(&cell);
-        let snapshot = super::ConsMutationSnapshot::from_field_ids(field_ids.to_vec());
-        assert!(super::CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| bloom.is_some()));
-
+        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
         drop(snapshot);
-        source.set_car(Value::Integer(3)).expect("source is a cons");
-        source.set_cdr(Value::Integer(4)).expect("source is a cons");
-
-        assert!(super::CONS_MUTATION_WATCHERS.with_borrow(|watchers| watchers.is_empty()));
-        assert!(super::CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| {
-            bloom
-                .as_ref()
-                .is_some_and(|words| words.iter().all(|word| *word == 0))
-        }));
+        source.set_car(Value::Integer(3)).expect("cons car");
+        source.set_cdr(Value::Integer(4)).expect("cons cdr");
+        let fresh = super::ConsMutationSnapshot::list_spine(&source);
+        assert!(fresh.is_current());
+        source.set_cdr(Value::Nil).expect("later store");
+        assert!(!fresh.is_current());
     }
 
     #[test]
@@ -4253,3 +3847,6 @@ mod tests {
         assert_eq!(original.to_bits(), distinct.to_bits());
     }
 }
+
+#[cfg(test)]
+mod ownership_tests;

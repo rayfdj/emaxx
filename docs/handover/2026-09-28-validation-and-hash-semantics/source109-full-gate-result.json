@@ -1,0 +1,537 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 2786.278412208,
+  "source_unchanged": true,
+  "summary": {
+    "artifact_root": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109",
+    "cargo_stages": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--profile",
+          "gate",
+          "--bins"
+        ],
+        "elapsed_seconds": 120.69187158399973,
+        "exit_code": 0,
+        "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/bins.log",
+        "results": [
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 56,
+            "reported_seconds": 2.74,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 2,
+            "reported_seconds": 0.0,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 0,
+            "reported_seconds": 0.0,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 2,
+            "reported_seconds": 0.0,
+            "status": "ok"
+          }
+        ],
+        "stage": "bins"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--profile",
+          "gate",
+          "--test",
+          "cli",
+          "--test",
+          "cli_parity",
+          "--test",
+          "ert_runner",
+          "--test",
+          "native_comp_identity",
+          "--test",
+          "native_thread_continuations",
+          "--test",
+          "package_lifecycle",
+          "--test",
+          "runtime_ownership"
+        ],
+        "elapsed_seconds": 729.2300112500002,
+        "exit_code": 0,
+        "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/integration.log",
+        "results": [
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 20,
+            "reported_seconds": 34.87,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 6,
+            "reported_seconds": 49.88,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 3,
+            "reported_seconds": 33.36,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 1,
+            "reported_seconds": 89.31,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 1,
+            "reported_seconds": 5.79,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 5,
+            "reported_seconds": 114.65,
+            "status": "ok"
+          },
+          {
+            "failed": 0,
+            "filtered_out": 0,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 3,
+            "reported_seconds": 19.28,
+            "status": "ok"
+          }
+        ],
+        "stage": "integration"
+      }
+    ],
+    "cargo_test_targets": {
+      "bins": [
+        "compat-harness",
+        "emaxx",
+        "make-fingerprint",
+        "perf-harness"
+      ],
+      "integrations": [
+        "cli",
+        "cli_parity",
+        "ert_runner",
+        "native_comp_identity",
+        "native_thread_continuations",
+        "package_lifecycle",
+        "runtime_ownership"
+      ]
+    },
+    "environment": {
+      "LANG": "C",
+      "LC_ALL": "C",
+      "RUST_BACKTRACE": "1",
+      "RUST_MIN_STACK": "134217728",
+      "RUST_TEST_THREADS": "1"
+    },
+    "execution_override": {
+      "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+      "script": "/private/tmp/emaxx-runtime-audit-followup/emaxx/tools/serial_grouped_gate.py"
+    },
+    "format_version": 1,
+    "git": {
+      "dirty": false,
+      "head": "64e18d84f64be95c58aa4287ce012b0ab38cbbb5"
+    },
+    "inventory": {
+      "groups": {
+        "batch": 50,
+        "compat_runtime": 86,
+        "eval_01": 385,
+        "eval_02": 295,
+        "eval_03": 320,
+        "eval_04": 254,
+        "eval_05": 352,
+        "lightweight": 530,
+        "primitives": 561,
+        "tty": 59
+      },
+      "ignored_tests": [
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "scheduled_tests": 2892,
+      "sha256": "d751587b8df2eea29869cde356047c3f06615d6f14b7e3b135bb984249d92016",
+      "total_tests": 2892
+    },
+    "profile": "gate",
+    "repetitions": 1,
+    "runs": [
+      {
+        "expected_tests": 2892,
+        "groups": [
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::eval::tests::eval_01::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 197.791086709,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 385,
+            "group": "eval_01",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-eval_01.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2507,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 385,
+              "reported_seconds": 197.74,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::eval::tests::eval_02::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 180.22549475,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 295,
+            "group": "eval_02",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-eval_02.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2597,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 295,
+              "reported_seconds": 180.16,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::eval::tests::eval_03::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 298.76802120800005,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 320,
+            "group": "eval_03",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-eval_03.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2572,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 320,
+              "reported_seconds": 298.69,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::eval::tests::eval_04::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 190.07903458299995,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 254,
+            "group": "eval_04",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-eval_04.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2638,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 254,
+              "reported_seconds": 190.02,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::eval::tests::eval_05::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 428.58313050000015,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 352,
+            "group": "eval_05",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-eval_05.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2540,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 352,
+              "reported_seconds": 428.52,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::primitives::tests::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 398.4132675420001,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 561,
+            "group": "primitives",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-primitives.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2331,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 561,
+              "reported_seconds": 398.35,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "lisp::primitives::compat_runtime_tests::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 20.354576624999936,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 86,
+            "group": "compat_runtime",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-compat_runtime.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2806,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 86,
+              "reported_seconds": 20.29,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "tty::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 6.254077125000094,
+            "exit_code": 0,
+            "expected_ignored": 2,
+            "expected_tests": 59,
+            "group": "tty",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-tty.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2833,
+              "ignored": 2,
+              "measured": 0,
+              "passed": 57,
+              "reported_seconds": 6.17,
+              "status": "ok"
+            },
+            "template": true,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "batch::tests::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 42.79847258399991,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 50,
+            "group": "batch",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-batch.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2842,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 50,
+              "reported_seconds": 42.71,
+              "status": "ok"
+            },
+            "template": false,
+            "test_threads": 1,
+            "timed_out": false
+          },
+          {
+            "command": [
+              "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+              "--skip",
+              "lisp::eval::tests::eval_01::",
+              "--skip",
+              "lisp::eval::tests::eval_02::",
+              "--skip",
+              "lisp::eval::tests::eval_03::",
+              "--skip",
+              "lisp::eval::tests::eval_04::",
+              "--skip",
+              "lisp::eval::tests::eval_05::",
+              "--skip",
+              "lisp::primitives::tests::",
+              "--skip",
+              "lisp::primitives::compat_runtime_tests::",
+              "--skip",
+              "tty::",
+              "--skip",
+              "batch::tests::",
+              "--test-threads",
+              "1"
+            ],
+            "elapsed_seconds": 10.292775624999877,
+            "exit_code": 0,
+            "expected_ignored": 0,
+            "expected_tests": 530,
+            "group": "lightweight",
+            "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-lightweight.log",
+            "result": {
+              "failed": 0,
+              "filtered_out": 2362,
+              "ignored": 0,
+              "measured": 0,
+              "passed": 530,
+              "reported_seconds": 10.25,
+              "status": "ok"
+            },
+            "template": false,
+            "test_threads": 1,
+            "timed_out": false
+          }
+        ],
+        "observed_outcomes": 2892,
+        "repetition": 1
+      }
+    ],
+    "schedule": [
+      [
+        "eval_01"
+      ],
+      [
+        "eval_02"
+      ],
+      [
+        "eval_03"
+      ],
+      [
+        "eval_04"
+      ],
+      [
+        "eval_05"
+      ],
+      [
+        "primitives"
+      ],
+      [
+        "compat_runtime"
+      ],
+      [
+        "tty"
+      ],
+      [
+        "batch"
+      ],
+      [
+        "lightweight"
+      ]
+    ],
+    "scope": "full",
+    "status": "passed",
+    "test_binary": {
+      "path": "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+      "sha256": "6b58da1ff2209c08e0e9deb016f3b4f00b6cf852ef9a33eed954ff0068d09df6"
+    },
+    "timeout_seconds": 3600
+  },
+  "immutable_binary": {
+    "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source109-gate-libtest",
+    "sha256": "6b58da1ff2209c08e0e9deb016f3b4f00b6cf852ef9a33eed954ff0068d09df6"
+  }
+}

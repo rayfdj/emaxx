@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (value)\n   (condition-case err\n       (let ((record (make-record 'slot-count-107 value nil)))\n         (list (length record) (aref record 0)))\n     (error err)))\n (list 0 1 -1 1.0 nil 'slot-count-109 most-positive-fixnum\n       (1+ most-positive-fixnum) 9223372036854775808))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-audit-followup/emaxx/tests/fixtures/generic-record-argument-errors.el",
+  "input_sha256": "0de719e738c50a43b54ab2d78897c8b42b49ba47e67faed0679a97f435355968",
+  "exit_code": 0,
+  "elapsed_seconds": 0.9996728750000017,
+  "stdout_hex": "28283120736c6f742d636f756e742d3130372920283220736c6f742d636f756e742d31303729202877726f6e672d747970652d617267756d656e742077686f6c656e756d70202d3129202877726f6e672d747970652d617267756d656e742077686f6c656e756d7020312e3029202877726f6e672d747970652d617267756d656e742077686f6c656e756d70206e696c29202877726f6e672d747970652d617267756d656e742077686f6c656e756d7020736c6f742d636f756e742d3130392920286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203233303538343330303932313336393339353220736c6f74733b206d617820697320343039352229202877726f6e672d747970652d617267756d656e742077686f6c656e756d70203233303538343330303932313336393339353229202877726f6e672d747970652d617267756d656e742077686f6c656e756d7020393232333337323033363835343737353830382929",
+  "stderr_hex": "",
+  "binary_sha256": "8d49763b6f3953d957240afd09dde9b7a1ab2ffb71e4c1ba22fad15a606d8eb8",
+  "image_sha256": "a4287f680a677ef7728e61d4496aa0dbbdbcf39a98e318eefbb06b671997ed33",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

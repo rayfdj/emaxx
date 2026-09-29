@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source61-debug-libtest",
+    "lisp::native_comp::runtime::tests::",
+    "lisp::types::tests::",
+    "lisp::eval::symbol_cells::tests::",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "b4fabd3e1c14d9988255b7bbcaa906d407e7e2c7ec052772f3b7cbd722a61d1a"
+}

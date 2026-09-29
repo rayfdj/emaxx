@@ -1,0 +1,8 @@
+{
+  "root": "/private/tmp/emaxx-runtime-next-jlufuyff",
+  "repository": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "upstream_symlink": "/private/tmp/emaxx-runtime-next-jlufuyff/emacs",
+  "upstream_target": "/Users/nbmhqa186/projects/emacs",
+  "base_commit": "878588f3a7ee1a101dcd9139de6a9cb6e54b7481",
+  "purpose": "Prepare menu preferred-key repair while source25 full validation stays unchanged; detached worktree, no new branch."
+}

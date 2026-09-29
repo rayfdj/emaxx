@@ -1,0 +1,18 @@
+{
+  "before": "103",
+  "after": "105",
+  "before_count": 2882,
+  "after_count": 2891,
+  "removed": [],
+  "added": [
+    "lisp::eval::function_cell_tests::function_cycle_validation_follows_the_current_symbol_cells",
+    "lisp::eval::function_cell_tests::static_roots_trace_the_current_symbol_function_cell_only",
+    "lisp::eval::symbol_cells::tests::function_enumeration_survives_redefinition_voiding_and_compaction",
+    "lisp::primitives::pdumper::tests::text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images",
+    "lisp::primitives::tests::text_conversion_alias_and_indirect_buffer_state_matches_gnu",
+    "lisp::primitives::tests::text_conversion_c_store_does_not_localize_or_duplicate_the_field",
+    "lisp::primitives::tests::text_conversion_detached_state_matches_gnu",
+    "lisp::primitives::tests::text_conversion_variable_state_matches_gnu",
+    "lisp::primitives::tests::text_conversion_void_default_let_matches_gnu"
+  ]
+}

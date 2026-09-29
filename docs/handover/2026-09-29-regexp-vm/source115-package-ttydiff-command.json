@@ -1,0 +1,28 @@
+{
+  "command": [
+    "python3",
+    "tools/ttydiff.py",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "/private/tmp/emaxx-runtime-gnu-20260928/lisp",
+    "package-menu-install-refresh-remove"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-package-tty-home",
+    "EMAXX_TTYDIFF_REQUIRE": "1"
+  },
+  "inputs": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "7a979482649db10f97b815b03285ca933b6f02dc6d8d384068c5f9b537bbff81",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "9a5a17a8f75eaddbb65ac3d4e06e713d6628d85ae8f8f3d8e463f6e055d90f45",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source115-package-tty.py": "88f05b6ad8b78bceae4cf84774c40228db14d8420ae63c01099c4e9d022df783"
+  },
+  "source_manifest": "source115-manifest.json",
+  "inventory": [
+    "package-menu-install-refresh-remove"
+  ],
+  "qualification": "Focused original package install/refresh/remove scenario after the exact snapshot optimization; original full failure remains. Identical actions/settles/comparison functions and separate temporary targets. Empty personal HOME; missing binaries are errors. Matching-native-ABI GNU candidate is source-matched, not the frozen Darwin pin."
+}

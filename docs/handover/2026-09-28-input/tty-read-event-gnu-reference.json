@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "--batch",
+    "-Q",
+    "--load",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-read-event-gnu-reference.el"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.438887,
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "fixture_sha256": "e061abe1fd76eccb5c207e470f0a7f57ecb2afdaa04a0c0926e4d6841c513531",
+  "stdout": "((down-mouse-1 (nil menu-bar (5 . 0) 0)) (mouse-1 (nil menu-bar (5 . 0) 0)) 97 (98 99))",
+  "note": "Mouse event contract from identical Lisp values in unread-command-events; live terminal raw bytes are covered separately by the unchanged mouse-bar-click scenario, not by this batch probe."
+}

@@ -1,0 +1,16 @@
+{
+  "command": [
+    "rustc",
+    "--edition",
+    "2024",
+    "-O",
+    "/Users/nbmhqa186/projects/emaxx/tools/generate_native_subrs.rs",
+    "-o",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/generate-native-subrs-gnu256"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx",
+  "source_sha256": "83d512c84ee49064019b10b2f86fc39d9777f7db81fa872aa0f32fcffea484be",
+  "exit_code": 0,
+  "elapsed_seconds": 1.591661708,
+  "binary_sha256": "acda3382e1372afdbd17aaf9598d21938bc260e33e8972bd707a256e0dd556fe"
+}

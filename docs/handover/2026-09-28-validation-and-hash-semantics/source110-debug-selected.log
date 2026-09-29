@@ -1,0 +1,17 @@
+
+running 1 test
+test lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array ... 
+thread 'lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array' (2018570) panicked at src/lisp/native_comp/runtime.rs:9960:9:
+assertion `left == right` failed: GNU PVEC_HASH_TABLE
+  left: 34
+ right: 14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2892 filtered out; finished in 0.02s
+

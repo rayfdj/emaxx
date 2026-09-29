@@ -1,0 +1,528 @@
+{
+  "artifact_root": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust",
+  "cargo_stages": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--profile",
+        "gate",
+        "--bins"
+      ],
+      "elapsed_seconds": 58.328609632999814,
+      "exit_code": 0,
+      "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/bins.log",
+      "results": [
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 57,
+          "reported_seconds": 0.43,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 2,
+          "reported_seconds": 0.0,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 0,
+          "reported_seconds": 0.0,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 2,
+          "reported_seconds": 0.0,
+          "status": "ok"
+        }
+      ],
+      "stage": "bins"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--profile",
+        "gate",
+        "--test",
+        "cli",
+        "--test",
+        "cli_parity",
+        "--test",
+        "ert_runner",
+        "--test",
+        "native_comp_identity",
+        "--test",
+        "native_thread_continuations",
+        "--test",
+        "package_lifecycle",
+        "--test",
+        "runtime_ownership"
+      ],
+      "elapsed_seconds": 638.8384082130001,
+      "exit_code": 0,
+      "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/integration.log",
+      "results": [
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 23,
+          "reported_seconds": 45.33,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 6,
+          "reported_seconds": 48.91,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 3,
+          "reported_seconds": 38.98,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 1,
+          "reported_seconds": 175.2,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 1,
+          "reported_seconds": 3.28,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 5,
+          "reported_seconds": 68.13,
+          "status": "ok"
+        },
+        {
+          "failed": 0,
+          "filtered_out": 0,
+          "ignored": 0,
+          "measured": 0,
+          "passed": 3,
+          "reported_seconds": 30.29,
+          "status": "ok"
+        }
+      ],
+      "stage": "integration"
+    }
+  ],
+  "cargo_test_targets": {
+    "bins": [
+      "compat-harness",
+      "emaxx",
+      "make-fingerprint",
+      "perf-harness"
+    ],
+    "integrations": [
+      "cli",
+      "cli_parity",
+      "ert_runner",
+      "native_comp_identity",
+      "native_thread_continuations",
+      "package_lifecycle",
+      "runtime_ownership"
+    ]
+  },
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_BACKTRACE": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "execution_override": {
+    "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+    "script": "/home/runner/work/emaxx/emaxx/emaxx/tools/serial_grouped_gate.py"
+  },
+  "format_version": 1,
+  "git": {
+    "dirty": false,
+    "head": "968bf33b43df990b3eb6b816e7a644654c646d98"
+  },
+  "inventory": {
+    "groups": {
+      "batch": 50,
+      "compat_runtime": 86,
+      "eval_01": 385,
+      "eval_02": 295,
+      "eval_03": 320,
+      "eval_04": 254,
+      "eval_05": 352,
+      "lightweight": 530,
+      "primitives": 573,
+      "tty": 59
+    },
+    "ignored_tests": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "scheduled_tests": 2904,
+    "sha256": "943f4cbcccfd95e56314c80ed53d46dea8061edb092eeb2b6cc43ab47c02d7f8",
+    "total_tests": 2904
+  },
+  "profile": "gate",
+  "repetitions": 1,
+  "runs": [
+    {
+      "expected_tests": 2904,
+      "groups": [
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::eval::tests::eval_01::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 121.53060461300004,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 385,
+          "group": "eval_01",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_01.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2519,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 385,
+            "reported_seconds": 121.46,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::eval::tests::eval_02::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 100.28716372400004,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 295,
+          "group": "eval_02",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_02.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2609,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 295,
+            "reported_seconds": 100.21,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::eval::tests::eval_03::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 144.36916220399996,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 320,
+          "group": "eval_03",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_03.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2584,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 320,
+            "reported_seconds": 144.32,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::eval::tests::eval_04::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 98.94560485199997,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 254,
+          "group": "eval_04",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_04.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2650,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 254,
+            "reported_seconds": 98.81,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::eval::tests::eval_05::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 239.506879057,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 352,
+          "group": "eval_05",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_05.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2552,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 352,
+            "reported_seconds": 239.36,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::primitives::tests::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 234.69406737300005,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 573,
+          "group": "primitives",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-primitives.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2331,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 573,
+            "reported_seconds": 234.63,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "lisp::primitives::compat_runtime_tests::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 11.877471722999871,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 86,
+          "group": "compat_runtime",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-compat_runtime.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2818,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 86,
+            "reported_seconds": 11.79,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "tty::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 3.6084667170000557,
+          "exit_code": 0,
+          "expected_ignored": 2,
+          "expected_tests": 59,
+          "group": "tty",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-tty.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2845,
+            "ignored": 2,
+            "measured": 0,
+            "passed": 57,
+            "reported_seconds": 3.53,
+            "status": "ok"
+          },
+          "template": true,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "batch::tests::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 39.58778837099999,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 50,
+          "group": "batch",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-batch.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2854,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 50,
+            "reported_seconds": 39.49,
+            "status": "ok"
+          },
+          "template": false,
+          "test_threads": 1,
+          "timed_out": false
+        },
+        {
+          "command": [
+            "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+            "--skip",
+            "lisp::eval::tests::eval_01::",
+            "--skip",
+            "lisp::eval::tests::eval_02::",
+            "--skip",
+            "lisp::eval::tests::eval_03::",
+            "--skip",
+            "lisp::eval::tests::eval_04::",
+            "--skip",
+            "lisp::eval::tests::eval_05::",
+            "--skip",
+            "lisp::primitives::tests::",
+            "--skip",
+            "lisp::primitives::compat_runtime_tests::",
+            "--skip",
+            "tty::",
+            "--skip",
+            "batch::tests::",
+            "--test-threads",
+            "1"
+          ],
+          "elapsed_seconds": 6.263515089000066,
+          "exit_code": 0,
+          "expected_ignored": 0,
+          "expected_tests": 530,
+          "group": "lightweight",
+          "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-lightweight.log",
+          "result": {
+            "failed": 0,
+            "filtered_out": 2374,
+            "ignored": 0,
+            "measured": 0,
+            "passed": 530,
+            "reported_seconds": 6.23,
+            "status": "ok"
+          },
+          "template": false,
+          "test_threads": 1,
+          "timed_out": false
+        }
+      ],
+      "observed_outcomes": 2904,
+      "repetition": 1
+    }
+  ],
+  "schedule": [
+    [
+      "eval_01"
+    ],
+    [
+      "eval_02"
+    ],
+    [
+      "eval_03"
+    ],
+    [
+      "eval_04"
+    ],
+    [
+      "eval_05"
+    ],
+    [
+      "primitives"
+    ],
+    [
+      "compat_runtime"
+    ],
+    [
+      "tty"
+    ],
+    [
+      "batch"
+    ],
+    [
+      "lightweight"
+    ]
+  ],
+  "scope": "full",
+  "status": "passed",
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5b7a78b11db80ab648ef5b0c7c70bb619a8461ca0b3248e1cdc2e6263a422fbe"
+  },
+  "timeout_seconds": 3600
+}

@@ -1,0 +1,14 @@
+{
+  "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/debug/deps/emaxx-062fd247b26fb761",
+  "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/cons-range-after-libtest",
+  "sha256": "dccfc557be32485cb8cea8c902504c2ec04b8274d4cc99740ad2101139554ccc",
+  "test": "lisp::primitives::tests::char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache",
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_out": 2802
+  },
+  "source_manifest": "source11-manifest.json",
+  "oracle_limit": "Source-matched local GNU executable, not the pinned Darwin executable."
+}

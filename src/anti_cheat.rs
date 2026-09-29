@@ -1343,7 +1343,7 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         regex::Regex::new(r"(?m)^    (?:pub(?:\((?:crate|super)\))? )?([a-z_0-9]+): (.+),$")
             .expect("compile field pattern");
     let roots_start = source
-        .find("pub(crate) fn weak_hash_reachability_with_native")
+        .find("pub(crate) fn weak_hash_reachability(")
         .expect("root-marking function");
     let roots_end = source[roots_start..]
         .find("\n    }\n")
@@ -1372,6 +1372,8 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     );
     assert!(roots.contains("self.stack_roots.mark("));
     assert!(roots.contains("roots::mark_source(self, &mut marked, &**context)"));
+    assert!(roots.contains("for value in native_roots"));
+    assert!(roots.contains("marked.mark(self, value)"));
     // Fields that hold Lisp objects but are not GNU roots, each with the
     // C reason.
     let documented: &[(&str, &str)] = &[
@@ -1382,14 +1384,6 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         (
             "finalizers",
             "alloc.c marks a live finalizer's function only through the reached object; an unreached one is doomed and then rooted",
-        ),
-        (
-            "functions_index",
-            "an index over `functions', which is marked",
-        ),
-        (
-            "functions_position",
-            "the positions of `functions' entries, no Lisp object",
         ),
         (
             "dispatched_signal",
@@ -1498,7 +1492,7 @@ pub(crate) fn interpreter_roots_are_dumped_or_documented() {
     let source =
         fs::read_to_string(repo_root().join("src/lisp/eval.rs")).expect("read src/lisp/eval.rs");
     let roots_start = source
-        .find("pub(crate) fn weak_hash_reachability_with_native")
+        .find("pub(crate) fn weak_hash_reachability(")
         .expect("root-marking function");
     let roots_end = source[roots_start..]
         .find("\n    }\n")

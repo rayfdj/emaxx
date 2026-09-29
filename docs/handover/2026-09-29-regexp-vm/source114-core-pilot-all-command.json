@@ -1,0 +1,23 @@
+{
+  "command": [
+    "python3",
+    "tools/core_runtime_perf.py",
+    "pilot",
+    "--source",
+    "/private/tmp/emaxx-runtime-gnu-20260928",
+    "--oracle",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "--emaxx",
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/release/emaxx",
+    "--output",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-pilot-all",
+    "--native-dir",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-core-native",
+    "--pilot-runner",
+    "both",
+    "--diagnostic"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "source_manifest": "source114-manifest.json",
+  "qualification": "All16 original locked workload inputs, one pilot observation each, no warmup. Concurrent source115 correctness build; elapsed times diagnostic only, not controlled performance or frozen certification. Unavailable allocation counters remain unavailable. Exact output/mode/process/inventory validators unchanged."
+}

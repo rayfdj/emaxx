@@ -18,6 +18,13 @@
 //! ARRAY_MARK_FLAG: small vectors share a block bitmap, and large vectors
 //! carry their mark past the payload. Ordinary object access reads neither.
 
+pub(crate) mod char_tables;
+pub use char_tables::{CharTableRef, SubCharTableRef};
+pub(crate) mod generic_records;
+pub use generic_records::LispRecordRef;
+mod symbols_with_pos;
+pub use symbols_with_pos::SymbolWithPosRef;
+
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
 use std::cell::{Cell, RefCell};
@@ -71,10 +78,14 @@ pub enum VectorTag {
     Marker = 3,
     Overlay = 4,
     Finalizer = 5,
+    SymbolWithPos = 6,
+    Frame = 10,
     Buffer = 13,
     Terminal = 16,
     Subr = 18,
     Closure = 31,
+    CharTable = 32,
+    SubCharTable = 33,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
@@ -90,10 +101,14 @@ impl VectorTag {
             3 => Self::Marker,
             4 => Self::Overlay,
             5 => Self::Finalizer,
+            6 => Self::SymbolWithPos,
+            10 => Self::Frame,
             13 => Self::Buffer,
             16 => Self::Terminal,
             18 => Self::Subr,
             31 => Self::Closure,
+            32 => Self::CharTable,
+            33 => Self::SubCharTable,
             34 => Self::Record,
             40 => Self::StringObject,
             41 => Self::ReaderForm,
@@ -216,7 +231,18 @@ impl VectorHeader {
         if self.is_pseudovector() {
             let traced = self.size & PSEUDOVECTOR_SIZE_MASK;
             let rest = (self.size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK;
-            HEADER_SIZE + (traced + rest) * WORD_SIZE
+            let bytes = HEADER_SIZE + (traced + rest) * WORD_SIZE;
+            if matches!(
+                self.tag(),
+                VectorTag::CharTable
+                    | VectorTag::SubCharTable
+                    | VectorTag::SymbolWithPos
+                    | VectorTag::Record
+            ) {
+                vroundup(bytes)
+            } else {
+                bytes
+            }
         } else {
             vroundup(HEADER_SIZE + self.size * std::mem::size_of::<Value>())
         }
@@ -702,6 +728,11 @@ impl Vectorlike for LispBignum {
     const TAG: VectorTag = VectorTag::Bignum;
 }
 
+impl Vectorlike for crate::lisp::types::FrameValue {
+    const TAG: VectorTag = VectorTag::Frame;
+    const LISP_SLOTS: usize = 1;
+}
+
 impl Vectorlike for crate::lisp::types::TerminalValue {
     const TAG: VectorTag = VectorTag::Terminal;
     const LISP_SLOTS: usize = 4;
@@ -842,7 +873,14 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTORS, 1);
                 raise(&LIVE_VECTOR_SLOTS, 4);
             }
-            VectorTag::Buffer | VectorTag::Terminal | VectorTag::Marker | VectorTag::Overlay => {
+            VectorTag::Buffer
+            | VectorTag::SymbolWithPos
+            | VectorTag::Frame
+            | VectorTag::Terminal
+            | VectorTag::Marker
+            | VectorTag::Overlay
+            | VectorTag::CharTable
+            | VectorTag::SubCharTable => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -854,8 +892,11 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                 raise(&LIVE_VECTOR_SLOTS, (*header).nbytes() / WORD_SIZE);
             }
             VectorTag::Record => {
-                let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
-                let slots = record.gnu_vector_slots();
+                let slots = if generic_records::record_has_inline_slots(header) {
+                    (*header).nbytes() / WORD_SIZE
+                } else {
+                    (&*payload(header).cast::<crate::lisp::eval::RecordState>()).gnu_vector_slots()
+                };
                 if slots != 0 {
                     raise(&LIVE_RECORDS, 1);
                     raise(&LIVE_RECORD_SLOTS, slots);
@@ -902,17 +943,24 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 debug_assert!((*marker).is_detached());
                 std::ptr::drop_in_place(marker);
             }
+            VectorTag::Frame => {
+                std::ptr::drop_in_place(body.cast::<crate::lisp::types::FrameValue>())
+            }
             VectorTag::Terminal => {
                 std::ptr::drop_in_place(body.cast::<crate::lisp::types::TerminalValue>())
             }
             VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
             // destructor. Its children are reclaimed by tracing, as in C.
-            VectorTag::Closure => {}
+            VectorTag::Closure
+            | VectorTag::CharTable
+            | VectorTag::SubCharTable
+            | VectorTag::SymbolWithPos => {}
             VectorTag::StringObject => {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
+            VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
             VectorTag::Record => {
                 let record = body.cast::<crate::lisp::eval::RecordState>();
                 // The interpreter that owns the id purges its side tables
@@ -974,17 +1022,25 @@ impl SweepStats {
                     self.vector_slots += 4;
                 }
                 VectorTag::Buffer
+                | VectorTag::SymbolWithPos
+                | VectorTag::Frame
                 | VectorTag::Terminal
                 | VectorTag::Marker
-                | VectorTag::Overlay => {
+                | VectorTag::Overlay
+                | VectorTag::CharTable
+                | VectorTag::SubCharTable => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
                     self.vector_slots += (*header).nbytes() / WORD_SIZE;
                 }
                 VectorTag::Record => {
-                    let record = &*payload(header).cast::<crate::lisp::eval::RecordState>();
-                    let slots = record.gnu_vector_slots();
+                    let slots = if generic_records::record_has_inline_slots(header) {
+                        (*header).nbytes() / WORD_SIZE
+                    } else {
+                        (&*payload(header).cast::<crate::lisp::eval::RecordState>())
+                            .gnu_vector_slots()
+                    };
                     if slots != 0 {
                         self.records += 1;
                         self.record_slots += slots;
@@ -1236,11 +1292,18 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Buffer => Value::Buffer(VectorlikeRef::from_raw(header)),
             VectorTag::Marker => Value::Marker(VectorlikeRef::from_raw(header)),
             VectorTag::Overlay => Value::Overlay(VectorlikeRef::from_raw(header)),
+            VectorTag::Frame => Value::Frame(VectorlikeRef::from_raw(header)),
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
+            VectorTag::SymbolWithPos => Value::SymbolWithPos(SymbolWithPosRef::from_raw(header)),
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
+            VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
+            VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
+            VectorTag::Record if generic_records::record_has_inline_slots(header) => {
+                Value::LispRecord(LispRecordRef::from_raw(header))
+            }
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
             VectorTag::Subr => unreachable!("static subrs do not live in vector allocations"),
             VectorTag::Free => unreachable!("a free vector is not a value"),

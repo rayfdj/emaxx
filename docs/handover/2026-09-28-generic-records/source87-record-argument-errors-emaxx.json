@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (value)\n   (condition-case err\n       (let ((record (make-record 'slot-count-107 value nil)))\n         (list (length record) (aref record 0)))\n     (error err)))\n (list 0 1 -1 1.0 nil 'slot-count-109 most-positive-fixnum\n       (1+ most-positive-fixnum) 9223372036854775808))\n)"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx",
+  "exit_code": 2,
+  "elapsed_seconds": 0.792073083,
+  "identities": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/generic-record-argument-errors.el": "0de719e738c50a43b54ab2d78897c8b42b49ba47e67faed0679a97f435355968",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-ordinary-emaxx": "18e9b74c211126f198f118de052bb23a29e21ea6dd7039c35495e0102957336a",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source87-ordinary-emaxx.pdmp": "70b0261e5d0ef595f18cf6d2ce72f4e1f2a7de8e314af2aa796fa66d2c33cf65"
+  },
+  "artifacts_unchanged": true
+}

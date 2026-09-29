@@ -1,0 +1,17 @@
+{
+  "group": "tty",
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "tty::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 59,
+  "expected_ignored": 2,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 6.254077125000094,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source109/repeat-01-tty.log"
+}

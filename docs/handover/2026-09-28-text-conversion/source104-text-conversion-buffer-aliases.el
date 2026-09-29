@@ -1,0 +1,23 @@
+(let (states)
+  (set-default 'text-conversion-style '(default-419))
+  (defvaralias 'text-style-alias-421 'text-conversion-style)
+  (with-temp-buffer
+    (push (list 'make (eq (make-local-variable 'text-style-alias-421)
+                         'text-style-alias-421)
+                (local-variable-p 'text-style-alias-421)) states)
+    (setq text-style-alias-421 [alias-local-431])
+    (let ((cloned (make-indirect-buffer (current-buffer) "style-clone-433" t))
+          (fresh (make-indirect-buffer (current-buffer) "style-fresh-439" nil)))
+      (unwind-protect
+          (push (list 'indirect
+                      (buffer-local-value 'text-conversion-style cloned)
+                      (local-variable-p 'text-conversion-style cloned)
+                      (buffer-local-value 'text-conversion-style fresh)
+                      (local-variable-p 'text-conversion-style fresh)) states)
+        (kill-buffer cloned)
+        (kill-buffer fresh)))
+    (push (list 'kill (eq (kill-local-variable 'text-style-alias-421)
+                         'text-style-alias-421)
+                (local-variable-p 'text-conversion-style)
+                text-style-alias-421) states))
+  (nreverse states))

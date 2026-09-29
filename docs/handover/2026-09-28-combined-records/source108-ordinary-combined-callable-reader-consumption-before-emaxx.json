@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(one) (two)\"))\n          (source (lambda (&optional char)\n                    (if char (push char chars) (pop chars))))\n          (first (funcall reader source))\n          (remaining (length chars))\n          (second (condition-case error (funcall reader source)\n                    (error (car error)))))\n     (list (symbol-name (bare-symbol (car first))) remaining\n           (if (consp second)\n               (symbol-name (bare-symbol (car second))) second))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/callable-reader-consumption-before.el",
+  "input_sha256": "b096f1703e9e6d043489c6a4611597e1b4b9e422be6add1bb0b09a6081f65a90",
+  "exit_code": 0,
+  "elapsed_seconds": 0.4476132909999997,
+  "stdout_hex": "2828226f6e65222036202274776f22292028226f6e65222036202274776f222929",
+  "stderr_hex": "",
+  "binary_sha256": "c26fc9277b9653c0e8e8cff07fafa170510cb1fb42a6acc1847bb0b548f79915",
+  "image_sha256": "7b2db386c3cb13c05fade056562f32059ad4a1d7eb442805cd03bb58ca455a78",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

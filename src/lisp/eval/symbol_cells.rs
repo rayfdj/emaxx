@@ -3,7 +3,7 @@
 //! GNU keeps a variable's value, its redirect (`SYMBOL_VARALIAS',
 //! `SYMBOL_LOCALIZED') and `declared_special' in the `Lisp_Symbol' object
 //! and reads them through the object, never through its name.  Emaxx's
-//! symbol objects are shared by every interpreter on a thread (the test
+//! symbol objects are shared by every interpreter in the process (the test
 //! image template is cloned), so the cells live in the interpreter, indexed
 //! by the symbol's dense id: one bounds-checked index per read instead of
 //! three name-keyed hash probes.  Name-keyed callers reach the same cell
@@ -16,8 +16,8 @@
 
 use super::super::types::{SymbolName, UNINTERNED_SYMBOL_ID_BIT, Value};
 use crate::lisp::primitives::FnvBuildHasher;
-use std::cell::Cell;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 /// data.c: `SYMBOL_LOCALIZED' -- the value cell can forward through a
 /// buffer-local binding.
@@ -47,19 +47,17 @@ struct SymbolCell {
     symbol: Option<SymbolName>,
     value: Option<Value>,
     /// lisp.h's `u.s.function': the function cell, read by id as
-    /// eval_sub reads `XSYMBOL (fun)->u.s.function' (the name-keyed
-    /// function index is written alongside; see `set_function').
+    /// eval_sub reads `XSYMBOL (fun)->u.s.function'. Lookup, tracing and
+    /// image copying all read this one payload.
     function: Option<Value>,
+    /// One-based position in `function_order' for a Lisp-installed
+    /// definition. Static defsubr installation has no such entry.
+    function_position: Option<NonZeroU32>,
     /// `SYMBOL_VARALIAS': the alias target.
     alias: Option<SymbolName>,
     flags: u8,
     /// Position in `order' while the value is bound.
     position: Option<u32>,
-    /// `SYMBOL_VAL' as generated code sees it: the value's native word,
-    /// stamped with the heap and collection generation that produced it
-    /// (stamp 0 = none).  Every value, alias or flag write clears it, so the
-    /// word is only ever the current plain value's.
-    native: Cell<(u64, usize)>,
     /// data.c's SYMBOL_PLAINVAL with `trapped_write == SYMBOL_UNTRAPPED_WRITE'
     /// and no dedicated store behind the name: an assignment or a dynamic
     /// binding is a store into `value' and nothing else.  Learned by the
@@ -87,6 +85,11 @@ pub(crate) struct SymbolCells {
     /// the cell's recorded position.
     order: Vec<u32>,
     bound: usize,
+    /// Enumeration metadata only: Lisp-installed functions keep the
+    /// previous first-definition order without copying names or values.
+    /// Remove this adapter when the obarray owns enumeration directly.
+    function_order: Vec<u32>,
+    defined_functions: usize,
     /// Number of cells with a redirect, so alias-free interpreters skip
     /// resolution entirely.
     aliases: usize,
@@ -149,43 +152,12 @@ impl SymbolCells {
     pub(crate) fn value_by_name_mut(&mut self, name: &str) -> Option<&mut Value> {
         let id = SymbolName::id_of(name)?;
         let cell = self.existing_cell_mut(id)?;
-        cell.native.set((0, 0));
         cell.value.as_mut()
     }
 
     pub(crate) fn value_mut(&mut self, symbol: &SymbolName) -> Option<&mut Value> {
         let cell = self.existing_cell_mut(symbol.id())?;
-        cell.native.set((0, 0));
         cell.value.as_mut()
-    }
-
-    // --- the value's native word ------------------------------------------
-
-    /// The cached native word of SYMBOL's plain value, if it was produced
-    /// under STAMP (a heap id and collection generation).
-    pub(crate) fn native_word(&self, symbol: &SymbolName, stamp: u64) -> Option<usize> {
-        let (cached_stamp, word) = self.cell(symbol.id())?.native.get();
-        (cached_stamp == stamp && stamp != 0).then_some(word)
-    }
-
-    /// Record WORD as the native word of SYMBOL's current value under STAMP.
-    /// A symbol without a cell has no value to cache for.
-    pub(crate) fn set_native_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
-        if let Some(cell) = self.cell(symbol.id())
-            && cell.value.is_some()
-        {
-            cell.native.set((stamp, word));
-        }
-    }
-
-    /// Number of cells holding a word produced under STAMP.
-    #[cfg(test)]
-    pub(crate) fn native_words_under(&self, stamp: u64) -> usize {
-        self.cells
-            .iter()
-            .chain(self.uninterned.values())
-            .filter(|cell| cell.native.get().0 == stamp)
-            .count()
     }
 
     pub(crate) fn is_bound_name(&self, name: &str) -> bool {
@@ -196,7 +168,6 @@ impl SymbolCells {
     pub(crate) fn insert(&mut self, symbol: &SymbolName, value: Value) -> Option<Value> {
         let next_position = u32::try_from(self.order.len()).expect("symbol order index");
         let cell = self.cell_mut(symbol);
-        cell.native.set((0, 0));
         let previous = cell.value.replace(value);
         if previous.is_none() {
             cell.position = Some(next_position);
@@ -213,7 +184,6 @@ impl SymbolCells {
 
     pub(crate) fn remove(&mut self, symbol: &SymbolName) -> Option<Value> {
         let cell = self.existing_cell_mut(symbol.id())?;
-        cell.native.set((0, 0));
         let previous = cell.value.take();
         if previous.is_some() {
             cell.position = None;
@@ -225,7 +195,6 @@ impl SymbolCells {
     pub(crate) fn remove_by_name(&mut self, name: &str) -> Option<Value> {
         let id = SymbolName::id_of(name)?;
         let cell = self.existing_cell_mut(id)?;
-        cell.native.set((0, 0));
         let previous = cell.value.take();
         if previous.is_some() {
             cell.position = None;
@@ -297,6 +266,11 @@ impl SymbolCells {
             .and_then(|cell| cell.function.as_ref())
     }
 
+    pub(crate) fn function_by_name(&self, name: &str) -> Option<&Value> {
+        let id = SymbolName::id_of(name)?;
+        self.cell(id)?.function.as_ref()
+    }
+
     /// Write (or void) the symbol's function cell.
     pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
         match function.filter(|value| !value.is_nil()) {
@@ -304,9 +278,92 @@ impl SymbolCells {
             None => {
                 if let Some(cell) = self.existing_cell_mut(symbol.id()) {
                     cell.function = None;
+                    if cell.function_position.take().is_some() {
+                        self.defined_functions -= 1;
+                    }
                 }
             }
         }
+    }
+
+    /// A Lisp definition uses the same cell as defsubr. The only extra
+    /// state records enumeration order, not another function payload.
+    pub(crate) fn set_function_definition(&mut self, symbol: &SymbolName, function: Option<Value>) {
+        self.set_function(symbol, function);
+        let next = self.function_order.len() + 1;
+        let Some(cell) = self.existing_cell_mut(symbol.id()) else {
+            return;
+        };
+        if cell.function.is_some() && cell.function_position.is_none() {
+            cell.function_position =
+                NonZeroU32::new(u32::try_from(next).expect("function order index"));
+            self.function_order.push(symbol.id());
+            self.defined_functions += 1;
+            self.compact_function_order_if_sparse();
+        }
+    }
+
+    pub(crate) fn has_function_definition(&self, symbol: &SymbolName) -> bool {
+        self.cell(symbol.id())
+            .is_some_and(|cell| cell.function_position.is_some())
+    }
+
+    pub(crate) fn function_definition_by_name(&self, name: &str) -> Option<&Value> {
+        let cell = self.cell(SymbolName::id_of(name)?)?;
+        cell.function_position?;
+        cell.function.as_ref()
+    }
+
+    pub(crate) fn function_definitions_len(&self) -> usize {
+        self.defined_functions
+    }
+
+    pub(crate) fn function_definitions(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
+        self.function_order
+            .iter()
+            .enumerate()
+            .filter_map(move |(position, id)| {
+                let cell = self.cell(*id)?;
+                if cell.function_position?.get() as usize != position + 1 {
+                    return None;
+                }
+                Some((cell.symbol.as_ref()?, cell.function.as_ref()?))
+            })
+    }
+
+    fn compact_function_order_if_sparse(&mut self) {
+        if self.function_order.len() < 1024
+            || self.function_order.len() < self.defined_functions * 2
+        {
+            return;
+        }
+        let mut order = Vec::with_capacity(self.defined_functions);
+        for (position, id) in std::mem::take(&mut self.function_order)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(cell) = self.existing_cell_mut(id) else {
+                continue;
+            };
+            if cell
+                .function_position
+                .is_some_and(|slot| slot.get() as usize == position + 1)
+            {
+                cell.function_position =
+                    NonZeroU32::new(u32::try_from(order.len() + 1).expect("function order index"));
+                order.push(id);
+            }
+        }
+        self.function_order = order;
+    }
+
+    /// Trace all actual function cells, including direct defsubr/image
+    /// stores that do not participate in Lisp-definition enumeration.
+    pub(crate) fn function_values(&self) -> impl Iterator<Item = &Value> {
+        self.cells
+            .iter()
+            .chain(self.uninterned.values())
+            .filter_map(|cell| cell.function.as_ref())
     }
 
     /// Every function cell, for the image copier.
@@ -344,7 +401,6 @@ impl SymbolCells {
 
     pub(crate) fn set_alias(&mut self, symbol: &SymbolName, target: SymbolName) {
         let cell = self.cell_mut(symbol);
-        cell.native.set((0, 0));
         cell.plain_store = false;
         if cell.alias.replace(target).is_none() {
             self.aliases += 1;
@@ -359,7 +415,6 @@ impl SymbolCells {
         let Some(cell) = self.existing_cell_mut(id) else {
             return false;
         };
-        cell.native.set((0, 0));
         let cleared = cell.alias.take().is_some();
         if cleared {
             self.aliases -= 1;
@@ -404,7 +459,6 @@ impl SymbolCells {
         }
         let had_alias = self.alias(symbol).is_some();
         let cell = self.cell_mut(symbol);
-        cell.native.set((0, 0));
         cell.flags = snapshot.flags;
         let has_alias = snapshot.alias.is_some();
         cell.alias = snapshot.alias;
@@ -434,7 +488,6 @@ impl SymbolCells {
     /// `set_flag_by_name' for the symbol in hand.
     pub(crate) fn set_flag(&mut self, symbol: &SymbolName, flag: u8) -> bool {
         let cell = self.cell_mut(symbol);
-        cell.native.set((0, 0));
         cell.plain_store = false;
         let was_clear = cell.flags & flag == 0;
         cell.flags |= flag;
@@ -444,7 +497,6 @@ impl SymbolCells {
     /// Set FLAG; true when it was not set before.
     pub(crate) fn set_flag_by_name(&mut self, name: &str, flag: u8) -> bool {
         let cell = self.cell_mut(&SymbolName::intern_str(name));
-        cell.native.set((0, 0));
         cell.plain_store = false;
         let was_clear = cell.flags & flag == 0;
         cell.flags |= flag;
@@ -455,7 +507,6 @@ impl SymbolCells {
         if let Some(id) = SymbolName::id_of(name)
             && let Some(cell) = self.existing_cell_mut(id)
         {
-            cell.native.set((0, 0));
             cell.flags &= !flag;
         }
     }
@@ -479,6 +530,61 @@ mod tests {
             .iter()
             .map(|(name, _)| name.as_str().to_owned())
             .collect()
+    }
+
+    #[test]
+    fn function_enumeration_survives_redefinition_voiding_and_compaction() {
+        let mut cells = SymbolCells::default();
+        let symbols = [
+            "function-order-first",
+            "function-order-second",
+            "function-order-third",
+        ]
+        .map(SymbolName::intern_str);
+        let direct = SymbolName::intern_str("function-order-direct");
+        cells.set_function(&direct, Some(Value::Integer(71)));
+        assert_eq!(cells.function_definitions_len(), 0);
+        assert_eq!(
+            cells.function_by_name(direct.as_str()),
+            Some(&Value::Integer(71))
+        );
+        for (index, symbol) in symbols.iter().enumerate() {
+            cells.set_function_definition(symbol, Some(Value::Integer(index as i64)));
+        }
+        cells.set_function_definition(&symbols[0], Some(Value::Integer(17)));
+        cells.set_function_definition(&symbols[1], Some(Value::Nil));
+        assert!(!cells.has_function_definition(&symbols[1]));
+        assert!(cells.function_by_name(symbols[1].as_str()).is_none());
+        cells.set_function_definition(&symbols[1], Some(Value::Integer(43)));
+        let transient = SymbolName::intern_str("function-order-transient");
+        for index in 0..3000 {
+            cells.set_function_definition(&transient, Some(Value::Integer(index)));
+            cells.set_function_definition(&transient, None);
+        }
+        assert_eq!(cells.function_definitions_len(), 3);
+        assert!(cells.function_order.len() <= 1024);
+        assert_eq!(
+            cells
+                .function_definitions()
+                .map(|(symbol, value)| (*symbol, *value))
+                .collect::<Vec<_>>(),
+            vec![
+                (symbols[0], Value::Integer(17)),
+                (symbols[2], Value::Integer(2)),
+                (symbols[1], Value::Integer(43))
+            ]
+        );
+        // A direct void store also retires an enumeration entry. Repeating
+        // it must not decrement the live count or revive an older slot.
+        cells.set_function(&symbols[0], None);
+        cells.set_function(&symbols[0], None);
+        assert_eq!(cells.function_definitions_len(), 2);
+        assert_eq!(cells.function_values().count(), 3);
+        assert!(
+            cells
+                .function_definition_by_name(symbols[0].as_str())
+                .is_none()
+        );
     }
 
     #[test]
@@ -563,53 +669,35 @@ mod tests {
 
     #[test]
     fn a_cells_native_word_is_cleared_by_every_data_c_write_transition() {
+        // Historical selector: no native-word cache remains. Every reader
+        // sees the cell's one value through all data.c transitions.
         let mut cells = SymbolCells::default();
         let symbol = SymbolName::intern_str("symbol-cells-word");
-        let stamp = (5u64 << 32) | 1;
-        // No cell, no value: nothing to cache for.
-        cells.set_native_word(&symbol, stamp, 0x10);
-        assert_eq!(cells.native_word(&symbol, stamp), None);
+        let target = SymbolName::intern_str("symbol-cells-word-base");
+        assert!(cells.value(&symbol).is_none());
         cells.insert(&symbol, Value::Integer(1));
-        cells.set_native_word(&symbol, stamp, 0x10);
-        assert_eq!(cells.native_word(&symbol, stamp), Some(0x10));
         assert_eq!(
-            cells.native_word(&symbol, stamp + 1),
-            None,
-            "another generation"
+            cells.value(&symbol).copied().map(Value::word),
+            Some(Value::Integer(1).word())
         );
-        assert_eq!(cells.native_word(&symbol, 0), None, "stamp 0 never matches");
-        // set_internal: the word belongs to the previous value.
         cells.insert(&symbol, Value::Integer(2));
-        assert_eq!(cells.native_word(&symbol, stamp), None);
-        cells.set_native_word(&symbol, stamp, 0x20);
+        assert_eq!(
+            cells.value(&symbol).copied().map(Value::word),
+            Some(Value::Integer(2).word())
+        );
         *cells.value_by_name_mut("symbol-cells-word").expect("bound") = Value::Integer(3);
-        assert_eq!(cells.native_word(&symbol, stamp), None);
-        // A redirect or localization changes what a read means.
-        for transition in [0u8, 1, 2, 3] {
-            cells.set_native_word(&symbol, stamp, 0x30);
-            assert_eq!(cells.native_word(&symbol, stamp), Some(0x30));
-            match transition {
-                0 => cells.set_alias(&symbol, SymbolName::intern_str("symbol-cells-word-base")),
-                1 => {
-                    cells.clear_alias_by_name("symbol-cells-word");
-                }
-                2 => {
-                    cells.set_flag_by_name("symbol-cells-word", LOCALIZED);
-                }
-                _ => cells.clear_flag_by_name("symbol-cells-word", LOCALIZED),
-            }
-            assert_eq!(
-                cells.native_word(&symbol, stamp),
-                None,
-                "transition {transition}"
-            );
-        }
-        assert_eq!(cells.native_words_under(stamp), 0);
-        cells.set_native_word(&symbol, stamp, 0x40);
-        assert_eq!(cells.native_words_under(stamp), 1);
-        // makunbound.
+        assert_eq!(cells.value(&symbol), Some(&Value::Integer(3)));
+        cells.set_alias(&symbol, target);
+        assert_eq!(cells.alias(&symbol), Some(&target));
+        cells.clear_alias_by_name("symbol-cells-word");
+        assert!(cells.alias(&symbol).is_none());
+        cells.set_flag_by_name("symbol-cells-word", LOCALIZED);
+        assert!(cells.has_flag(&symbol, LOCALIZED));
+        cells.clear_flag_by_name("symbol-cells-word", LOCALIZED);
+        assert!(!cells.has_flag(&symbol, LOCALIZED));
+        assert_eq!(cells.value(&symbol), Some(&Value::Integer(3)));
         cells.remove_by_name("symbol-cells-word");
-        assert_eq!(cells.native_words_under(stamp), 0);
+        assert!(cells.value(&symbol).is_none());
     }
 
     #[test]

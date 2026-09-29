@@ -1,0 +1,28 @@
+[
+  {
+    "editor": "gnu",
+    "command": [
+      "../emacs/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((map (make-keymap))) (aset (car (cdr map)) 65 'raw-key-command) (prin1 (list (lookup-key map [65]) (where-is-internal 'raw-key-command (list map)) (progn (define-key map [66] 'api-key-command) (aset (car (cdr map)) 66 'raw-key-command) (where-is-internal 'raw-key-command (list map))))))"
+    ],
+    "exit_code": 0,
+    "stdout": "(raw-key-command ([65]) ([(65 . 66)]))",
+    "stderr": ""
+  },
+  {
+    "editor": "emaxx",
+    "command": [
+      "target/runtime-resume-source25/release/emaxx",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(let ((map (make-keymap))) (aset (car (cdr map)) 65 'raw-key-command) (prin1 (list (lookup-key map [65]) (where-is-internal 'raw-key-command (list map)) (progn (define-key map [66] 'api-key-command) (aset (car (cdr map)) 66 'raw-key-command) (where-is-internal 'raw-key-command (list map))))))"
+    ],
+    "exit_code": 0,
+    "stdout": "(raw-key-command nil nil)",
+    "stderr": ""
+  }
+]

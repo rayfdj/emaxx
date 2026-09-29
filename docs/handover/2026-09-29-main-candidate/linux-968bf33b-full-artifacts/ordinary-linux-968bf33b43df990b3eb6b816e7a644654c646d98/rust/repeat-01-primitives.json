@@ -1,0 +1,17 @@
+{
+  "group": "primitives",
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 573,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 234.69406737300005,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-primitives.log"
+}

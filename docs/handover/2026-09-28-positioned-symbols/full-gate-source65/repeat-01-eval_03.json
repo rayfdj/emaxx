@@ -1,0 +1,17 @@
+{
+  "group": "eval_03",
+  "command": [
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "lisp::eval::tests::eval_03::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 320,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 599.7733137499999,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source65/repeat-01-eval_03.log"
+}

@@ -1,0 +1,23 @@
+{
+  "command": [
+    "sh",
+    "tools/build-image.sh",
+    "target/runtime-resume/release/emaxx"
+  ],
+  "exit_code": 0,
+  "seconds": 21.882516917,
+  "artifacts": [
+    {
+      "path": "target/runtime-resume/release/emaxx",
+      "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source17-release-emaxx-fingerprinted",
+      "bytes": 13393312,
+      "sha256": "449c37a5da4ecf1d7fd9f99517924f1508f2bc6f785fe081f5f7707ed8c4b5cd"
+    },
+    {
+      "path": "target/runtime-resume/release/emaxx.pdmp",
+      "preserved": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source17-release-emaxx.pdmp",
+      "bytes": 19205568,
+      "sha256": "daf25df8bcc7e3c2122c37226fef916bb85851c37e581e7b5d72af8a23e5b47c"
+    }
+  ]
+}

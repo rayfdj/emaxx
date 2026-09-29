@@ -1,0 +1,610 @@
+[
+  [
+    "src/lisp/eval/faces.rs:51:60",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/faces.rs:72:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/faces.rs:127:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/faces.rs:177:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/faces.rs:194:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:1016:68",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:1218:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:1225:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:2908:23",
+    "error[E0609]: no field `live` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:2908:37",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:2910:32",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:446:9",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:556:32",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:616:17",
+    "error[E0560]: struct `FrameState` has no field named `name`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:607:13",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:636:31",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:647:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:645:15",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:650:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:670:74",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:687:42",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:695:23",
+    "error[E0609]: no field `live` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:697:26",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:700:32",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval/terminal.rs:886:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval.rs:4075:37",
+    "error[E0609]: no field `old_selected_window_id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4237:41",
+    "error[E0609]: no field `face_hash_table` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4382:68",
+    "error[E0609]: no field `live` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4384:23",
+    "error[E0609]: no field `root_window_id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4385:23",
+    "error[E0609]: no field `selected_window_id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4386:23",
+    "error[E0609]: no field `minibuffer_window_id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4605:47",
+    "error[E0609]: no field `terminal` on type `&mut VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4609:27",
+    "error[E0609]: no field `terminal` on type `&mut VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4670:37",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval.rs:4670:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval.rs:4671:46",
+    "error[E0609]: no field `parameter_overrides` on type `&mut VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4695:45",
+    "error[E0609]: no field `face_hash_table` on type `&mut VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/eval.rs:4696:27",
+    "error[E0609]: no field `face_hash_table` on type `&mut VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/native_comp/runtime.rs:5273:51",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/native_comp/runtime.rs:11833:40",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/native_comp/runtime.rs:11834:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:900:40",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:905:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:1923:75",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:1927:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:1948:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2029:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2035:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2038:18",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2058:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2082:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:2389:30",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:3100:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4303:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4312:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4327:26",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4331:42",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4344:54",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4351:48",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4701:70",
+    "error[E0631]: type mismatch in function arguments"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4711:23",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4729:64",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4732:50",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4734:35",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4738:35",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4741:36",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4743:40",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4763:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4773:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:4852:26",
+    "error[E0631]: type mismatch in function arguments"
+  ],
+  [
+    "src/lisp/primitives/dispatch/display.rs:5240:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/faces.rs:244:29",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/faces.rs:551:47",
+    "error[E0609]: no field `live` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/faces.rs:552:44",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:7:18",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:32:68",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:34:8",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:47:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:67:31",
+    "error[E0609]: no field `name` on type `Ref<'_, FrameState>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:80:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:121:46",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:125:15",
+    "error[E0609]: no field `name` on type `RefMut<'_, FrameState>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:152:48",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:158:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:226:56",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:227:44",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:300:44",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:309:44",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:340:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:348:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:356:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:377:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:381:52",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:387:51",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:388:30",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:403:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:407:51",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:408:30",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:418:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:453:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:462:52",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:463:38",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:465:40",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:513:42",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:567:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:569:39",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:576:34",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:578:26",
+    "error[E0631]: type mismatch in function arguments"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:618:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:628:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:642:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:652:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:666:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:754:21",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:763:11",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:767:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:804:28",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:812:36",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:812:75",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:831:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:834:70",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:836:28",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:841:22",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:845:11",
+    "error[E0277]: can't compare `u64` with `VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:850:23",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:851:51",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:853:26",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:860:41",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:860:80",
+    "error[E0609]: no field `id` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:862:32",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:870:19",
+    "error[E0609]: no field `live` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:872:22",
+    "error[E0609]: no field `terminal` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:887:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/frames.rs:893:26",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/terminals.rs:27:38",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/dispatch/terminals.rs:110:31",
+    "error[E0609]: no field `live` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/terminals.rs:112:34",
+    "error[E0609]: no field `terminal` on type `&&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/dispatch/terminals.rs:115:40",
+    "error[E0609]: no field `id` on type `&VectorlikeRef<FrameValue>`"
+  ],
+  [
+    "src/lisp/primitives/pdumper/context.rs:83:45",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/pdumper/context.rs:1062:60",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/pdumper/tests.rs:1153:22",
+    "error[E0609]: no field `name` on type `Ref<'_, FrameState>`"
+  ],
+  [
+    "src/lisp/primitives/print.rs:1235:49",
+    "error[E0609]: no field `name` on type `Ref<'_, FrameState>`"
+  ],
+  [
+    "src/lisp/primitives/print.rs:1235:84",
+    "error[E0277]: `VectorlikeRef<FrameValue>` doesn't implement `std::fmt::Display`"
+  ],
+  [
+    "src/lisp/primitives/print.rs:1236:46",
+    "error[E0277]: `VectorlikeRef<FrameValue>` doesn't implement `std::fmt::Display`"
+  ],
+  [
+    "src/lisp/primitives/print.rs:1237:42",
+    "error[E0277]: the trait bound `VectorlikeRef<FrameValue>: LowerHex` is not satisfied"
+  ],
+  [
+    "src/lisp/primitives/values.rs:1825:29",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/primitives/values.rs:2048:29",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/tty.rs:460:46",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/tty.rs:502:46",
+    "error[E0308]: mismatched types"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:708:13",
+    "error[E0596]: cannot borrow `frame` as mutable, as it is not declared as mutable"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:722:21",
+    "error[E0596]: cannot borrow `frame` as mutable, as it is not declared as mutable"
+  ],
+  [
+    "src/lisp/eval/runtime.rs:803:21",
+    "error[E0596]: cannot borrow `frame` as mutable, as it is not declared as mutable"
+  ]
+]

@@ -57,7 +57,7 @@ impl ThreadExecutionContext {
 }
 
 impl TraceLispRoots for ThreadExecutionContext {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for restore in &self.active_special_restores {
             restore.trace_lisp_roots(marker);
         }
@@ -157,7 +157,6 @@ impl Interpreter {
     /// The OS reclaims Lisp storage; embedded callers still drop it normally.
     pub(crate) fn release_external_resources_for_exit(&mut self) {
         self.unwind_suspended_threads_for_shutdown();
-        crate::lisp::types::forget_cons_mutation_watchers_for_exit();
         if self.state.is_some() {
             #[cfg(unix)]
             for process in &mut self.process_states {

@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "timeout": false,
+  "elapsed_seconds": 0.410538959,
+  "artifacts_unchanged": true,
+  "stdout_hex": "28227365637265740a7365636f6e640a2220227365637265740a7365636f6e640a726567696f6e0a2229",
+  "stderr_hex": ""
+}

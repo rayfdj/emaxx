@@ -1,0 +1,29 @@
+{
+  "expected_inventory": [
+    "text-conversion-variable-state",
+    "text-conversion-detached-state",
+    "text-conversion-void-default-let",
+    "text-conversion-buffer-aliases"
+  ],
+  "results": [
+    {
+      "fixture": "text-conversion-variable-state",
+      "matches": true
+    },
+    {
+      "fixture": "text-conversion-detached-state",
+      "matches": true
+    },
+    {
+      "fixture": "text-conversion-void-default-let",
+      "matches": true
+    },
+    {
+      "fixture": "text-conversion-buffer-aliases",
+      "matches": true
+    }
+  ],
+  "source_unchanged": true,
+  "all_match": true,
+  "qualification": "Ordinary CLI, exact stdout and stderr, identical inputs. Source-matched local GNU, not frozen certification. Linux-only primitive comparison is not executed on macOS."
+}

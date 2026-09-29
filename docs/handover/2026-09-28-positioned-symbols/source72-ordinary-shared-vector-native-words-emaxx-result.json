@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 9.742623250000001,
+  "stdout": "((t t 45) (t t 45))",
+  "matches_expected": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true
+}

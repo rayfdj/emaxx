@@ -1,0 +1,25 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (list internal--text-quoting-flag\n      (text-quoting-style)\n      (default-boundp 'internal--text-quoting-flag)\n      (special-variable-p 'internal--text-quoting-flag)\n      (format-message \"Quote `locale-179' here\")\n      (let ((purify-flag t))\n        (purecopy (propertize \"locale-181\" 'face 'bold))))\n)"
+  ],
+  "environment_overrides": {
+    "LC_ALL": "en_US.UTF-8"
+  },
+  "working_directory": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "input_identities": {
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx": "8d49763b6f3953d957240afd09dde9b7a1ab2ffb71e4c1ba22fad15a606d8eb8",
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx.pdmp": "a4287f680a677ef7728e61d4496aa0dbbdbcf39a98e318eefbb06b671997ed33",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/dump-locale-quoting.el": "0532a0abf91595e23ffb9e925263944fe4e12d4ec957777ea09e09431f29ea72",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-dump-locale-v2.py": "532d1898149065f46cf9f9eac6cd8d51cb3fceb733ed83d48e2f286b7846d0d9"
+  },
+  "inputs_unchanged": true,
+  "exit_code": 0,
+  "elapsed_seconds": 1.1087197500000001,
+  "stdout_hex": "287420637572766520742074202251756f746520e280986c6f63616c652d313739e2809920686572652220226c6f63616c652d3138312229",
+  "stderr_hex": "44726f7070696e6720746578742d70726f70657274696573207768696c65206d616b696e6720737472696e6720e280986c6f63616c652d313831e2809920707572650a",
+  "qualification": "Ordinary image locale restoration diagnostic, identical input and per-process locale. Local GNU source matched, not the frozen executable."
+}

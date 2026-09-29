@@ -1,0 +1,17 @@
+{
+  "group": "primitives",
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume/gate/deps/emaxx-2172bc5d2c1706ff",
+    "lisp::primitives::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 520,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 390.254923042,
+  "exit_code": 101,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source25/repeat-01-primitives.log"
+}

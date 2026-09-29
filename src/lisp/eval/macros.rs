@@ -70,11 +70,60 @@ impl CircularReadMaterializer<'_> {
             && crate::lisp::reader::contains_circular_read_syntax(&literal)
     }
 
+    fn char_table_placeholder(
+        &mut self,
+        form: &crate::lisp::types::ReaderFormRef,
+        label: Option<u32>,
+    ) -> Result<Option<Value>, LispError> {
+        if let Some(value) = self.records.get(&form.identity()).copied() {
+            if let Some(label) = label {
+                self.labels.insert(label, value);
+            }
+            return Ok(Some(value));
+        }
+        let (value, fields, skip) = match form.as_ref() {
+            ReaderForm::CharTable { fields } => (
+                Value::CharTable(CharTableRef::new(Value::Nil, Value::Nil, fields.len() - 68)),
+                fields,
+                0,
+            ),
+            ReaderForm::SubCharTable { fields } => (
+                Value::SubCharTable(SubCharTableRef::new(
+                    fields[0].as_integer()? as usize,
+                    fields[1].as_integer()? as u32,
+                    Value::Nil,
+                )),
+                fields,
+                2,
+            ),
+            _ => return Ok(None),
+        };
+        self.records.insert(form.identity(), value);
+        if let Some(label) = label {
+            self.labels.insert(label, value);
+        }
+        for (index, field) in fields.iter().skip(skip).enumerate() {
+            let field = self.resolve(field)?;
+            let field = self
+                .interpreter
+                .materialize_read_object_literals(field, self.environment)?;
+            match value.kind() {
+                Kind::CharTable(table) => table.set_slot(index, field),
+                Kind::SubCharTable(table) => table.set_slot(index, field),
+                _ => unreachable!(),
+            }
+        }
+        Ok(Some(value))
+    }
+
     fn record_placeholder(
         &mut self,
         form: &crate::lisp::types::ReaderFormRef,
         label: Option<u32>,
     ) -> Result<Option<Value>, LispError> {
+        if let Some(table) = self.char_table_placeholder(form, label)? {
+            return Ok(Some(table));
+        }
         let identity = form.identity();
         if let Some(record) = self.records.get(&identity).cloned() {
             if let Some(label) = label {
@@ -89,8 +138,11 @@ impl CircularReadMaterializer<'_> {
             _ => return Ok(None),
         };
         let ordinary_record = closure_kind.is_none();
-        if ordinary_record && slots.is_empty() {
-            return Err(LispError::ReadError("empty record literal".into()));
+        if ordinary_record {
+            if slots.is_empty() {
+                return Err(LispError::ReadError("empty record literal".into()));
+            }
+            crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
         }
 
         // lread.c installs the finished object's address in the #N= table
@@ -147,13 +199,15 @@ impl CircularReadMaterializer<'_> {
             }
             return Ok(Some(placeholder));
         }
-        let Kind::Record(record_id) = placeholder.kind() else {
-            unreachable!("record placeholder allocation returns a record")
-        };
-        if ordinary_record {
-            let type_tag = resolved.remove(0);
-            self.interpreter.retag_record(record_id.id, type_tag)?;
+        if let Kind::LispRecord(record) = placeholder.kind() {
+            for (index, value) in resolved.into_iter().enumerate() {
+                record.set(index, value);
+            }
+            return Ok(Some(placeholder));
         }
+        let Kind::Record(record_id) = placeholder.kind() else {
+            unreachable!("byte-code placeholder allocation returns a host record")
+        };
         self.interpreter
             .find_record_mut(record_id)
             .expect("new reader record must remain allocated")
@@ -303,10 +357,6 @@ impl CircularReadMaterializer<'_> {
                     ReaderForm::BoolVector { bits } => {
                         ReaderForm::BoolVector { bits: bits.clone() }
                     }
-                    ReaderForm::PositionedSymbol { name, pos } => ReaderForm::PositionedSymbol {
-                        name: name.clone(),
-                        pos: *pos,
-                    },
                     ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                         unreachable!("circular forms are handled before structural descent")
                     }
@@ -467,7 +517,8 @@ impl Interpreter {
                     let Some(kind) = materialized.first() else {
                         return Err(LispError::ReadError("empty record literal".into()));
                     };
-                    self.create_record_with_type(*kind, materialized[1..].to_vec())
+                    crate::lisp::primitives::check_record_data_slots(materialized.len() - 1)?;
+                    Value::LispRecord(LispRecordRef::new(*kind, &materialized[1..]))
                 }
             };
             active_reader_forms.remove(&identity);
@@ -647,26 +698,6 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn try_macroexpand_with_environment(
-        &mut self,
-        name: &str,
-        args: &[Value],
-        macro_environment: Option<&Value>,
-        caller: MacroCaller,
-        env: &mut Env,
-    ) -> Result<Option<Value>, LispError> {
-        // GNU resolves the function cell first and binds `lexical-binding'
-        // only after that resolution proves the form is a macro call. A
-        // generation-stamped global non-macro verdict gives us the same
-        // answer without buffer-local binding, watcher notification, and
-        // unwind setup on every ordinary interpreted call. An explicit
-        // macro environment must still run.
-        if macro_environment.is_none() && self.known_not_macro(name) {
-            return Ok(None);
-        }
-        self.try_macroexpand_with_environment_inner(name, args, macro_environment, caller, env)
-    }
-
     /// Run only the macro expander itself with GNU's temporary
     /// `lexical-binding' value.
     ///
@@ -734,7 +765,7 @@ impl Interpreter {
         }
     }
 
-    fn try_macroexpand_with_environment_inner(
+    pub(super) fn try_macroexpand_with_environment(
         &mut self,
         name: &str,
         args: &[Value],
@@ -750,48 +781,35 @@ impl Interpreter {
                 .map(Some);
         }
 
-        // A cached (and still current) not-a-macro verdict skips the whole
-        // probe.  cl-flet frame shadowing can only make a name LESS of a
-        // macro, so a global "not a macro" verdict stays correct under any
-        // frames; verdicts influenced by frames are never cached.
-        if self.known_not_macro(name) {
-            return Ok(None);
-        }
-
         let mut attempted_autoload = false;
         loop {
-            // GNU keeps global macros in the function cell as
-            // (macro . EXPANDER);
-            // nadvice fsets advised macros (and advised macro ALIASES) that
-            // way, so the cell wins over the native macro table.
-            if let Some(expander) = self.function_cell_macro_expander(name, env) {
+            let Some(function) = self.macro_position_function(name, env) else {
+                return Ok(None);
+            };
+            let Some((head, expander)) = function.cons_values() else {
+                return Ok(None);
+            };
+            // GNU reads (macro . EXPANDER) from the current function cell.
+            // Direct/native stores must be visible without notifying a
+            // per-name cache. Resolve once, including symbol aliases.
+            if matches!(head.kind(), Kind::Symbol(name) if name == "macro") {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
                     interp.call_expander(expander, name, args, env)
                 })?;
                 return Ok(Some(expanded));
             }
 
-            if attempted_autoload {
-                self.note_not_macro(name);
+            if attempted_autoload
+                || !matches!(head.kind(), Kind::Symbol(name) if name == "autoload")
+            {
                 return Ok(None);
             }
-            // Only global state can hold an autoload stub (env frames
-            // never resolve to autoload conses), so probe the macro
-            // position without scanning ordinary frames.
-            let Some((function, from_frame)) = self.macro_position_function(name, env) else {
-                self.note_not_macro(name);
-                return Ok(None);
-            };
             let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
-                if !from_frame {
-                    self.note_not_macro(name);
-                }
                 return Ok(None);
             };
             let loads_macro =
                 crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
             if !loads_macro {
-                self.note_not_macro(name);
                 return Ok(None);
             }
             self.load_autoload_target(&file, env)?;

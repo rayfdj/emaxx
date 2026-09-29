@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((case-fold-search nil)\n      (answers nil))\n  (with-temp-buffer\n    (let* ((parent (make-syntax-table))\n           (child (make-char-table 'syntax-table nil))\n           (descriptor (cons 1 nil))\n           (categories (make-category-table)))\n      (set-char-table-parent child parent)\n      (set-syntax-table child)\n      (set-category-table categories)\n      (define-category ?x \"snapshot category\" categories)\n      (dolist (character '(?a ?\\u03a9))\n        (set-char-table-range parent character descriptor)\n        (modify-category-entry character ?x categories))\n      (insert \"a\\u03a9\")\n      (goto-char (point-min))\n      ;; Warm both caches, including a shared descriptor and category set.\n      (dotimes (_ 2)\n        (push (list (looking-at \"\\\\w\") (looking-at \"\\\\cx\")) answers))\n      ;; The leaf identities stay fixed while their contents change.\n      (setcar descriptor 2)\n      (aset (aref categories ?a) ?x nil)\n      (push (list (looking-at \"\\\\w\") (looking-at \"\\\\cx\")) answers)\n      (forward-char)\n      (push (looking-at \"\\\\w\") answers)\n      ;; Disconnect the cached graph, collect, and allocate new payloads.\n      ;; Validation must reject the changed edge before reading old nodes.\n      (dolist (character '(?a ?\\u03a9))\n        (set-char-table-range parent character (cons 1 nil)))\n      (setq descriptor nil)\n      (garbage-collect)\n      (dotimes (index 600) (make-vector (+ 1 (% index 9)) index))\n      (push (looking-at \"\\\\w\") answers)\n      (modify-syntax-entry ?\\u03a9 \"w\" parent)\n      (push (looking-at \"\\\\w\") answers)\n      (goto-char (point-min))\n      (modify-category-entry ?a ?x categories)\n      (push (looking-at \"\\\\cx\") answers)))\n  (nreverse answers))\n)"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.191740042,
+  "stdout": "((nil t) (nil t) (t nil) t nil t t)",
+  "stderr": "",
+  "fixture_sha256": "864223b0598aa1e0e0c49680bc0a0ae9228a91dad248261f64e412e30ab744bf",
+  "matches_expected": true,
+  "fixture_correction": "Use fresh cons descriptors. GNU string-to-syntax returns a shared standard descriptor; mutating it also changes subsequent requests for that same syntax code. Earlier probes retained."
+}

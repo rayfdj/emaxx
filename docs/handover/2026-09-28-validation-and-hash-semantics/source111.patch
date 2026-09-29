@@ -1,0 +1,252 @@
+diff --git a/src/lisp/json.rs b/src/lisp/json.rs
+index 86ce70e0..d2a46654 100644
+--- a/src/lisp/json.rs
++++ b/src/lisp/json.rs
+@@ -626,6 +626,12 @@ pub(crate) fn make_hash_table_with_capacity(
+     crate::lisp::native_comp::note_lisp_allocation(
+         crate::lisp::eval::gnu_hash_table_storage_bytes(capacity),
+     );
++    let (user_compare, user_hash) = if matches!(test, "eq" | "eql" | "equal") {
++        (Value::Nil, Value::Nil)
++    } else {
++        crate::lisp::primitives::hash_table_user_test_functions(interp, test)
++            .unwrap_or((Value::Nil, Value::Nil))
++    };
+     let table = interp.create_pseudovector(
+         crate::lisp::eval::RecordKind::HashTable,
+         HASH_TABLE_RECORD_TYPE,
+@@ -636,8 +642,11 @@ pub(crate) fn make_hash_table_with_capacity(
+             // that would invent live Lisp objects and distort GC accounting.
+             Value::Nil,
+             Value::Integer(requested_capacity as i64),
+-            Value::Nil,
+-            Value::Nil,
++            // fns.c:make_hash_table owns the selected test descriptor.
++            // These existing slots retain its Lisp functions across GC and
++            // copy-hash-table; operations never reread the symbol property.
++            user_compare,
++            user_hash,
+             Value::Nil,
+             Value::Nil,
+         ],
+diff --git a/src/lisp/native_comp/runtime.rs b/src/lisp/native_comp/runtime.rs
+index 33dea35e..534c161d 100644
+--- a/src/lisp/native_comp/runtime.rs
++++ b/src/lisp/native_comp/runtime.rs
+@@ -9920,6 +9920,82 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn native_hash_tables_expose_the_authoritative_gnu_entry_array() {
++        // lisp.h:Lisp_Hash_Table, verified with the configured GNU C
++        // compiler: 72-byte payload; key_and_value at24, count at48 and
++        // table_size at56. fns.c uses PVEC_HASH_TABLE (14), with no inline
++        // Lisp slots. HASH_VALUE reads the actual out-of-line array.
++        extern "C" fn replace_first_value(table: NativeWord, value: NativeWord) -> NativeWord {
++            // The checked header and dimensions below precede this call.
++            // There is no live Rust borrow of the array during the store.
++            unsafe {
++                let base = (table & !TAG_MASK) as *mut u8;
++                let entries = base.add(24).cast::<*mut NativeWord>().read();
++                entries.add(1).write(value);
++            }
++            table
++        }
++
++        let mut interpreter = Interpreter::new();
++        let mut environment = Env::new();
++        let first_key = Value::symbol("native-hash-first-key");
++        let second_key = Value::Integer(-39);
++        let table = crate::lisp::json::make_hash_table_with_capacity(
++            &mut interpreter,
++            "eq",
++            vec![
++                (first_key, Value::Integer(17)),
++                (second_key, Value::Integer(29)),
++            ],
++            8,
++        );
++        let mut runtime = NativeRuntime::default();
++        let word = runtime.heap.encode(&table).expect("ordinary table word");
++        assert_eq!(word, table.word());
++        let base = (word & !TAG_MASK) as *const u8;
++        // Every vectorlike allocation has this header. Refuse the wrong
++        // type before interpreting any subsequent byte as a GNU hash field.
++        let header = unsafe { base.cast::<NativeWord>().read() };
++        assert_eq!((header >> 24) & 0x3f, 14, "GNU PVEC_HASH_TABLE");
++        assert_eq!(header & 0xfff, 0, "no inline Lisp slots");
++        assert_eq!((header >> 12) & 0xfff, 8, "eight non-Lisp payload words");
++        let (count, capacity, entries) = unsafe {
++            (
++                base.add(48).cast::<i32>().read(),
++                base.add(56).cast::<i32>().read(),
++                base.add(24).cast::<*const NativeWord>().read(),
++            )
++        };
++        assert_eq!(count, 2);
++        assert_eq!(capacity, 8);
++        assert!(!entries.is_null());
++        assert_eq!(unsafe { entries.read() }, first_key.word());
++        assert_eq!(unsafe { entries.add(1).read() }, Value::Integer(17).word());
++        assert_eq!(unsafe { entries.add(2).read() }, second_key.word());
++
++        let replacement = Value::vector([table, Value::string("native-hash-payload")]);
++        let result = runtime
++            .invoke(
++                &mut interpreter,
++                &mut environment,
++                replace_first_value as *const c_void,
++                NativeCallingConvention::Fixed,
++                &[table, replacement],
++            )
++            .expect("native hash value slot write");
++        assert_eq!(result, table);
++        let observed = crate::lisp::primitives::call(
++            &mut interpreter,
++            "gethash",
++            &[first_key, table],
++            &mut environment,
++        )
++        .expect("ordinary gethash observes the native store");
++        assert_eq!(observed.word(), replacement.word());
++        assert_eq!(crate::lisp::alloc::conservative_value(word), Some(table));
++    }
++
+     #[test]
+     fn native_terminals_share_words_and_the_authoritative_parameter_slot() {
+         extern "C" fn replace_parameters(
+diff --git a/src/lisp/primitives/dispatch/misc_keymaps.rs b/src/lisp/primitives/dispatch/misc_keymaps.rs
+index a06af1b8..688e70a4 100644
+--- a/src/lisp/primitives/dispatch/misc_keymaps.rs
++++ b/src/lisp/primitives/dispatch/misc_keymaps.rs
+@@ -742,13 +742,10 @@ define_dispatch!(
+                 if record.kind != crate::lisp::eval::RecordKind::HashTable {
+                     return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
+                 }
+-                let copy = interp.copy_record(id.id)?;
+-                if let Kind::Record(copy_id) = copy.kind() {
+-                    interp.reindex_hash_table_runtime_entries_in_env(copy_id.id, env);
+-                    Ok(Value::Record(copy_id))
+-                } else {
+-                    Ok(copy)
+-                }
++                // fns.c:copy_hash_table copies the existing hash codes and
++                // indices. Rehashing would make a mutated key spuriously
++                // reachable and change dynamically positioned-symbol keys.
++                interp.copy_record(id.id)
+             }
+             "gethash" => {
+                 if args.len() < 2 || args.len() > 3 {
+diff --git a/src/lisp/primitives/hash_insert.rs b/src/lisp/primitives/hash_insert.rs
+index ffac952a..bace86eb 100644
+--- a/src/lisp/primitives/hash_insert.rs
++++ b/src/lisp/primitives/hash_insert.rs
+@@ -6,11 +6,29 @@ pub(crate) fn hash_table_user_test_functions(
+     test: &str,
+ ) -> Option<(Value, Value)> {
+     let spec = interp.get_symbol_property(test, "hash-table-test")?;
+-    let items = spec.to_vec().ok()?;
+-    if items.len() != 2 {
++    // fns.c:get_hash_table_user_test reads the first two cons cells.  It
++    // neither copies the property list nor requires a proper two-item list.
++    let (compare, tail) = spec.cons_values()?;
++    let (hash, _) = tail.cons_values()?;
++    Some((compare, hash))
++}
++
++fn hash_table_captured_test_functions(
++    interp: &Interpreter,
++    table: &Value,
++    test: &str,
++) -> Option<(Value, Value)> {
++    if matches!(test, "eq" | "eql" | "equal") {
+         return None;
+     }
+-    Some((items[0], items[1]))
++    let Kind::Record(id) = table.kind() else {
++        return None;
++    };
++    let record = interp.find_record(id)?;
++    // GNU's descriptor retains the function objects selected when the table
++    // was made.  Redefining the property affects only subsequent tables;
++    // a captured symbol still resolves its current function when called.
++    Some((*record.slots.get(3)?, *record.slots.get(4)?))
+ }
+ 
+ pub(crate) fn call_hash_table_test_function(
+@@ -45,7 +63,7 @@ pub(crate) fn touch_hash_table_key(
+     key: &Value,
+     env: &mut Env,
+ ) -> Result<(), LispError> {
+-    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
++    let Some((_, hash_fn)) = hash_table_captured_test_functions(interp, table, test) else {
+         return Ok(());
+     };
+     let _ = call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
+@@ -59,7 +77,7 @@ fn custom_hash_code(
+     key: &Value,
+     env: &mut Env,
+ ) -> Result<i64, LispError> {
+-    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
++    let Some((_, hash_fn)) = hash_table_captured_test_functions(interp, table, test) else {
+         return Err(LispError::Signal("Invalid hash table test".into()));
+     };
+     let hash =
+@@ -79,7 +97,7 @@ fn custom_hash_matching_index(
+     hash: i64,
+     env: &mut Env,
+ ) -> Result<Option<(usize, Value)>, LispError> {
+-    let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
++    let Some((compare_fn, _)) = hash_table_captured_test_functions(interp, table, test) else {
+         return Err(LispError::Signal("Invalid hash table test".into()));
+     };
+     let candidates = interp
+@@ -162,7 +180,8 @@ pub(crate) fn hash_table_key_matches(
+         "eq" => Ok(values_eq_in_env(interp, left, right, env)),
+         "eql" => Ok(values_eql(left, right)),
+         _ => {
+-            let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
++            let Some((compare_fn, _)) = hash_table_captured_test_functions(interp, table, test)
++            else {
+                 return Err(LispError::Signal("Invalid hash table test".into()));
+             };
+             Ok(
+diff --git a/src/lisp/primitives/tests.rs b/src/lisp/primitives/tests.rs
+index 9eeb910c..3f13cf1b 100644
+--- a/src/lisp/primitives/tests.rs
++++ b/src/lisp/primitives/tests.rs
+@@ -7227,6 +7227,33 @@ fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
+     }
+ }
+ 
++#[test]
++fn hash_copy_preserves_stored_codes_after_key_mutation() {
++    assert_oracle_contract_matches_interpreter(
++        include_str!("../../../tests/fixtures/hash-copy-stored-codes.el"),
++        include_str!("../../../tests/fixtures/hash-copy-stored-codes.expected"),
++        "hash-copy-stored-codes",
++    );
++}
++
++#[test]
++fn hash_captured_functions_survive_redefinition_copy_and_gc() {
++    assert_oracle_contract_matches_interpreter(
++        include_str!("../../../tests/fixtures/hash-captured-functions.el"),
++        include_str!("../../../tests/fixtures/hash-captured-functions.expected"),
++        "hash-captured-functions",
++    );
++}
++
++#[test]
++fn hash_captured_symbols_keep_dynamic_function_resolution() {
++    assert_oracle_contract_matches_interpreter(
++        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.el"),
++        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.expected"),
++        "hash-captured-symbol-functions",
++    );
++}
++
+ #[test]
+ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
+     let mut interp = Interpreter::new();

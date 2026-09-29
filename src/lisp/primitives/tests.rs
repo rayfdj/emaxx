@@ -139,11 +139,56 @@ fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
 }
 
 #[test]
+fn positioned_symbol_fields_survive_interpreted_bytecode_and_native_calls() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-symbol-native-words.el"),
+        "((t t t t 36) (t t t t 36))",
+        "positioned symbol identity, flags and collection across all execution modes",
+    );
+}
+
+#[test]
+fn positioned_reader_preserves_cycles_shorthands_and_private_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader.el"),
+        r###"((("expanded-α" 2) ("s-raw" 8) ("t" 14) nil) (("expanded-β" 25) t) (t tag expanded-value) '("expanded-quote" 53) (t 0 t))"###,
+        "positioned reader characters, opaque literals, cycles and private obarray identity",
+    );
+}
+
+#[test]
+fn positioned_reader_resolves_private_nil_and_t_before_wrapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader-special.el"),
+        r###"(("nil" t t "nil") ("t" t t "t") ("reader-private-name" t t "reader-private-name"))"###,
+        "positioned reader canonical nil versus private nil and t symbols",
+    );
+}
+
+#[test]
+fn positioned_reader_keeps_uninterned_names_and_source_positions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/shared-positioned-reader-uninterned.el"),
+        r###"((("s-name" nil nil nil) ("nil" nil nil nil) ("t" nil nil nil) ("123" nil nil nil) ("" nil nil nil)) (("s-name" t 2 nil) ("nil" t 2 nil) ("t" t 2 nil) ("123" t 2 nil) ("" nil nil nil)))"###,
+        "positioned reader uninterned names, empty names and source positions",
+    );
+}
+
+#[test]
 fn native_string_words_preserve_mutation_and_cycles_across_execution_modes() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/shared-string-native-words.el"),
         "((t t t t 36) (t t t t 36))",
         "native strings share mutation, properties and collection roots across execution modes",
+    );
+}
+
+#[test]
+fn cons_mutation_reads_current_macro_keymap_and_shared_graph_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/runtime-cons-mutation.el"),
+        "((t t 37) (t (17 payload)) (t table-command parent-command))",
+        "cons mutation, macro state, keymap inheritance and cyclic graph roots",
     );
 }
 
@@ -1652,7 +1697,11 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::buffer(1, "*scratch*"),
         Value::Marker(crate::lisp::types::MarkerRef::new()),
         Value::Overlay(crate::overlay::OverlayRef::new(false, false)),
-        Value::CharTable(1),
+        Value::CharTable(crate::lisp::types::CharTableRef::new(
+            Value::Nil,
+            Value::Nil,
+            0,
+        )),
         interp.create_record("representative", Vec::new()),
         Value::Finalizer(crate::lisp::alloc::FinalizerRef::new(Value::Nil)),
         Value::Unbound,
@@ -3292,12 +3341,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let result = interp
         .eval(&form, &mut env)
         .expect("the dump returns or signals");
-    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
-        .expect("print the context result");
-    assert_eq!(
-        string_like(&printed).expect("printed string").text,
-        "(nil zz-pure (zz-post-gc) (\"ZZ=1\") t)"
-    );
     let bytes = std::fs::read(&path).expect("the completed image");
     let _ = std::fs::remove_file(&path);
     assert_eq!(&bytes[..DUMP_MAGIC.len()], &DUMP_MAGIC);
@@ -3314,7 +3357,10 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let dumped_symbol_count = interp.known_symbol_names().len();
     // Every root group of the loadup state prints the same from the
     // restored interpreter (the timer list's due times are relative); taken
-    // before the programs below, which update lexical cells.
+    // before the programs below, which update lexical cells. Capture these
+    // before printing even the context result: print.c:print_prepare binds
+    // print-escape-nonascii for prin1-to-string's buffer, advancing the
+    // writer's binding counter after the image has already been written.
     let mut source_groups = Vec::new();
     for (slot, value) in interp.dump_root_groups() {
         let text = call(
@@ -3326,6 +3372,12 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         .expect("print the source group");
         source_groups.push((slot, string_like(&text).expect("printed").text));
     }
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print the context result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        "(nil zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+    );
     let programs = [
         "(list (featurep 'subr-x) (featurep 'cl-lib) (fboundp 'when-let) (macrop 'when))",
         "(list (length load-path) (symbol-value 'emacs-version) (default-value 'fill-column))",
@@ -7176,6 +7228,33 @@ fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
 }
 
 #[test]
+fn hash_copy_preserves_stored_codes_after_key_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-copy-stored-codes.el"),
+        include_str!("../../../tests/fixtures/hash-copy-stored-codes.expected"),
+        "hash-copy-stored-codes",
+    );
+}
+
+#[test]
+fn hash_captured_functions_survive_redefinition_copy_and_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-captured-functions.el"),
+        include_str!("../../../tests/fixtures/hash-captured-functions.expected"),
+        "hash-captured-functions",
+    );
+}
+
+#[test]
+fn hash_captured_symbols_keep_dynamic_function_resolution() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.el"),
+        include_str!("../../../tests/fixtures/hash-captured-symbol-functions.expected"),
+        "hash-captured-symbol-functions",
+    );
+}
+
+#[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -8051,27 +8130,24 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     )
     .expect("process-send-region should succeed");
 
-    // Process output is asynchronous.  Wait explicitly, as Lisp callers
-    // must, before asserting on its buffer.  The long deadline does not slow
-    // the normal case (accept returns on delivery), but avoids mistaking CPU
-    // starvation or endpoint scanning in the full parallel suite for a
-    // process semantic failure.
-    let current_contents = interp
-        .get_buffer_by_id(buffer_id)
-        .expect("process buffer")
-        .buffer_substring(
-            1,
-            interp
-                .get_buffer_by_id(buffer_id)
-                .expect("process buffer")
-                .point_max(),
-        )
-        .expect("process output");
-    if current_contents != "secret\nsecond\nregion\n" {
+    // process.c:Faccept_process_output returns after any output, which can
+    // be only a prefix of the three writes. Keep the same overall deadline
+    // while waiting for all bytes; a successful first read is not completion.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let buffer = interp.get_buffer_by_id(buffer_id).expect("process buffer");
+        let current_contents = buffer
+            .buffer_substring(1, buffer.point_max())
+            .expect("process output");
+        drop(buffer);
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if current_contents == "secret\nsecond\nregion\n" || remaining.is_zero() {
+            break;
+        }
         call(
             &mut interp,
             "accept-process-output",
-            &[process, Value::Integer(60)],
+            &[process, Value::float(remaining.as_secs_f64())],
             &mut env,
         )
         .expect("accept-process-output should receive the echo");
@@ -10513,6 +10589,263 @@ fn let_initializers_precede_name_validation_and_binding_names_are_reread() {
         program,
         "(((error \"initializer-error\") (first second)) (nil 41) ((setting-constant nil) (initialized)) (nil 41) 41 ((error \"initializer-error\") (initialized)) (42 nil) (1 nil) ((circular-list t 0) (circular-list t 1)))",
         "let and let* initializer order, source mutation, and cycles",
+    );
+}
+
+#[test]
+fn char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache() {
+    let program = r#"(let* ((parent (make-char-table nil 'parent))
+                            (table (make-char-table nil nil)))
+        (set-char-table-parent table parent)
+        (let ((inherited (list (aref table 65)
+                               (char-table-range table 65)
+                               (char-table-range table '(65 . 66))
+                               (char-table-range table '(65 . 64)))))
+          (aset table 65 'old)
+          (fillarray table 'new)
+          (list inherited (aref table 65) (char-table-range table 65)
+                (char-table-range table '(65 . 66))
+                (char-table-range table '(65 . 65)))))"#;
+    let expected = "((parent parent nil nil) old old new new)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("read range contract")
+        .expect("range form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("evaluate range contract");
+    let printed =
+        call(&mut interp, "prin1-to-string", &[result], &mut env).expect("print range result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymaps_keep_modified_events_out_of_character_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-modifier-char-table.el"),
+        "((22 inherited modified t inherited plain plain) (23 inherited modified t inherited plain plain) (24 inherited modified t inherited plain plain) (25 inherited modified t inherited plain plain) (26 inherited modified t inherited plain plain) (27 inherited modified t inherited plain plain))",
+        "keymap modified events, inheritance, where-is and removal",
+    );
+}
+
+#[test]
+fn char_table_keymap_ranges_validate_character_bounds() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-range-char-table.el"),
+        "((wrong-type-argument characterp -1) (wrong-type-argument characterp 4194304) (wrong-type-argument characterp wrong) binding binding)",
+        "keymap character range errors and non-character cons events",
+    );
+}
+
+#[test]
+fn char_table_keymap_enumerators_read_live_slots_and_preserve_binding_identity() {
+    let program = include_str!("../../../tests/fixtures/keymap-char-table-authority.el");
+    let expected = "(((raw-key-command ([65])) ([(65 . 66)])) (([] [67]) ([67 120])) (nil t parent nil) ((65 t nil) (66 nil t)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap authority fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap authority fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap authority result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_callbacks_see_live_slots_and_keep_distinct_ranges() {
+    let program = include_str!("../../../tests/fixtures/keymap-live-char-table.el");
+    let expected = "(((65 first) (90 (after))) (((65 . 66) first) ((90 . 91) second)) (range (((65 . 66) range) (65 sparse))) ((65 nil)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read live keymap fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate live keymap fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print live keymap result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_traversal_preserves_aliases_parents_and_meta_order() {
+    let program = include_str!("../../../tests/fixtures/keymap-traversal-char-table.el");
+    let expected = "((([] [98] [97] [98 122] [97 122]) ([98 122 113] [97 122 113])) (([] [80]) ([80 120])) (([] [27] [134217826] [134217825]) ([27] [27 97] [27 98]) ([102] [134217826 121] [134217825 120])) ([97 98] [120]) (([67108927] [134217759] [menu-bar sample item]) [134217759]))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read traversal fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate traversal fixture");
+    let printed =
+        call(&mut interp, "prin1-to-string", &[result], &mut env).expect("print traversal result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_public_tail_survives_api_writes_and_live_callbacks() {
+    let program = include_str!("../../../tests/fixtures/keymap-public-tail.el");
+    let expected = "((table (65 . sparse) ((65 table) (f10 symbol-command) (65 sparse))) (sparse (65 . sparse)) ((65 first) (66 after)) ([65 120]))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap storage fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap storage fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap storage result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymap_range_removal_preserves_sparse_storage_and_inheritance() {
+    let program = include_str!("../../../tests/fixtures/keymap-range-removal.el");
+    let expected = "((parent nil nil nil ((67 third))) (((65 . 66) replacement) (70 retained) (66 replacement) (65 replacement)) (nil ((70 retained))))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read keymap storage fixture");
+    assert_eq!(forms.len(), 1);
+    let result = interp
+        .eval(&forms[0], &mut env)
+        .expect("evaluate keymap storage fixture");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print keymap storage result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_parameterized_key_events_keep_physical_slots_without_a_dump() {
+    let program = include_str!("../../../tests/fixtures/keymap-parameterized-char-table.el");
+    let expected = "(((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))) ((binding binding [4194304] (4194304) binding (4194304)) (nil nil nil (268435455) nil (268435455)) (nil nil nil (134217825) nil (134217825))))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read parameterized key events")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("evaluate parameterized key events");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print parameterized key events");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        expected
+    );
+}
+
+#[test]
+fn char_table_keymaps_convert_lucid_lists_before_ranges_and_lookup() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-lucid-char-table.el"),
+        "(plain plain control control ((char-table-lucid-mode . control)))",
+        "Lucid event conversion before character-range validation and active map lookup",
+    );
+}
+
+#[test]
+fn char_table_keymaps_preserve_meta_escape_and_event_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-event-boundaries-char-table.el"),
+        "((binding [134217755]) (binding [134217737]) (binding [201326689]) (binding [134217755]) (binding [201326689]) (binding [4194303]) (binding [97]) (binding [C-M-f9]) (binding [f9 134217755]))",
+        "Meta-ESC, modifier combinations, maximum characters, fixnum masking and symbolic prefix maps",
+    );
+}
+
+#[test]
+fn char_table_keymap_events_preserve_numeric_identity_and_normalize_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-event-char-table.el"),
+        "((control-byte control-flag t t second second nil t (control-byte nil)) (control-byte control-flag t t second second nil t (control-byte nil)))",
+        "distinct Control event words, canonical symbol events, and independent removal",
+    );
+}
+
+#[test]
+fn char_table_casing_preserves_gnu_modifier_and_integer_semantics() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/case-modifier-char-table.el"),
+        "(((4194369 4194401 4194369 4194369) (8388673 8388705 8388673 8388673) (16777281 16777313 16777281 16777281) (33554497 33554529 33554497 33554497) (67108929 67108961 67108929 67108929) (134217793 134217825 134217793 134217793)) (((wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p)) (268435456 268435456 268435456 268435456) (65 4294967393 65 65) (4294967361 97 4294967361 4294967361) (2305843009213693951 2305843009213693951 2305843009213693951 2305843009213693951) ((wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p) (wrong-type-argument char-or-string-p))))",
+        "numeric casing modifier bits, C-int narrowing and type errors",
+    );
+}
+
+#[test]
+fn char_table_cons_ranges_expand_compressed_neighbors_until_values_differ() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/char-table-range-uniprop.el"),
+        "((7 nil nil t) (7 nil t nil) (7 t nil nil) (8 t nil nil))",
+        "char-table cons range decompression",
+    );
+}
+
+#[test]
+fn char_table_compressed_unicode_slots_decode_into_the_canonical_tree() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/char-table-uniprop.el"),
+        "(t (default default 7 8 default default) (4 4 4 0 0 9 default default) nil t (changed 7))",
+        "lazy Unicode-property decompression, zero versus nil, and copied subtable ownership",
+    );
+}
+
+#[test]
+fn char_table_identity_callbacks_and_specialized_values_follow_gnu() {
+    let program = include_str!("../../../tests/fixtures/char-table-identity.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((initial args-out-of-range t nil nil error all all (wrong-type-argument characterp)) (t t t t t (8388610 . 50)) (t 128 "Za" 95 t t t t t nil nil t error) ((((1 . 3) a) (1000 b) (1001 changed) (1002 b) ((131072 . 131075) late)) t) (ascii-old new new new) (t t nil))"#,
+        "char-table symbol identity, fixed extras, canonical syntax/category values, live map callbacks, ASCII fields and reader cycles",
+    );
+}
+
+#[test]
+fn char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values() {
+    let program = include_str!("../../../tests/fixtures/char-table-authoritative-values.el");
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(initial initial default parent parent replacement-default range t (slot-initial slot-initial t) (replacement 0))",
+        "authoritative char-table values, defaults, parent lookup, extra slots and overwritten-value reclamation",
     );
 }
 
@@ -16740,7 +17073,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
     assert_eq!(
         key_sequence_keymap_parts(&Value::String("\x03,\x17".into()))
             .expect("raw control-byte key sequence should retain every event"),
-        vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
+        vec![Value::Integer(3), Value::Integer(44), Value::Integer(23)]
     );
     assert_eq!(
         key_sequence_binding_parts(&Value::String("C-c g".into()))
@@ -16748,7 +17081,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C", "-", "c", "SPC", "g"]
     );
     assert_eq!(
-        textual_key_sequence_binding_parts(&Value::String("C-c g".into()))
+        key_sequence_binding_parts(&parse_kbd_sequence("C-c g").expect("parse key spelling"))
             .expect("textual control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
     );
@@ -16764,12 +17097,12 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
     assert_eq!(
         textual_key_sequence_keymap_parts(&Value::String("M-v".into()))
             .expect("Meta character key should normalize for keymap storage"),
-        vec!["ESC".to_string(), "v".to_string()]
+        vec![Value::Integer(27), Value::Integer(118)]
     );
     assert_eq!(
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
-        vec!["M-up".to_string()]
+        vec![Value::symbol("M-up")]
     );
 }
 
@@ -16782,7 +17115,7 @@ fn keymap_lookup_uses_the_event_head_of_a_character_range() {
     assert_eq!(
         key_sequence_keymap_parts(&range_event)
             .expect("a map-keymap character range should remain a valid lookup event"),
-        vec!["w".to_string()]
+        vec![Value::Integer(119)]
     );
 }
 
@@ -18497,7 +18830,7 @@ fn native_minibuffer_runs_initial_post_command_hook_before_input() {
         .expect("initial post-command setup should evaluate");
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -18752,7 +19085,7 @@ fn native_overlay_and_char_table_census_uses_gnu_layouts() {
     assert_eq!(after.vectors - before.vectors, 2);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        crate::lisp::eval::GNU_CHAR_TABLE_VECTOR_SLOTS + 4
+        70 + 4 // char-table header + 68 Lisp slots, rounded to 16 bytes
     );
 }
 
@@ -19216,7 +19549,7 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
         .expect("start keyboard macro recording");
@@ -21521,7 +21854,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(121)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     assert_eq!(
@@ -21535,7 +21868,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|| None)));
+    set_tty_event_reader(Some(Box::new(|_| None)));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
@@ -21554,7 +21887,7 @@ fn tty_event_reader_does_not_preempt_queued_events() {
         Value::list([Value::Integer(97)]),
         &mut env,
     );
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(98)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(98)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     assert_eq!(
@@ -21579,7 +21912,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 
     let polls = std::rc::Rc::new(std::cell::Cell::new(0));
     let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move || {
+    set_tty_event_poller(Some(Box::new(move |_| {
         let count = poll_count.get();
         poll_count.set(count + 1);
         Some((count > 0).then_some(Value::Integer(120)))
@@ -21632,7 +21965,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     let poll_observation = std::rc::Rc::clone(&saw_output);
     let polls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
     let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move || {
+    set_tty_event_poller(Some(Box::new(move |_| {
         let count = poll_count.get() + 1;
         poll_count.set(count);
         Some((poll_observation.get() || count >= 100_000).then_some(Value::Integer(120)))
@@ -21741,7 +22074,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_event_poller(Some(Box::new(|| Some(None))));
+    set_tty_event_poller(Some(Box::new(|_| Some(None))));
     let result = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -21796,7 +22129,7 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     let result = call(
         &mut interp,
@@ -21849,7 +22182,7 @@ fn write_region_mustbenew_consumes_a_full_negative_answer() {
             .collect::<Vec<_>>(),
     ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "write-region",
@@ -21893,7 +22226,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
@@ -21931,7 +22264,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
 
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
@@ -21961,7 +22294,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
     interp.set_variable("emaxx-default-history", Value::Nil, &mut env);
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
 
     let result = call(
         &mut interp,
@@ -22007,7 +22340,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -22057,7 +22390,7 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-from-minibuffer",
@@ -22083,7 +22416,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     // The frontend's reader answers None for C-g; the loop signals quit.
-    set_tty_event_reader(Some(Box::new(|| None)));
+    set_tty_event_reader(Some(Box::new(|_| None)));
     let result = call(
         &mut interp,
         "read-string",
@@ -22111,7 +22444,7 @@ fn tty_completing_read_completes_with_tab() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -22137,7 +22470,7 @@ fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let current = Value::Buffer(interp.buffer);
-    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&prompts);
     set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
@@ -22201,7 +22534,7 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "completing-read",
@@ -22241,7 +22574,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // Observe the live minibuffer from the frame-redraw hook, exactly
     // where the frontend composes the echo row.
     let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>> =
@@ -22359,7 +22692,7 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
                     .collect(),
             ));
         let feed = std::rc::Rc::clone(&script);
-        set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+        set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     };
     let history = Value::Symbol("emaxx--test-history".into());
     feed_events("first\r");
@@ -23346,6 +23679,145 @@ fn interactive_undo_restores_the_unmodified_state() {
 }
 
 #[test]
+fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
+    let program = r#"(let ((map (make-sparse-keymap)) (menu (make-sparse-keymap)))
+        (use-global-map map)
+        (define-key map [134217759] 'menu-hint-action)
+        (define-key map [67108927] 'menu-hint-action)
+        (define-key menu [item] '(menu-item "Action" menu-hint-action))
+        (define-key map [menu-bar sample] menu)
+        (list (key-description (where-is-internal 'menu-hint-action nil t))
+              (progn (define-key map [134217759] nil t)
+                     (key-description (where-is-internal 'menu-hint-action nil t)))
+              (progn (define-key map [67108927] nil t)
+                     (define-key map [f7] 'menu-hint-action)
+                     (key-description (where-is-internal 'menu-hint-action nil t)))
+              (progn (define-key map [f7] nil t)
+                     (where-is-internal 'menu-hint-action nil t))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        r#"("C-M-_" "C-?" "<f7>" nil)"#,
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let map = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("global map");
+    let menu = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("menu map");
+    let command = Value::symbol("menu-hint-action");
+    call(&mut interp, "use-global-map", &[map], &mut env).expect("select global map");
+    for code in [134_217_759, 67_108_927] {
+        call(
+            &mut interp,
+            "define-key",
+            &[map, Value::vector([Value::Integer(code)]), command],
+            &mut env,
+        )
+        .expect("bind modified event");
+    }
+    let item = Value::list([
+        Value::symbol("menu-item"),
+        Value::String("Action".into()),
+        command,
+    ]);
+    call(
+        &mut interp,
+        "define-key",
+        &[menu, Value::vector([Value::symbol("item")]), item],
+        &mut env,
+    )
+    .expect("menu item");
+    call(
+        &mut interp,
+        "define-key",
+        &[
+            map,
+            Value::vector([Value::symbol("menu-bar"), Value::symbol("sample")]),
+            menu,
+        ],
+        &mut env,
+    )
+    .expect("menu-bar binding");
+    for (remove, add, expected) in [
+        (None, None, "Action  C-M-_"),
+        (Some(Value::Integer(134_217_759)), None, "Action  C-?"),
+        (
+            Some(Value::Integer(67_108_927)),
+            Some(Value::symbol("f7")),
+            "Action  <f7>",
+        ),
+        (Some(Value::symbol("f7")), None, "Action"),
+    ] {
+        if let Some(event) = remove {
+            call(
+                &mut interp,
+                "define-key",
+                &[map, Value::vector([event]), Value::Nil, Value::T],
+                &mut env,
+            )
+            .expect("remove live binding");
+        }
+        if let Some(event) = add {
+            call(
+                &mut interp,
+                "define-key",
+                &[map, Value::vector([event]), command],
+                &mut env,
+            )
+            .expect("add symbolic binding");
+        }
+        let pane = tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Sample");
+        assert_eq!(pane.items.len(), 1);
+        assert_eq!(pane.items[0].text, expected);
+    }
+}
+
+#[test]
+fn command_error_echo_accepts_mutable_error_message_strings() {
+    let program = r#"(let ((text (copy-sequence "before")))
+        (list (error-message-string '(beginning-of-buffer))
+              (error-message-string '(user-error "visible warning"))
+              (copy-sequence (error-message-string (list 'error text)))
+              (progn (aset text 0 ?B)
+                     (error-message-string (list 'error text)))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        r#"("Beginning of buffer" "visible warning" "before" "Before")"#,
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for (condition, expected) in [
+        ("(beginning-of-buffer)", "Beginning of buffer"),
+        ("(user-error \"visible warning\")", "visible warning"),
+    ] {
+        let data = Reader::new(condition)
+            .read()
+            .expect("read echo condition")
+            .expect("echo condition form");
+        let error = LispError::SignalValue(data);
+        assert_eq!(
+            command_error_echo_text(&mut interp, &mut env, &error),
+            expected
+        );
+    }
+    let text = make_shared_string_value_with_multibyte("before".into(), Vec::new(), true);
+    let error = LispError::SignalValue(Value::list([Value::symbol("error"), text]));
+    assert_eq!(
+        command_error_echo_text(&mut interp, &mut env, &error),
+        "before"
+    );
+    call(
+        &mut interp,
+        "aset",
+        &[text, Value::Integer(0), Value::Integer(i64::from(b'B'))],
+        &mut env,
+    )
+    .expect("mutate error text");
+    assert_eq!(
+        command_error_echo_text(&mut interp, &mut env, &error),
+        "Before"
+    );
+}
+
+#[test]
 fn error_message_strings_match_the_oracle() {
     let program = "(progn (setq contract-out (mapconcat (lambda (e) (error-message-string e))
         (list (quote (quit)) (quote (beginning-of-buffer)) (quote (error \"boom\"))
@@ -23713,7 +24185,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // The frame-redraw hook runs once per minibuffer iteration; observing
     // the layout there sees the pop-up while the read is still live.
     type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>)>;
@@ -23843,7 +24315,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let observed: std::rc::Rc<std::cell::RefCell<Vec<usize>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
@@ -23892,7 +24364,7 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
                 .collect(),
         ));
     let feed = std::rc::Rc::clone(&script);
-    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, String)>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
@@ -25552,4 +26024,390 @@ fn registered_subrs_never_request_function_cell_overrides() {
             subr.name,
         );
     }
+}
+
+#[test]
+fn reader_callable_streams_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-streams.el"),
+        include_str!("../../../tests/fixtures/reader-callable-streams.expected"),
+        "reader-callable-streams",
+    );
+}
+
+#[test]
+fn reader_callable_encoding_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-encoding.el"),
+        include_str!("../../../tests/fixtures/reader-callable-encoding.expected"),
+        "reader-callable-encoding",
+    );
+}
+
+#[test]
+fn reader_callable_gc_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-gc.el"),
+        include_str!("../../../tests/fixtures/reader-callable-gc.expected"),
+        "reader-callable-gc",
+    );
+}
+
+#[test]
+fn reader_callable_obarray_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-obarray.el"),
+        include_str!("../../../tests/fixtures/reader-callable-obarray.expected"),
+        "reader-callable-obarray",
+    );
+}
+
+#[test]
+fn reader_callable_errors_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-errors.el"),
+        include_str!("../../../tests/fixtures/reader-callable-errors.expected"),
+        "reader-callable-errors",
+    );
+}
+
+#[test]
+fn reader_callable_syntax_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-syntax.el"),
+        include_str!("../../../tests/fixtures/reader-callable-syntax.expected"),
+        "reader-callable-syntax",
+    );
+}
+
+#[test]
+fn reader_callable_redefinition_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-redefinition.el"),
+        include_str!("../../../tests/fixtures/reader-callable-redefinition.expected"),
+        "reader-callable-redefinition",
+    );
+}
+
+#[test]
+fn reader_callable_execution_modes_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-execution-modes.el"),
+        include_str!("../../../tests/fixtures/reader-callable-execution-modes.expected"),
+        "reader-callable-execution-modes",
+    );
+}
+
+#[test]
+fn reader_stream_positions_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-stream-positions.el"),
+        include_str!("../../../tests/fixtures/reader-stream-positions.expected"),
+        "reader-stream-positions",
+    );
+}
+
+#[test]
+fn reader_callable_consumption_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-consumption.el"),
+        include_str!("../../../tests/fixtures/reader-callable-consumption.expected"),
+        "reader-callable-consumption",
+    );
+}
+
+#[test]
+fn reader_callable_lifetime_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-lifetime.el"),
+        include_str!("../../../tests/fixtures/reader-callable-lifetime.expected"),
+        "reader-callable-lifetime",
+    );
+}
+
+#[test]
+fn reader_callable_dots_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-callable-dots.el"),
+        include_str!("../../../tests/fixtures/reader-callable-dots.expected"),
+        "reader-callable-dots",
+    );
+}
+
+#[test]
+fn reader_stream_entrypoints_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-stream-entrypoints.el"),
+        include_str!("../../../tests/fixtures/reader-stream-entrypoints.expected"),
+        "reader-stream-entrypoints",
+    );
+}
+
+#[test]
+fn reader_byte_printing_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-byte-printing.el"),
+        include_str!("../../../tests/fixtures/reader-byte-printing.expected"),
+        "reader-byte-printing",
+    );
+}
+
+#[test]
+fn reader_printer_bindings_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-printer-bindings.el"),
+        include_str!("../../../tests/fixtures/reader-printer-bindings.expected"),
+        "reader-printer-bindings",
+    );
+}
+
+#[test]
+fn generic_record_size_limits_include_the_type_slot() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-size-boundary.el"),
+        include_str!("../../../tests/fixtures/generic-record-size-boundary.expected"),
+        "generic-record-size-boundary",
+    );
+}
+
+#[test]
+fn generic_record_sharing_cycles_and_copying_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-graph.el"),
+        include_str!("../../../tests/fixtures/generic-record-graph.expected"),
+        "generic-record-graph",
+    );
+}
+
+#[test]
+fn generic_record_constructors_reader_and_purecopy_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-construction.el"),
+        include_str!("../../../tests/fixtures/generic-record-construction.expected"),
+        "generic-record-construction",
+    );
+}
+
+#[test]
+fn generic_record_argument_errors_match_gnu_without_large_allocation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-argument-errors.el"),
+        include_str!("../../../tests/fixtures/generic-record-argument-errors.expected"),
+        "generic-record-argument-errors",
+    );
+}
+
+#[test]
+fn generic_record_purecopy_message_preserves_coding_and_log_state() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-purecopy-message.el"),
+        include_str!("../../../tests/fixtures/generic-record-purecopy-message.expected"),
+        "generic-record-purecopy-message",
+    );
+}
+
+#[test]
+fn generic_record_property_values_preserve_eq_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/generic-record-text-properties.el"),
+        include_str!("../../../tests/fixtures/generic-record-text-properties.expected"),
+        "generic-record-text-properties",
+    );
+}
+
+fn assert_purecopy_callback_contract(program: &str, expected: &str) {
+    // Expected bytes come from the same input in a real GNU -nw command.
+    // message_with_string's interactive callbacks require live window metrics.
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
+    let mut env = Env::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let forms = Reader::new(program)
+        .read_all()
+        .expect("read purecopy callback fixture");
+    assert_eq!(forms.len(), 1);
+    // The raw reader precedes lread's obarray and literal materialization
+    // steps. Enter through the same symbols as the loaded Lisp runtime.
+    let form = interp
+        .intern_read_symbols_in_value(forms[0], &env)
+        .expect("intern purecopy fixture symbols");
+    let form = interp
+        .materialize_read_object_literals(form, &mut env)
+        .expect("materialize purecopy fixture literals");
+    let previous_metrics = interactive_window_metrics();
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 1,
+    }));
+    let result = interp.eval(&form, &mut env).map(|value| value.to_string());
+    set_interactive_window_metrics(previous_metrics);
+    assert_eq!(result.expect("purecopy callback fixture"), expected);
+}
+
+#[test]
+fn purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-five-kinds-gc.el"),
+        include_str!("../../../tests/fixtures/purecopy-five-kinds-gc.expected"),
+    );
+}
+
+#[test]
+fn purecopy_callbacks_preserve_vector_and_record_source_snapshots() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-sequence-snapshot.el"),
+        include_str!("../../../tests/fixtures/purecopy-sequence-snapshot.expected"),
+    );
+}
+
+#[test]
+fn purecopy_callbacks_observe_current_purify_flag() {
+    assert_purecopy_callback_contract(
+        include_str!("../../../tests/fixtures/purecopy-callback-purify-flag.el"),
+        include_str!("../../../tests/fixtures/purecopy-callback-purify-flag.expected"),
+    );
+}
+
+#[test]
+fn message_callback_bindings_are_special_before_and_after_disconnection() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/message-callback-special-bindings.el"),
+        include_str!("../../../tests/fixtures/message-callback-special-bindings.expected"),
+        "C message callback special bindings",
+    );
+}
+
+#[test]
+fn text_conversion_variable_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-variable-state.el"),
+        include_str!("../../../tests/fixtures/text-conversion-variable-state.expected"),
+        "text-conversion-variable-state",
+    );
+}
+
+#[test]
+fn text_conversion_detached_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-detached-state.el"),
+        include_str!("../../../tests/fixtures/text-conversion-detached-state.expected"),
+        "text-conversion-detached-state",
+    );
+}
+
+#[test]
+fn text_conversion_void_default_let_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-void-default-let.el"),
+        include_str!("../../../tests/fixtures/text-conversion-void-default-let.expected"),
+        "text-conversion-void-default-let",
+    );
+}
+
+#[test]
+fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let current = interp.current_buffer_id();
+    let (other, _) = interp.create_buffer("text-style-other-359");
+    let default = Value::list([Value::Integer(367)]);
+    interp.set_global_binding("text-conversion-style", default);
+    let written = Value::vector([Value::Integer(373)]);
+    interp.buffer.borrow_mut().text_conversion_style = written;
+    assert_eq!(
+        interp
+            .symbol_value_cell("text-conversion-style")
+            .expect("C field"),
+        written
+    );
+    assert!(!interp.buffer.borrow().text_conversion_style_is_local);
+    assert!(
+        interp
+            .buffer_local_cells(current)
+            .iter()
+            .all(|(name, _)| name != "text-conversion-style")
+    );
+    assert_eq!(interp.default_value("text-conversion-style"), Some(default));
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style,
+        default
+    );
+
+    let restore = interp
+        .bind_special_dynamic("text-conversion-style", Value::Integer(379), &mut env)
+        .expect("bind native default");
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style,
+        Value::Integer(379)
+    );
+    interp
+        .restore_special_dynamic(restore, &mut env)
+        .expect("restore C value as default");
+    assert_eq!(interp.default_value("text-conversion-style"), Some(written));
+    assert_eq!(
+        interp
+            .get_buffer_by_id(other)
+            .expect("other buffer")
+            .text_conversion_style
+            .word(),
+        written.word()
+    );
+    call(
+        &mut interp,
+        "makunbound",
+        &[Value::symbol("text-conversion-style")],
+        &mut env,
+    )
+    .expect("disconnect symbol");
+    assert!(interp.symbol_value_cell("text-conversion-style").is_err());
+    let replacement = Value::cons(Value::Integer(383), Value::Nil);
+    interp.buffer.borrow_mut().text_conversion_style = replacement;
+    interp.set_variable("text-conversion-style", Value::Integer(389), &mut env);
+    assert_eq!(
+        interp.forwarded_c_value("text-conversion-style", &env),
+        Some(replacement)
+    );
+    assert_eq!(
+        interp
+            .symbol_value_cell("text-conversion-style")
+            .expect("plain symbol"),
+        Value::Integer(389)
+    );
+    assert_eq!(
+        interp.native_text_conversion_style_default().word(),
+        written.word()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn text_conversion_native_store_matches_gnu_without_localizing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-native-store.el"),
+        "(((stored nil [native-307] (default-293) nil nil nil) (bound (temporary-311) (temporary-311)) (restored [native-307] [native-307]) (default-propagated (replaced-313)) (arbitrary nil 317 t) (detached nil nil (text-conversion-style native-331)) (independent (plain-337) (plain-337) (text-conversion-style . [native-347]))) ((set nil) (set nil) (set nil) (makunbound nil) (set nil)))",
+        "text-conversion native field writes, let, watchers and detachment",
+    );
+}
+
+#[test]
+fn text_conversion_alias_and_indirect_buffer_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/text-conversion-buffer-aliases.el"),
+        include_str!("../../../tests/fixtures/text-conversion-buffer-aliases.expected"),
+        "native text-conversion aliases and indirect buffer fields",
+    );
+}
+
+#[test]
+fn regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.el"),
+        include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.expected"),
+        "regexp table snapshots across shared leaves, replaced edges and collection",
+    );
 }

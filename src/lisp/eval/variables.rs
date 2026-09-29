@@ -132,10 +132,37 @@ impl Interpreter {
         }
     }
 
-    /// The bound local value of NAME in BUFFER_ID; a void local (data.c's
-    /// `Qunbound' in the alist cell) answers None like no local at all.
-    /// Callers that must tell the two apart use `buffer_local_binding'.
+    /// The Lisp symbol is still forwarded to buffer.h's native field.
+    pub(crate) fn has_native_text_conversion_style(&self, name: &str) -> bool {
+        name == "text-conversion-style" && self.is_forwarded_variable(name)
+    }
+
+    /// The C default survives disconnection of its Lisp symbol. The existing
+    /// detached-slot storage then owns that default, not a buffer field copy.
+    pub(crate) fn native_text_conversion_style_default(&self) -> Value {
+        self.detached_forwarded_variables
+            .get("text-conversion-style")
+            .copied()
+            .or_else(|| self.global_binding_value("text-conversion-style"))
+            .unwrap_or(Value::Nil)
+    }
+
+    fn reset_buffer_text_conversion_style(&mut self, buffer_id: u64) {
+        let default = self.native_text_conversion_style_default();
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.text_conversion_style = default;
+            buffer.text_conversion_style_is_local = false;
+        }
+    }
+
+    /// The bound value of a native field or local alist cell.
+    /// Callers that need the locality flag use `buffer_local_binding'.
     pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
+        if self.has_native_text_conversion_style(name) {
+            return self
+                .get_buffer_by_id(buffer_id)
+                .map(|buffer| buffer.text_conversion_style);
+        }
         self.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.binding_by_name(name))
@@ -150,6 +177,11 @@ impl Interpreter {
         key: &'static std::thread::LocalKey<SymbolName>,
     ) -> Option<Value> {
         key.with(|symbol| {
+            if self.has_native_text_conversion_style(symbol.as_str()) {
+                return self
+                    .get_buffer_by_id(buffer_id)
+                    .map(|buffer| buffer.text_conversion_style);
+            }
             self.buffer_locals
                 .get(&buffer_id)
                 .and_then(|locals| locals.binding(symbol))
@@ -161,6 +193,13 @@ impl Interpreter {
     /// `assq_no_quit (symbol, BVAR (buffer, local_var_alist))': `Some(None)'
     /// is a binding whose value is void.
     pub(crate) fn buffer_local_binding(&self, buffer_id: u64, name: &str) -> Option<Option<Value>> {
+        if self.has_native_text_conversion_style(name) {
+            return self.get_buffer_by_id(buffer_id).and_then(|buffer| {
+                buffer
+                    .text_conversion_style_is_local
+                    .then_some(Some(buffer.text_conversion_style))
+            });
+        }
         self.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.binding_by_name(name))
@@ -172,6 +211,13 @@ impl Interpreter {
         buffer_id: u64,
         symbol: &SymbolName,
     ) -> Option<Option<Value>> {
+        if self.has_native_text_conversion_style(symbol.as_str()) {
+            return self.get_buffer_by_id(buffer_id).and_then(|buffer| {
+                buffer
+                    .text_conversion_style_is_local
+                    .then_some(Some(buffer.text_conversion_style))
+            });
+        }
         self.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.binding(symbol))
@@ -183,6 +229,13 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
+        if self.has_native_text_conversion_style(name) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.text_conversion_style = Self::stored_value(value);
+                buffer.text_conversion_style_is_local = true;
+            }
+            return;
+        }
         self.globals.set_flag_by_name(name, LOCALIZED);
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
@@ -210,6 +263,10 @@ impl Interpreter {
         symbol: &SymbolName,
         value: Value,
     ) {
+        if self.has_native_text_conversion_style(symbol.as_str()) {
+            self.set_buffer_local_value(buffer_id, symbol.as_str(), value);
+            return;
+        }
         self.globals.set_flag(symbol, LOCALIZED);
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
@@ -230,6 +287,9 @@ impl Interpreter {
     }
 
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
+        if self.has_native_text_conversion_style(name) {
+            self.reset_buffer_text_conversion_style(buffer_id);
+        }
         let remove_buffer = self
             .buffer_locals
             .get_mut(&buffer_id)
@@ -251,6 +311,7 @@ impl Interpreter {
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
+        self.reset_buffer_text_conversion_style(buffer_id);
         self.buffer_locals.remove(&buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
@@ -260,6 +321,7 @@ impl Interpreter {
     // hook variable is marked `permanent-local', like `write-file-functions'
     // in an archive member buffer surviving `normal-mode'.
     pub fn clear_buffer_local_state_for_mode_change(&mut self, buffer_id: u64) {
+        self.reset_buffer_text_conversion_style(buffer_id);
         let permanent_hooks = self
             .buffer_local_hooks
             .get(&buffer_id)
@@ -282,6 +344,18 @@ impl Interpreter {
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
+        let style = self.get_buffer_by_id(from_buffer_id).map(|buffer| {
+            (
+                buffer.text_conversion_style,
+                buffer.text_conversion_style_is_local,
+            )
+        });
+        if let Some((value, local)) = style
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(to_buffer_id)
+        {
+            buffer.text_conversion_style = value;
+            buffer.text_conversion_style_is_local = local;
+        }
         let locals = self
             .buffer_locals
             .get(&from_buffer_id)
@@ -340,7 +414,8 @@ impl Interpreter {
     /// Every local binding of BUFFER_ID in first-binding order; a void
     /// local carries `Value::Unbound'.
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        self.buffer_locals
+        let mut values: Vec<_> = self
+            .buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
@@ -348,7 +423,16 @@ impl Interpreter {
                     .map(|(name, value)| (name.as_str().to_owned(), *value))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(buffer) = self.get_buffer_by_id(buffer_id)
+            && buffer.text_conversion_style_is_local
+        {
+            values.insert(
+                0,
+                ("text-conversion-style".into(), buffer.text_conversion_style),
+            );
+        }
+        values
     }
 
     /// `blv->local_if_set = 1' (data.c:Fmake_variable_buffer_local).
@@ -405,14 +489,14 @@ impl Interpreter {
         self.globals.has_flag_by_name(name, ALWAYS_LOCAL)
     }
 
-    /// data.c:let_shadows_buffer_binding_p: a `SPECPDL_LET_LOCAL' or
-    /// `SPECPDL_LET_DEFAULT' record for NAME made in the current buffer.
+    /// data.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
+    /// record for NAME made in the current buffer (not LET_LOCAL).
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
         let current = self.current_buffer_id();
         self.active_special_restores.iter().any(|restore| {
             restore.name == name
                 && match restore.scope {
-                    SpecialBindingScope::BufferLocal(buffer_id) => buffer_id == current,
+                    SpecialBindingScope::BufferLocal(_) => false,
                     SpecialBindingScope::Global => restore.binding_buffer_id == Some(current),
                 }
         })
@@ -656,10 +740,6 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        // Lisp macro expanders may consult arbitrary symbol properties.
-        // Treat every plist write as a definition change so a previously
-        // cached expansion cannot outlive the metadata it depended on.
-        self.note_definition_changed();
         let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
             let plist = self.symbol_properties[index].1;
@@ -749,6 +829,9 @@ impl Interpreter {
                 }
                 Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
                     pending.extend(vector.slots());
+                }
+                Kind::SymbolWithPos(object) if seen_vectors.insert(object.identity()) => {
+                    pending.push(object.symbol());
                 }
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
@@ -876,16 +959,6 @@ impl Interpreter {
                     ReaderForm::BoolVector { bits } => {
                         ReaderForm::BoolVector { bits: bits.clone() }
                     }
-                    ReaderForm::PositionedSymbol { name, pos } => {
-                        // lread.c interns the bare symbol through the
-                        // active obarray even when LOCATE_SYMS wraps the
-                        // occurrence with a position.
-                        crate::lisp::primitives::intern_in_obarray(self, obarray, name)?;
-                        ReaderForm::PositionedSymbol {
-                            name: name.clone(),
-                            pos: *pos,
-                        }
-                    }
                 };
                 Ok(Value::ReaderForm(
                     crate::lisp::alloc::VectorlikeRef::allocate(mapped),
@@ -919,9 +992,6 @@ impl Interpreter {
     }
 
     pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        // Replacing the whole plist has the same cache-coherence contract as
-        // `put' and `remprop', including when the new plist is empty.
-        self.note_definition_changed();
         if plist.is_nil() {
             if let Some(existing) = self.symbol_property_index(name) {
                 self.symbol_properties.remove(existing);
@@ -1021,6 +1091,30 @@ impl Interpreter {
             return Ok(());
         }
         self.notify_variable_watchers(symbol.as_str(), value, action, buffer_id, env)
+    }
+
+    /// data.c:set_internal notifies before changing locality. Its native
+    /// per-buffer path can then call set_default_internal under LET_DEFAULT,
+    /// which emits a second notification with no buffer.
+    pub(crate) fn notify_assignment_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let buffer_id = if self.has_native_text_conversion_style(symbol.as_str()) {
+            Some(self.current_buffer_id())
+        } else {
+            self.assignment_buffer_id_symbol(symbol)
+        };
+        self.notify_variable_watchers_symbol(symbol, value, "set", buffer_id, env)?;
+        if self.has_native_text_conversion_style(symbol.as_str())
+            && !self.buffer.borrow().text_conversion_style_is_local
+            && self.let_shadows_buffer_binding(symbol.as_str())
+        {
+            self.notify_variable_watchers_symbol(symbol, value, "set", None, env)?;
+        }
+        Ok(())
     }
 
     pub fn notify_variable_watchers(
@@ -1206,6 +1300,12 @@ impl Interpreter {
     /// `sym->u.s.redirect = SYMBOL_PLAINVAL' -- later stores cannot
     /// reconnect it to the C variable.
     pub(crate) fn detach_forwarded_variable(&mut self, name: &str, slot_value: Value) {
+        if self.has_native_text_conversion_style(name) {
+            // The symbol becomes plain; the buffer's actual C field and its
+            // local flag continue to exist independently of that redirect.
+            self.globals
+                .clear_flag_by_name(name, LOCALIZED | LOCAL_IF_SET | PER_BUFFER);
+        }
         self.globals
             .clear_flag_by_name(name, FORWARDED | FWD_BOOL | FWD_INT);
         self.detached_forwarded_variables
@@ -1282,31 +1382,6 @@ impl Interpreter {
         }
         self.globals.remove(symbol);
         self.note_obarray_removal();
-    }
-
-    /// The native word of SYMBOL's plain value, if the cell still holds
-    /// one produced under STAMP (see `SymbolCells::native_word').
-    pub(crate) fn cached_native_symbol_word(
-        &self,
-        symbol: &SymbolName,
-        stamp: u64,
-    ) -> Option<usize> {
-        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
-            return None;
-        }
-        self.globals.native_word(symbol, stamp)
-    }
-
-    pub(crate) fn cache_native_symbol_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
-        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
-            return;
-        }
-        self.globals.set_native_word(symbol, stamp, word);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn native_symbol_words_under(&self, stamp: u64) -> usize {
-        self.globals.native_words_under(stamp)
     }
 
     fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
@@ -1478,6 +1553,18 @@ impl Interpreter {
     pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
         let name = symbol.as_str();
         let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+        if self.has_native_text_conversion_style(name) {
+            // data.c:set_default_internal updates every live buffer whose
+            // independent local flag is clear, including earlier C stores.
+            for buffer in std::iter::once(self.buffer)
+                .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
+            {
+                let mut buffer = buffer.borrow_mut();
+                if !buffer.text_conversion_style_is_local {
+                    buffer.text_conversion_style = value;
+                }
+            }
+        }
         if self.set_terminal_keyboard_value(name, &value) {
             return;
         }
@@ -1488,11 +1575,6 @@ impl Interpreter {
                 .into_iter()
                 .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
                 .collect();
-        }
-        if name == "ascii-case-table"
-            && let Kind::CharTable(id) = value.kind()
-        {
-            self.mark_ascii_case_table(id);
         }
         if self
             .buffer_locals
@@ -1744,6 +1826,11 @@ impl Interpreter {
         resolved: &SymbolName,
     ) -> Option<SpecialBindingScope> {
         let buffer_id = self.current_buffer_id();
+        if self.has_native_text_conversion_style(resolved.as_str())
+            && self.buffer.borrow().text_conversion_style_is_local
+        {
+            return Some(SpecialBindingScope::BufferLocal(buffer_id));
+        }
         // data.c:set_internal dispatches on the redirect tag: only a
         // SYMBOL_LOCALIZED symbol can have a buffer-local binding, so the
         // buffer's binding table is probed for those alone (the read path
@@ -2134,7 +2221,14 @@ impl Interpreter {
                 local_binding_killed: false,
             }
         } else {
-            let previous = self.global_binding_value_symbol(&resolved);
+            // specbind saves find_symbol_value even for LET_DEFAULT.
+            // A prior bset may differ from the per-buffer default.
+            let native_style = self.has_native_text_conversion_style(name);
+            let previous = if native_style {
+                Some(self.buffer.borrow().text_conversion_style)
+            } else {
+                self.global_binding_value_symbol(&resolved)
+            };
             let binding_buffer_id = if self.globals.has_flag(&resolved, LOCAL_IF_SET) {
                 Some(buffer_id)
             } else {
@@ -2153,7 +2247,14 @@ impl Interpreter {
                 .globals
                 .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
                 .then_some(buffer_id);
-            self.notify_variable_watchers_symbol(&resolved, value, "let", where_heard, env)?;
+            let (action, where_heard) = if native_style {
+                // do_specbind's BUFFER_OBJFWD/LET_DEFAULT path calls
+                // set_default_internal, whose watcher operation is set.
+                ("set", None)
+            } else {
+                ("let", where_heard)
+            };
+            self.notify_variable_watchers_symbol(&resolved, value, action, where_heard, env)?;
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
@@ -2364,6 +2465,14 @@ impl Interpreter {
             }
             return Ok(());
         }
+        if restore.name == "text-conversion-style"
+            && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
+                if !self.has_buffer_local_binding(buffer_id, restore.name.as_str()))
+        {
+            // SPECPDL_LET_LOCAL restores only if Flocal_variable_p still
+            // holds; the raw field alone is not a local Lisp binding.
+            return Ok(());
+        }
         if restore.local_binding_killed
             && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
                 if self.buffer_local_value(buffer_id, &restore.name).is_none())
@@ -2393,7 +2502,12 @@ impl Interpreter {
                 // back through set_default_internal (watchers hear `set',
                 // no buffer); SPECPDL_LET through set_internal (`unlet',
                 // the current buffer when the symbol is local if set there).
-                let (action, where_heard) = if restore.let_default {
+                let detached_style = restore.name == "text-conversion-style"
+                    && self
+                        .detached_forwarded_variables
+                        .contains_key(restore.name.as_str())
+                    && !self.globals.has_flag(&restore.name, LOCALIZED);
+                let (action, where_heard) = if restore.let_default && !detached_style {
                     ("set", None)
                 } else {
                     (

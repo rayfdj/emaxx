@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (progn\n  (require 'comp)\n  (let* ((comp-no-spawn nil)\n         (comp-running-batch-compilation t)\n         (native-comp-jit-compilation nil)\n         (root (make-temp-file \"reader-stream-native-\" t))\n         (native-comp-eln-load-path (list (file-name-as-directory root)))\n         (form '(lambda (&optional character)\n                  (if character\n                      (push character reader-stream-characters)\n                    (setq reader-stream-count (1+ reader-stream-count))\n                    (when (= (% reader-stream-count 11) 0) (garbage-collect))\n                    (pop reader-stream-characters)))))\n    (defvar reader-stream-characters nil)\n    (defvar reader-stream-count 0)\n    (unwind-protect\n        (let ((functions (list (eval form t) (byte-compile form) (native-compile form))))\n          (mapcar\n           (lambda (function)\n             (list (list (interpreted-function-p function)\n                         (byte-code-function-p function)\n                         (native-comp-function-p function))\n                   (mapcar\n                    (lambda (reader)\n                      (let ((reader-stream-characters\n                             (string-to-list \"(#:first [#:second \\\"payload\\\"]) (#:next)\"))\n                            (reader-stream-count 0))\n                        (let* ((first (funcall reader function))\n                               (remaining (concat reader-stream-characters))\n                               (second (funcall reader function)))\n                          (list (symbol-name (bare-symbol (car first)))\n                                (symbol-name (bare-symbol (aref (nth 1 first) 0)))\n                                (aref (nth 1 first) 1)\n                                remaining\n                                (symbol-name (bare-symbol (car second)))\n                                (null reader-stream-characters)))))\n                    '(read read-positioning-symbols))))\n           functions))\n      (delete-directory root t))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-execution-modes.el",
+  "input_sha256": "9c22fdadfe47a664a6246c3c8e3b88eeddc22ccf82cd1da30c6465cd9087d7a8",
+  "exit_code": 0,
+  "elapsed_seconds": 1.6764461669999982,
+  "stdout_hex": "28282874206e696c206e696c292028282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e6578742220742920282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e6578742220742929292028286e696c2074206e696c292028282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e6578742220742920282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e6578742220742929292028286e696c206e696c2074292028282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e6578742220742920282266697273742220227365636f6e642220227061796c6f61642220222028233a6e657874292220226e65787422207429292929",
+  "stderr_hex": "",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

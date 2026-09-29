@@ -14,12 +14,12 @@ use std::rc::Rc;
 
 /// Only the real GC marker is exposed to a root's trace implementation: tracing
 /// must inspect values, never execute Lisp or switch execution contexts.
-pub(crate) struct LispRootMarker<'a, 'mark, 'heap> {
+pub(crate) struct LispRootMarker<'a> {
     interpreter: &'a Interpreter,
-    reachable: &'a mut LispReachability<'mark, 'heap>,
+    reachable: &'a mut LispReachability,
 }
 
-impl LispRootMarker<'_, '_, '_> {
+impl LispRootMarker<'_> {
     pub(crate) fn value(&mut self, value: &Value) {
         self.reachable.mark(self.interpreter, value);
     }
@@ -30,7 +30,7 @@ impl LispRootMarker<'_, '_, '_> {
 }
 
 pub(crate) trait TraceLispRoots {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>);
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>);
 }
 
 pub(super) fn mark_source<T: TraceLispRoots>(
@@ -45,33 +45,35 @@ pub(super) fn mark_source<T: TraceLispRoots>(
 }
 
 impl TraceLispRoots for Value {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(self);
     }
 }
 
 impl TraceLispRoots for [Value] {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for value in self {
             marker.value(value);
         }
     }
 }
 
-impl TraceLispRoots for Vec<Value> {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
-        self.as_slice().trace_lisp_roots(marker);
+impl<T: TraceLispRoots> TraceLispRoots for Vec<T> {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        for value in self {
+            value.trace_lisp_roots(marker);
+        }
     }
 }
 
 impl TraceLispRoots for Env {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.environment(self);
     }
 }
 
 impl TraceLispRoots for LispError {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         match self.kind() {
             LispErrorKind::WrongTypeArgument(_, value) | LispErrorKind::SignalValue(value) => {
                 marker.value(value);
@@ -95,7 +97,7 @@ impl TraceLispRoots for LispError {
 }
 
 impl<T: TraceLispRoots, E: TraceLispRoots> TraceLispRoots for Result<T, E> {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         match self {
             Ok(value) => value.trace_lisp_roots(marker),
             Err(error) => error.trace_lisp_roots(marker),
@@ -104,14 +106,14 @@ impl<T: TraceLispRoots, E: TraceLispRoots> TraceLispRoots for Result<T, E> {
 }
 
 impl<A: TraceLispRoots, B: TraceLispRoots> TraceLispRoots for (A, B) {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         self.0.trace_lisp_roots(marker);
         self.1.trace_lisp_roots(marker);
     }
 }
 
 impl TraceLispRoots for WindowConfigurationSnapshot {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(&Value::Frame(self.frame_id));
         marker.value(&Value::Frame(self.selected_frame_id));
         if let Some(buffer) = marker
@@ -138,7 +140,7 @@ impl TraceLispRoots for WindowConfigurationSnapshot {
 }
 
 impl TraceLispRoots for SpecialBindingRestore {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         if let Some(value) = &self.previous {
             marker.value(value);
         }
@@ -149,13 +151,13 @@ impl TraceLispRoots for SpecialBindingRestore {
 }
 
 impl TraceLispRoots for SavedExcursion {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(&Value::Marker(self.marker_id));
     }
 }
 
 impl TraceLispRoots for LabeledRestriction {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         if let Some(value) = &self.label {
             marker.value(value);
         }
@@ -165,7 +167,7 @@ impl TraceLispRoots for LabeledRestriction {
 }
 
 impl TraceLispRoots for SavedRestriction {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         if let SavedRestrictionBounds::Narrow {
             beginning_marker_id,
             end_marker_id,
@@ -182,14 +184,14 @@ impl TraceLispRoots for SavedRestriction {
 }
 
 impl<T: TraceLispRoots + ?Sized> TraceLispRoots for &T {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         (*self).trace_lisp_roots(marker);
     }
 }
 
 struct RootRange {
     address: *const (),
-    trace: unsafe fn(*const (), &mut LispRootMarker<'_, '_, '_>),
+    trace: unsafe fn(*const (), &mut LispRootMarker<'_>),
 }
 
 #[derive(Default)]
@@ -253,10 +255,7 @@ impl Interpreter {
         source: &T,
         body: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        unsafe fn trace<T: TraceLispRoots>(
-            address: *const (),
-            marker: &mut LispRootMarker<'_, '_, '_>,
-        ) {
+        unsafe fn trace<T: TraceLispRoots>(address: *const (), marker: &mut LispRootMarker<'_>) {
             // SAFETY: the private RootFrame owns the immutable &T borrow for
             // every instant this monomorphized trace function is registered.
             unsafe { &*address.cast::<T>() }.trace_lisp_roots(marker);

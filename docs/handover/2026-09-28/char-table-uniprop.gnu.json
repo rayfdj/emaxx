@@ -1,0 +1,12 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (eval (read (with-temp-buffer (insert-file-contents \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/char-table-uniprop.el\") (buffer-string))) t))"
+  ],
+  "exit_code": 0,
+  "stdout": "(t (default default 7 8 default default) (4 4 4 0 0 9 default default) nil t (changed 7))",
+  "stderr": ""
+}

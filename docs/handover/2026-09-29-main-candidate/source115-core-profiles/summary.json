@@ -1,0 +1,142 @@
+{
+  "cases": [
+    {
+      "case_id": "interpreted-calls",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.2749650478363037
+          ],
+          "median": 0.2749650478363037
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.231011152267456
+          ],
+          "median": 1.231011152267456
+        }
+      },
+      "paired_ratios": [
+        4.476973207883207
+      ],
+      "median_ratio": 4.476973207883207,
+      "ratio_interval": [
+        4.476973207883207,
+        4.476973207883207
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "native-execution",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.594322919845581
+          ],
+          "median": 0.594322919845581
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            2.770826816558838
+          ],
+          "median": 2.770826816558838
+        }
+      },
+      "paired_ratios": [
+        4.662157093451424
+      ],
+      "median_ratio": 4.662157093451424,
+      "ratio_interval": [
+        4.662157093451424,
+        4.662157093451424
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "bytecode-to-native",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.16349196434020996
+          ],
+          "median": 0.16349196434020996
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.5491530895233154
+          ],
+          "median": 1.5491530895233154
+        }
+      },
+      "paired_ratios": [
+        9.475408138712476
+      ],
+      "median_ratio": 9.475408138712476,
+      "ratio_interval": [
+        9.475408138712476,
+        9.475408138712476
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "upstream-undo",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.14457297325134277
+          ],
+          "median": 0.14457297325134277
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.58793306350708
+          ],
+          "median": 1.58793306350708
+        }
+      },
+      "paired_ratios": [
+        10.983609368996163
+      ],
+      "median_ratio": 10.983609368996163,
+      "ratio_interval": [
+        10.983609368996163,
+        10.983609368996163
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    }
+  ],
+  "complete_inventory": true,
+  "geometric_mean_ratio": 6.826979531476541,
+  "criterion_satisfied": false,
+  "action": "pilot",
+  "certification_eligible": false,
+  "inputs_unchanged": true
+}

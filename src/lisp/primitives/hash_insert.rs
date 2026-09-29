@@ -6,11 +6,29 @@ pub(crate) fn hash_table_user_test_functions(
     test: &str,
 ) -> Option<(Value, Value)> {
     let spec = interp.get_symbol_property(test, "hash-table-test")?;
-    let items = spec.to_vec().ok()?;
-    if items.len() != 2 {
+    // fns.c:get_hash_table_user_test reads the first two cons cells.  It
+    // neither copies the property list nor requires a proper two-item list.
+    let (compare, tail) = spec.cons_values()?;
+    let (hash, _) = tail.cons_values()?;
+    Some((compare, hash))
+}
+
+fn hash_table_captured_test_functions(
+    interp: &Interpreter,
+    table: &Value,
+    test: &str,
+) -> Option<(Value, Value)> {
+    if matches!(test, "eq" | "eql" | "equal") {
         return None;
     }
-    Some((items[0], items[1]))
+    let Kind::Record(id) = table.kind() else {
+        return None;
+    };
+    let record = interp.find_record(id)?;
+    // GNU's descriptor retains the function objects selected when the table
+    // was made.  Redefining the property affects only subsequent tables;
+    // a captured symbol still resolves its current function when called.
+    Some((*record.slots.get(3)?, *record.slots.get(4)?))
 }
 
 pub(crate) fn call_hash_table_test_function(
@@ -45,7 +63,7 @@ pub(crate) fn touch_hash_table_key(
     key: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
+    let Some((_, hash_fn)) = hash_table_captured_test_functions(interp, table, test) else {
         return Ok(());
     };
     let _ = call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
@@ -59,7 +77,7 @@ fn custom_hash_code(
     key: &Value,
     env: &mut Env,
 ) -> Result<i64, LispError> {
-    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
+    let Some((_, hash_fn)) = hash_table_captured_test_functions(interp, table, test) else {
         return Err(LispError::Signal("Invalid hash table test".into()));
     };
     let hash =
@@ -79,7 +97,7 @@ fn custom_hash_matching_index(
     hash: i64,
     env: &mut Env,
 ) -> Result<Option<(usize, Value)>, LispError> {
-    let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
+    let Some((compare_fn, _)) = hash_table_captured_test_functions(interp, table, test) else {
         return Err(LispError::Signal("Invalid hash table test".into()));
     };
     let candidates = interp
@@ -162,7 +180,8 @@ pub(crate) fn hash_table_key_matches(
         "eq" => Ok(values_eq_in_env(interp, left, right, env)),
         "eql" => Ok(values_eql(left, right)),
         _ => {
-            let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
+            let Some((compare_fn, _)) = hash_table_captured_test_functions(interp, table, test)
+            else {
                 return Err(LispError::Signal("Invalid hash table test".into()));
             };
             Ok(
@@ -452,33 +471,17 @@ fn project_embedded_keymaps(
 #[derive(Clone)]
 pub(crate) struct RuntimeKeymapBinding {
     pub(crate) key: String,
-    pub(crate) parts: Option<Vec<String>>,
+    pub(crate) parts: Option<Vec<Value>>,
     pub(crate) value: Value,
     pub(crate) after_prompt: bool,
 }
 
-pub(crate) fn keymap_entry_key_value(parts: &[String], key: &str) -> Value {
-    if let [part] = parts {
-        let (_, _, saw_prefix) = parse_kbd_prefixes(part);
-        if !part.starts_with('<')
-            && !part.ends_with('>')
-            && !saw_prefix
-            && named_kbd_key_code(part).is_none()
-            && part.chars().count() > 1
-        {
-            return Value::Symbol(part.clone().into());
-        }
-
-        let mut events = parse_kbd_token(part)
-            .into_iter()
-            .map(reader_key_event_value)
-            .collect::<Vec<_>>();
-        if events.len() == 1 {
-            return events.remove(0);
-        }
+pub(crate) fn keymap_entry_key_value(parts: &[Value], key: &str) -> Value {
+    if let [event] = parts {
+        *event
+    } else {
+        Value::String(key.into())
     }
-
-    Value::String(key.into())
 }
 
 pub(crate) fn set_hash_table_entries(

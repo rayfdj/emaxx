@@ -1,0 +1,64 @@
+{
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36422864349",
+  "head": "f3842fb56d5b65f9b8df9b13abfab92cdcc25768",
+  "scope": "Selected library tests under GDB; not a full gate or performance run",
+  "result": {
+    "status": "ok",
+    "passed": 569,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 2331,
+    "reported_seconds": 497.36
+  },
+  "selected": 569,
+  "executed": 569,
+  "source_after": {
+    "head": "f3842fb56d5b65f9b8df9b13abfab92cdcc25768",
+    "dirty": false
+  },
+  "binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-6503da101bf69812",
+    "sha256": "de43557f69a6bce9442b7a75849ea75405f5570efc74a0de3287c1a821cdc0ea",
+    "artifact": "libtest"
+  },
+  "qualification": "Complete original569-selector primitivesgroup passed underGDB. This diagnostic does not erase source108 fullgateGCfailure or certify uncompleted full109gate.",
+  "files": {
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/metadata/ci-bwrap.apparmor": {
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/metadata/oracle.txt": {
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/backtrace.log": {
+      "bytes": 99978,
+      "sha256": "62d2c8f13c9a9a7f441f9645f2147eb8b35a8b50055c2ff20e414e42f7ed03f7"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/build.log": {
+      "bytes": 179703,
+      "sha256": "28a908ba700e92e474ede8917c373b20907d078cb837c78b168d7b284b6ac605"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/full-inventory.log": {
+      "bytes": 255269,
+      "sha256": "16c0d4a2054a04ddd07b51628b00d03bbd51cf2642e2fb922c761dbab75a2c75"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/ignored-inventory.log": {
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/libtest": {
+      "bytes": 141473816,
+      "sha256": "de43557f69a6bce9442b7a75849ea75405f5570efc74a0de3287c1a821cdc0ea"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/selected-inventory.log": {
+      "bytes": 50527,
+      "sha256": "02ad8d1774fc801350a802d5de73f3a1dc8570497ab516059733207bfd8a9730"
+    },
+    "ordinary-linux-f3842fb56d5b65f9b8df9b13abfab92cdcc25768/rust-backtrace/summary.json": {
+      "bytes": 104256,
+      "sha256": "50465c58a11870e83a62dc4a7de4ea28f5d7eed5fc84a40105b4eddfefa361b2"
+    }
+  }
+}

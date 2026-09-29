@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--all-features",
+    "--lib",
+    "--no-run",
+    "--message-format=json-render-diagnostics"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation"
+  }
+}

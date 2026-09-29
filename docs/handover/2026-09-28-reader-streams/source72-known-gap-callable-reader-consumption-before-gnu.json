@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let* ((chars (string-to-list \"(one) (two)\"))\n          (source (lambda (&optional char)\n                    (if char (push char chars) (pop chars))))\n          (first (funcall reader source))\n          (remaining (length chars))\n          (second (condition-case error (funcall reader source)\n                    (error (car error)))))\n     (list (symbol-name (bare-symbol (car first))) remaining\n           (if (consp second)\n               (symbol-name (bare-symbol (car second))) second))))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 0.16111066600000012,
+  "stdout_hex": "2828226f6e65222036202274776f22292028226f6e65222036202274776f222929",
+  "stderr_hex": "",
+  "artifact": {
+    "binary": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "image": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8"
+  },
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Source-matched ordinary reader diagnostics. Failed comparisons remain failed. GNU is not the pinned Darwin executable. No frozen or performance claim."
+}

@@ -382,7 +382,7 @@ impl Interpreter {
 
             // lread.c constructs every nested object before eval_sub.
             // A vector is self-evaluating and keeps its reader identity.
-            Kind::Vector(_) => Ok(*expr),
+            Kind::Vector(_) | Kind::LispRecord(_) => Ok(*expr),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
@@ -390,7 +390,7 @@ impl Interpreter {
             // evaluation put there (GNU strings are always heap objects).
             Kind::String(_) => Ok(Self::stored_value(*expr)),
 
-            Kind::Record(_)
+            Kind::SymbolWithPos(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
             {
@@ -407,13 +407,18 @@ impl Interpreter {
                 if name == "nil" {
                     return Ok(Value::Nil);
                 }
-                match self.lookup(name, env).map_err(LispError::into_kind) {
-                    Ok(value) => Ok(value),
-                    Err(LispErrorKind::Void(_)) => Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("void-variable".into()),
-                        *expr,
-                    ]))),
-                    Err(error) => Err(LispError::from(error)),
+                // Inspect the boxed error in place. Moving its large enum
+                // through this inlined evaluator reserves inactive stack
+                // payload words that can conservatively retain dead objects.
+                // Non-void errors keep their existing allocation and identity.
+                match self.lookup(name, env) {
+                    Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("void-variable".into()),
+                            *expr,
+                        ])))
+                    }
+                    result => result,
                 }
             }
 
@@ -423,8 +428,10 @@ impl Interpreter {
             | Kind::Marker(_)
             | Kind::Overlay(_)
             | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
             | Kind::Frame(_)
             | Kind::Terminal(_)
+            | Kind::SymbolWithPos(_)
             | Kind::Record(_)
             | Kind::Finalizer(_)
             | Kind::Unbound => Ok(*expr),
@@ -1160,11 +1167,11 @@ impl Interpreter {
     // reports the source callee instead. Translate before signaling to
     // handler-bind, while the callee's backtrace frame is still live.
     fn builtin_call_error(name: &str, nargs: usize, funcall: bool, error: LispError) -> LispError {
-        match error.into_kind() {
-            LispErrorKind::WrongNumberOfArgs(ref failed_name, count)
+        match error.kind() {
+            LispErrorKind::WrongNumberOfArgs(failed_name, count)
                 if funcall
                     && failed_name == name
-                    && count == nargs
+                    && *count == nargs
                     && primitives::GNU_C_PRIMITIVES
                         .binary_search_by_key(&name, |contract| contract.name)
                         .ok()
@@ -1176,10 +1183,10 @@ impl Interpreter {
                 LispError::SignalValue(Value::list([
                     Value::symbol("wrong-number-of-arguments"),
                     Value::BuiltinFunc(name.into()),
-                    Value::Integer(count as i64),
+                    Value::Integer(*count as i64),
                 ]))
             }
-            error => LispError::from(error),
+            _ => error,
         }
     }
 
@@ -1215,11 +1222,9 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let result = match error.into_kind() {
-            error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)) => {
-                Err(LispError::from(error))
-            }
-            error => self.dispatch_handler_bindings(LispError::from(error), env),
+        let result = match error.kind() {
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_) => Err(error),
+            _ => self.dispatch_handler_bindings(error, env),
         };
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);

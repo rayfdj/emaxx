@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(progn (load \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/eager-macroexpand-gc-source.el\" nil t t) (prin1 (list (symbol-name (aref emaxx-eager-root-result 0)) (length (aref emaxx-eager-root-result 1)) (aref emaxx-eager-root-result 2))))"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx": "8d49763b6f3953d957240afd09dde9b7a1ab2ffb71e4c1ba22fad15a606d8eb8",
+    "/private/tmp/emaxx-runtime-audit-validation/release/emaxx.pdmp": "a4287f680a677ef7728e61d4496aa0dbbdbcf39a98e318eefbb06b671997ed33",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/eager-macroexpand-gc-source.el": "fffaa1e2061a34ed1e094a9c34fe33070515fb6e04cad2f8113b4e45d632cbcb"
+  },
+  "qualification": "Ordinary same-input diagnostic of a GC during eager expansion of a newly allocated progn; original failing release run remains failed. GNU source-matched, not frozen pin."
+}

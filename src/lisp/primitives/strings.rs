@@ -1250,10 +1250,13 @@ pub(crate) fn text_property_search_buffer(
         // through textget, so `char-property-alias-alist' entries (the
         // face -> font-lock-face alias font-lock-mode installs) answer
         // here exactly as for `get-text-property'.
-        let matches = values_equal(
+        // GNU compares property values with EQ, including distinct but
+        // structurally equal records, strings and other aggregate values.
+        let matches = values_eq_in_env(
             interp,
             &buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil),
             wanted,
+            &Env::new(),
         );
         if matches == want_match {
             return Some(pos);
@@ -1278,10 +1281,11 @@ pub(crate) fn text_property_search_string(
         return None;
     }
     for pos in start..end {
-        let matches = values_equal(
+        let matches = values_eq_in_env(
             interp,
-            &string_property_at(value, pos, prop).unwrap_or(Value::Nil),
+            &string_property_at_with_category(interp, value, pos, prop).unwrap_or(Value::Nil),
             wanted,
+            &Env::new(),
         );
         if matches == want_match {
             return Some(pos);

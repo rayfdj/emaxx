@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source72-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (progn\n  (require 'cl-lib)\n  (let ((print-symbols-bare t))\n    (mapcar\n     (lambda (reader)\n       (let ((standard-input \"entry-token tail\"))\n         (list\n          (condition-case error (prin1-to-string (funcall reader))\n            (error (car error)))\n          (condition-case error (prin1-to-string (funcall reader nil))\n            (error (car error)))\n          (condition-case error (funcall reader 17) (error error))\n          (condition-case error (funcall reader 'missing-reader-callback)\n            (error error))\n          (cl-letf (((symbol-function 'read-minibuffer)\n                     (lambda (prompt) (list 'minibuffer prompt))))\n            (mapcar (lambda (stream)\n                      (condition-case error (funcall reader stream)\n                        (error (car error))))\n                    '(t read-char))))))\n     '(read read-positioning-symbols))))\n)"
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "exit_code": 0,
+  "elapsed_seconds": 3.4390855420000004,
+  "input_sha256": "9980625f4ef8ac2985b93c73a91794726393c2c88cab6296891e7d88461af578",
+  "binary_sha256": "f668fb4a777d6c5ef9f9092ff1d3d4f6d33c0abc263ca4c92b43ed913c1734b6",
+  "stdout_hex": "282877726f6e672d6e756d6265722d6f662d617267756d656e74732077726f6e672d747970652d617267756d656e74202877726f6e672d747970652d617267756d656e7420737472696e677020313729202877726f6e672d747970652d617267756d656e7420737472696e6770206d697373696e672d7265616465722d63616c6c6261636b29202877726f6e672d747970652d617267756d656e74206572726f722929202822656e7472792d746f6b656e222077726f6e672d747970652d617267756d656e74202877726f6e672d747970652d617267756d656e7420737472696e677020313729202877726f6e672d747970652d617267756d656e7420737472696e6770206d697373696e672d7265616465722d63616c6c6261636b29202877726f6e672d747970652d617267756d656e74206572726f72292929",
+  "stderr_hex": "",
+  "qualification": "Before comparison on immutable source72. GNU source-matched diagnostics only, not pinned or frozen."
+}

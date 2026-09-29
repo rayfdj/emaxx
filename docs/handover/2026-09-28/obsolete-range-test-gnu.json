@@ -1,0 +1,6 @@
+{
+  "program": "(let* ((parent (make-char-table 'parent 10)) (child (make-char-table 'child 30)) results)\n(set-char-table-range parent '(97 . 122) 20)\n(set-char-table-parent child parent)\n(set-char-table-range child '(109 . 122) 40)\n(aset child 120 50) (aset child 120 nil)\n(push (list (aref child 97) (aref child 109) (aref child 120)) results)\n(aset parent 97 21) (push (aref child 97) results)\n(let ((copy (copy-sequence child))) (aset child 120 51) (push (aref copy 120) results))\n(set-char-table-range child '(256 . 512) 60) (aset child 384 61) (push (aref child 384) results)\n(set-char-table-range child t nil) (aset child 113 70)\n(push (list (aref child 113) (aref child 120)) results)\n(set-char-table-range child t nil) (push (aref child 113) results)\n(set-char-table-range child nil nil) (push (list (aref child 97) (aref child 113)) results)\n(nreverse results))",
+  "stdout": "((30 40 30) 30 30 61 (70 30) 30 (21 20))",
+  "stderr": "",
+  "exit_code": 0
+}

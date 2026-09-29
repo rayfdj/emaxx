@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (reader)\n   (let ((table (make-hash-table :test 'eq :weakness 'key)))\n     (funcall\n      (lambda ()\n        (let* ((characters (string-to-list \"(#:temporary [#:nested])\"))\n               (stream (lambda (&optional character)\n                         (if character (push character characters)\n                           (pop characters))))\n               (form (funcall reader stream)))\n          (puthash form t table)\n          (puthash (car form) t table)\n          (puthash (aref (nth 1 form) 0) t table)\n          (garbage-collect)\n          (unless (= (hash-table-count table) 3)\n            (error \"Reader result was reclaimed while live\")))))\n     (garbage-collect)\n     (hash-table-count table)))\n '(read read-positioning-symbols))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/reader-callable-lifetime.el",
+  "input_sha256": "066eee11b24d720e76b16bc78364a6f63ce5c39cfbe1fcee38a3e13b9b9bd50a",
+  "exit_code": 0,
+  "elapsed_seconds": 0.45090791600000024,
+  "stdout_hex": "2830203029",
+  "stderr_hex": "",
+  "binary_sha256": "e54fdd555878f11beba7a8da2b204bd465dc4266f6788f90134bd27c643e727b",
+  "image_sha256": "ff51d636174e3fbf74799f4f13d82786e6ab1c395ec4147b9193121f5d559163",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

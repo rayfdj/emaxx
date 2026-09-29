@@ -30,6 +30,101 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
     ctx.buffer().to_vec()
 }
 
+#[test]
+fn text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images() {
+    fn check(first: Value, second: Value, original_graph: Value) {
+        let Kind::Buffer(first_buffer) = first.kind() else {
+            panic!("first buffer")
+        };
+        let Kind::Buffer(second_buffer) = second.kind() else {
+            panic!("second buffer")
+        };
+        let first_state = first_buffer.borrow();
+        let second_state = second_buffer.borrow();
+        assert!(!first_state.text_conversion_style_is_local);
+        assert!(second_state.text_conversion_style_is_local);
+        let graph = first_state.text_conversion_style;
+        assert_eq!(graph.word(), second_state.text_conversion_style.word());
+        assert_ne!(graph.word(), original_graph.word());
+        let Kind::Vector(slots) = graph.kind() else {
+            panic!("shared graph")
+        };
+        assert_eq!(slots.get(0).expect("buffer cycle").word(), first.word());
+        assert_eq!(
+            slots.get(1).expect("payload"),
+            Value::list([Value::Integer(353)])
+        );
+    }
+
+    let mut source = Interpreter::new();
+    let (first_id, _) = source.create_buffer("style-no-local-277");
+    let (second_id, _) = source.create_buffer("style-local-281");
+    let first = source.buffer_value(first_id).expect("first buffer");
+    let second = source.buffer_value(second_id).expect("second buffer");
+    let graph = Value::vector([first, Value::list([Value::Integer(353)])]);
+    source
+        .get_buffer_by_id_mut(first_id)
+        .expect("C store")
+        .text_conversion_style = graph;
+    source.set_buffer_local_value(second_id, "text-conversion-style", graph);
+    for id in [first_id, second_id] {
+        assert!(
+            source
+                .buffer_local_cells(id)
+                .iter()
+                .all(|(name, _)| name != "text-conversion-style"),
+            "the native field has no duplicate local payload; unrelated locals remain"
+        );
+    }
+    let clone = source.deep_clone_image();
+    check(
+        clone.buffer_value(first_id).expect("cloned first"),
+        clone.buffer_value(second_id).expect("cloned second"),
+        graph,
+    );
+
+    let bytes = dump(
+        &mut source,
+        vec![(RootSlot::LoadPath, Value::vector([first, second]))],
+    );
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("restore native buffer fields");
+    let restored = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("buffer roots")
+        .1;
+    let Kind::Vector(slots) = restored.kind() else {
+        panic!("root vector")
+    };
+    check(
+        slots.get(0).expect("restored first"),
+        slots.get(1).expect("restored second"),
+        graph,
+    );
+}
+
+#[test]
+fn positioned_symbols_are_rejected_as_in_gnu_dump_vectorlike() {
+    let interpreter = Interpreter::new();
+    let object = Value::positioned_symbol(Value::symbol("undumpable-position"), Value::Integer(19));
+    let mut context = DumpContext::new(true, interpreter.main_thread_record_id());
+    let result = write_image(
+        &mut context,
+        &interpreter,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, Value::vector([object, object]))]),
+    );
+    match result {
+        Err(super::context::DumpError::Unsupported(error)) => {
+            assert_eq!(error.object.word(), object.word());
+            assert_eq!(error.message, "pseudovector type 6");
+        }
+        Err(super::context::DumpError::Lisp(error)) => panic!("unrelated dump error: {error}"),
+        Ok(_) => panic!("GNU rejects a reachable PVEC_SYMBOL_WITH_POS"),
+    }
+}
+
 /// Structural equality with identity correspondence: every object of A
 /// maps to exactly one object of B, so sharing and cycles are preserved.
 fn graph_matches(
@@ -109,6 +204,15 @@ fn graph_matches(
         (Kind::Lambda(left), Kind::Lambda(right)) => {
             if left.public_len() != right.public_len() {
                 return Err("closure length differs".into());
+            }
+            for (left, right) in left.slots().zip(right.slots()) {
+                graph_matches(&left, &right, seen)?;
+            }
+            Ok(())
+        }
+        (Kind::LispRecord(left), Kind::LispRecord(right)) => {
+            if left.len() != right.len() {
+                return Err("record length differs".into());
             }
             for (left, right) in left.slots().zip(right.slots()) {
                 graph_matches(&left, &right, seen)?;
@@ -606,29 +710,30 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     let Kind::CharTable(table_id) = slots[1].kind() else {
         panic!("char-table")
     };
-    let table = target
-        .find_char_table(table_id)
-        .expect("installed char-table");
-    assert_eq!(table.subtype.as_deref(), Some("zz-purpose"));
-    assert_eq!(table.default, Value::symbol("dflt"));
+    let table = table_id;
+    assert!(table.has_purpose("zz-purpose"));
+    assert_eq!(table.default(), Value::symbol("dflt"));
     assert_eq!(
         table
-            .entries
+            .ranges()
             .iter()
-            .map(|entry| (entry.start, entry.end, entry.value))
+            .map(|e| (e.start, e.end, e.value))
             .collect::<Vec<_>>(),
         vec![
+            (0, 64, Value::symbol("dflt")),
+            (65, 65, Value::symbol("upper")),
+            (66, 96, Value::symbol("dflt")),
             (97, 122, Value::symbol("lower")),
-            (65, 65, Value::symbol("upper"))
+            (123, 0x3fffff, Value::symbol("dflt")),
         ]
     );
+    assert_eq!(table.extra_count(), 1);
     assert_eq!(
         table
-            .extra_slots
-            .iter()
-            .map(|slot| string_like(slot).map(|s| s.text))
-            .collect::<Vec<_>>(),
-        vec![Some("extra".to_owned())]
+            .extra(0)
+            .and_then(|value| string_like(&value))
+            .map(|s| s.text),
+        Some("extra".into())
     );
 
     // The bool-vector's bits came through the cold section.
@@ -648,17 +753,22 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(set, vec![0, 65, 69]);
 
     // The record's slots, with the shared list being the same object.
-    let Kind::Record(record_id) = slots[3].kind() else {
+    let Kind::LispRecord(record) = slots[3].kind() else {
         panic!("record")
     };
-    let record = target.find_record(record_id).expect("installed record");
-    assert_eq!(record.type_tag, Value::symbol("zz-rec"));
-    assert_eq!(record.slots[0], Value::Integer(1));
+    assert_eq!(record.type_tag(), Value::symbol("zz-rec"));
+    assert_eq!(record.get(1), Some(Value::Integer(1)));
     assert_eq!(
-        string_like(&record.slots[1]).map(|s| s.text),
+        record
+            .get(2)
+            .and_then(|value| string_like(&value))
+            .map(|s| s.text),
         Some("two".to_owned())
     );
-    assert_eq!(object_key(&record.slots[2]), object_key(&slots[0]));
+    assert_eq!(
+        object_key(&record.get(3).expect("shared field")),
+        object_key(&slots[0])
+    );
 
     // The main thread is the restoring process's own.  (The standard
     // obarray reaches every symbol's value, hash tables included: it joins
@@ -1087,11 +1197,14 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
             .iter()
             .any(|(symbol, value)| symbol == "zz-dump-local" && *value == Value::Integer(42))
     );
+    let loaded_syntax_table = target
+        .buffer_syntax_table_id(source_id)
+        .expect("restored syntax table");
+    assert_ne!(loaded_syntax_table, source_syntax_table);
     assert_eq!(
-        target.buffer_syntax_table_id(source_id),
-        Some(source_syntax_table)
+        Value::CharTable(loaded_syntax_table),
+        Value::CharTable(source_syntax_table)
     );
-    assert!(target.find_char_table(source_syntax_table).is_some());
     let mark_marker = target
         .buffer_mark_marker_id(source_id)
         .expect("the mark marker relation");
@@ -1144,14 +1257,10 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let Kind::Frame(frame) = slots[5].kind() else {
         panic!("frame")
     };
-    let state = target.frame_state(frame).expect("dead frame installed");
-    assert!(!state.live);
-    assert_eq!(state.name, Value::Nil);
-    assert!(
-        target
-            .frame_state(target.selected_frame_id)
-            .is_some_and(|frame| frame.live)
-    );
+    let state = frame.borrow();
+    assert!(state.terminal.is_none());
+    assert_eq!(frame.name.get(), Value::Nil);
+    assert!(target.selected_frame_id.is_live());
     assert_ne!(frame, target.selected_frame_id);
     let Kind::Terminal(dead_terminal) = root(RootSlot::QuitFlag).kind() else {
         panic!("terminal")
@@ -1297,21 +1406,6 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             width: 2,
         });
     let source_groups = interp.dump_root_groups();
-    let source_printed = source_groups
-        .iter()
-        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
-        .collect::<Vec<_>>();
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
-    );
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
-    );
-
     let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, &interp, RootSource::Interpreter) {
         Ok(summary) => summary,
@@ -1327,6 +1421,24 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     };
     assert!(summary.hot_bytes > 0);
     let bytes = ctx.buffer().to_vec();
+    // Capture the image before presentation. GNU print_prepare temporarily
+    // binds escape flags, so prin1-to-string advances this interpreter's
+    // binding IDs even though it restores the variables afterwards. The
+    // remembered scalar values must come from the same pre-print snapshot.
+    let source_printed = source_groups
+        .iter()
+        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
+        .collect::<Vec<_>>();
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
+    );
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
+    );
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     for (slot, _) in &source_groups {
@@ -1564,4 +1676,100 @@ fn voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration() 
         )
         .expect("install the actual dumped function cells");
     check(&mut target, restored_subr);
+}
+
+#[test]
+fn image_nilled_frames_preserve_address_identity_and_shared_references() {
+    let mut source = Interpreter::new();
+    let other = Interpreter::new();
+    let first = source.selected_frame_value();
+    let second = other.selected_frame_value();
+    assert_ne!(first, second);
+    let bytes = dump(
+        &mut source,
+        vec![(RootSlot::LoadPath, Value::vector([first, second, first]))],
+    );
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("load nilled frames");
+    let graph = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("root")
+        .1;
+    let Kind::Vector(slots) = graph.kind() else {
+        panic!("frame vector")
+    };
+    let restored = slots.slots().collect::<Vec<_>>();
+    assert_eq!(restored.len(), 3);
+    assert_ne!(restored[0], restored[1]);
+    assert_eq!(restored[0], restored[2]);
+    for value in restored {
+        let Kind::Frame(frame) = value.kind() else {
+            panic!("dead restored frame")
+        };
+        assert!(!frame.is_live());
+        assert!(frame.name.get().is_nil());
+        assert_ne!(frame, target.selected_frame_id);
+    }
+    assert_eq!(
+        target.frame_states.len(),
+        1,
+        "nilled objects are not live frame roots"
+    );
+}
+
+#[test]
+fn inline_record_type_and_data_cycles_survive_clone_and_dump() {
+    use crate::lisp::types::LispRecordRef;
+    let mut source = Interpreter::new();
+    let record = LispRecordRef::filled(Value::Nil, 3, Value::Nil);
+    let object = Value::LispRecord(record);
+    let descriptor = LispRecordRef::new(
+        Value::symbol("record-descriptor"),
+        &[Value::symbol("cycle-type"), object],
+    );
+    let shared = Value::vector([object, Value::LispRecord(descriptor)]);
+    record.set(0, Value::LispRecord(descriptor));
+    record.set(1, object);
+    record.set(2, shared);
+    record.set(3, shared);
+    let root = Value::vector([object, shared, Value::LispRecord(descriptor)]);
+    source.set_variable(
+        "inline-record-graph",
+        root,
+        &mut crate::lisp::types::Env::new(),
+    );
+    let clone = source.deep_clone_image();
+    let cloned = clone
+        .symbol_value_cell("inline-record-graph")
+        .expect("cloned root");
+    graph_matches(&root, &cloned, &mut HashMap::new())
+        .expect("clone preserves every record field and identity relation");
+    assert_ne!(root.word(), cloned.word());
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, root)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("record graph loads");
+    let restored = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("restored graph")
+        .1;
+    graph_matches(&root, &restored, &mut HashMap::new())
+        .expect("type descriptors, cycles and shared fields relocate");
+    let Kind::Vector(vector) = restored.kind() else {
+        panic!("root vector")
+    };
+    let Kind::LispRecord(record) = vector.get(0).expect("record field").kind() else {
+        panic!("inline record")
+    };
+    let words = record.identity() as *const usize;
+    assert_eq!(unsafe { words.add(1).read() }, record.type_tag().word());
+    assert_eq!(
+        unsafe { words.add(2).read() },
+        Value::LispRecord(record).word()
+    );
+    record.set(3, Value::Integer(101));
+    assert_eq!(unsafe { words.add(4).read() }, Value::Integer(101).word());
 }

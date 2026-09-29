@@ -1,0 +1,11 @@
+(list
+ (mapcar (lambda (bit)
+           (let ((event (logior 97 (lsh 1 bit))))
+             (mapcar (lambda (function) (funcall function event))
+                     '(upcase downcase capitalize upcase-initials)))) '(22 23 24 25 26 27))
+ (mapcar (lambda (number)
+           (mapcar (lambda (function)
+                     (condition-case err (funcall function number)
+                       (error (list (car err) (cadr err)))))
+                   '(upcase downcase capitalize upcase-initials)))
+         (list -1 268435456 4294967393 4294967361 most-positive-fixnum (expt 2 70))))

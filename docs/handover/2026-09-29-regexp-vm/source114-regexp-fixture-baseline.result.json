@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 0.332950625,
+  "stdout": "((nil t) (nil t) (t nil) t nil t t)",
+  "stderr": "",
+  "expected_match": true,
+  "inputs_unchanged": true
+}

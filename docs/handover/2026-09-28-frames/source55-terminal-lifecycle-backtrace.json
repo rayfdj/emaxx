@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source55-release-libtest",
+    "terminal_frames_isolate_faces_keyboards_and_saved_configurations",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment_overrides": {
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "cf4a7ec48cf19c136469963ffff8c30c9a3592dc546cecfa1e4a6cb042842c78",
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "exit_code": 101,
+  "elapsed_seconds": 1.8323119589999999
+}

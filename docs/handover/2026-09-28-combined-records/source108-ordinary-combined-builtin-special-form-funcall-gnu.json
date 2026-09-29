@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((special (symbol-function 'if)))\n  (prin1\n   (list\n    (condition-case err (funcall special t 1 2)\n      (error (list (car err) (eq (cadr err) special))))\n    (condition-case err (funcall special)\n      (error (list (car err) (eq (cadr err) special)))))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/builtin-special-form-funcall.el",
+  "input_sha256": "d02edaa6d9881acf0b4a851cb5b1d232ac0f9ee70b199eab27b14ed207af4054",
+  "exit_code": 0,
+  "elapsed_seconds": 0.28861745800000094,
+  "stdout_hex": "2828696e76616c69642d66756e6374696f6e2074292028696e76616c69642d66756e6374696f6e207429292828696e76616c69642d66756e6374696f6e2074292028696e76616c69642d66756e6374696f6e20742929",
+  "stderr_hex": "",
+  "binary_sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+  "image_sha256": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

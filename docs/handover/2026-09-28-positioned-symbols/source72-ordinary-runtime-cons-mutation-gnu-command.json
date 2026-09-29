@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 ;; Run this same expression in each editor through ordinary Lisp entry points.\n(list\n (let* ((shared (cons 'start nil))\n        (a (vector shared shared))\n        (b (cons shared a)))\n   (setcdr shared b)\n   (garbage-collect)\n   (setcar (aref a 1) 37)\n   (prog1\n       (list (eq (aref a 0) (aref a 1))\n             (eq (cdr shared) b)\n             (car (car b)))\n     (setcdr shared nil)))\n (let* ((definition (cons 'ordinary 'list))\n        (form (list 'compact-mutable-macro 17 'payload)))\n   (fset 'compact-mutable-macro definition)\n   (let ((before (macroexpand form)))\n     (setcar definition 'macro)\n     (list (eq before form) (macroexpand form))))\n (let* ((parent (make-sparse-keymap))\n        (child (make-keymap))\n        (table (make-char-table 'keymap)))\n   (define-key parent [f8] 'parent-command)\n   (set-char-table-range table 65 'table-command)\n   (lookup-key child \"A\")\n   (setcdr child (cons table parent))\n   (list (eq (keymap-parent child) parent)\n         (lookup-key child \"A\")\n         (lookup-key child [f8]))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-positioned-symbols/emaxx",
+  "artifact": {
+    "path": "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+    "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8"
+  },
+  "fixture": "tests/fixtures/runtime-cons-mutation.el",
+  "fixture_sha256": "db23fc31f9cea3fa415584a1f0288cb0cadfa49541de2043d01203ce010738ea",
+  "expected": "((t t 37) (t (17 payload)) (t table-command parent-command))",
+  "qualification": "Source-matched diagnostic; GNU binary differs from pinned Darwin oracle."
+}

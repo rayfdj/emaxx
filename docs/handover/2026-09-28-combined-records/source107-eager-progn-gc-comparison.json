@@ -1,0 +1,6 @@
+{
+  "matches": true,
+  "gnu_receipt": "source105-eager-progn-gc-gnu-result.json",
+  "emaxx_receipt": "source107-eager-progn-gc-emaxx-result.json",
+  "qualification": "Same unchanged input. Ordinary Lisp printer preserves complete graph after collection. Source107 Rust assertion used diagnostic Display and remains failed."
+}

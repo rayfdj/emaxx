@@ -1,0 +1,16 @@
+(list
+ (mapcar (lambda (name) (list name (boundp name) (special-variable-p name)))
+         '(set-message-function clear-message-function))
+ (eval '(let ((set-message-function 'set-callback-397)
+              (clear-message-function 'clear-callback-401))
+          (list set-message-function (symbol-value 'set-message-function)
+                clear-message-function (symbol-value 'clear-message-function)))
+       t)
+ (progn
+   (makunbound 'set-message-function)
+   (list (boundp 'set-message-function)
+         (special-variable-p 'set-message-function)
+         (eval '(let ((set-message-function 'detached-callback-409))
+                  (list set-message-function (symbol-value 'set-message-function)))
+               t)
+         (boundp 'set-message-function))))

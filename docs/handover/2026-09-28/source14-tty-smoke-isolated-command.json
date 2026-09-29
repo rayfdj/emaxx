@@ -1,0 +1,12 @@
+{
+  "command": [
+    "python3",
+    "tools/tty-smoke.py",
+    "target/runtime-resume/release/emaxx",
+    "../emacs/lisp"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/tty-smoke-isolated-home",
+    "EMAXX_TTY_SMOKE_REQUIRE": "1"
+  }
+}

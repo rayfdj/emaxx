@@ -1,0 +1,84 @@
+{
+  "artifact_root": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust",
+  "cargo_stages": [],
+  "environment": {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "RUST_BACKTRACE": "1",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1"
+  },
+  "error": "primitives exited with 101: expected exactly one libtest result line, found 2",
+  "execution_override": {
+    "description": "One group and one worker at a time; all inventory, selectors, template flags, captured-output behavior and strict outcome checks retained.",
+    "script": "/home/runner/work/emaxx/emaxx/emaxx/tools/serial_grouped_gate.py"
+  },
+  "format_version": 1,
+  "git": {
+    "dirty": false,
+    "head": "f3842fb56d5b65f9b8df9b13abfab92cdcc25768"
+  },
+  "inventory": {
+    "groups": {
+      "batch": 50,
+      "compat_runtime": 86,
+      "eval_01": 385,
+      "eval_02": 295,
+      "eval_03": 320,
+      "eval_04": 254,
+      "eval_05": 352,
+      "lightweight": 530,
+      "primitives": 569,
+      "tty": 59
+    },
+    "ignored_tests": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "scheduled_tests": 2900,
+    "sha256": "2ae7a0e0e4b693431e925d2c492a0514dc666871c41702fb1336885c454bdc5a",
+    "total_tests": 2900
+  },
+  "profile": "gate",
+  "repetitions": 1,
+  "runs": [],
+  "schedule": [
+    [
+      "eval_01"
+    ],
+    [
+      "eval_02"
+    ],
+    [
+      "eval_03"
+    ],
+    [
+      "eval_04"
+    ],
+    [
+      "eval_05"
+    ],
+    [
+      "primitives"
+    ],
+    [
+      "compat_runtime"
+    ],
+    [
+      "tty"
+    ],
+    [
+      "batch"
+    ],
+    [
+      "lightweight"
+    ]
+  ],
+  "scope": "full",
+  "status": "failed",
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5287effe3d3b10a7b7da10ec89117c030bb157373b3f2c32a006309a082bb873"
+  },
+  "timeout_seconds": 3600
+}

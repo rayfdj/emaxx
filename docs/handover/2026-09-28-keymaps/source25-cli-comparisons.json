@@ -1,0 +1,51 @@
+{
+  "results": [
+    {
+      "fixture": "char-table-authoritative-values",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "char-table-uniprop",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "char-table-range-uniprop",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "case-modifier-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-modifier-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-range-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-event-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-event-boundaries-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-parameterized-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "keymap-lucid-char-table",
+      "same_stdout_and_successful_processes": true
+    },
+    {
+      "fixture": "char-table-generated",
+      "same_stdout_and_successful_processes": true
+    }
+  ],
+  "all_pass": true,
+  "source_unchanged": true,
+  "emaxx_image_sha256": "b1f315418cb286c176c315b488cb6c2ce67788e687662dae20c69b44e2dee660"
+}

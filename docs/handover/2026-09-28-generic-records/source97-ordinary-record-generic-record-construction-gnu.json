@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((print-circle t))\n  (list\n   (mapcar\n    (lambda (count)\n      (let* ((fields (make-list count 79))\n             (object (apply #'record 'arity-73 fields)))\n        (list count (length object) (aref object 0)\n              (if (> count 0) (aref object count) 'empty))))\n    '(0 1 17 259 4094))\n   (mapcar\n    (lambda (count)\n      (condition-case err\n          (length (apply #'record 'too-many-83 (make-list count nil)))\n        (error err)))\n    '(4095 4096))\n   (mapcar\n    (lambda (count)\n      (condition-case err\n          (length (read (concat \"#s(read-type-89\" (apply #'concat (make-list count \" nil\")) \")\")))\n        (error err)))\n    '(0 1 257 4094 4095))\n   (let* ((original (record 'pure-97 (propertize \"text\" 'face 'bold)))\n          (copy (let ((purify-flag t)) (purecopy original))))\n     (list (eq original copy) (equal original copy)\n           (equal-including-properties original copy)\n           (text-properties-at 0 (aref copy 1))))))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/generic-record-construction.el",
+  "input_sha256": "b2c9149ad754178e93f1b9510d18eed56bf35ba96e0f0e556b0425ddbd56de6b",
+  "exit_code": 0,
+  "elapsed_seconds": 0.23838987499999575,
+  "stdout_hex": "2828283020312061726974792d373320656d7074792920283120322061726974792d373320373929202831372031382061726974792d3733203739292028323539203236302061726974792d37332037392920283430393420343039352061726974792d373320373929292028286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203430393620736c6f74733b206d61782069732034303935222920286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203430393720736c6f74733b206d61782069732034303935222929202831203220323538203430393520286572726f722022417474656d707420746f20616c6c6f636174652061207265636f7264206f66203430393620736c6f74733b206d6178206973203430393522292920286e696c2074206e696c206e696c2929",
+  "stderr_hex": "44726f7070696e6720746578742d70726f70657274696573207768696c65206d616b696e6720737472696e6720e2809874657874e2809920707572650a",
+  "binary_sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+  "image_sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

@@ -1,0 +1,21 @@
+{
+  "snapshot": 64,
+  "base": "76ad608fdd71fe4590042f601780e5ddfeea9e9a",
+  "gnu_source": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: aarch64-apple-darwin\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.7.1 (sys:0.4.88+curl-8.20.0 system ssl:(SecureTransport) LibreSSL/3.3.6)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Mac OS 26.7.0 [64-bit]\n",
+  "trigger_charge": {
+    "before": "note_lisp_allocation(16)",
+    "after": "note_lisp_allocation(size_of::<ConsCell>()) with compile assertion 16",
+    "unchanged": true
+  },
+  "block_geometry": {
+    "slots": 1350,
+    "payload_bytes": 16,
+    "bytes_per_block": 32768,
+    "payload_capacity": 21600,
+    "metadata_and_padding": 11168,
+    "not_counted_here": "BTreeMap registry and system allocator overhead"
+  },
+  "accounting_limit": "No total-RSS reduction, collection-count equivalence or performance conclusion is inferred from geometry."
+}

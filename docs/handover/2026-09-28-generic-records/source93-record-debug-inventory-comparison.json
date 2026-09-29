@@ -1,0 +1,12 @@
+{
+  "before_snapshot": 91,
+  "after_snapshot": 93,
+  "before_count": 2870,
+  "after_count": 2873,
+  "added": [
+    "lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump",
+    "lisp::primitives::tests::generic_record_constructors_reader_and_purecopy_match_gnu",
+    "lisp::primitives::tests::generic_record_sharing_cycles_and_copying_match_gnu"
+  ],
+  "removed": []
+}

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source97-ordinary-emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (let ((saved-identity (symbol-function 'identity))\n      (saved-if (symbol-function 'if)))\n  (unwind-protect\n      (progn\n        (fmakunbound 'identity)\n        (fmakunbound 'if)\n        (prin1\n         (list (fboundp 'identity) (symbol-function 'identity)\n               (condition-case err (funcall 'identity 5)\n                 (void-function (car err)))\n               (funcall saved-identity 7)\n               (fboundp 'if) (symbol-function 'if)\n               (condition-case err (eval '(if t 1 2))\n                 (void-function (car err))))))\n    (fset 'if saved-if)\n    (fset 'identity saved-identity)))\n)"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "input_path": "/private/tmp/emaxx-runtime-reader-streams/emaxx/tests/fixtures/builtin-function-cell-authority.el",
+  "input_sha256": "8fb2dba4601d9f7560990033211006cb965b2536f26f6b8daf12b195d5264254",
+  "exit_code": 0,
+  "elapsed_seconds": 0.9068107909999981,
+  "stdout_hex": "286e696c206e696c20766f69642d66756e6374696f6e2037206e696c206e696c20766f69642d66756e6374696f6e29286e696c206e696c20766f69642d66756e6374696f6e2037206e696c206e696c20766f69642d66756e6374696f6e29",
+  "stderr_hex": "",
+  "binary_sha256": "adf41072a709792c7e45e73002a90dab7042f92a302a51bd4c7ed5a3bf9f724d",
+  "image_sha256": "f8986a70a57d6719e8c61d20a04e37c2ef970cb9a39cf6e4a9de29157ff74a6c",
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "image_unchanged": true,
+  "qualification": "Ordinary source-matched diagnostic. Local GNU differs from the pinned Darwin executable; no frozen/performance claim."
+}

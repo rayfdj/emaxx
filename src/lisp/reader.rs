@@ -2,6 +2,10 @@ use super::types::{
     Kind, LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
     make_uninterned_symbol_name,
 };
+mod input;
+use input::Input;
+pub(crate) use input::ReaderStream;
+
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeSet, HashSet};
@@ -11,6 +15,15 @@ use unicode_names2::character as unicode_character;
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AtomSyntax {
+    Ordinary,
+    ShorthandExempt,
+    Uninterned,
+}
+
+type SymbolResolver<'a> = dyn FnMut(&str) -> Result<Value, LispError> + 'a;
 
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
     match value.kind() {
@@ -75,9 +88,7 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
                     pending.extend(slots.iter().cloned());
                 }
-                // A bool vector holds no sub-objects to scan; a
-                // positioned symbol is a leaf.
-                ReaderForm::BoolVector { .. } | ReaderForm::PositionedSymbol { .. } => {}
+                ReaderForm::BoolVector { .. } => {}
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     return true;
                 }
@@ -166,13 +177,14 @@ pub(crate) fn apply_symbol_shorthands_to_token(
 /// that appears in ERT test files: atoms, lists, strings, quotes,
 /// backquote, characters, and comments.
 pub struct Reader<'a> {
-    input: &'a [u8],
+    input: Input<'a>,
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
+    symbol_resolver: Option<&'a mut SymbolResolver<'a>>,
     backquote_depth: usize,
     unescaped_character_literals: BTreeSet<u8>,
-    /// read0's LOCATE_SYMS: wrap each symbol occurrence (t included, nil
-    /// excluded) in a position-bearing `ReaderForm::PositionedSymbol'.
+    /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
+    /// occurrence except the canonical nil symbol.
     locate_symbols: bool,
     /// Added to each recorded character offset (a buffer read reports
     /// buffer positions, a string read zero-based string offsets).
@@ -182,7 +194,7 @@ pub struct Reader<'a> {
     position_cursor_char: i64,
     /// Whether any datum read so far is a `ReaderForm' placeholder (a
     /// circular label or reference, a hash-table, record, char-table,
-    /// bool-vector or closure literal, a positioned symbol): only then
+    /// bool-vector or closure literal): only then
     /// does the read result need Interpreter-owned object materialization.
     emitted_reader_forms: bool,
 }
@@ -197,9 +209,10 @@ impl<'a> Reader<'a> {
         symbol_shorthands: Vec<(String, String)>,
     ) -> Self {
         Reader {
-            input: input.as_bytes(),
+            input: Input::Text(input.as_bytes()),
             pos: 0,
             symbol_shorthands,
+            symbol_resolver: None,
             backquote_depth: 0,
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
@@ -226,8 +239,37 @@ impl<'a> Reader<'a> {
         reader
     }
 
+    pub(crate) fn from_stream(stream: &'a mut dyn ReaderStream, locate_symbols: bool) -> Self {
+        let mut reader = Self::new("");
+        reader.input = Input::function(stream);
+        reader.locate_symbols = locate_symbols;
+        reader
+    }
+
+    pub(crate) fn finish_stream(&mut self) -> Result<(), LispError> {
+        self.input.unread_lookahead()
+    }
+
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    /// Resolve atom names through the active obarray before applying
+    /// LOCATE_SYMS, as lread.c's oblookup/intern_driver do. The borrowed
+    /// resolver avoids a second object graph and a post-read interning walk.
+    pub(crate) fn with_symbol_resolver(mut self, resolver: &'a mut SymbolResolver<'a>) -> Self {
+        self.symbol_resolver = Some(resolver);
+        self
+    }
+
+    fn resolve_symbol(&mut self, name: &str) -> Result<Value, LispError> {
+        if let Input::Function(input) = &mut self.input {
+            return input.stream.intern_symbol(name, false);
+        }
+        match self.symbol_resolver.as_mut() {
+            Some(resolve) => resolve(name),
+            None => Ok(Value::symbol(name)),
+        }
     }
 
     pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
@@ -237,53 +279,79 @@ impl<'a> Reader<'a> {
             .map(i64::from)
     }
 
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.pos).copied()
+    fn peek(&mut self) -> Result<Option<u8>, LispError> {
+        self.peek_at(0)
     }
 
-    fn advance(&mut self) -> Option<u8> {
-        let ch = self.input.get(self.pos).copied()?;
-        self.pos += 1;
-        Some(ch)
+    fn peek_at(&mut self, offset: usize) -> Result<Option<u8>, LispError> {
+        self.input.peek(self.pos, offset)
     }
 
-    fn peek_char(&self) -> Option<char> {
-        match self.peek()? {
-            ch if ch < 0x80 => Some(ch as char),
-            _ => {
-                let first = *self.input.get(self.pos)?;
-                let len = if first < 0xE0 {
-                    2
-                } else if first < 0xF0 {
-                    3
-                } else {
-                    4
-                };
-                let s = std::str::from_utf8(self.input.get(self.pos..self.pos + len)?).ok()?;
-                s.chars().next()
-            }
+    fn advance(&mut self) -> Result<Option<u8>, LispError> {
+        let byte = self.input.advance(self.pos)?;
+        self.pos += usize::from(byte.is_some());
+        Ok(byte)
+    }
+
+    fn advance_bytes(&mut self, count: usize) -> Result<(), LispError> {
+        for _ in 0..count {
+            self.advance()?;
         }
+        Ok(())
     }
 
-    fn advance_char(&mut self) -> Option<char> {
-        let ch = self.peek_char()?;
-        self.pos += ch.len_utf8();
-        Some(ch)
+    fn retreat_ascii(&mut self, byte: u8) {
+        self.pos -= 1;
+        self.input.retreat_ascii(byte);
     }
 
-    fn skip_whitespace_and_comments(&mut self) {
+    fn peek_char(&mut self) -> Result<Option<char>, LispError> {
+        let Some(first) = self.peek()? else {
+            return Ok(None);
+        };
+        let len = if first < 0x80 {
+            1
+        } else if first < 0xE0 {
+            2
+        } else if first < 0xF0 {
+            3
+        } else {
+            4
+        };
+        let mut bytes = [0; 4];
+        bytes[0] = first;
+        for (index, byte) in bytes.iter_mut().enumerate().take(len).skip(1) {
+            let Some(next) = self.peek_at(index)? else {
+                return Ok(None);
+            };
+            *byte = next;
+        }
+        Ok(std::str::from_utf8(&bytes[..len])
+            .ok()
+            .and_then(|s| s.chars().next()))
+    }
+
+    fn advance_char(&mut self) -> Result<Option<char>, LispError> {
+        let character = self.peek_char()?;
+        if let Some(character) = character {
+            self.advance_bytes(character.len_utf8())?;
+        }
+        Ok(character)
+    }
+
+    fn skip_whitespace_and_comments(&mut self) -> Result<(), LispError> {
         loop {
             // Skip whitespace
-            while let Some(ch) = self.peek_char() {
-                if ch.is_whitespace() {
-                    self.advance_char();
+            while let Some(ch) = self.peek_char()? {
+                if ch <= ' ' || ch == '\u{a0}' {
+                    self.advance_char()?;
                 } else {
                     break;
                 }
             }
             // Skip line comments (;)
-            if self.peek() == Some(b';') {
-                while let Some(ch) = self.advance() {
+            if self.peek()? == Some(b';') {
+                while let Some(ch) = self.advance()? {
                     if ch == b'\n' {
                         break;
                     }
@@ -292,11 +360,16 @@ impl<'a> Reader<'a> {
                 break;
             }
         }
+        Ok(())
     }
 
     /// Read one s-expression. Returns None at end of input.
     pub fn read(&mut self) -> Result<Option<Value>, LispError> {
-        let value = self.read_datum()?;
+        let roots = self.input.root_depth();
+        let result = self.read_datum();
+        self.input
+            .root_result(roots, result.as_ref().ok().copied().flatten());
+        let value = result?;
         // Every placeholder is the value of some `read' call, nested ones
         // included (lists, vectors and quotes read their elements here).
         if matches!(value.map(|v| v.kind()), Some(Kind::ReaderForm(_))) {
@@ -313,9 +386,9 @@ impl<'a> Reader<'a> {
     }
 
     fn read_datum(&mut self) -> Result<Option<Value>, LispError> {
-        self.skip_whitespace_and_comments();
+        self.skip_whitespace_and_comments()?;
 
-        match self.peek() {
+        match self.peek()? {
             None => Ok(None),
             Some(b'(') => self.read_list(),
             Some(b'[') => self.read_vector(),
@@ -325,16 +398,24 @@ impl<'a> Reader<'a> {
             Some(b'\'') => self.read_quote("quote"),
             Some(b'`') => self.read_quote("backquote"),
             Some(b',') => {
-                self.advance();
-                if self.peek() == Some(b'@') {
-                    self.advance();
+                self.advance()?;
+                if self.peek()? == Some(b'@') {
+                    self.advance()?;
                     self.read_quote("comma-at")
                 } else {
+                    self.input.unread_lookahead()?;
                     self.read_quote("comma")
                 }
             }
             Some(b'?') => self.read_character(),
             Some(b'#') => self.read_hash(),
+            Some(b'.') => {
+                if self.read_dot_separator()? {
+                    Err(LispError::ReadError(".".into()))
+                } else {
+                    self.read_atom()
+                }
+            }
             _ => self.read_atom(),
         }
     }
@@ -353,60 +434,68 @@ impl<'a> Reader<'a> {
     }
 
     fn apply_symbol_shorthands(&self, token: String) -> String {
-        apply_symbol_shorthands_to_token(token, &self.symbol_shorthands)
+        if matches!(self.input, Input::Function(_)) {
+            token
+        } else {
+            apply_symbol_shorthands_to_token(token, &self.symbol_shorthands)
+        }
+    }
+
+    /// lread.c:read0 always reads and unreads the character after a dot,
+    /// even when the dot starts an ordinary symbol or number.
+    fn read_dot_separator(&mut self) -> Result<bool, LispError> {
+        self.advance()?;
+        let next = self.peek_char()?;
+        self.input.unread_lookahead()?;
+        let separator = next.is_none_or(|ch| {
+            ch <= ' '
+                || ch == '\u{a0}'
+                || matches!(ch, '"' | '\'' | ';' | '(' | '[' | '#' | '?' | '`' | ',')
+        });
+        if !separator {
+            self.retreat_ascii(b'.');
+        }
+        Ok(separator)
     }
 
     fn read_list(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance(); // consume '('
+        self.advance()?; // consume '('
         let mut items = Vec::new();
         let mut dotted_end: Option<Value> = None;
 
         loop {
-            self.skip_whitespace_and_comments();
-            match self.peek() {
+            self.skip_whitespace_and_comments()?;
+            match self.peek()? {
                 None => return Err(LispError::EndOfInput()),
                 Some(b')') => {
-                    self.advance();
+                    self.advance()?;
                     break;
                 }
                 _ => {
-                    // Check for dotted pair
-                    if self.peek() == Some(b'.') && !items.is_empty() {
-                        let saved = self.pos;
-                        self.advance();
-                        // Only a dot if followed by whitespace or paren
-                        match self.peek_char() {
-                            Some(ch) if ch.is_whitespace() || ch == ')' => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                                dotted_end = Some(val);
-                                self.skip_whitespace_and_comments();
-                                if self.peek() == Some(b')') {
-                                    self.advance();
-                                    break;
-                                }
-                                return Err(LispError::ReadError(
-                                    "expected ')' after dotted pair".into(),
-                                ));
+                    if self.peek()? == Some(b'.') {
+                        if self.read_dot_separator()? {
+                            if items.is_empty() {
+                                return Err(LispError::ReadError(".".into()));
                             }
-                            Some(',') if self.backquote_depth > 0 => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                                dotted_end = Some(val);
-                                self.skip_whitespace_and_comments();
-                                if self.peek() == Some(b')') {
-                                    self.advance();
-                                    break;
-                                }
-                                return Err(LispError::ReadError(
-                                    "expected ')' after dotted pair".into(),
-                                ));
+                            let val = self.read()?.ok_or(LispError::EndOfInput())?;
+                            dotted_end = Some(val);
+                            self.skip_whitespace_and_comments()?;
+                            self.input.unread_lookahead()?;
+                            if self.peek()? == Some(b')') {
+                                self.advance()?;
+                                break;
                             }
-                            _ => {
-                                // Not a dot separator, it's an atom starting with '.'
-                                self.pos = saved;
-                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                                items.push(val);
-                            }
+                            return Err(LispError::ReadError(
+                                "expected ')' after dotted pair".into(),
+                            ));
                         }
+                        // The dot lookahead has already happened. Read this
+                        // atom directly, retaining it across later callbacks
+                        // just as the ordinary recursive read would.
+                        let roots = self.input.root_depth();
+                        let val = self.read_atom()?.ok_or(LispError::EndOfInput())?;
+                        self.input.root_result(roots, Some(val));
+                        items.push(val);
                     } else {
                         let val = self.read()?.ok_or(LispError::EndOfInput())?;
                         items.push(val);
@@ -424,14 +513,14 @@ impl<'a> Reader<'a> {
     }
 
     fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance(); // consume '['
+        self.advance()?; // consume '['
         let mut items = vec![Value::symbol("vector-literal")];
         loop {
-            self.skip_whitespace_and_comments();
-            match self.peek() {
+            self.skip_whitespace_and_comments()?;
+            match self.peek()? {
                 None => return Err(LispError::EndOfInput()),
                 Some(b']') => {
-                    self.advance();
+                    self.advance()?;
                     break;
                 }
                 _ => {
@@ -444,17 +533,17 @@ impl<'a> Reader<'a> {
     }
 
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance(); // consume opening '"'
+        self.advance()?; // consume opening '"'
         let mut s = String::new();
         let mut extended_chars = Vec::new();
         let mut has_explicit_multibyte = false;
         let mut has_raw_bytes = false;
         let mut has_invalid_unicode = false;
         loop {
-            match self.peek() {
+            match self.peek()? {
                 None => return Err(LispError::EndOfInput()),
                 Some(b'"') => {
-                    self.advance();
+                    self.advance()?;
                     // alloc.c canonicalizes every zero-length unibyte string
                     // to empty_unibyte_string.  It is the one reader literal
                     // whose identity is intentionally shared globally.
@@ -481,12 +570,11 @@ impl<'a> Reader<'a> {
                     )));
                 }
                 Some(b'\\') => {
-                    self.advance();
+                    self.advance()?;
                     if self
-                        .peek()
+                        .peek()?
                         .is_some_and(|ch| matches!(ch, b'C' | b'M' | b'^'))
-                        && (self.peek() == Some(b'^')
-                            || self.input.get(self.pos + 1).copied() == Some(b'-'))
+                        && (self.peek()? == Some(b'^') || self.peek_at(1)? == Some(b'-'))
                     {
                         let code = self.read_string_modified_escape()?;
                         Self::push_string_escape_code(
@@ -499,7 +587,17 @@ impl<'a> Reader<'a> {
                         );
                         continue;
                     }
-                    match self.advance() {
+                    if self.peek()?.is_some_and(|ch| ch >= 0x80) {
+                        self.push_non_ascii_string_source(
+                            &mut s,
+                            &mut has_explicit_multibyte,
+                            &mut has_raw_bytes,
+                            &mut has_invalid_unicode,
+                            &mut extended_chars,
+                        )?;
+                        continue;
+                    }
+                    match self.advance()? {
                         None => return Err(LispError::EndOfInput()),
                         Some(b'n') => s.push('\n'),
                         Some(b't') => s.push('\t'),
@@ -508,8 +606,8 @@ impl<'a> Reader<'a> {
                         Some(b'd') => s.push('\x7F'),
                         Some(b'\n') => {}
                         Some(b'\r') => {
-                            if self.peek() == Some(b'\n') {
-                                self.advance();
+                            if self.peek()? == Some(b'\n') {
+                                self.advance()?;
                             }
                         }
                         Some(b'\\') => s.push('\\'),
@@ -543,7 +641,7 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'x') => {
                             // Emacs reads as many contiguous hex digits as it can here.
-                            let hex = self.read_hex_digits(usize::MAX);
+                            let hex = self.read_hex_digits(usize::MAX)?;
                             if hex <= 0x7F {
                                 s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
                             } else if hex <= 0xFF {
@@ -567,7 +665,7 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'u') => {
                             // Unicode escape: \uNNNN
-                            let hex = self.read_hex_digits(4);
+                            let hex = self.read_hex_digits(4)?;
                             if valid_unicode_scalar(hex) {
                                 let c = char::from_u32(hex).expect("validated scalar");
                                 if hex > 0x7F {
@@ -582,7 +680,7 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'U') => {
                             // Unicode escape: \UNNNNNNNN
-                            let hex = self.read_hex_digits(8);
+                            let hex = self.read_hex_digits(8)?;
                             if valid_unicode_scalar(hex) {
                                 let c = char::from_u32(hex).expect("validated scalar");
                                 if hex > 0x7F {
@@ -596,7 +694,7 @@ impl<'a> Reader<'a> {
                             }
                         }
                         Some(b'N') => {
-                            if self.peek() == Some(b'{') {
+                            if self.peek()? == Some(b'{') {
                                 let code = self.read_named_character_code()?;
                                 if valid_unicode_scalar(code) {
                                     let c = char::from_u32(code).expect("validated scalar");
@@ -617,9 +715,9 @@ impl<'a> Reader<'a> {
                             // Octal escape
                             let mut val = (ch - b'0') as u32;
                             for _ in 0..2 {
-                                match self.peek() {
+                                match self.peek()? {
                                     Some(d) if d.is_ascii_digit() && d < b'8' => {
-                                        self.advance();
+                                        self.advance()?;
                                         val = val * 8 + (d - b'0') as u32;
                                     }
                                     _ => break,
@@ -643,29 +741,50 @@ impl<'a> Reader<'a> {
                     }
                 }
                 Some(ch) if ch < 0x80 => {
-                    self.advance();
+                    self.advance()?;
                     s.push(ch as char);
                 }
                 Some(_) => {
-                    // Multi-byte UTF-8: decode properly
-                    if let Some(c) = self.read_utf8_char() {
-                        if raw_byte_from_source_char(c).is_some() {
-                            has_raw_bytes = true;
-                        } else {
-                            has_explicit_multibyte = true;
-                        }
-                        s.push(c);
-                    } else {
-                        self.advance(); // skip invalid byte
-                        s.push(char::REPLACEMENT_CHARACTER);
-                    }
+                    self.push_non_ascii_string_source(
+                        &mut s,
+                        &mut has_explicit_multibyte,
+                        &mut has_raw_bytes,
+                        &mut has_invalid_unicode,
+                        &mut extended_chars,
+                    )?;
                 }
             }
         }
     }
 
+    fn push_non_ascii_string_source(
+        &mut self,
+        text: &mut String,
+        multibyte: &mut bool,
+        raw_bytes: &mut bool,
+        invalid_unicode: &mut bool,
+        extended: &mut Vec<(usize, u32)>,
+    ) -> Result<(), LispError> {
+        let code = self.input.function_code()?;
+        let character = self
+            .read_utf8_char()?
+            .ok_or_else(|| LispError::ReadError("invalid UTF-8 in string".into()))?;
+        if raw_byte_from_source_char(character).is_some() {
+            *raw_bytes = true;
+        } else if let Some(code) =
+            code.filter(|code| u32::try_from(*code).ok().and_then(char::from_u32).is_none())
+        {
+            *invalid_unicode = true;
+            extended.push((text.chars().count(), code as u32));
+        } else {
+            *multibyte = true;
+        }
+        text.push(character);
+        Ok(())
+    }
+
     fn read_string_control_escape(&mut self) -> Result<u32, LispError> {
-        let Some(ch) = self.advance() else {
+        let Some(ch) = self.advance()? else {
             return Err(LispError::EndOfInput());
         };
         Ok(match ch {
@@ -711,36 +830,36 @@ impl<'a> Reader<'a> {
                 // GNU chains modifiers only through another backslash escape
                 // ("\C-\M-a"); a bare `C-', `M-' or `^' after the first
                 // modifier is the target character ("\C-^" is control-^).
-                let chained = self.peek() == Some(b'\\')
-                    && match self.input.get(self.pos + 1).copied() {
+                let chained = self.peek()? == Some(b'\\')
+                    && match self.peek_at(1)? {
                         Some(b'^') => true,
-                        Some(b'C' | b'M') => self.input.get(self.pos + 2).copied() == Some(b'-'),
+                        Some(b'C' | b'M') => self.peek_at(2)? == Some(b'-'),
                         _ => false,
                     };
                 if !chained {
                     break;
                 }
-                self.advance();
+                self.advance()?;
             }
             first = false;
-            match (self.peek(), self.input.get(self.pos + 1).copied()) {
+            match (self.peek()?, self.peek_at(1)?) {
                 (Some(b'C'), Some(b'-')) => {
                     ctrl_count += 1;
-                    self.pos += 2;
+                    self.advance_bytes(2)?;
                 }
                 (Some(b'M'), Some(b'-')) => {
                     modifiers |= META_BIT;
-                    self.pos += 2;
+                    self.advance_bytes(2)?;
                 }
                 (Some(b'^'), _) => {
                     ctrl_count += 1;
-                    self.pos += 1;
+                    self.advance_bytes(1)?;
                 }
                 _ => break,
             }
         }
 
-        let mut value = if self.peek() == Some(b'\\') {
+        let mut value = if self.peek()? == Some(b'\\') {
             self.read_escaped_character_code()?
         } else {
             self.read_literal_character_code()?
@@ -779,14 +898,14 @@ impl<'a> Reader<'a> {
         Ok(value as u32)
     }
 
-    fn read_hex_digits(&mut self, max: usize) -> u32 {
+    fn read_hex_digits(&mut self, max: usize) -> Result<u32, LispError> {
         let mut val: u32 = 0;
         let mut remaining = max;
         let unlimited = max == usize::MAX;
         while unlimited || remaining > 0 {
-            match self.peek() {
+            match self.peek()? {
                 Some(ch) if ch.is_ascii_hexdigit() => {
-                    self.advance();
+                    self.advance()?;
                     let digit = match ch {
                         b'0'..=b'9' => ch - b'0',
                         b'a'..=b'f' => ch - b'a' + 10,
@@ -801,32 +920,16 @@ impl<'a> Reader<'a> {
                 _ => break,
             }
         }
-        val
+        Ok(val)
     }
 
-    fn read_utf8_char(&mut self) -> Option<char> {
-        let start = self.pos;
-        let first = *self.input.get(self.pos)?;
-        let len = if first < 0x80 {
-            1
-        } else if first < 0xE0 {
-            2
-        } else if first < 0xF0 {
-            3
-        } else {
-            4
-        };
-        if self.pos + len > self.input.len() {
-            return None;
-        }
-        let s = std::str::from_utf8(&self.input[start..start + len]).ok()?;
-        self.pos += len;
-        s.chars().next()
+    fn read_utf8_char(&mut self) -> Result<Option<char>, LispError> {
+        self.advance_char()
     }
 
     fn read_quote(&mut self, name: &str) -> Result<Option<Value>, LispError> {
         if name != "comma" && name != "comma-at" {
-            self.advance(); // consume the quote/backquote char
+            self.advance()?; // consume the quote/backquote char
         }
         let inner = if name == "backquote" {
             self.backquote_depth += 1;
@@ -849,8 +952,29 @@ impl<'a> Reader<'a> {
     }
 
     fn read_character(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance(); // consume '?'
-        match self.peek() {
+        let space_or_tab = matches!(self.peek_at(1)?, Some(b' ' | b'\t'));
+        let value = self.read_character_body()?;
+        if !space_or_tab {
+            // lread.c:read_char_literal reads and unreads one terminator,
+            // including when the character literal is nested in a list.
+            let next = self.peek_char()?;
+            self.input.unread_lookahead()?;
+            if next.is_some_and(|ch| {
+                ch > ' '
+                    && !matches!(
+                        ch,
+                        '\"' | '\'' | ';' | '(' | ')' | '[' | ']' | '#' | '?' | '`' | ',' | '.'
+                    )
+            }) {
+                return Err(LispError::ReadError("?".into()));
+            }
+        }
+        Ok(value)
+    }
+
+    fn read_character_body(&mut self) -> Result<Option<Value>, LispError> {
+        self.advance()?; // consume '?'
+        match self.peek()? {
             None => Err(LispError::EndOfInput()),
             Some(b'\\') => {
                 const ALT_BIT: i64 = 1 << 22;
@@ -864,62 +988,61 @@ impl<'a> Reader<'a> {
                 let mut ctrl_count = 0u8;
                 let mut saw_modifier = false;
                 loop {
-                    let escaped_modifier_start = self.peek() == Some(b'\\')
-                        && matches!(
-                            (
-                                self.input.get(self.pos + 1).copied(),
-                                self.input.get(self.pos + 2).copied(),
-                            ),
-                            (Some(b'^'), _)
-                                | (Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's'), Some(b'-'))
-                        );
+                    let escaped_modifier_start = self.peek()? == Some(b'\\')
+                        && match self.peek_at(1)? {
+                            Some(b'^') => true,
+                            Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's') => {
+                                self.peek_at(2)? == Some(b'-')
+                            }
+                            _ => false,
+                        };
                     if !escaped_modifier_start {
                         // GNU chains modifiers only through another
                         // backslash escape (?\C-\M-a); a bare `M-' or `^'
                         // after the first modifier is the target character.
                         break;
                     }
-                    self.advance();
-                    match (self.peek(), self.input.get(self.pos + 1).copied()) {
+                    self.advance()?;
+                    match (self.peek()?, self.peek_at(1)?) {
                         (Some(b'A'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= ALT_BIT;
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b'S'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= SHIFT_BIT;
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b'C'), Some(b'-')) => {
                             saw_modifier = true;
                             ctrl_count = ctrl_count.saturating_add(1);
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b'H'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= HYPER_BIT;
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b'M'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= META_BIT;
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b's'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= SUPER_BIT;
-                            self.pos += 2;
+                            self.advance_bytes(2)?;
                         }
                         (Some(b'^'), _) => {
                             saw_modifier = true;
                             ctrl_count = ctrl_count.saturating_add(1);
-                            self.pos += 1;
+                            self.advance_bytes(1)?;
                         }
                         _ => break,
                     }
                 }
-                let mut value = if !saw_modifier || self.peek() == Some(b'\\') {
+                let mut value = if !saw_modifier || self.peek()? == Some(b'\\') {
                     self.read_escaped_character_code()?
                 } else {
                     self.read_literal_character_code()?
@@ -941,7 +1064,7 @@ impl<'a> Reader<'a> {
                 Ok(Some(Value::Integer(value)))
             }
             Some(ch) if ch < 0x80 => {
-                self.advance();
+                self.advance()?;
                 if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';') {
                     self.unescaped_character_literals.insert(ch);
                 }
@@ -955,17 +1078,25 @@ impl<'a> Reader<'a> {
     }
 
     fn read_literal_character_code(&mut self) -> Result<i64, LispError> {
-        match self.peek() {
+        if let Some(code) = self.input.function_code()? {
+            self.advance_char()?;
+            return Ok(if (0x3fff80..=0x3fffff).contains(&code) {
+                code & 0xff
+            } else {
+                code
+            });
+        }
+        match self.peek()? {
             None => Err(LispError::EndOfInput()),
             Some(ch) if ch < 0x80 => {
-                self.advance();
+                self.advance()?;
                 Ok(ch as i64)
             }
             Some(_) => {
-                if let Some(c) = self.read_utf8_char() {
+                if let Some(c) = self.read_utf8_char()? {
                     Ok(raw_byte_from_source_char(c).map_or(c as i64, i64::from))
                 } else {
-                    let byte = self.advance().ok_or(LispError::EndOfInput())?;
+                    let byte = self.advance()?.ok_or(LispError::EndOfInput())?;
                     Ok(byte as i64)
                 }
             }
@@ -973,27 +1104,30 @@ impl<'a> Reader<'a> {
     }
 
     fn read_escaped_character_code(&mut self) -> Result<i64, LispError> {
-        if self.peek() == Some(b'\\') {
-            self.advance();
-            if matches!(self.peek(), Some(b'A' | b'S' | b'C' | b'H' | b'M'))
-                && self.input.get(self.pos + 1).copied() != Some(b'-')
+        if self.peek()? == Some(b'\\') {
+            self.advance()?;
+            if matches!(self.peek()?, Some(b'A' | b'S' | b'C' | b'H' | b'M'))
+                && self.peek_at(1)? != Some(b'-')
             {
                 return Err(LispError::ReadError(
                     "invalid character modifier syntax".into(),
                 ));
             }
-            if self.peek() == Some(b's') && self.input.get(self.pos + 1).copied() == Some(b'-') {
+            if self.peek()? == Some(b's') && self.peek_at(1)? == Some(b'-') {
                 return Err(LispError::ReadError(
                     "invalid character modifier syntax".into(),
                 ));
             }
-            if self.peek() == Some(b'\\') && self.input.get(self.pos + 1).copied() == Some(b'\'') {
-                self.pos += 2;
+            if self.peek()? == Some(b'\\') && self.peek_at(1)? == Some(b'\'') {
+                self.advance_bytes(2)?;
                 return Ok('\'' as i64);
             }
         }
-        if self.peek().is_some_and(|ch| ch >= 0x80) {
-            return self.read_utf8_char().map_or_else(
+        if self.peek()?.is_some_and(|ch| ch >= 0x80) {
+            if matches!(self.input, Input::Function(_)) {
+                return self.read_literal_character_code();
+            }
+            return self.read_utf8_char()?.map_or_else(
                 || {
                     Err(LispError::ReadError(
                         "invalid UTF-8 in character literal".into(),
@@ -1002,7 +1136,7 @@ impl<'a> Reader<'a> {
                 |ch| Ok(raw_byte_from_source_char(ch).map_or(ch as i64, i64::from)),
             );
         }
-        match self.advance() {
+        match self.advance()? {
             None => Err(LispError::EndOfInput()),
             Some(b'\n') | Some(b'\r') => Err(LispError::ReadError(
                 "invalid escaped line feed in character literal".into(),
@@ -1020,7 +1154,7 @@ impl<'a> Reader<'a> {
             Some(b'v') => Ok('\x0B' as i64),
             Some(b'\\') => Ok('\\' as i64),
             Some(b'N') => {
-                if self.peek() != Some(b'{') {
+                if self.peek()? != Some(b'{') {
                     return Err(LispError::ReadError(
                         "invalid named character escape".into(),
                     ));
@@ -1029,7 +1163,7 @@ impl<'a> Reader<'a> {
             }
             Some(b'x') => {
                 let start = self.pos;
-                let value = self.read_hex_digits(6);
+                let value = self.read_hex_digits(6)?;
                 if self.pos == start {
                     return Err(LispError::ReadError(
                         "missing hex digits in character escape".into(),
@@ -1039,7 +1173,7 @@ impl<'a> Reader<'a> {
             }
             Some(b'u') => {
                 let start = self.pos;
-                let value = self.read_hex_digits(4);
+                let value = self.read_hex_digits(4)?;
                 if self.pos - start != 4 {
                     return Err(LispError::ReadError(
                         "unicode character escape must have four hex digits".into(),
@@ -1049,7 +1183,7 @@ impl<'a> Reader<'a> {
             }
             Some(b'U') => {
                 let start = self.pos;
-                let value = self.read_hex_digits(8);
+                let value = self.read_hex_digits(8)?;
                 if self.pos - start != 8 {
                     return Err(LispError::ReadError(
                         "unicode character escape must have eight hex digits".into(),
@@ -1060,9 +1194,9 @@ impl<'a> Reader<'a> {
             Some(ch) if ch.is_ascii_digit() => {
                 let mut val = (ch - b'0') as i64;
                 for _ in 0..2 {
-                    match self.peek() {
+                    match self.peek()? {
                         Some(d) if d.is_ascii_digit() && d < b'8' => {
-                            self.advance();
+                            self.advance()?;
                             val = val * 8 + (d - b'0') as i64;
                         }
                         _ => break,
@@ -1075,14 +1209,12 @@ impl<'a> Reader<'a> {
     }
 
     fn read_named_character_code(&mut self) -> Result<u32, LispError> {
-        debug_assert_eq!(self.peek(), Some(b'{'));
-        self.advance(); // consume '{'
-        let start = self.pos;
-        while let Some(ch) = self.peek() {
+        debug_assert_eq!(self.peek()?, Some(b'{'));
+        self.advance()?; // consume '{'
+        let mut name = String::new();
+        while let Some(ch) = self.peek()? {
             if ch == b'}' {
-                let name = std::str::from_utf8(&self.input[start..self.pos])
-                    .map_err(|error| LispError::ReadError(error.to_string()))?;
-                self.advance(); // consume '}'
+                self.advance()?; // consume '}'
                 if name.len() > 200 {
                     return Err(LispError::ReadError("Character name too long".into()));
                 }
@@ -1092,31 +1224,31 @@ impl<'a> Reader<'a> {
                         ch as u32
                     )));
                 }
-                let normalized = normalize_named_character_name(name);
+                let normalized = normalize_named_character_name(&name);
                 if normalized.is_empty() {
                     return Err(LispError::ReadError("Empty character name".into()));
                 }
                 return resolve_named_character_code(&normalized)
                     .ok_or_else(|| LispError::ReadError(format!("\\N{{{normalized}}}")));
             }
-            self.advance();
+            name.push(self.advance_char()?.ok_or(LispError::EndOfInput())?);
         }
         Err(LispError::EndOfInput())
     }
 
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance(); // consume '#'
-        match self.peek() {
+        self.advance()?; // consume '#'
+        match self.peek()? {
             None => Err(LispError::ReadError("#".into())),
             Some(b'#') => {
-                self.advance();
-                Ok(Some(Value::Symbol("".into())))
+                self.advance()?;
+                self.resolve_symbol("").map(Some)
             }
             // lread.c read0: `#!' (the shebang line of an executable
             // script) skips the rest of the line and reads on.
             Some(b'!') => {
-                while let Some(byte) = self.peek() {
-                    self.advance();
+                while let Some(byte) = self.peek()? {
+                    self.advance()?;
                     if byte == b'\n' {
                         break;
                     }
@@ -1124,24 +1256,27 @@ impl<'a> Reader<'a> {
                 self.read()
             }
             Some(b'_') => {
-                self.advance();
-                match self.peek() {
+                self.advance()?;
+                match self.peek()? {
                     None
                     | Some(
                         b' ' | b'\t' | b'\n' | b'\r' | 0x0C | b'(' | b')' | b'[' | b']' | b'"'
                         | b'\'' | b';' | b'#' | b'`' | b',',
-                    ) => Ok(Some(Value::Symbol(String::new().into()))),
-                    Some(_) => self.read_atom_with_shorthands(false),
+                    ) => {
+                        self.input.unread_lookahead()?;
+                        self.resolve_symbol("").map(Some)
+                    }
+                    Some(_) => self.read_atom_in_syntax(AtomSyntax::ShorthandExempt),
                 }
             }
             Some(b'\'') => {
                 // #'symbol — function quote, treat as (function sym)
-                self.advance();
+                self.advance()?;
                 let inner = self.read()?.ok_or(LispError::EndOfInput())?;
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
             }
             Some(b'<') => {
-                self.advance();
+                self.advance()?;
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("invalid-read-syntax".into()),
                     Value::String("#<".into()),
@@ -1150,27 +1285,27 @@ impl<'a> Reader<'a> {
                 ])))
             }
             Some(b'@') => {
-                self.advance();
+                self.advance()?;
                 let count_start = self.pos;
-                let count = self.read_unsigned_decimal();
+                let count = self.read_unsigned_decimal()?;
                 if self.pos == count_start {
                     return Err(LispError::ReadError("invalid-read-syntax".into()));
                 }
                 if count == 0 {
-                    self.pos = self.input.len();
+                    while self.advance()?.is_some() {}
                     return Ok(Some(Value::Nil));
                 }
                 Err(LispError::ReadError("unsupported #@ syntax".into()))
             }
             Some(b'^') => {
-                self.advance();
-                let sub_table = if self.peek() == Some(b'^') {
-                    self.advance();
+                self.advance()?;
+                let sub_table = if self.peek()? == Some(b'^') {
+                    self.advance()?;
                     true
                 } else {
                     false
                 };
-                if self.peek() != Some(b'[') {
+                if self.peek()? != Some(b'[') {
                     return Err(LispError::ReadError("invalid-read-syntax".into()));
                 }
                 // read0 clears locate_syms across a char-table literal.
@@ -1180,7 +1315,9 @@ impl<'a> Reader<'a> {
                 self.locate_symbols = saved_locate;
                 let fields = fields?;
                 if !sub_table {
-                    if fields.len() < 68 {
+                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+                        .contains(&fields.len())
+                    {
                         return Err(LispError::ReadError("invalid size char-table".into()));
                     }
                 } else {
@@ -1214,18 +1351,18 @@ impl<'a> Reader<'a> {
                 )))
             }
             Some(b'[') => {
-                self.advance();
+                self.advance()?;
                 // read0 clears locate_syms across a `#[...]' literal.
                 let saved_locate = self.locate_symbols;
                 self.locate_symbols = false;
                 let fields = (|| {
                     let mut fields = Vec::new();
                     loop {
-                        self.skip_whitespace_and_comments();
-                        match self.peek() {
+                        self.skip_whitespace_and_comments()?;
+                        match self.peek()? {
                             None => return Err(LispError::EndOfInput()),
                             Some(b']') => {
-                                self.advance();
+                                self.advance()?;
                                 break;
                             }
                             _ => {
@@ -1269,9 +1406,9 @@ impl<'a> Reader<'a> {
                 )))
             }
             Some(b'&') => {
-                self.advance();
+                self.advance()?;
                 let len_start = self.pos;
-                let len = self.read_unsigned_decimal() as usize;
+                let len = self.read_unsigned_decimal()? as usize;
                 if self.pos == len_start {
                     return Err(LispError::ReadError("missing bool vector length".into()));
                 }
@@ -1313,33 +1450,51 @@ impl<'a> Reader<'a> {
                 )))
             }
             Some(b':') => {
-                self.advance();
-                let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput())?;
-                let Kind::Symbol(base) = symbol.kind() else {
-                    return Err(LispError::ReadError(
-                        "invalid uninterned symbol syntax".into(),
-                    ));
-                };
-                let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(Some(Value::Symbol(
-                    make_uninterned_symbol_name(&base, id).into(),
-                )))
+                self.advance()?;
+                if matches!(
+                    self.peek()?,
+                    None | Some(
+                        b' ' | b'\t'
+                            | b'\n'
+                            | b'\r'
+                            | 0x0C
+                            | b'('
+                            | b')'
+                            | b'['
+                            | b']'
+                            | b'"'
+                            | b'\''
+                            | b';'
+                            | b'#'
+                            | b'`'
+                            | b','
+                    )
+                ) {
+                    self.input.unread_lookahead()?;
+                    // lread.c's empty #: branch returns a bare fresh symbol.
+                    let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+                    Ok(Some(Value::Symbol(
+                        make_uninterned_symbol_name("", id).into(),
+                    )))
+                } else {
+                    self.read_atom_in_syntax(AtomSyntax::Uninterned)
+                }
             }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
                 // string literal with text properties.  read0 clears
                 // locate_syms across the literal (lread.c RE_string_props).
-                self.advance(); // consume '('
+                self.advance()?; // consume '('
                 let saved_locate = self.locate_symbols;
                 self.locate_symbols = false;
                 let items = (|| {
                     let mut items = Vec::new();
                     loop {
-                        self.skip_whitespace_and_comments();
-                        match self.peek() {
+                        self.skip_whitespace_and_comments()?;
+                        match self.peek()? {
                             None => return Err(LispError::EndOfInput()),
                             Some(b')') => {
-                                self.advance();
+                                self.advance()?;
                                 break;
                             }
                             _ => {
@@ -1361,14 +1516,14 @@ impl<'a> Reader<'a> {
                 }
             }
             Some(ch) if ch.is_ascii_digit() => {
-                let base = self.read_unsigned_decimal();
-                let radix = match self.peek() {
+                let base = self.read_unsigned_decimal()?;
+                let radix = match self.peek()? {
                     Some(b'r') | Some(b'R') => {
-                        self.advance();
+                        self.advance()?;
                         base
                     }
                     Some(b'=') => {
-                        self.advance();
+                        self.advance()?;
                         let value = self.read()?.ok_or(LispError::EndOfInput())?;
                         return Ok(Some(Value::ReaderForm(
                             crate::lisp::alloc::VectorlikeRef::allocate(
@@ -1380,7 +1535,7 @@ impl<'a> Reader<'a> {
                         )));
                     }
                     Some(b'#') => {
-                        self.advance();
+                        self.advance()?;
                         return Ok(Some(Value::ReaderForm(
                             crate::lisp::alloc::VectorlikeRef::allocate(
                                 ReaderForm::CircularReference(base),
@@ -1392,7 +1547,7 @@ impl<'a> Reader<'a> {
                         // the buffered token text — `#', the digits, and the
                         // character the dispatch choked on ("#5)").
                         let offender = self
-                            .peek_char()
+                            .peek_char()?
                             .map(|ch| ch.to_string())
                             .unwrap_or_default();
                         return Err(LispError::ReadError(format!("#{base}{offender}")));
@@ -1400,98 +1555,26 @@ impl<'a> Reader<'a> {
                 };
                 Ok(Some(self.read_radix_integer(radix)?))
             }
-            Some(b'x') | Some(b'X') => {
-                // #xNN or #x-NN — hexadecimal integer
-                self.advance();
-                let neg = self.peek() == Some(b'-');
-                if neg {
-                    self.advance();
-                }
-                let mut val = BigInt::from(0u8);
-                let mut any = false;
-                while let Some(ch) = self.peek() {
-                    if ch.is_ascii_hexdigit() {
-                        self.advance();
-                        any = true;
-                        let digit = match ch {
-                            b'0'..=b'9' => ch - b'0',
-                            b'a'..=b'f' => ch - b'a' + 10,
-                            b'A'..=b'F' => ch - b'A' + 10,
-                            _ => unreachable!(),
-                        };
-                        val = val * 16u8 + BigInt::from(digit);
-                    } else {
-                        break;
-                    }
-                }
-                if !any {
-                    return Err(LispError::ReadError("integer, radix 16".into()));
-                }
-                if neg {
-                    val = -val;
-                }
-                Ok(Some(normalize_bigint(val)))
+            Some(b'x' | b'X') => {
+                self.advance()?;
+                Ok(Some(self.read_radix_integer(16)?))
             }
-            Some(b'o') | Some(b'O') => {
-                // #oNN or #o-NN — octal integer
-                self.advance();
-                let neg = self.peek() == Some(b'-');
-                if neg {
-                    self.advance();
-                }
-                let mut val = BigInt::from(0u8);
-                let mut any = false;
-                while let Some(ch) = self.peek() {
-                    if (b'0'..=b'7').contains(&ch) {
-                        self.advance();
-                        any = true;
-                        val = val * 8u8 + BigInt::from(ch - b'0');
-                    } else {
-                        break;
-                    }
-                }
-                if !any {
-                    return Err(LispError::ReadError("integer, radix 8".into()));
-                }
-                if neg {
-                    val = -val;
-                }
-                Ok(Some(normalize_bigint(val)))
+            Some(b'o' | b'O') => {
+                self.advance()?;
+                Ok(Some(self.read_radix_integer(8)?))
             }
-            Some(b'b') | Some(b'B') => {
-                // #bNN or #b-NN — binary integer
-                self.advance();
-                let neg = self.peek() == Some(b'-');
-                if neg {
-                    self.advance();
-                }
-                let mut val = BigInt::from(0u8);
-                let mut any = false;
-                while let Some(ch) = self.peek() {
-                    if ch == b'0' || ch == b'1' {
-                        self.advance();
-                        any = true;
-                        val = val * 2u8 + BigInt::from(ch - b'0');
-                    } else {
-                        break;
-                    }
-                }
-                if !any {
-                    return Err(LispError::ReadError("integer, radix 2".into()));
-                }
-                if neg {
-                    val = -val;
-                }
-                Ok(Some(normalize_bigint(val)))
+            Some(b'b' | b'B') => {
+                self.advance()?;
+                Ok(Some(self.read_radix_integer(2)?))
             }
             Some(b's') | Some(b'S') => {
-                self.advance();
-                self.skip_whitespace_and_comments();
-                if self.peek() != Some(b'(') {
+                self.advance()?;
+                self.skip_whitespace_and_comments()?;
+                if self.peek()? != Some(b'(') {
                     return Err(LispError::ReadError("unsupported #s syntax".into()));
                 }
-                self.advance(); // consume '('
-                self.skip_whitespace_and_comments();
+                self.advance()?; // consume '('
+                self.skip_whitespace_and_comments()?;
                 // read0 clears locate_syms for the ENTIRE `#s(...)' payload
                 // (lread.c RE_record push), so a positioned read keeps
                 // record slots and hash-table data bare.
@@ -1503,11 +1586,11 @@ impl<'a> Reader<'a> {
                     };
                     let mut fields = Vec::new();
                     loop {
-                        self.skip_whitespace_and_comments();
-                        match self.peek() {
+                        self.skip_whitespace_and_comments()?;
+                        match self.peek()? {
                             None => return Err(LispError::EndOfInput()),
                             Some(b')') => {
-                                self.advance();
+                                self.advance()?;
                                 break;
                             }
                             _ => {
@@ -1535,22 +1618,22 @@ impl<'a> Reader<'a> {
             }
             _ => {
                 // Treat unknown hash-prefixed syntax as a symbol token that starts with '#'.
-                self.pos = self.pos.saturating_sub(1);
+                self.retreat_ascii(b'#');
                 self.read_atom()
             }
         }
     }
 
     fn read_bracketed_fields(&mut self) -> Result<Vec<Value>, LispError> {
-        debug_assert_eq!(self.peek(), Some(b'['));
-        self.advance();
+        debug_assert_eq!(self.peek()?, Some(b'['));
+        self.advance()?;
         let mut fields = Vec::new();
         loop {
-            self.skip_whitespace_and_comments();
-            match self.peek() {
+            self.skip_whitespace_and_comments()?;
+            match self.peek()? {
                 None => return Err(LispError::EndOfInput()),
                 Some(b']') => {
-                    self.advance();
+                    self.advance()?;
                     return Ok(fields);
                 }
                 _ => fields.push(self.read()?.ok_or(LispError::EndOfInput())?),
@@ -1610,77 +1693,84 @@ impl<'a> Reader<'a> {
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
-        self.read_atom_with_shorthands(true)
+        self.read_atom_in_syntax(AtomSyntax::Ordinary)
     }
 
-    /// An atom the reader consumes for its own syntax (`#:', `#s(') —
-    /// never positioned, whatever LOCATE_SYMS says.
-    fn read_bare_atom(&mut self) -> Result<Option<Value>, LispError> {
-        let saved = self.locate_symbols;
-        self.locate_symbols = false;
-        let result = self.read_atom();
-        self.locate_symbols = saved;
-        result
-    }
-
-    /// Character position of BYTE, amortized O(1) over a monotone scan.
-    fn character_position(&mut self, byte: usize) -> i64 {
-        let byte = byte.max(self.position_cursor_byte);
-        let span = &self.input[self.position_cursor_byte..byte];
+    /// Text positions use a monotonic scan; callable positions count source
+    /// characters, independently of the UTF-8 bytes in bounded lookahead.
+    fn character_position(&mut self) -> i64 {
+        if let Some(position) = self.input.function_position() {
+            return self.position_base + position;
+        }
+        let Input::Text(bytes) = &self.input else {
+            unreachable!()
+        };
+        let span = &bytes[self.position_cursor_byte..self.pos];
         self.position_cursor_char += std::str::from_utf8(span)
             .map(|text| text.chars().count() as i64)
             .unwrap_or(span.len() as i64);
-        self.position_cursor_byte = byte;
+        self.position_cursor_byte = self.pos;
         self.position_base + self.position_cursor_char
     }
 
-    /// read0's LOCATE_SYMS wrap: every symbol occurrence (`t' included,
-    /// `nil' excluded) becomes a position-bearing wrapper the caller
-    /// materializes into a real `symbol-with-pos'.
-    fn positioned_symbol_value(&mut self, start_byte: usize, name: String) -> Value {
-        let pos = self.character_position(start_byte);
-        Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-            crate::lisp::types::ReaderForm::PositionedSymbol { name, pos },
-        ))
+    fn read_symbol_value(
+        &mut self,
+        position: i64,
+        name: &str,
+        syntax: AtomSyntax,
+    ) -> Result<Value, LispError> {
+        let symbol = if syntax == AtomSyntax::Uninterned {
+            let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+            Value::Symbol(make_uninterned_symbol_name(name, id).into())
+        } else if let Input::Function(input) = &mut self.input {
+            input
+                .stream
+                .intern_symbol(name, syntax == AtomSyntax::Ordinary)?
+        } else {
+            self.resolve_symbol(name)?
+        };
+        Ok(if self.locate_symbols && !symbol.is_nil() {
+            Value::positioned_symbol(symbol, Value::Integer(position))
+        } else {
+            symbol
+        })
     }
 
-    fn read_atom_with_shorthands(
-        &mut self,
-        apply_shorthands: bool,
-    ) -> Result<Option<Value>, LispError> {
-        let token_start = self.pos;
+    fn read_atom_in_syntax(&mut self, syntax: AtomSyntax) -> Result<Option<Value>, LispError> {
+        let token_start = if self.locate_symbols {
+            self.character_position()
+        } else {
+            0
+        };
         let mut token = String::new();
         let mut saw_escape = false;
-        while let Some(ch) = self.peek() {
+        while let Some(ch) = self.peek()? {
             // GNU's reader also ends a symbol at unescaped quote, backquote,
             // and comma (read0 stops at "\"';()[]#`,"), so `,flags, hop-real'
             // reads as two unquotes rather than a symbol named "flags,".
-            if ch == b' '
-                || ch == b'\t'
-                || ch == b'\n'
-                || ch == b'\r'
-                || ch == 0x0C
+            if ch <= b' '
+                || self.peek_char()? == Some('\u{a0}')
                 || ch == b'('
                 || ch == b')'
                 || ch == b'['
                 || ch == b']'
                 || ch == b'"'
                 || ch == b';'
-                || (!token.is_empty() && (ch == b',' || ch == b'\'' || ch == b'`'))
+                || (!token.is_empty() && (ch == b',' || ch == b'\'' || ch == b'`' || ch == b'#'))
             {
                 break;
             }
             if ch == b'\\' {
                 saw_escape = true;
-                self.advance();
-                match self.peek() {
+                self.advance()?;
+                match self.peek()? {
                     None => return Err(LispError::EndOfInput()),
                     Some(next) if next < 0x80 => {
-                        self.advance();
+                        self.advance()?;
                         token.push(next as char);
                     }
                     Some(_) => {
-                        if let Some(next) = self.read_utf8_char() {
+                        if let Some(next) = self.read_symbol_character()? {
                             token.push(next);
                         } else {
                             return Err(LispError::ReadError(
@@ -1692,35 +1782,34 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if ch < 0x80 {
-                self.advance();
+                self.advance()?;
                 token.push(ch as char);
-            } else if let Some(next) = self.read_utf8_char() {
+            } else if let Some(next) = self.read_symbol_character()? {
                 token.push(next);
             } else {
                 return Err(LispError::ReadError("invalid UTF-8 in symbol".into()));
             }
         }
 
+        // read0 unreads the terminator before numeric conversion or interning.
+        self.input.unread_lookahead()?;
         if token.is_empty() {
             return Err(LispError::EndOfInput());
         }
 
         if saw_escape {
-            let token = if apply_shorthands {
+            let token = if syntax == AtomSyntax::Ordinary {
                 self.apply_symbol_shorthands(token)
             } else {
                 token
             };
-            return Ok(Some(match token.as_str() {
-                "nil" => Value::Nil,
-                _ if self.locate_symbols => self.positioned_symbol_value(token_start, token),
-                "t" => Value::T,
-                _ => Value::Symbol(token.into()),
-            }));
+            return self
+                .read_symbol_value(token_start, &token, syntax)
+                .map(Some);
         }
 
         // Try parsing as integer
-        if apply_shorthands {
+        if syntax == AtomSyntax::Ordinary {
             if let Ok(n) = token.parse::<i64>() {
                 return Ok(Some(Value::Integer(n)));
             }
@@ -1738,51 +1827,60 @@ impl<'a> Reader<'a> {
             }
         }
 
-        let token = if apply_shorthands {
+        let token = if syntax == AtomSyntax::Ordinary {
             self.apply_symbol_shorthands(token)
         } else {
             token
         };
 
-        // Special atoms
-        match token.as_str() {
-            "nil" => Ok(Some(Value::Nil)),
-            _ if self.locate_symbols => Ok(Some(self.positioned_symbol_value(token_start, token))),
-            "t" => Ok(Some(Value::T)),
-            _ => Ok(Some(Value::Symbol(token.into()))),
-        }
+        self.read_symbol_value(token_start, &token, syntax)
+            .map(Some)
     }
 
-    fn read_unsigned_decimal(&mut self) -> u32 {
-        let start = self.pos;
-        while let Some(ch) = self.peek() {
-            if ch.is_ascii_digit() {
-                self.advance();
+    fn read_symbol_character(&mut self) -> Result<Option<char>, LispError> {
+        let code = self.input.function_code()?;
+        let character = self.read_utf8_char()?;
+        Ok(match code {
+            // readchar's function branch leaves `multibyte` false. read0
+            // writes each character to one unsigned byte in the symbol name.
+            Some(code) => Some(if (code as u8) < 128 {
+                code as u8 as char
             } else {
+                encode_raw_byte(code as u8)
+            }),
+            None => character,
+        })
+    }
+
+    fn read_unsigned_decimal(&mut self) -> Result<u32, LispError> {
+        let mut value = Some(0u32);
+        let mut any = false;
+        while let Some(ch) = self.peek()? {
+            if !ch.is_ascii_digit() {
                 break;
             }
+            self.advance()?;
+            any = true;
+            value = value.and_then(|v| v.checked_mul(10)?.checked_add(u32::from(ch - b'0')));
         }
-        std::str::from_utf8(&self.input[start..self.pos])
-            .ok()
-            .and_then(|digits| digits.parse::<u32>().ok())
-            .unwrap_or(10)
+        Ok(if any { value.unwrap_or(10) } else { 10 })
     }
 
     fn read_radix_integer(&mut self, base: u32) -> Result<Value, LispError> {
-        let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.advance();
+        let mut token = String::new();
+        if let Some(sign @ (b'-' | b'+')) = self.peek()? {
+            self.advance()?;
+            token.push(sign as char);
         }
-        while let Some(ch) = self.peek() {
-            if ch.is_ascii_alphanumeric() {
-                self.advance();
-            } else {
+        while let Some(ch) = self.peek()? {
+            if !ch.is_ascii_alphanumeric() {
                 break;
             }
+            self.advance()?;
+            token.push(ch as char);
         }
-        let token = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|e| LispError::ReadError(e.to_string()))?;
-        parse_radix_integer(base, token)
+        self.input.unread_lookahead()?;
+        parse_radix_integer(base, &token)
     }
 }
 
@@ -1879,7 +1977,9 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     }
     let (negative, digits) = token
         .strip_prefix('-')
-        .map_or((false, token), |rest| (true, rest));
+        .map_or((false, token.strip_prefix('+').unwrap_or(token)), |rest| {
+            (true, rest)
+        });
     if digits.is_empty() {
         return Err(LispError::ReadError(format!("integer, radix {base}")));
     }
@@ -1904,6 +2004,56 @@ mod tests {
 
     fn read_one(s: &str) -> Value {
         Reader::new(s).read().unwrap().unwrap()
+    }
+
+    #[test]
+    fn positioning_reader_returns_final_native_words_without_materialization() {
+        let mut reader = Reader::with_positioned_symbols("(alpha [β alpha t nil])", vec![], 17);
+        let form = reader.read().expect("read positions").expect("one form");
+        assert!(!reader.emitted_reader_forms());
+        assert!(!read_object_needs_resolution(&form));
+        let items = form.to_vec().expect("outer list");
+        let Kind::Vector(vector) = items[1].kind() else {
+            panic!("nested vector");
+        };
+        let slots = vector.slots().collect::<Vec<_>>();
+        assert_eq!(slots[3], Value::Nil);
+        let objects = [items[0], slots[0], slots[1], slots[2]];
+        for (object, (name, position)) in
+            objects
+                .into_iter()
+                .zip([("alpha", 18), ("β", 25), ("alpha", 27), ("t", 33)])
+        {
+            // lisp.h:Lisp_Symbol_With_Pos is already available to native
+            // loads before any interpreter or materialization is involved.
+            assert_eq!(object.word() & 7, 5);
+            let fields = (object.word() & !7) as *const usize;
+            let header = unsafe { fields.read() };
+            assert_eq!((header >> 24) & 0x3f, 6);
+            assert_eq!(header & 0xfff, 2);
+            assert_eq!(unsafe { fields.add(1).read() }, Value::symbol(name).word());
+            assert_eq!(
+                unsafe { fields.add(2).read() },
+                Value::Integer(position).word()
+            );
+        }
+        assert_ne!(objects[0].word(), objects[2].word(), "distinct occurrences");
+        let before = objects.map(|object| object.word());
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
+        interpreter.intern_symbols_in_value(&form);
+        let after = interpreter
+            .materialize_read_object_literals(form, &mut crate::lisp::types::Env::new())
+            .expect("no replacement objects");
+        assert_eq!(after.word(), form.word());
+        let items = after.to_vec().expect("same list");
+        let Kind::Vector(vector) = items[1].kind() else {
+            panic!("same vector");
+        };
+        let slots = vector.slots().collect::<Vec<_>>();
+        assert_eq!(
+            [items[0], slots[0], slots[1], slots[2]].map(|v| v.word()),
+            before
+        );
     }
 
     #[test]
@@ -2316,6 +2466,22 @@ mod tests {
                         if matches!(crate::lisp::types::kinds(fields).as_slice(), [Kind::Integer(3), Kind::Integer(0), ..])
                 )
         ));
+
+        // make-char-table limits the property to ten extras; literal reader
+        // objects carry their own size and may have more (lread.c).
+        let wide = read_one(&format!(
+            "#^[{}]",
+            std::iter::repeat_n("nil", 88).collect::<Vec<_>>().join(" ")
+        ));
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let materialized = interp
+            .materialize_read_object_literals(wide, &mut crate::lisp::types::Env::new())
+            .expect("wide char-table literal");
+        let Kind::CharTable(table) = materialized.kind() else {
+            panic!("canonical char-table")
+        };
+        assert_eq!(table.extra_count(), 20);
+        assert_eq!(table.extra(19), Some(Value::Nil));
 
         assert!(matches!(
             Reader::new("#^[nil]").read().as_ref().map_err(LispError::kind),

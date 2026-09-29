@@ -1,0 +1,25 @@
+{
+  "commits": [
+    {
+      "commit": "f8da4244f58c2f1f5977e15d4c29f7b793a16d90",
+      "message": "Avoid hashing scalar mappings while checking regexp table inputs",
+      "paths": [
+        "src/lisp/eval/runtime.rs"
+      ],
+      "stdout": "[runtime-regexp-table-walk f8da4244] Avoid hashing scalar mappings while checking regexp table inputs\n 1 file changed, 18 insertions(+), 10 deletions(-)\n",
+      "stderr": ""
+    },
+    {
+      "commit": "eaa7463df7894fb95ba21e1cc709e2d44c650561",
+      "message": "Keep pending eager macroexpansion forms alive across collection",
+      "paths": [
+        "src/lisp/primitives/loading.rs",
+        "src/lisp/eval/tests/eval_05.rs",
+        "tests/fixtures/eager-macroexpand-gc-source.el"
+      ],
+      "stdout": "[runtime-regexp-table-walk eaa7463d] Keep pending eager macroexpansion forms alive across collection\n 3 files changed, 43 insertions(+), 5 deletions(-)\n create mode 100644 tests/fixtures/eager-macroexpand-gc-source.el\n",
+      "stderr": ""
+    }
+  ],
+  "qualification": "Local commits only; broader release selection remains running. Software unchanged from source108 manifest."
+}

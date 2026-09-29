@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-Q",
+    "--batch",
+    "-l",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/hash-table-authority-before.el"
+  ],
+  "working_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/hash-table-authority-before.el": "e9b92b171586722e75581bc037fc34dad93c40d86562f5f07962ecdf07a193c1"
+  },
+  "qualification": "Ordinary same-input diagnostic of a hash-table copying after mutable-key changes and constructor-owned custom test descriptors; original failing release run remains failed. GNU source-matched, not frozen pin."
+}

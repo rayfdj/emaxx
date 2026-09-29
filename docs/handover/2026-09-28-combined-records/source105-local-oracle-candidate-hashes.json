@@ -1,0 +1,60 @@
+{
+  "pinned_sha256": "591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d",
+  "candidates": [
+    {
+      "path": "/Users/nbmhqa186/projects/emacs/src/bootstrap-emacs",
+      "resolved": "/Users/nbmhqa186/projects/emacs/src/bootstrap-emacs",
+      "sha256": "e99645fc883b2ee165a9583603dabaece214a1655f3dc283fccdc18741ac7b84",
+      "matches_pin": false
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emacs/src/emacs-30.2.2",
+      "resolved": "/Users/nbmhqa186/projects/emacs/src/emacs-30.2.2",
+      "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+      "matches_pin": false
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emacs/src/emacs",
+      "resolved": "/Users/nbmhqa186/projects/emacs/src/emacs",
+      "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+      "matches_pin": false
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emacs/src/emacs-30.2.1",
+      "resolved": "/Users/nbmhqa186/projects/emacs/src/emacs-30.2.1",
+      "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82",
+      "matches_pin": false
+    },
+    {
+      "path": "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+      "resolved": "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+      "sha256": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+      "matches_pin": false
+    },
+    {
+      "path": "/opt/homebrew/Cellar/emacs-plus@30/30.2/Emacs.app/Contents/MacOS/Emacs",
+      "resolved": "/opt/homebrew/Cellar/emacs-plus@30/30.2/Emacs.app/Contents/MacOS/Emacs",
+      "sha256": "7ad9cf06a429aca8a9228e6589448f86c34884883c99d752516fe45eaad5585c",
+      "matches_pin": false
+    },
+    {
+      "path": "/opt/homebrew/Cellar/emacs-plus@30/30.2/bin/emacs-30.2",
+      "resolved": "/opt/homebrew/Cellar/emacs-plus@30/30.2/bin/emacs-30.2",
+      "sha256": "ac2e59b7cd6df6ab8ad7db0ae5fd2bccc7b6767a9c85cd513c752745832cfb6f",
+      "matches_pin": false
+    },
+    {
+      "path": "/opt/homebrew/Cellar/emacs-plus@30/30.2/bin/emacs",
+      "resolved": "/opt/homebrew/Cellar/emacs-plus@30/30.2/bin/emacs",
+      "sha256": "d09c4e4548fb82b08370f03d6834ecd2827ece1f98f80e72c17c238364caede0",
+      "matches_pin": false
+    },
+    {
+      "path": "/Applications/Emacs.app/Contents/MacOS/Emacs",
+      "resolved": "/Applications/Emacs.app/Contents/MacOS/Emacs",
+      "sha256": "7ad9cf06a429aca8a9228e6589448f86c34884883c99d752516fe45eaad5585c",
+      "matches_pin": false
+    }
+  ],
+  "qualification": "Read-only candidate search; matching a binary alone would still require the locked source/configuration/image."
+}

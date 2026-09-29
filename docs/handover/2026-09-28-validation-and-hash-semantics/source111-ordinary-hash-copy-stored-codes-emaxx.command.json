@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-symbol-validation/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar\n (lambda (kind)\n   (let* ((key (cond ((eq kind 'string) (copy-sequence \"first-key\"))\n                     ((eq kind 'vector) (vector 102 105 114))\n                     (t (list 102 105 114))))\n          (table (make-hash-table :test 'equal :size 8)))\n     (puthash key 'kept table)\n     (if (eq kind 'list) (setcar key 120) (aset key 0 120))\n     (let* ((copy (copy-hash-table table))\n            (shared nil)\n            (misses (list (gethash key table 'absent)\n                          (gethash key copy 'absent))))\n       (maphash (lambda (stored _value) (setq shared (eq stored key))) copy)\n       (if (eq kind 'list) (setcar key 102) (aset key 0 102))\n       (append misses\n               (list (hash-table-count table) (hash-table-count copy)\n                     shared (gethash key table) (gethash key copy)\n                     (= (hash-table-size table) (hash-table-size copy)))))))\n '(string vector list))\n)"
+  ],
+  "cwd": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28",
+  "environment_overrides": {
+    "EMAXX_GC_VERIFY": "1"
+  },
+  "artifacts": {
+    "/private/tmp/emaxx-runtime-symbol-validation/release/emaxx": "da139b2593fdc9ed799c2dca02d34e051e855875979bbc7fe5e46138821e4259",
+    "/private/tmp/emaxx-runtime-symbol-validation/release/emaxx.pdmp": "5136001d166fbd1b68d3f5209676bec0d001a8f4f6c9ea0d8852dd36c9df3946",
+    "/private/tmp/emaxx-runtime-symbol-ownership/emaxx/tests/fixtures/hash-copy-stored-codes.el": "fe27a46723564297778bd880d8a6628277125da708bab246243d9c291f95df0f",
+    "/private/tmp/emaxx-runtime-symbol-ownership/emaxx/tests/fixtures/hash-copy-stored-codes.expected": "e9ad5fa3aef6f5142a8709aaddae0948c823444e4a3d0dd00521b7e4a2bfbf4c"
+  },
+  "source_manifest": "source111-manifest.json",
+  "scope": "Fresh ordinary source111 executable/image, same input and exact bytes. GNU source matched, not frozen pin. Native hash authority remains failing."
+}

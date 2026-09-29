@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-resume-source25/release/emaxx",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(prin1 (mapcar (lambda (key) (let ((map (make-keymap))) (define-key map key 'binding) (list (lookup-key map key) (where-is-internal 'binding map 'non-ascii)))) '([27 27] [27 9] [27 67108961] [134217755] [201326689] [4194303] [1099511627873] [M-C-f9] [f9 27 27]))\n)"
+  ],
+  "environment_overrides": {
+    "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source25-batch-home"
+  },
+  "exit_code": 0,
+  "elapsed_seconds_diagnostic_only": 0.7747809886932373,
+  "binary_sha256": "7fce5276afb61ab1802e316c0e9a4c38c3b3f36f39a8cc16acb086d2732265d7",
+  "fixture_sha256": "4fbe769a336802eae90a85250e25549bcd63199b263dc3dbdbc2fe10604bb6c8",
+  "stdout_sha256": "087b15c84087ee79f2e74f2d14f314d55eaeedde323c7f792d9d8a067eb0aaff",
+  "stdout_bytes": 190,
+  "stderr_bytes": 0,
+  "qualification": "Local source-matched GNU, not pinned certification or performance evidence."
+}

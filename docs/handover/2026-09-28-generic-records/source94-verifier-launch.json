@@ -1,0 +1,14 @@
+{
+  "source": 94,
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "sessions": {
+    "debug_static": 76874,
+    "release": 15143
+  },
+  "software_frozen": true,
+  "scope": "Debug repeats the original record and full pdumper selection and adds existing text-property-search control. Release broadens reader/native/allocator/types/purecopy/property/ERT and both original suspended-thread contracts."
+}

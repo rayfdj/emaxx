@@ -1,0 +1,46 @@
+{
+  "head": "803e4326a16b7bfe13bb0b757ee85c8b02ac3998",
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36359209336",
+  "status": "FAILED",
+  "groups": [
+    {
+      "group": "repeat-01-eval_01",
+      "status": "ok",
+      "passed": 385,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "group": "repeat-01-eval_02",
+      "status": "ok",
+      "passed": 295,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "group": "repeat-01-eval_03",
+      "status": "FAILED",
+      "passed": 318,
+      "failed": 2,
+      "ignored": 0
+    }
+  ],
+  "passed": 998,
+  "failed": 2,
+  "ignored": 0,
+  "qualification": "Only first three library groups executed. Later groups, Cargo integration/bin/doc stages, frozen and TTY inventories are unexecuted. This older char-table source is not final-source validation.",
+  "raw_sha256": {
+    "rust/summary.json": "512d92f5adde9a4226539ef0ffe78245c5740595684104a87af63234bffcf384",
+    "rust/repeat-01-eval_02.json": "dd638cce3a674c47e1f207d5d7ab01682ec323010e9974b156d78f65b3e70068",
+    "rust/repeat-01-eval_03.json": "4673d32fd7f8643a774461f1eca600f3c09ff184f327b74acbd2b4e6951e5246",
+    "rust/inventory.txt": "7fb99b82a5a60d212a064879de9e79e426a88f2e9fc4f295898d960c95729aa1",
+    "rust/repeat-01-eval_03.log": "e7a00449a545c52d500f11dcc7d75170d711f3fb70c1d16d3ccef0d3c2a08231",
+    "rust/repeat-01-eval_02.log": "3742952f7b8f4d0372f084104327ae45e82acade6fbf6649642c05615478b334",
+    "rust/ignored-inventory.txt": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b",
+    "rust/repeat-01-eval_01.log": "48276902f03b02fb21e311f87c0f45589aa844081e7749b9e5786aab4f1a440e",
+    "rust/repeat-01-eval_01.json": "881ef8285a9ff350e4042620514030a61a7d98271c4c0524cbe07494cc55a206",
+    "rust/build.log": "062f3e974af987a3af829165a3dfefde4fc5f69ca7d8ae87a7ae549749cc6625",
+    "metadata/oracle.txt": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4",
+    "metadata/ci-bwrap.apparmor": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+  }
+}

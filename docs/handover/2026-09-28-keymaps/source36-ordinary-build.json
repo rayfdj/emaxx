@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "--all-features",
+    "--bin",
+    "emaxx",
+    "--bin",
+    "make-fingerprint",
+    "--bin",
+    "compat-harness"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-next-jlufuyff/emaxx/target/menu-validation"
+  },
+  "exit_code": 0,
+  "elapsed_seconds": 116.21600625,
+  "source_unchanged": true
+}

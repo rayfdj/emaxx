@@ -1,0 +1,6 @@
+{
+  "path": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "branch": "runtime-frame-authority",
+  "base": "f69e1f0dade9ddceff294f465be663ae6618be9f",
+  "note": "Independent architectural continuation; input fix remains on runtime-tty-input until validated and merged."
+}

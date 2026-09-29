@@ -1,0 +1,12 @@
+{
+  "command": [
+    "../emacs/src/emacs",
+    "-Q",
+    "--batch",
+    "--eval",
+    "(let* ((table (read (concat \"#^[\" (mapconcat #'identity (make-list 88 \"nil\") \" \") \"]\")))) (prin1 (list (char-table-extra-slot table 19) (condition-case e (char-table-extra-slot table 20) (error (car e))))))"
+  ],
+  "exit_code": 0,
+  "stdout": "(nil args-out-of-range)",
+  "stderr": ""
+}

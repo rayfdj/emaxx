@@ -1,0 +1,1 @@
+(((0 1 arity-73 empty) (1 2 arity-73 79) (17 18 arity-73 79) (259 260 arity-73 79) (4094 4095 arity-73 79)) ((error "Attempt to allocate a record of 4096 slots; max is 4095") (error "Attempt to allocate a record of 4097 slots; max is 4095")) (1 2 258 4095 (error "Attempt to allocate a record of 4096 slots; max is 4095")) (nil t nil nil))

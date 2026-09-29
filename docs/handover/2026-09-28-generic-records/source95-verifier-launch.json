@@ -1,0 +1,14 @@
+{
+  "source": 95,
+  "working_directory": "/private/tmp/emaxx-runtime-reader-streams/emaxx",
+  "environment": {
+    "EMAXX_GC_VERIFY": "1",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "sessions": {
+    "debug_static": 80640,
+    "release": 94208
+  },
+  "software_frozen": true,
+  "scope": "Same selections as failed source94; only two single-Value scoped-root type corrections."
+}

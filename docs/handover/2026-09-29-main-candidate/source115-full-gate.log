@@ -1,0 +1,25 @@
+ARTIFACT /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source115
+REPETITION 1/1
+START eval_01
+PASS eval_01: 385 passed, 0 ignored, 171.83s
+START eval_02
+PASS eval_02: 295 passed, 0 ignored, 143.78s
+START eval_03
+PASS eval_03: 320 passed, 0 ignored, 175.74s
+START eval_04
+PASS eval_04: 254 passed, 0 ignored, 152.37s
+START eval_05
+PASS eval_05: 352 passed, 0 ignored, 489.79s
+START primitives
+PASS primitives: 565 passed, 0 ignored, 386.00s
+START compat_runtime
+PASS compat_runtime: 86 passed, 0 ignored, 16.28s
+START tty
+PASS tty: 57 passed, 2 ignored, 4.99s
+START batch
+PASS batch: 50 passed, 0 ignored, 33.22s
+START lightweight
+PASS lightweight: 530 passed, 0 ignored, 9.05s
+PASS bins: 113.59s
+PASS integration: 608.98s
+GROUPED GATE PASSED: /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source115

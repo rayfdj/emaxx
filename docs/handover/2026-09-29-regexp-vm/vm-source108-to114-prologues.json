@@ -1,0 +1,147 @@
+{
+  "qualification": "Static inspection of ordinary macOS ARM code generation only. Source108 vs114 includes other semantic corrections. Does not identify a live Linux GC root or certify speed.",
+  "records": [
+    {
+      "label": "source108",
+      "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-ordinary-emaxx",
+      "binary_sha256": "c26fc9277b9653c0e8e8cff07fafa170510cb1fb42a6acc1847bb0b548f79915",
+      "symbol_command": [
+        "/usr/bin/objdump",
+        "--syms",
+        "--demangle",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-ordinary-emaxx"
+      ],
+      "symbol_exit_code": 0,
+      "symbols": [
+        "00000001003b5934 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run",
+        "00000001003b7c20 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}",
+        "00000001003c0e1c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_fast",
+        "00000001003c1eac l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#1}",
+        "00000001003c2508 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::eval::WindowConfigurationSnapshot), core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#2}>",
+        "00000001003c2734 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::types::Value), core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#3}>",
+        "00000001003c29c0 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#4}>",
+        "00000001003c2b58 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#5}>"
+      ],
+      "prologues": [
+        {
+          "symbol": "00000001003b5934 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003b5934",
+            "--stop-address=0x1003b59d4",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source108-vm-prologue-0"
+        },
+        {
+          "symbol": "00000001003b7c20 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003b7c20",
+            "--stop-address=0x1003b7cc0",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source108-vm-prologue-1"
+        },
+        {
+          "symbol": "00000001003c0e1c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_fast",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003c0e1c",
+            "--stop-address=0x1003c0ebc",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source108-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source108-vm-prologue-2"
+        }
+      ]
+    },
+    {
+      "label": "source114",
+      "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx",
+      "binary_sha256": "42346870f9ecaba46bf4395393cb13503957f4b40ce383f3217231c874a64775",
+      "symbol_command": [
+        "/usr/bin/objdump",
+        "--syms",
+        "--demangle",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx"
+      ],
+      "symbol_exit_code": 0,
+      "symbols": [
+        "00000001003b58a8 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run",
+        "00000001003b7aec l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}",
+        "00000001003c0c9c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_fast",
+        "00000001003c1d2c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#1}",
+        "00000001003c2388 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::eval::WindowConfigurationSnapshot), core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#2}>",
+        "00000001003c25b4 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<(&emaxx::lisp::types::Value, &emaxx::lisp::types::Value), core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#3}>",
+        "00000001003c297c l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<emaxx::lisp::types::Value, emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#4}>",
+        "00000001003c2b14 l     F __TEXT,__text <emaxx::lisp::eval::Interpreter>::with_lisp_stack_roots::<emaxx::lisp::types::Value, core::result::Result<(), emaxx::lisp::types::LispError>, emaxx::lisp::bytecode::vm::run_frames::{closure#0}::{closure#5}>"
+      ],
+      "prologues": [
+        {
+          "symbol": "00000001003b58a8 l     F __TEXT,__text emaxx::lisp::bytecode::vm::run",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003b58a8",
+            "--stop-address=0x1003b5948",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source114-vm-prologue-0"
+        },
+        {
+          "symbol": "00000001003b7aec l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_frames::{closure#0}",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003b7aec",
+            "--stop-address=0x1003b7b8c",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source114-vm-prologue-1"
+        },
+        {
+          "symbol": "00000001003c0c9c l     F __TEXT,__text emaxx::lisp::bytecode::vm::run_fast",
+          "command": [
+            "/usr/bin/objdump",
+            "--disassemble",
+            "--demangle",
+            "--start-address=0x1003c0c9c",
+            "--stop-address=0x1003c0d3c",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source114-ordinary-emaxx"
+          ],
+          "exit_code": 0,
+          "artifact": "source114-vm-prologue-2"
+        }
+      ]
+    }
+  ],
+  "observed_fixed_stack_reservations": {
+    "platform": "macOS ARM64 ordinary release",
+    "run": {
+      "source108_bytes": 752,
+      "source114_bytes": 736
+    },
+    "run_frames_closure0": {
+      "source108_bytes": 1072,
+      "source114_bytes": 1008
+    },
+    "run_fast": {
+      "source108_bytes": 112,
+      "source114_bytes": 112
+    },
+    "method": "Add initial stp/sub reservation to following sub sp,sp immediate; the prologue includes saved registers. Static evidence only, not live Linux root diagnosis."
+  }
+}
