@@ -629,10 +629,10 @@
     {
       "path": "package-main-candidate-evidence.py",
       "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/package-main-candidate-evidence.py",
-      "bytes": 4190,
-      "sha256": "b7816b13b6b247181f5ee874d825edd690b00ed19d1ea63530cf155f1ae8cf8f",
-      "stored_bytes": 4190,
-      "stored_sha256": "b7816b13b6b247181f5ee874d825edd690b00ed19d1ea63530cf155f1ae8cf8f",
+      "bytes": 4241,
+      "sha256": "e8425b9493c1d59d1bd98fb3bfc99f0d8f8f93a853c8ad520b6c20518cfe6596",
+      "stored_bytes": 4241,
+      "stored_sha256": "e8425b9493c1d59d1bd98fb3bfc99f0d8f8f93a853c8ad520b6c20518cfe6596",
       "gzip": false
     },
     {
@@ -3471,6 +3471,15 @@
       "gzip": false
     },
     {
+      "path": "source117.patch",
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source117.patch",
+      "bytes": 841,
+      "sha256": "70c344b099ee883c514eaf3ac16fb98c3562adeb27bf0eb63258d3ba71edbd9a",
+      "stored_bytes": 841,
+      "stored_sha256": "70c344b099ee883c514eaf3ac16fb98c3562adeb27bf0eb63258d3ba71edbd9a",
+      "gzip": false
+    },
+    {
       "path": "source118-base.json",
       "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source118-base.json",
       "bytes": 204,
@@ -5728,6 +5737,15 @@
       "stored_bytes": 4830,
       "stored_sha256": "413392db2a8e51083d3fe1acd8a2e965b6ab200b840a38eec1d473ddb041df42",
       "gzip": true
+    },
+    {
+      "path": "source118.patch",
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source118.patch",
+      "bytes": 2511,
+      "sha256": "2cfcb21695c2e58defdfb639c67668327a7709d57fc7981066ef3f4882706cf6",
+      "stored_bytes": 2511,
+      "stored_sha256": "2cfcb21695c2e58defdfb639c67668327a7709d57fc7981066ef3f4882706cf6",
+      "gzip": false
     }
   ]
 }

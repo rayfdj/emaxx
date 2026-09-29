@@ -37,6 +37,7 @@ for prefix in ['source117-', 'source118-']:
 for name in ['launch-source117.py', 'launch-source118.py',
              'run-source117-core.py', 'run-source118-core.py',
              'profile-source118-core-runtime-pilot.py',
+             'source117.patch', 'source118.patch',
              'source117-source118-pilot-comparison.json']:
     add(p / name)
 
