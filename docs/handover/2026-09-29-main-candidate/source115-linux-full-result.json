@@ -1,0 +1,17 @@
+{
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36501085147",
+  "commit": "968bf33b43df990b3eb6b816e7a644654c646d98",
+  "status": "passed",
+  "library_passed": 2902,
+  "library_ignored": 2,
+  "cargo_stages": {
+    "bins": 61,
+    "integration": 42
+  },
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "5b7a78b11db80ab648ef5b0c7c70bb619a8461ca0b3248e1cdc2e6263a422fbe"
+  },
+  "raw_summary": "target/runtime-goal/resume-2026-09-28/linux-968bf33b-full-artifacts/ordinary-linux-968bf33b43df990b3eb6b816e7a644654c646d98/rust/summary.json",
+  "qualification": "Full original Linux Rust gate passes, including both original suspended-root contracts. Prior source109/source114 full failures remain preserved; root cause of their differing weak-key reclamation is not established. Two pre-existing TTY ignores unchanged. Not frozen compatibility or performance certification."
+}

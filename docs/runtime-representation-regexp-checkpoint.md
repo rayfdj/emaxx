@@ -1,5 +1,10 @@
 # Regexp validation and remaining Linux reclamation failure — 29 September 2026
 
+Later complete source-115 macOS and Linux Rust gates pass; see the
+[main checkpoint continuation](runtime-representation-main-candidate.md).
+The earlier failed runs below remain historical evidence, and their differing
+reclamation result has not been explained.
+
 The [complete goal](runtime-representation-goal.md) remains open. The
 [portable receipts](handover/2026-09-29-regexp-vm/manifest.json) retain the
 commands, source and artifact identities, raw successes and failures, startup

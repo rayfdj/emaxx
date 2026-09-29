@@ -1,0 +1,538 @@
+{
+  "cases": [
+    {
+      "case_id": "interpreted-lexical",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.2230830192565918
+          ],
+          "median": 0.2230830192565918
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.6229732036590576
+          ],
+          "median": 0.6229732036590576
+        }
+      },
+      "paired_ratios": [
+        2.7925621848541913
+      ],
+      "median_ratio": 2.7925621848541913,
+      "ratio_interval": [
+        2.7925621848541913,
+        2.7925621848541913
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "interpreted-dynamic",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.18764305114746094
+          ],
+          "median": 0.18764305114746094
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.4402179718017578
+          ],
+          "median": 0.4402179718017578
+        }
+      },
+      "paired_ratios": [
+        2.346039297004442
+      ],
+      "median_ratio": 2.346039297004442,
+      "ratio_interval": [
+        2.346039297004442,
+        2.346039297004442
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "interpreted-calls",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.2662539482116699
+          ],
+          "median": 0.2662539482116699
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.9049379825592041
+          ],
+          "median": 0.9049379825592041
+        }
+      },
+      "paired_ratios": [
+        3.398777703156481
+      ],
+      "median_ratio": 3.398777703156481,
+      "ratio_interval": [
+        3.398777703156481,
+        3.398777703156481
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "bytecode-calls",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.13766813278198242
+          ],
+          "median": 0.13766813278198242
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.452955961227417
+          ],
+          "median": 0.452955961227417
+        }
+      },
+      "paired_ratios": [
+        3.290201966672555
+      ],
+      "median_ratio": 3.290201966672555,
+      "ratio_interval": [
+        3.290201966672555,
+        3.290201966672555
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "native-execution",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.5669910907745361
+          ],
+          "median": 0.5669910907745361
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.8606009483337402
+          ],
+          "median": 1.8606009483337402
+        }
+      },
+      "paired_ratios": [
+        3.2815347165192192
+      ],
+      "median_ratio": 3.2815347165192192,
+      "ratio_interval": [
+        3.2815347165192192,
+        3.2815347165192192
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "interpreted-to-native",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.19392800331115723
+          ],
+          "median": 0.19392800331115723
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.5189821720123291
+          ],
+          "median": 0.5189821720123291
+        }
+      },
+      "paired_ratios": [
+        2.6761590030895275
+      ],
+      "median_ratio": 2.6761590030895275,
+      "ratio_interval": [
+        2.6761590030895275,
+        2.6761590030895275
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "bytecode-to-native",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.17205095291137695
+          ],
+          "median": 0.17205095291137695
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.3666870594024658
+          ],
+          "median": 1.3666870594024658
+        }
+      },
+      "paired_ratios": [
+        7.94350183056785
+      ],
+      "median_ratio": 7.94350183056785,
+      "ratio_interval": [
+        7.94350183056785,
+        7.94350183056785
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "native-to-interpreted",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.22292590141296387
+          ],
+          "median": 0.22292590141296387
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.7136659622192383
+          ],
+          "median": 0.7136659622192383
+        }
+      },
+      "paired_ratios": [
+        3.2013595445654044
+      ],
+      "median_ratio": 3.2013595445654044,
+      "ratio_interval": [
+        3.2013595445654044,
+        3.2013595445654044
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "native-to-bytecode",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.20532703399658203
+          ],
+          "median": 0.20532703399658203
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.7139790058135986
+          ],
+          "median": 0.7139790058135986
+        }
+      },
+      "paired_ratios": [
+        3.4772771608120725
+      ],
+      "median_ratio": 3.4772771608120725,
+      "ratio_interval": [
+        3.4772771608120725,
+        3.4772771608120725
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "cons-allocation",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.20309710502624512
+          ],
+          "median": 0.20309710502624512
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.40228891372680664
+          ],
+          "median": 0.40228891372680664
+        }
+      },
+      "paired_ratios": [
+        1.9807712851191113
+      ],
+      "median_ratio": 1.9807712851191113,
+      "ratio_interval": [
+        1.9807712851191113,
+        1.9807712851191113
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "list-traversal",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.3020668029785156
+          ],
+          "median": 0.3020668029785156
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.7153141498565674
+          ],
+          "median": 0.7153141498565674
+        }
+      },
+      "paired_ratios": [
+        2.3680660794342363
+      ],
+      "median_ratio": 2.3680660794342363,
+      "ratio_interval": [
+        2.3680660794342363,
+        2.3680660794342363
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "mapcar",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.14701604843139648
+          ],
+          "median": 0.14701604843139648
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.32829904556274414
+          ],
+          "median": 0.32829904556274414
+        }
+      },
+      "paired_ratios": [
+        2.233083048181243
+      ],
+      "median_ratio": 2.233083048181243,
+      "ratio_interval": [
+        2.233083048181243,
+        2.233083048181243
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "explicit-gc",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.17625689506530762
+          ],
+          "median": 0.17625689506530762
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.23526787757873535
+          ],
+          "median": 0.23526787757873535
+        }
+      },
+      "paired_ratios": [
+        1.3348009874539244
+      ],
+      "median_ratio": 1.3348009874539244,
+      "ratio_interval": [
+        1.3348009874539244,
+        1.3348009874539244
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "upstream-sort",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.3450181484222412
+          ],
+          "median": 0.3450181484222412
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.6893720626831055
+          ],
+          "median": 1.6893720626831055
+        }
+      },
+      "paired_ratios": [
+        4.896473041805362
+      ],
+      "median_ratio": 4.896473041805362,
+      "ratio_interval": [
+        4.896473041805362,
+        4.896473041805362
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "upstream-undo",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.1245110034942627
+          ],
+          "median": 0.1245110034942627
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            1.237205982208252
+          ],
+          "median": 1.237205982208252
+        }
+      },
+      "paired_ratios": [
+        9.936519243178862
+      ],
+      "median_ratio": 9.936519243178862,
+      "ratio_interval": [
+        9.936519243178862,
+        9.936519243178862
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    },
+    {
+      "case_id": "upstream-bindat",
+      "runners": {
+        "oracle": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.18052887916564941
+          ],
+          "median": 0.18052887916564941
+        },
+        "emaxx": {
+          "completed": 1,
+          "total": 1,
+          "samples": [
+            0.4922161102294922
+          ],
+          "median": 0.4922161102294922
+        }
+      },
+      "paired_ratios": [
+        2.7265228283938177
+      ],
+      "median_ratio": 2.7265228283938177,
+      "ratio_interval": [
+        2.7265228283938177,
+        2.7265228283938177
+      ],
+      "long_enough": true,
+      "allocation_counters_available": false,
+      "same_modes": true,
+      "criterion_satisfied": false
+    }
+  ],
+  "complete_inventory": true,
+  "geometric_mean_ratio": 3.172914749503274,
+  "criterion_satisfied": false,
+  "action": "pilot",
+  "certification_eligible": false,
+  "inputs_unchanged": true
+}

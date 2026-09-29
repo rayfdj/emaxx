@@ -1,0 +1,41 @@
+{
+  "commands": [
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "118",
+      "window",
+      "frame",
+      "undo",
+      "record_index",
+      "pdumper",
+      "--static"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "118",
+      "window",
+      "frame",
+      "undo",
+      "record_index",
+      "pdumper",
+      "--release"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "118",
+      "--ordinary"
+    ]
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-audit-followup/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Profile-backed window configuration save/restore reuses existing window index instead of scanning all pseudovectors. Payloads, deleted-window inclusion, id order and original assertions remain. No new registry or performance certification."
+}

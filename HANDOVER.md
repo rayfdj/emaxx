@@ -1,13 +1,21 @@
 # Resume the compact runtime goal here
 
-**Newest continuation:** read the [regexp and VM checkpoint](docs/runtime-representation-regexp-checkpoint.md)
-after the complete goal. Source 115 passes 152 debug and 152 release tests,
-strict static checks, four ordinary GNU comparisons and all 11 original package
-installation checkpoints. The latest full Linux run still fails after 2,177
-passes: a dead suspended-bytecode weak key remains. All 16 diagnostic workloads
-match results and execution modes but remain substantially slower than GNU;
-allocation accounting and parity are unfinished. The [portable evidence](docs/handover/2026-09-29-regexp-vm/manifest.json)
-preserves those results and all prior failures. The full goal remains open.
+**Newest continuation:** read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md)
+after the complete goal. Source 115 now passes the complete macOS gate with
+2,993 passes and the complete Linux gate with 3,005 passes; each retains the
+two existing terminal-test ignores. Native artifact identity and the original
+GC contracts pass. Earlier Linux reclamation failures remain preserved and
+their cause is not established. Full pinned compatibility, allocation accounting,
+the final audit and performance parity remain unfinished. The
+[portable evidence](docs/handover/2026-09-29-main-candidate/manifest.json)
+records the complete results. The full goal remains open.
+
+The [regexp and VM checkpoint](docs/runtime-representation-regexp-checkpoint.md)
+also records 152 debug and 152 release passes, strict static checks, four
+ordinary GNU comparisons and all 11 original package installation checkpoints.
+All 16 diagnostic workloads match results and execution modes but remain
+substantially slower than GNU. Its earlier failures and measurements remain
+in their original portable bundle.
 
 **Previous results:** source 109 completes the entire macOS gate: 2,890 library
 passes, two existing ignores, 60 binary passes and 39 integration passes,
@@ -78,6 +86,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).
    Then read the [newest regexp, VM and completed Linux continuation](docs/runtime-representation-regexp-checkpoint.md).
 2. [Latest combined-source continuation and profiling limits](docs/runtime-representation-integration-checkpoint.md).
    Then read the [completed validation and hash semantics continuation](docs/runtime-representation-hash-checkpoint.md).

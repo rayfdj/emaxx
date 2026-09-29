@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/usr/bin/sample",
+    "60563",
+    "10",
+    "1",
+    "-mayDie",
+    "-file",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source115-core-profiles/round-00/upstream-undo/oracle/sample.txt"
+  ],
+  "exit_code": 0,
+  "timeout": false,
+  "report_exists": true,
+  "qualification": "Raw whole-process stack sample; process results and modes are validated separately by the unchanged locked-suite validator."
+}

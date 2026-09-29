@@ -1,0 +1,56 @@
+
+running 50 tests
+test batch::tests::batch_evaluates_perf_named_forms_as_ordinary_lisp ... ok
+test batch::tests::batch_font_lock_honors_a_modes_custom_region_function ... ok
+test batch::tests::batch_load_resolution_uses_the_shared_gnu_search ... ok
+test batch::tests::batch_reconstruction_reaches_loadup_native_trampoline_transition ... ok
+test batch::tests::batch_reconstruction_registers_the_default_tty_colors ... ok
+test batch::tests::batch_runtime_applies_the_gnu_locale_startup_policy ... ok
+test batch::tests::batch_runtime_binds_command_line_args_left_to_nil ... ok
+test batch::tests::batch_runtime_can_load_align_stack ... ok
+test batch::tests::batch_runtime_can_load_ert_helpers ... ok
+test batch::tests::batch_runtime_exposes_generated_upstream_org_version_autoload_contract ... ok
+test batch::tests::batch_runtime_info_finds_a_dot_info_file_on_its_dynamic_path ... ok
+test batch::tests::batch_runtime_installs_generated_autoload_symbol_properties ... ok
+test batch::tests::batch_runtime_installs_generated_builtin_package_versions ... ok
+test batch::tests::batch_runtime_lets_the_compile_owner_initialize_its_patterns ... ok
+test batch::tests::batch_runtime_loads_gnu_inherited_cl_struct_setters ... ok
+test batch::tests::batch_runtime_preloads_gnu_simple_and_event_position_helpers ... ok
+test batch::tests::batch_runtime_preloads_gnus_complete_character_category_owner ... ok
+test batch::tests::batch_runtime_preloads_programming_mode_owners_in_parent_order ... ok
+test batch::tests::batch_runtime_preloads_the_complete_face_and_font_lock_owners ... ok
+test batch::tests::batch_runtime_preloads_the_complete_selection_owner ... ok
+test batch::tests::batch_runtime_preloads_the_complete_subr_owner ... ok
+test batch::tests::batch_runtime_preloads_the_complete_tab_bar_owner ... ok
+test batch::tests::batch_runtime_preloads_the_complete_tabulated_list_state ... ok
+test batch::tests::batch_runtime_preloads_the_dumped_electric_eldoc_cluster ... ok
+test batch::tests::batch_runtime_preloads_the_dumped_seq_surface ... ok
+test batch::tests::batch_runtime_preloads_the_generated_character_script_table ... ok
+test batch::tests::batch_runtime_preloads_the_gnu_compression_hook_surface ... ok
+test batch::tests::batch_runtime_preloads_the_gnu_paragraph_fill_and_comment_owners ... ok
+test batch::tests::batch_runtime_preloads_the_isearch_owner_and_full_map ... ok
+test batch::tests::batch_runtime_preloads_the_minor_mode_registration_policy ... ok
+test batch::tests::batch_runtime_preloads_the_mouse_owner_and_dynamic_context_menu_policy ... ok
+test batch::tests::batch_runtime_preserves_the_mule_ccl_boundary ... ok
+test batch::tests::batch_runtime_reconstructs_the_image_despite_a_shadowing_load_path ... ok
+test batch::tests::batch_runtime_records_ordered_initialization_times ... ok
+test batch::tests::batch_runtime_rejects_a_broken_resolvable_preload ... ok
+test batch::tests::batch_runtime_starts_with_gnu_scratch_lexical_binding ... ok
+test batch::tests::batch_runtime_uses_the_complete_files_auto_mode_registry ... ok
+test batch::tests::batch_stack_preserves_the_calling_thread_and_unwinds_back_to_it ... ok
+test batch::tests::batch_top_level_uses_the_form_installed_by_gnu_startup ... ok
+test batch::tests::dump_build_load_path_starts_at_the_gnu_source_lisp_root ... ok
+test batch::tests::dump_reconstruction_has_cache_then_gnu_system_native_paths ... ok
+test batch::tests::dumped_load_history_keeps_build_tree_provenance ... ok
+test batch::tests::kmacro_frontier_preloads_subr_conversion_and_register_owners ... ok
+test batch::tests::load_path_forwarding_supports_unchanged_gnu_startup_splicing ... ok
+test batch::tests::safe_run_hooks_reports_and_removes_a_failing_function_as_keyboard_c_does ... ok
+test batch::tests::safe_startup_hooks_inhibit_quit_and_observe_live_global_values ... ok
+test batch::tests::safe_startup_hooks_preserve_nonlocal_exits_and_restore_inhibit_quit ... ok
+test batch::tests::session_path_does_not_discover_the_gnu_test_tree ... ok
+test batch::tests::startup_process_modes_preserve_gnu_initialization_phases ... ok
+test batch::tests::xt_mouse_read_key_discards_the_unbound_down_event ... 
+ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 2846 filtered out; finished in 33.12s
+

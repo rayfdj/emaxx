@@ -1,0 +1,9 @@
+# Ubuntu's restricted user namespaces require an application profile.
+# This applies only to the bubblewrap executable in the ephemeral CI VM.
+# https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
+abi <abi/4.0>,
+include <tunables/global>
+
+profile emaxx-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

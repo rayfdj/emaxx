@@ -1,0 +1,14 @@
+{
+  "kind": "diagnostic_profile",
+  "command": [
+    "target/runtime-goal/resume-2026-09-28/profile-source118-core-runtime-pilot.py"
+  ],
+  "source_commit": "021ea58de29a5484afb3b6135a901e9ab34132f8",
+  "source_manifest": "source118-manifest.json",
+  "source_patch": "source118.patch",
+  "inputs": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/profile-source118-core-runtime-pilot.py": "fc85318be4797322db62cdeb42725bd0d3907230cbb26277f60325cecd756aba",
+    "/usr/bin/sample": "952a8f78c674e59dd3a0674f389380f94d1678669511dbcbbbeed55d96023853"
+  },
+  "qualification": "The locked upstream undo workload through the unchanged normal CLI and Lisp helper. Existing pilot mode uses one observation per process, no warmup; it is not the required full timing suite. Stack sampling includes startup, preparation and body. Builds/tests run concurrently; sampled elapsed times cannot establish performance. Missing allocation counters remain unavailable, never zero."
+}

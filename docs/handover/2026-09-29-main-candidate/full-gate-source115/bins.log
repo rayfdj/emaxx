@@ -1,0 +1,86 @@
+   Compiling emaxx v30.2.0 (/private/tmp/emaxx-runtime-reader-streams/emaxx)
+    Finished `gate` profile [optimized] target(s) in 1m 48s
+     Running unittests src/bin/compat-harness.rs (/private/tmp/emaxx-runtime-stream-validation/gate/deps/compat_harness-e1dbfb9050cacfa0)
+
+running 56 tests
+test prerequisites::tests::changed_prepared_executable_or_symlink_is_rejected ... ok
+test prerequisites::tests::launcher_preserves_arguments_and_does_not_interpret_path_metacharacters ... ok
+test prerequisites::tests::missing_prerequisites_fail_instead_of_selecting_fewer_tests ... ok
+test prerequisites::tests::staged_installation_preserves_native_paths_and_gnu_module_lookup ... ok
+test tests::a_timed_out_runner_earns_no_matching_outcomes ... ok
+test tests::aggregate_preserves_each_runners_pass_fail_and_skip_counts ... ok
+test tests::audit_missing_child_output_cannot_reuse_a_previous_pass ... ok
+test tests::audit_path_normalization_preserves_literal_payloads_and_child_names ... ok
+test tests::audit_raw_errors_survive_scoping_and_equal_count_name_substitutions_fail ... ok
+test tests::audit_report_identity_rejects_copied_or_misrouted_reports ... ok
+test tests::audit_resume_ignores_forged_scores_and_retains_each_editors_raw_evidence ... ok
+test tests::audit_resume_rejects_tampering_incomplete_receipts_and_other_run_inputs ... ok
+test tests::audit_resume_requires_matching_contract_before_using_any_file ... ok
+test tests::audit_runtime_image_changes_are_bound_to_provenance ... ok
+test tests::best_effort_landed_resolution_skips_ambiguous_targets ... ok
+test tests::cargo_target_cannot_be_shared_between_source_roots ... ok
+test tests::checked_in_frozen_manifests_match_their_pinned_counts ... ok
+test tests::command_reports_setup_timeout_before_the_loaded_marker ... ok
+test tests::command_timeout_resets_when_test_execution_starts ... ok
+test tests::command_uses_child_markers_for_sub_poll_body_timing ... ok
+test tests::concurrent_subject_use_is_rejected ... ok
+test tests::copied_harness_location_is_rejected ... ok
+test tests::emaxx_build_uses_the_harness_binary_profile ... ok
+test tests::every_subject_uses_a_dedicated_target_cache ... ok
+test tests::explicit_zero_timeout_is_rejected ... ok
+test tests::from_file_preserves_the_inclusive_tail_and_rejects_missing_or_reversed_ranges ... ok
+test tests::frozen_manifest_parser_rejects_duplicate_and_count_drift ... ok
+test tests::frozen_visits_zero_outcome_files_to_detect_new_selection ... ok
+test tests::isolated_test_checkout_excludes_ignored_state_and_restores_between_files ... ok
+test tests::manifest_file_filter_reports_missing_entry ... ok
+test tests::manifest_insert_dedupes_and_sorts_entries ... ok
+test tests::matching_results_do_not_hide_unsuccessful_execution ... ok
+test tests::paired_timeouts_are_incomplete_not_passing_or_slow ... ok
+test tests::parses_advance_compat_subjects ... ok
+test tests::path_spellings_cover_resolved_and_downcased_forms ... ok
+test tests::per_file_artifact_directory_preserves_tree_shape ... ok
+test tests::performance_warnings_do_not_fail_semantic_compatibility ... ok
+test tests::regression_add_accepts_multiple_files ... ok
+test tests::regression_manifest_allows_same_file_with_different_selector ... ok
+test tests::regression_manifest_rejects_duplicates ... ok
+test tests::rejects_ambiguous_landed_file_targets ... ok
+test tests::rejects_missing_landed_file_targets ... ok
+test tests::resolves_landed_files_by_basename_and_dedupes ... ok
+test tests::resolves_landed_files_by_relative_path ... ok
+test tests::runner_redirects_native_comp_cache_before_loading_tests ... ok
+test tests::runner_temp_directory_is_isolated_and_exported_portably ... ok
+test tests::runner_timing_flags_the_two_x_boundary ... ok
+test tests::runner_uses_upstream_working_directory_without_rewriting_source_provenance ... ok
+test tests::stale_emaxx_candidate_must_be_removed_before_build ... ok
+test tests::subject_comparison_rejects_incompatible_runs_and_pass_to_skip ... ok
+test tests::subject_comparison_separates_regressions_fixes_and_changed_failures ... ok
+test tests::subject_fingerprint_detects_runtime_or_rust_source_changes ... ok
+test tests::subject_report_accepts_the_batch_runners_quoted_selector_spelling ... ok
+test tests::synthesized_runner_failure_is_persisted_as_a_batch_report ... ok
+test tests::through_file_selects_the_canonical_inclusive_prefix ... ok
+test tests::unmanifested_result_names_flag_manifest_staleness_in_both_directions ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
+
+     Running unittests src/main.rs (/private/tmp/emaxx-runtime-stream-validation/gate/deps/emaxx-cfc46fe6b2517f0f)
+
+running 2 tests
+test tests::argmatch_matches_exactly_or_by_long_abbreviation_and_takes_values ... ok
+test tests::sort_args_orders_by_emacs_c_priority_and_keeps_option_arguments ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/make-fingerprint.rs (/private/tmp/emaxx-runtime-stream-validation/gate/deps/make_fingerprint-b2aef0cbdacfece7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/perf-harness.rs (/private/tmp/emaxx-runtime-stream-validation/gate/deps/perf_harness-6c8b59390a77588e)
+
+running 2 tests
+test tests::failed_processes_and_incomplete_reports_cannot_claim_completed_runs ... ok
+test tests::top_line_summary_only_counts_comparable_cases ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -1,0 +1,64 @@
+
+running 59 tests
+test tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected ... ok
+test tty::tests::align_to_display_specs_lay_out_as_blank_columns ... ok
+test tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions ... ok
+test tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer ... ok
+test tty::tests::control_characters_use_ascii_codes ... ok
+test tty::tests::display_columns_match_tab_expansion ... ok
+test tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell ... ok
+test tty::tests::embedded_display_newlines_are_hard_row_boundaries ... ok
+test tty::tests::function_keys_encode_as_symbols ... ok
+test tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules ... ok
+test tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu ... ok
+test tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph ... ok
+test tty::tests::hscroll_marker_precedes_the_requested_source_column ... ok
+test tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell ... ok
+test tty::tests::interactive_execution_inserts_through_lisp ... ok
+test tty::tests::interactive_startup_initializes_scratch_and_messages_buffers ... ok
+test tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells ... ok
+test tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input ... ok
+test tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys ... ok
+test tty::tests::key_descriptions_follow_gnu_spellings ... ok
+test tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined ... ok
+test tty::tests::long_lines_wrap_exactly_like_a_gnu_tty ... ok
+test tty::tests::margin_default_foreground_preserves_an_extending_background ... ok
+test tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent ... ok
+test tty::tests::meta_becomes_the_escape_prefix ... ok
+test tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face ... ok
+test tty::tests::minibuffer_cursor_follows_echo_wrapping ... ok
+test tty::tests::non_selected_windows_render_from_their_start_without_recentering ... ok
+test tty::tests::overlay_display_string_replaces_its_covered_buffer_range ... ok
+test tty::tests::paint_rows_compare_by_text_and_attribute ... ok
+test tty::tests::plain_characters_encode_as_their_codes ... ok
+test tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis ... ok
+test tty::tests::point_max_overlay_before_string_contributes_hard_display_rows ... ok
+test tty::tests::point_precedes_a_point_max_overlay_after_string ... ok
+test tty::tests::prefix_echo_accumulates_like_gnu ... ok
+test tty::tests::propertized_string_display_specs_replace_the_covered_text ... ok
+test tty::tests::rendered_lines_expand_tabs_to_eight_column_stops ... ok
+test tty::tests::segment_counts_follow_the_wrap_geometry ... ok
+test tty::tests::selected_windows_recenter_around_an_off_window_point ... ok
+test tty::tests::sgr_sequences_reset_then_select_each_attribute ... ok
+test tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators ... ok
+test tty::tests::terminal_editing_keys_use_gnu_codes ... ok
+test tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns ... ok
+test tty::tests::text_only_blits_preserve_an_extending_base_face ... ok
+test tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer ... ok
+test tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column ... ok
+test tty::tests::truncating_windows_keep_one_row_per_logical_line ... ok
+test tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order ... ok
+test tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows ... ok
+test tty::tests::universal_argument_prefixes_dispatch_through_simple_el ... ok
+test tty::tests::visual_row_positions_follow_wrap_geometry ... ok
+test tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs ... ok
+test tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail ... ok
+test tty::tests::window_margin_display_strings_do_not_enter_the_text_body ... ok
+test tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces ... ok
+test tty::tests::wrapped_echo_preserves_a_faced_trailing_space ... ok
+test tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row ... ok
+test tty::tty_differential_end_to_end ... ignored, requires target/release/emaxx and ../emacs/{src/emacs,lisp}
+test tty::tty_smoke_end_to_end ... ignored, requires target/release/emaxx and ../emacs/lisp
+
+test result: ok. 57 passed; 0 failed; 2 ignored; 0 measured; 2837 filtered out; finished in 4.90s
+
