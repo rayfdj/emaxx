@@ -3387,12 +3387,6 @@ fn key_parts_identity(parts: &[Value]) -> Vec<usize> {
     parts.iter().map(|event| event.word()).collect()
 }
 
-pub(crate) enum KeyLookupResult {
-    Missing,
-    Value(Value),
-    PrefixLen(usize),
-}
-
 pub(crate) fn keymap_lookup_binding_exact_parts(
     interp: &Interpreter,
     keymap: &Value,
@@ -3531,57 +3525,133 @@ pub(crate) fn keymap_lookup_binding(
     keymap_lookup_binding_exact_parts(interp, keymap, &approximate_key_parts(key))
 }
 
-pub(crate) fn keymap_lookup_sequence_single_map(
+// keymap.c:access_keymap_1 reads one event from the actual Lisp map. Prefix
+// maps are composed before reading the next event, so menu filters run once
+// and inherited prefixes remain visible. Nil bindings stop parent lookup but
+// allow another map of lower precedence to contribute a binding.
+fn keymap_access_event(
     interp: &mut Interpreter,
-    keymap: &Value,
-    key_parts: &[Value],
-    accept_default: bool,
+    map: Value,
+    event: Value,
+    mut accept_default: bool,
     env: &mut Env,
-) -> Result<KeyLookupResult, LispError> {
-    if key_parts.is_empty() {
-        return Ok(KeyLookupResult::Missing);
-    }
-    ensure_runtime_keymap_current(interp, keymap)?;
-
-    let binding =
-        keymap_lookup_binding_exact_parts_with_default(interp, keymap, key_parts, accept_default)?;
-    if !binding.is_nil() {
-        return Ok(KeyLookupResult::Value(keymap_get_keyelt(
-            interp, &binding, true, env,
-        )?));
-    }
-
-    for prefix_len in (1..key_parts.len()).rev() {
-        let binding = keymap_lookup_binding_exact_parts_with_default(
-            interp,
-            keymap,
-            &key_parts[..prefix_len],
-            accept_default,
-        )?;
-        if binding.is_nil() {
-            continue;
+) -> Result<Option<Value>, LispError> {
+    let map = keymap_reference_map(interp, &map, env).unwrap_or(map);
+    let map = public_keymap_value(interp, &map);
+    let tail = if map
+        .car()
+        .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
+    {
+        map.cdr()?
+    } else {
+        map
+    };
+    // Current map, cursor, result, composite tail, default, current event.
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
+        map,
+        tail,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        event,
+    ]);
+    let mut found = false;
+    let mut have_default = false;
+    loop {
+        if roots[1].cons_values().is_none() {
+            let Some(parent) = keymap_reference_map(interp, &roots[1], env) else {
+                break;
+            };
+            roots[1] = public_keymap_value(interp, &parent);
         }
-        let resolved = keymap_get_keyelt(interp, &binding, true, env)?;
-        if let Some(prefix_map) = keymap_reference_map(interp, &resolved, env) {
-            match keymap_lookup_sequence_single_map(
-                interp,
-                &prefix_map,
-                &key_parts[prefix_len..],
-                accept_default,
-                env,
-            )? {
-                KeyLookupResult::Missing => {}
-                KeyLookupResult::Value(value) => return Ok(KeyLookupResult::Value(value)),
-                KeyLookupResult::PrefixLen(len) => {
-                    return Ok(KeyLookupResult::PrefixLen(prefix_len + len));
-                }
+        let Some((binding, _)) = roots[1].cons_values() else {
+            break;
+        };
+        let value = if binding.eq_value(Value::symbol("keymap")) {
+            if found && roots[2].is_nil() {
+                break;
             }
+            if found {
+                let inherited = keymap_access_event(interp, roots[1], event, accept_default, env)?
+                    .and_then(|value| keymap_reference_map(interp, &value, env));
+                if let Some(parent) = inherited {
+                    if roots[3].cons_values().is_some() {
+                        roots[3].set_cdr(parent)?;
+                    } else {
+                        roots[3] = Value::cons(roots[2], parent);
+                        roots[2] = Value::cons(Value::symbol("keymap"), roots[3]);
+                    }
+                }
+                break;
+            }
+            None
+        } else if let Some(submap) = keymap_reference_map(interp, &binding, env) {
+            keymap_access_event(interp, submap, event, accept_default, env)?
         } else {
-            return Ok(KeyLookupResult::PrefixLen(prefix_len));
+            match binding.kind() {
+                Kind::Cons(_) => {
+                    let key = binding.car()?;
+                    if values_eq_in_env(interp, &key, &event, env) {
+                        Some(binding.cdr()?)
+                    } else {
+                        if accept_default && key == Value::T {
+                            roots[4] = binding.cdr()?;
+                            have_default = true;
+                            accept_default = false;
+                        }
+                        None
+                    }
+                }
+                Kind::Vector(vector) => event
+                    .as_integer()
+                    .ok()
+                    .and_then(|code| usize::try_from(code).ok())
+                    .and_then(|index| vector.get(index)),
+                Kind::CharTable(table) => event
+                    .as_integer()
+                    .ok()
+                    .and_then(|code| u32::try_from(code).ok())
+                    .filter(|code| *code <= 0x3f_ffff)
+                    .and_then(|code| interp.char_table_get(table, code))
+                    .filter(|value| !value.is_nil()),
+                _ => None,
+            }
+        };
+        if let Some(value) = value {
+            let value = if value == Value::T { Value::Nil } else { value };
+            let value = keymap_get_keyelt(interp, &value, true, env)?;
+            if keymap_reference_map(interp, &value, env).is_none() {
+                if !found || roots[2].is_nil() {
+                    roots[2] = value;
+                }
+                found = true;
+                if !value.is_nil() {
+                    break;
+                }
+            } else if !found || roots[2].is_nil() {
+                roots[2] = value;
+                found = true;
+            } else {
+                let tail = Value::list([value]);
+                if roots[3].cons_values().is_some() {
+                    roots[3].set_cdr(tail)?;
+                } else {
+                    roots[2] = Value::cons(Value::symbol("keymap"), Value::cons(roots[2], tail));
+                }
+                roots[3] = tail;
+            }
         }
+        // A filter may have changed this very cons's cdr.
+        roots[1] = roots[1].cdr()?;
+        interp.maybe_quit(env)?;
     }
-
-    Ok(KeyLookupResult::Missing)
+    if found {
+        Ok(Some(roots[2]))
+    } else if have_default {
+        keymap_get_keyelt(interp, &roots[4], true, env).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) fn keymap_lookup_sequence_value(
@@ -3600,84 +3670,25 @@ pub(crate) fn keymap_lookup_sequence_value_with_default(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    // GNU returns the map (or stack of maps) itself for an empty sequence.
-    // Help uses that identity operation to propagate root-level shadow maps.
     if key_parts.is_empty() {
         return Ok(*keymap_or_maps);
     }
-
-    if is_keymap_value(interp, keymap_or_maps) {
-        return Ok(
-            match keymap_lookup_sequence_single_map(
-                interp,
-                keymap_or_maps,
-                key_parts,
-                accept_default,
-                env,
-            )? {
-                KeyLookupResult::Missing => Value::Nil,
-                KeyLookupResult::Value(value) => value,
-                KeyLookupResult::PrefixLen(len) => Value::Integer(len as i64),
-            },
-        );
-    }
-
-    // GNU's keymap walkers call `lookup-key' on the current list TAIL while
-    // iterating a canonical sparse map.  Such a tail is intentionally not a
-    // `keymapp', but lookup still treats its `(EVENT . DEFINITION)' entries
-    // as a partial map.  Preserve that contract before interpreting an
-    // ordinary list as a list of complete keymaps.
-    if let Ok(entries) = keymap_or_maps.to_vec()
-        && entries.iter().any(|entry| entry.cons_values().is_some())
-        && !entries.iter().any(|entry| is_keymap_value(interp, entry))
-    {
-        for entry in &entries {
-            let Some((event, definition)) = entry.cons_values() else {
-                continue;
+    interp.with_lisp_stack_roots(&(keymap_or_maps, key_parts), |interp| {
+        let mut map = *keymap_or_maps;
+        for (index, event) in key_parts.iter().enumerate() {
+            let value = keymap_access_event(interp, map, *event, accept_default, env)?
+                .unwrap_or(Value::Nil);
+            if index + 1 == key_parts.len() {
+                return Ok(value);
+            }
+            let Some(prefix) = keymap_reference_map(interp, &value, env) else {
+                return Ok(Value::Integer((index + 1) as i64));
             };
-            let event_sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
-            let Ok(event_parts) = key_sequence_keymap_parts(&event_sequence) else {
-                continue;
-            };
-            if event_parts.is_empty()
-                || event_parts.len() > key_parts.len()
-                || !key_parts_match(&event_parts, &key_parts[..event_parts.len()])
-            {
-                continue;
-            }
-            let resolved = keymap_get_keyelt(interp, &definition, true, env)?;
-            if event_parts.len() == key_parts.len() {
-                return Ok(resolved);
-            }
-            if let Some(prefix_map) = keymap_reference_map(interp, &resolved, env) {
-                return keymap_lookup_sequence_value_with_default(
-                    interp,
-                    &prefix_map,
-                    &key_parts[event_parts.len()..],
-                    accept_default,
-                    env,
-                );
-            }
-            return Ok(Value::Integer(event_parts.len() as i64));
+            map = prefix;
+            interp.maybe_quit(env)?;
         }
-        return Ok(Value::Nil);
-    }
-
-    let mut prefix_match = None;
-    for keymap in keymap_or_maps.to_vec()? {
-        if !is_keymap_value(interp, &keymap) {
-            continue;
-        }
-        match keymap_lookup_sequence_single_map(interp, &keymap, key_parts, accept_default, env)? {
-            KeyLookupResult::Missing => {}
-            KeyLookupResult::Value(value) => return Ok(value),
-            KeyLookupResult::PrefixLen(len) => prefix_match = Some(len),
-        }
-    }
-
-    Ok(prefix_match
-        .map(|len| Value::Integer(len as i64))
-        .unwrap_or(Value::Nil))
+        unreachable!("nonempty key sequence returns at its final event")
+    })
 }
 
 pub(crate) fn keymap_get_keyelt(
@@ -3705,12 +3716,7 @@ pub(crate) fn keymap_get_keyelt(
                 while index + 1 < items.len() {
                     if matches!(items[index].kind(), Kind::Symbol(symbol) if symbol == ":filter") {
                         let filter = unwrap_function_quote(&items[index + 1]);
-                        definition = call_function_value(
-                            interp,
-                            &filter,
-                            std::slice::from_ref(&definition),
-                            env,
-                        )?;
+                        definition = interp.call_menu_item_filter(filter, definition, env)?;
                         break;
                     }
                     index += 2;

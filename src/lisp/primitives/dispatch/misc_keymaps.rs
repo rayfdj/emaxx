@@ -37,33 +37,22 @@ fn lookup_key_once(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let keymap = if keymap.is_nil() || matches!(keymap.kind(), Kind::Cons(_)) {
+        keymap
+    } else {
+        keymap_reference_map(interp, &keymap, env)
+            .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), keymap))?
+    };
     let normalized = normalize_lucid_key_events(interp, &key, env)?;
     interp.with_lisp_stack_roots(&(keymap, normalized), |interp| {
         let parts = key_sequence_keymap_parts(&normalized)?;
-        let mut found = keymap_lookup_sequence_value_with_default(
+        let found = keymap_lookup_sequence_value_with_default(
             interp,
             &keymap,
             &parts,
             accept_default,
             env,
         )?;
-        // lookup_key_1 returns the first non-prefix length even when the
-        // non-prefix binding is nil. Other keymap callers still want nil.
-        if found.is_nil() {
-            for prefix_len in 1..parts.len() {
-                let prefix = keymap_lookup_sequence_value_with_default(
-                    interp,
-                    &keymap,
-                    &parts[..prefix_len],
-                    accept_default,
-                    env,
-                )?;
-                if keymap_reference_map(interp, &prefix, env).is_none() {
-                    found = Value::Integer(prefix_len as i64);
-                    break;
-                }
-            }
-        }
         if let Kind::Integer(prefix_len) = found.kind() {
             Ok(Value::Integer(key_sequence_prefix_event_count(
                 &normalized,
