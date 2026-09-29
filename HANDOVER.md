@@ -6,7 +6,14 @@ release controls**, including all three previously failing assertions. It fixes
 Meta event boundaries and preserves GNU's textual-vector key translation. The
 reclamation fixture still requires live survival and eventual collection in all
 three execution modes, now after the creating/calling frames return. Full macOS
-validation is running; fresh Linux validation follows on PR #77.
+validation is running alongside [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36544217147),
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36544220911) and the
+[Linux reclamation control](https://github.com/rayfdj/emaxx/actions/runs/36544224404)
+on PR #77, published at `900a6b7f`. The reclamation control has completed and
+passes; both full Linux runs remain pending. All thirteen ordinary exact GNU fixtures
+and four unchanged upstream reports now match, including all three repeat tests.
+[5,618 portable receipts](docs/handover/2026-09-29-compatibility-gate-repair/manifest.json)
+include original failed runs, identities and the current selected evidence.
 
 Source 148's full Rust gates failed: macOS 2,185 passes/one failure and Linux
 2,192 passes/two failures, with later stages unexecuted. Its Linux frozen run
@@ -15,8 +22,11 @@ completed **all 519 files**, with 7,927/7,928 matching outcomes; only
 The previous [history](docs/handover/2026-09-29-compatibility-history/manifest.json)
 and [source148 receipts](docs/handover/2026-09-29-compatibility/manifest.json)
 remain unchanged. Main's hash checkpoint is merged through PR #76 at `1d1e8cdc`.
-The separate keymap facade migration is parked and is not part of this merge
-candidate. The architecture and performance goal is **not complete**.
+The [separately packaged keymap draft](docs/handover/2026-09-29-keymap-authority-draft/manifest.json)
+is parked and is not part of the production merge candidate. It compiles with
+one warning and has no executed tests; its source150 patch replays exactly
+from published `c2d328ab`, but predates the source153 lookup repair. The
+architecture and performance goal is **not complete**.
 
 **Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
 after the complete goal. Source 133 replaces the host record and four side maps

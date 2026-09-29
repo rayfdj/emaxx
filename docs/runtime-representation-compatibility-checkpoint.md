@@ -11,8 +11,21 @@ The [complete goal](runtime-representation-goal.md) remains open.
 Source 153 passes strict compiler, formatting, warnings-denied Clippy and diff
 checks, plus **382 debug and 382 release controls**, zero failures or ignores.
 It includes the original parameterized-character control omitted from the earlier
-selected set. Ordinary comparisons and the complete macOS gate are underway;
-fresh Linux validation is still required before merging this repair.
+selected set. All thirteen ordinary GNU comparisons pass. The unchanged
+upstream repeat file passes all three tests, keymap passes all 46, casing
+matches ten passes and one existing locale skip, and generalized variables
+match six passes and two existing expected failures, including full messages.
+The [5,618 portable receipts](handover/2026-09-29-compatibility-gate-repair/manifest.json)
+preserve all inputs, outcomes and original failures.
+
+The complete macOS gate is running on production `82fcb6c9`. Published
+`900a6b7f` has the same 326 compiled/test inputs. Fresh Linux runs are
+[complete Rust](https://github.com/rayfdj/emaxx/actions/runs/36544217147),
+[full frozen](https://github.com/rayfdj/emaxx/actions/runs/36544220911) and
+[reclamation replay](https://github.com/rayfdj/emaxx/actions/runs/36544224404).
+The reclamation replay passes its original named control, zero failures or
+ignores; the downloaded executable and image match their recorded hashes.
+Both full Linux runs and full macOS validation remain pending. PR #77 remains a draft.
 
 The original source148 complete Rust gates fail: macOS 2,185 passes/one failure,
 Linux 2,192 passes/two failures. Four later library groups and both Cargo stages
@@ -26,8 +39,8 @@ The second Linux assertion fails in GNU itself, before Emaxx runs: the native
 payload is still retained while its enclosing caller is active. The fixture now
 returns from all creating/calling frames before collecting. All live-payload
 checks, actual execution-mode predicates and the required final zero count in
-every mode remain. Three ordinary Darwin GNU runs pass; the revised Linux
-contract still requires validation. No ignore or expected failure was added.
+every mode remain. Three ordinary Darwin GNU runs and the fresh Linux replay
+pass; full-gate coverage remains pending. No ignore or expected failure was added.
 
 The [source148 Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
 finishes all 519 files and compares all 7,928 required outcomes: 7,927 match and
@@ -41,7 +54,11 @@ Source152 passes 381 debug tests and fails the existing textual-vector key
 contract; thirteen ordinary comparisons pass. Its superseded full gate is
 cancelled during compilation and establishes no full-test result. Source153
 restores the GNU translation step and all three original failed assertions pass.
-The separate keymap representation draft149/150 remains parked locally.
+The separate [keymap representation draft149/150](handover/2026-09-29-keymap-authority-draft/manifest.json)
+remains parked. Its source150 patch reproduces every manifest input from
+published `c2d328ab`. It has one compiler warning, no executed tests, and
+requires explicit integration of the newer source153 lookup repair. It is
+packaged as unfinished continuation material, not production implementation.
 
 ## Changes and GNU reference
 
