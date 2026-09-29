@@ -45,10 +45,10 @@ thread_local! {
 }
 
 struct ResumeGuard(*const ResumeContext);
-struct StackBaseGuard(Option<*const usize>);
+pub(crate) struct StackBaseGuard(Option<*const usize>);
 
 impl StackBaseGuard {
-    fn enter(base: usize) -> Self {
+    pub(crate) fn enter(base: usize) -> Self {
         Self(CURRENT_STACK_BASE.replace(Some(base as *const usize)))
     }
 }

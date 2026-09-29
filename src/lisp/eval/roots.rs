@@ -376,17 +376,32 @@ mod tests {
             std::hint::black_box(&os_roots);
         }
 
-        let mut interpreter = Interpreter::new();
-        let table = weak_key_table(&mut interpreter, "alternate-stack-weak-table");
-        for panic in [false, true] {
-            nested(&mut interpreter, &table, panic);
-            crate::lisp::alloc::clobber_stack();
-            assert_eq!(
-                weak_entries(&mut interpreter, &table),
-                0,
-                "no region or key remains after its caller frame ends"
-            );
+        fn exercise() {
+            let mut interpreter = Interpreter::new();
+            let table = weak_key_table(&mut interpreter, "alternate-stack-weak-table");
+            for panic in [false, true] {
+                nested(&mut interpreter, &table, panic);
+                crate::lisp::alloc::clobber_stack();
+                assert_eq!(
+                    weak_entries(&mut interpreter, &table),
+                    0,
+                    "no region or key remains after its caller frame ends"
+                );
+            }
         }
+        // Cover both private callers with the OS-stack fallback and the
+        // actual public host boundary, including nested entry's same bound.
+        exercise();
+        crate::lisp::runtime::with_runtime(|| {
+            let base = super::super::continuations::current_stack_base();
+            assert!(base.is_some());
+            crate::lisp::runtime::with_runtime(|| {
+                assert_eq!(super::super::continuations::current_stack_base(), base);
+                exercise();
+            });
+            assert_eq!(super::super::continuations::current_stack_base(), base);
+        });
+        assert!(super::super::continuations::current_stack_base().is_none());
     }
 
     #[test]

@@ -23,6 +23,13 @@ impl Drop for Entered {
     }
 }
 
+// Keep Lisp locals in a frame below the registered boundary even when the
+// compiler inlines the closure body. The host-entry frame contains host data.
+#[inline(never)]
+fn invoke_owned_body<R>(body: impl FnOnce() -> R) -> R {
+    body()
+}
+
 /// Execute a complete host call while this thread owns the Lisp heap.
 /// Nested entry on the same thread retains the outer lock. Both the result
 /// and every value captured by a public caller must be owned host data:
@@ -35,7 +42,19 @@ pub(crate) fn with_runtime<R>(body: impl FnOnce() -> R) -> R {
     let _lock = RUNTIME.lock().expect("Lisp runtime panicked while active");
     ENTERED.set(true);
     let _entered = Entered;
-    body()
+    // emacs.c:main records a local as stack_bottom. This host entry is the
+    // corresponding boundary: no public caller holds or returns Lisp GC
+    // handles, and nested entries retain the outer boundary above. Register
+    // it before an alternate stack records its waiting caller. In particular,
+    // GNU's Linux seccomp filters do not permit pthread_getattr_np's affinity
+    // query; no OS-stack query is needed for a range this frame already owns.
+    let stack_bottom = 0usize;
+    let _stack = super::eval::continuations::StackBaseGuard::enter(
+        std::ptr::from_ref(&stack_bottom) as usize,
+    );
+    let result = invoke_owned_body(body);
+    std::hint::black_box(&stack_bottom);
+    result
 }
 
 #[cfg(test)]
