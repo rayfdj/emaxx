@@ -43,13 +43,63 @@ fn lookup_key_once(
         keymap_reference_map(interp, &keymap, env)
             .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), keymap))?
     };
-    let normalized = normalize_lucid_key_events(interp, &key, env)?;
-    interp.with_lisp_stack_roots(&(keymap, normalized), |interp| {
-        // lookup_key_1 advances once per original event. Meta-to-ESC is
-        // part of access_keymap_1; a missing Meta prefix on the final event
-        // is an undefined binding, not a zero-length failed sequence.
-        let events = key_description_events(&normalized)?;
-        keymap_lookup_sequence_value_with_default(interp, &keymap, &events, accept_default, env)
+    interp.with_lisp_stack_roots(&(keymap, key), |interp| {
+        // keymap.c:possibly_translate_key_sequence delegates the ["C-x"]
+        // syntax to unchanged key-valid-p/key-parse, including redefinition
+        // and invalid descriptions that must remain literal string events.
+        let translated = if let Kind::Vector(vector) = key.kind()
+            && vector.len() == 1
+            && let Some(description) = vector.get(0).filter(|value| string_like(value).is_some())
+        {
+            if interp.lookup_function("key-valid-p", env).is_err() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("error"),
+                    Value::string("`key-valid-p' is not defined, so this syntax can't be used: %s"),
+                    key,
+                ])));
+            }
+            let valid = interp.call_function_value(
+                Value::symbol("key-valid-p"),
+                Some("key-valid-p"),
+                &[description],
+                env,
+            )?;
+            if valid.is_nil() {
+                key
+            } else {
+                let parsed = interp.call_function_value(
+                    Value::symbol("key-parse"),
+                    Some("key-parse"),
+                    &[description],
+                    env,
+                )?;
+                if key_description_events(&parsed)?.is_empty() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("error"),
+                        Value::string("Invalid `key-parse' syntax: %S"),
+                        parsed,
+                    ])));
+                }
+                parsed
+            }
+        } else {
+            key
+        };
+        interp.with_lisp_stack_roots(&translated, |interp| {
+            let normalized = normalize_lucid_key_events(interp, &translated, env)?;
+            interp.with_lisp_stack_roots(&normalized, |interp| {
+                // lookup_key_1 advances once per original (or translated)
+                // event. Meta-to-ESC is part of access_keymap_1 itself.
+                let events = key_description_events(&normalized)?;
+                keymap_lookup_sequence_value_with_default(
+                    interp,
+                    &keymap,
+                    &events,
+                    accept_default,
+                    env,
+                )
+            })
+        })
     })
 }
 
