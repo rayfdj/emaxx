@@ -1,0 +1,47 @@
+{
+  "commit": "f0ea449c31e7db2f80f6c33e998cfd307144715a",
+  "run": "https://github.com/rayfdj/emaxx/actions/runs/36510727754",
+  "library_passed": 2902,
+  "library_ignored": 2,
+  "cargo": {
+    "bins": 61,
+    "integration": 42
+  },
+  "test_binary": {
+    "path": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "sha256": "de097801597d70c8127eb24867142275d4d8ca0222ff5e4c039bd2eedcfe08f7"
+  },
+  "retained_artifacts": {
+    "gate_status": "passed",
+    "gate_summary_sha256": "11dc6f81aefd2a9bfb2ab60efffe326ce53e6df11333de9d9871f6cd1358e5ea",
+    "qualification": "Post-run files; no inference that every test used every image.",
+    "status": "retained",
+    "files": [
+      {
+        "original": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+        "artifact": "libtest",
+        "sha256": "de097801597d70c8127eb24867142275d4d8ca0222ff5e4c039bd2eedcfe08f7",
+        "bytes": 34304200
+      },
+      {
+        "original": "target/grouped-gate/fixture-images/loadup-02980a17-988ea42f.pdmp",
+        "artifact": "fixture-images/loadup-02980a17-988ea42f.pdmp",
+        "sha256": "3dcd994145ac48bb6b842abda6274949c9ebb7ec008222a96eefe79b4d0d2dff",
+        "bytes": 23480704
+      },
+      {
+        "original": "target/grouped-gate/fixture-images/loadup-3a03a792-988ea42f.pdmp",
+        "artifact": "fixture-images/loadup-3a03a792-988ea42f.pdmp",
+        "sha256": "133d9d2b37bfe691d7fe6757485ae9c6dba55e8e09d464636e35fde2d06944b8",
+        "bytes": 23480720
+      },
+      {
+        "original": "target/grouped-gate/fixture-images/loadup-de097801-988ea42f.pdmp",
+        "artifact": "fixture-images/loadup-de097801-988ea42f.pdmp",
+        "sha256": "790bffa298aaa9c7d8b61a4fb5bd7dc2d2cbafb2ecd1bad9b83d4cfbef1bb1a8",
+        "bytes": 23477568
+      }
+    ]
+  },
+  "qualification": "Complete original Linux Rust gate passes on combined119 runtime with120 evidence collector. Prior failed executions remain preserved; no frozen/performance certification."
+}

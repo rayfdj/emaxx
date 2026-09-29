@@ -26,9 +26,26 @@ Both original suspended-root contracts are included. A fresh ordinary binary
 and image run every one of the 16 locked workloads; all 32 processes complete
 with exact results and actual execution modes. The validated source is
 integrated on the task branch at `1c91576c5300c8a90a4629670b25d603e0c92f5a`,
-with all 362 recorded source inputs unchanged. Its complete macOS gate is
-running; full Linux validation has been dispatched separately. Neither is yet
-reported as a pass.
+with all 362 recorded source inputs unchanged. Both complete Rust gates now
+pass on this runtime source:
+
+| Platform | Library passes | Existing ignores | Binary passes | Integration passes |
+| --- | ---: | ---: | ---: | ---: |
+| macOS ARM | 2,894 | 2 | 60 | 39 |
+| Linux x86-64 | 2,902 | 2 | 61 | 42 |
+
+The original complete inventories, selectors, assertions and timeouts are
+unchanged. Both suspended-root contracts and all nine native artifact identity
+fixtures pass. The macOS driver records 2,286.25 seconds, with source unchanged
+and immutable libtest SHA-256
+`d90e7fe8294d4560668e352f6e895af130988a70978fe79b7b5b6b7d2b5cd637`.
+The [complete Linux run](https://github.com/rayfdj/emaxx/actions/runs/36510727754)
+on `f0ea449c31e7db2f80f6c33e998cfd307144715a` also passes the evidence collector;
+its retained libtest SHA-256 is
+`de097801597d70c8127eb24867142275d4d8ca0222ff5e4c039bd2eedcfe08f7`.
+The actual ELF and three post-run fixture images were downloaded and hash
+verified. The [78 complete-run receipts](handover/2026-09-29-call-window-complete/manifest.json)
+preserve every group log, inventory, command, source identity and outcome.
 
 Source-115 whole-process profiles contained 118 self samples in native symbol
 interning, and the undo profile contained 265/253 self samples in window
@@ -57,7 +74,12 @@ combined commands, source manifests, raw selected checks, every workload pilot
 and artifact-tool controls. The earlier
 [bundle](handover/2026-09-29-main-candidate/manifest.json) preserves each separate
 patch and profile. Earlier Linux reclamation failures remain unexplained. The
-new complete source-115 terminal comparison is still running; full final-source
-pinned comparisons, shared hash allocation, remaining representation and
+source-115 complete terminal comparison matched its first 146 scenarios, then
+failed during GNU startup for scenario 147, `buffer-list`; the remaining 76
+scenarios did not run. The source and inputs were unchanged. A diagnostic replay
+of the original scenario passed all three checkpoints with the original
+120-second timeout, while recording raw terminal output and both clocks. It
+does not turn the failed full run into a pass. A separate replay of the failed
+scenario and remaining tail is underway. Full final-source pinned comparisons, shared hash allocation, remaining representation and
 ownership work, accounting, the adversarial audit and performance parity remain
 unfinished.

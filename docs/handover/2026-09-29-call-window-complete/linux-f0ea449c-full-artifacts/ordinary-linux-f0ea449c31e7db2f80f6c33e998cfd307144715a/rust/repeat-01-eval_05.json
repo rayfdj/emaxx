@@ -1,0 +1,17 @@
+{
+  "group": "eval_05",
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::eval::tests::eval_05::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 352,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 202.54245778799998,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-eval_05.log"
+}

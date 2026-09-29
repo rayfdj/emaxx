@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tools/ttydiff.py",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "/private/tmp/emaxx-runtime-gnu-20260928/lisp",
+    "buffer-list"
+  ],
+  "inputs": {
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx": "7a979482649db10f97b815b03285ca933b6f02dc6d8d384068c5f9b537bbff81",
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx.pdmp": "9a5a17a8f75eaddbb65ac3d4e06e713d6628d85ae8f8f3d8e463f6e055d90f45",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs": "02045bece8f8102607394bbc1686235e1b781ccc7fa27c955bcdd67bf48288e8",
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs.pdmp": "5d27373ee6d6e04825945c02eefdfc3d3ac5e4d141ebe9f9a66d1f5a9df491b9",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/tools/ttydiff.py": "6be161131b199da20d486cb01f8043f6855b54774cc23cb386bf148ae0e865e5",
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/diagnose-source115-buffer-startup.py": "ee049c7609e4f497b35b01bf1945058fa481bdb839a9ca72733acd147fad500e"
+  },
+  "qualification": "Original scenario, timeout, waits and comparisons; added raw-output and wall/monotonic timing observations only. A diagnostic replay cannot clear the failed full run.",
+  "inputs_unchanged": true
+}

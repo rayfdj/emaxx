@@ -1,0 +1,16 @@
+{
+  "macOS": {
+    "passed": 2894,
+    "failed": 0,
+    "ignored": 2,
+    "bins_passed": 60,
+    "integration_passed": 39
+  },
+  "Linux": {
+    "passed": 2902,
+    "failed": 0,
+    "ignored": 2,
+    "bins_passed": 61,
+    "integration_passed": 42
+  }
+}

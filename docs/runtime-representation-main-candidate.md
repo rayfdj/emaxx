@@ -53,8 +53,12 @@ preserves the generated startup image and rules out that particular prelude as
 a sufficient reproduction on this source. No assertion was weakened.
 
 The original package installation terminal scenario passes all 11 checkpoints
-on source 115. A new complete 223-scenario terminal comparison is running at
-this checkpoint; it is not yet a complete pass. The earlier source-108 full
+on source 115. The new complete 223-scenario terminal comparison matched 146 scenarios, then
+failed during GNU startup for `buffer-list`, leaving 76 later scenarios
+unexecuted. The original-timeout diagnostic replay passed that scenario,
+without clearing the failed full run; the
+[later checkpoint](runtime-representation-call-window-checkpoint.md) preserves
+the raw failure and diagnostic. The earlier source-108 full
 terminal failures remain recorded. GNU's native ABI matches the recorded
 configuration, but the available GNU executable differs from the frozen Darwin
 pin. No oracle lock has changed and no full pinned compatibility certificate
@@ -76,8 +80,9 @@ the symbol already in hand; `021ea58de29a5484afb3b6135a901e9ab34132f8` visits
 the existing window index when saving/restoring configurations. They pass
 53 and 180 selected tests respectively in each of debug and release, strict
 static checks, fresh ordinary images and all 16 workload result/mode checks.
-Their combined source is undergoing separate validation. These checks do not
-extend the complete source-115 gate results to the later code.
+Their combined source has since passed its own complete macOS and Linux Rust
+gates, recorded in the [follow-up](runtime-representation-call-window-checkpoint.md).
+Those are separate results; the source-115 gate is not extended to later code.
 The portable bundle retains the two patches against `968bf33b`, their exact
 source manifests, commands, raw selected checks and all ordinary pilot outcomes:
 [native call patch](handover/2026-09-29-main-candidate/source117.patch) and

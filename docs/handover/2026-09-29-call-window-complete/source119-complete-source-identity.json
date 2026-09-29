@@ -1,0 +1,7 @@
+{
+  "candidate": "3cfcc20c9c6debabbe726be1a6121d7a03a68fde",
+  "source_manifest": "source119-manifest.json",
+  "source_files": 362,
+  "all_manifest_files_unchanged": true,
+  "qualification": "Runtime source119. Source120 evidence collector has separate controls and the complete Linux workflow."
+}

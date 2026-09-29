@@ -1,0 +1,17 @@
+{
+  "group": "batch",
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "batch::tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 50,
+  "expected_ignored": 0,
+  "template": false,
+  "test_threads": 1,
+  "elapsed_seconds": 32.525749529999985,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-batch.log"
+}

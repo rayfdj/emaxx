@@ -1,0 +1,103 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+    "-nw",
+    "-Q",
+    "--eval",
+    "(progn (setq features (delq 'ns features)) (define-key global-map [?\\s-c] nil) (define-key global-map [?\\s-u] nil) (makunbound 'menu-bar-edit-menu) (load \"/private/tmp/emaxx-runtime-gnu-20260928/lisp/menu-bar.el\" nil t t))",
+    "/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/ttydiff-buffer-list-77z1ioay.dat"
+  ],
+  "pid": 74646,
+  "events": [
+    {
+      "kind": "output",
+      "wall": 1790651546.2474282,
+      "monotonic": 0.46516775,
+      "bytes": 24
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.255984,
+      "monotonic": 0.473722791,
+      "bytes": 51
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.2561762,
+      "monotonic": 0.473913666,
+      "bytes": 24
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.2863529,
+      "monotonic": 0.5040925,
+      "bytes": 5
+    },
+    {
+      "kind": "wait_boot",
+      "arguments": [
+        120.0
+      ],
+      "wall_start": 1790651545.945216,
+      "monotonic_start": 0.16295475,
+      "status": "completed",
+      "wall_seconds": 0.5460960865020752,
+      "monotonic_seconds": 0.546098541
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.9706602,
+      "monotonic": 1.188404166,
+      "bytes": 392
+    },
+    {
+      "kind": "output",
+      "wall": 1790651548.291358,
+      "monotonic": 2.509116166,
+      "bytes": 16
+    },
+    {
+      "kind": "output",
+      "wall": 1790651548.2916732,
+      "monotonic": 2.5094305,
+      "bytes": 114
+    },
+    {
+      "kind": "output",
+      "wall": 1790651548.318479,
+      "monotonic": 2.536236958,
+      "bytes": 709
+    },
+    {
+      "kind": "wait_for_screen_text",
+      "arguments": [
+        "ttydiff-buffer-l",
+        120.0,
+        0.5
+      ],
+      "wall_start": 1790651546.970622,
+      "monotonic_start": 1.188366791,
+      "status": "completed",
+      "wall_seconds": 1.850846767425537,
+      "monotonic_seconds": 1.850865625
+    },
+    {
+      "kind": "output",
+      "wall": 1790651549.809435,
+      "monotonic": 4.027208958,
+      "bytes": 706
+    },
+    {
+      "kind": "output",
+      "wall": 1790651553.812423,
+      "monotonic": 8.030234166,
+      "bytes": 386
+    },
+    {
+      "kind": "output",
+      "wall": 1790651554.522502,
+      "monotonic": 8.740320541,
+      "bytes": 64
+    }
+  ]
+}
