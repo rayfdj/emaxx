@@ -55,7 +55,7 @@ fixtures exactly: copy, captured functions, captured symbols, actual buckets,
 purecopy, constructor ordering, positioned callbacks and positioned-key copying.
 Every process exits zero with empty stderr and unchanged source/artifact hashes.
 These GNU comparisons use the source-matched candidate, not the frozen Darwin
-executable. Complete macOS and Linux Rust gates are pending.
+executable. The complete Rust gates subsequently fail as recorded below.
 
 The [portable receipts](handover/2026-09-29-hash-allocation/manifest.json) retain
 commands, source manifests, original failures, exact binary/image identities,
@@ -90,12 +90,44 @@ A separate GNU purecopy probe with unused slots aborts with exit -6. That failed
 probe remains preserved; a distinct full-table control passes. No GNU crash is
 counted as a pass or deliberately reproduced in Rust.
 
+## Complete-gate failure and assertion repair
+
+The original source-133 complete gates both fail at
+`dump_emacs_portable_restores_context_and_reports_native_image_limit`: 2,174
+passes on macOS and 2,182 on Linux precede the one failure. Four later library
+groups and all later Cargo stages remain unexecuted. The
+[Linux run](https://github.com/rayfdj/emaxx/actions/runs/36524987767) and
+[portable failure receipts](handover/2026-09-29-hash-gate-repair/manifest.json)
+retain the exact source, executable, image, logs and incomplete inventories.
+The downloaded Linux executable and image were checked against their recorded
+hashes.
+
+The test still expected reopening 117 native units to advance `next-record-id`
+by 117. GNU `pdumper.c:RELOC_NATIVE_COMP_UNIT` creates each unit's
+`lambda_gc_guard_h` with `Fmake_hash_table`; these tables now have their own
+allocation, so the observed record-counter change is correctly zero. Source 135
+(audit commit `b04cd0bc`, integration `27effbdd`) removes the special counter
+exception and requires the entire remembered-scalar group to match exactly.
+Every other root, native-unit and restored-behavior assertion remains. This is
+a test-only change. Both dump controls pass in debug and release, with zero
+ignores, and all strict static checks pass. Fresh complete macOS and
+[Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36527539384) are running.
+
+All 16 locked workloads also complete on the ordinary source-133 executable:
+32 successful processes, exact results and execution modes, unchanged inputs.
+Single-observation body ratios range from 1.31 to 8.55 times GNU, with geometric
+mean 3.13. These diagnostics ran alongside correctness work and lack allocation
+counters; they establish neither a controlled speedup nor performance parity.
+Every raw sample is in the same follow-up bundle.
+
 ## Remaining work
 
 The previous main checkpoint's full terminal comparison passes all 223 scenarios,
 but its Linux frozen run remains failed and incomplete: two of 500 compared
 files differ, the next keymap report has invalid UTF-8 and 18 later files never
-execute. The same original keymap file reproduces nine Emaxx failures on macOS
+execute in that run. A [separate tail run](https://github.com/rayfdj/emaxx/actions/runs/36524566529)
+on the same main runtime passes those 18 files and 468 outcomes, with no
+mismatches; it does not clear the failed full run. The same original keymap file reproduces nine Emaxx failures on macOS
 while all 46 GNU tests pass. See the [compatibility record](runtime-representation-call-window-checkpoint.md).
 
 Complete gates for this hash source, final pinned comparisons on both platforms,

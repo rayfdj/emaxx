@@ -4,10 +4,14 @@
 after the complete goal. Source 133 replaces the host record and four side maps
 with one GNU-compatible allocation and owned arrays shared by all execution
 engines, GC and image loading. It passes 105 selected debug and 271 release tests,
-all strict static checks and eight ordinary exact GNU comparisons. Complete
-macOS and Linux gates are pending. Original failures and two GNU-grounded test
-corrections remain in the portable evidence. This checkpoint is not merged yet;
-the full goal remains open.
+all strict static checks and eight ordinary exact GNU comparisons. Both complete
+gates then fail on a dump test that still expects the removed hash record
+allocator to advance. Source 135 corrects that assertion to require exact
+restoration of every remembered scalar; its two debug and two release dump
+controls and strict checks pass. Fresh complete gates are running on PR #76,
+head `27effbdd`. The original failures, diagnostic workload results and separate
+Linux compatibility tail are [preserved](docs/handover/2026-09-29-hash-gate-repair/manifest.json).
+This checkpoint is not merged yet; the full goal remains open.
 
 **Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
 combines two measured ordinary-path improvements, with 232 debug and 232 release
