@@ -1222,10 +1222,15 @@ pub(crate) fn value_ordering(
         return Err(type_mismatch_signal(left, right));
     }
 
-    if matches!(left.kind(), Kind::CharTable(_)) || matches!(right.kind(), Kind::CharTable(_)) {
+    // fns.c:value_cmp treats distinct pseudovectors without a dedicated
+    // ordering (including hash and character tables) as unordered. Their
+    // contents do not order them; different pseudovector types still signal.
+    if matches!(left.kind(), Kind::CharTable(_) | Kind::HashTable(_))
+        || matches!(right.kind(), Kind::CharTable(_) | Kind::HashTable(_))
+    {
         return if matches!(
             (left.kind(), right.kind()),
-            (Kind::CharTable(_), Kind::CharTable(_))
+            (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::HashTable(_), Kind::HashTable(_))
         ) {
             Ok(ValueOrder::Unordered)
         } else {
