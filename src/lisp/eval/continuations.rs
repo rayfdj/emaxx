@@ -390,6 +390,10 @@ mod tests {
         for (continuation, roots, enabled) in
             [(&mut first, 2, Value::T), (&mut second, 1, Value::Nil)]
         {
+            // Earlier collections can leave pointer words in returned
+            // driver frames. Clear only dead stack space: both suspended
+            // native stacks and every live caller remain GC roots.
+            crate::lisp::alloc::clobber_stack();
             crate::lisp::primitives::call(
                 &mut interpreter,
                 "garbage-collect",
@@ -411,6 +415,7 @@ mod tests {
             );
             assert!(continuation.done());
         }
+        crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after both native stacks return");
         assert!((table_id.count() == 0));
@@ -463,6 +468,7 @@ mod tests {
             "native-only word survived the other stack's collection"
         );
         assert!(continuation.done());
+        crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after native frame exits");
         assert!(

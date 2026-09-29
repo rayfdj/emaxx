@@ -10611,6 +10611,15 @@ fn keymap_lookup_composes_prefixes_with_gnu_precedence_and_nil_shadowing() {
 }
 
 #[test]
+fn keymap_translated_sequences_keep_gnu_type_and_empty_checks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-translated-sequence-validation.el"),
+        include_str!("../../../tests/fixtures/keymap-translated-sequence-validation.expected"),
+        "redefined key parser result types and collection during translation",
+    );
+}
+
+#[test]
 fn keymap_lookup_validates_the_map_before_the_key_and_resolves_symbols() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/keymap-lookup-argument-order.el"),

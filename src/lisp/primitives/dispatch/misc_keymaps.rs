@@ -73,6 +73,9 @@ fn lookup_key_once(
                     &[description],
                     env,
                 )?;
+                if !is_vector_value(&parsed) && string_like(&parsed).is_none() {
+                    return Err(LispError::WrongTypeArgument("arrayp".into(), parsed));
+                }
                 if key_description_events(&parsed)?.is_empty() {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("error"),
