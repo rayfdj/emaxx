@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-pub use crate::lisp::alloc::vectors::{CharTableRef, SubCharTableRef};
+pub use crate::lisp::alloc::vectors::{CharTableRef, HashTableRef, SubCharTableRef};
 pub use crate::lisp::native_comp::abi::BuiltinRef;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -439,23 +439,23 @@ impl SymbolName {
 /// Lisp thread that runs (alloc.c's `Vobarray' is a plain global under
 /// the global lock; a template interpreter built on one thread is used
 /// from another, one at a time).
-struct ProcessTable<T>(std::cell::UnsafeCell<Option<T>>);
+pub(crate) struct ProcessTable<T>(std::cell::UnsafeCell<Option<T>>);
 
 // SAFETY: one Lisp OS thread at a time, by construction (see above).
 unsafe impl<T> Sync for ProcessTable<T> {}
 
 impl<T: Default> ProcessTable<T> {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(std::cell::UnsafeCell::new(None))
     }
 
-    fn with_borrow<R>(&self, body: impl FnOnce(&T) -> R) -> R {
+    pub(crate) fn with_borrow<R>(&self, body: impl FnOnce(&T) -> R) -> R {
         // SAFETY: the one running Lisp thread's access.
         let table = unsafe { &mut *self.0.get() };
         body(table.get_or_insert_with(T::default))
     }
 
-    fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
+    pub(crate) fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
         // SAFETY: as above.
         let table = unsafe { &mut *self.0.get() };
         body(table.get_or_insert_with(T::default))
@@ -1667,6 +1667,8 @@ pub enum Kind {
     /// The canonical GNU char-table and internal radix nodes.
     CharTable(CharTableRef),
     SubCharTable(SubCharTableRef),
+    /// GNU PVEC_HASH_TABLE and its canonical out-of-line entry array.
+    HashTable(HashTableRef),
     /// An allocated frame with address identity and directly owned state.
     Frame(FrameRef),
     /// An allocated terminal with address identity and directly owned state.
@@ -1776,6 +1778,10 @@ impl Value {
     }
     #[inline]
     pub fn SubCharTable(table: SubCharTableRef) -> Value {
+        Value::from_bits(table.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn HashTable(table: HashTableRef) -> Value {
         Value::from_bits(table.identity() | TAG_VECTORLIKE)
     }
     #[inline]
@@ -1914,6 +1920,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::SubCharTable => {
                             Kind::SubCharTable(SubCharTableRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::HashTable => {
+                            Kind::HashTable(HashTableRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
@@ -2006,6 +2015,7 @@ impl Kind {
             Kind::Buffer(v) => Value::Buffer(v),
             Kind::Marker(v) => Value::Marker(v),
             Kind::Overlay(v) => Value::Overlay(v),
+            Kind::HashTable(v) => Value::HashTable(v),
             Kind::CharTable(v) => Value::CharTable(v),
             Kind::SubCharTable(v) => Value::SubCharTable(v),
             Kind::Frame(v) => Value::Frame(v),
@@ -2633,6 +2643,7 @@ impl Value {
             Kind::Buffer(buffer) => format!("buffer<{}>", buffer.borrow().name),
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
+            Kind::HashTable(table) => format!("hash-table<{:x}>", table.identity()),
             Kind::CharTable(id) => format!("char-table<{}>", id),
             Kind::SubCharTable(id) => format!("sub-char-table<{:x}>", id.identity()),
             Kind::Frame(id) => format!("frame<{}>", id.borrow().id),
@@ -2772,6 +2783,7 @@ fn values_equal_recursive(
         (Kind::Frame(a), Kind::Frame(b)) => a == b,
         (Kind::Terminal(a), Kind::Terminal(b)) => a.ptr_eq(&b),
         (Kind::SymbolWithPos(a), Kind::SymbolWithPos(b)) => a.ptr_eq(&b),
+        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
         (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
@@ -2875,6 +2887,7 @@ fn format_value(
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
+        Kind::HashTable(table) => write!(f, "#<hash-table {:x}>", table.identity()),
         Kind::CharTable(id) => write!(f, "#<char-table {id}>"),
         Kind::SubCharTable(id) => write!(f, "#<sub-char-table {:x}>", id.identity()),
         Kind::Frame(id) => write!(f, "#<frame id:{}>", id.borrow().id),

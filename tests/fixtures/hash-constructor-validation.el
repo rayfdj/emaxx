@@ -1,0 +1,21 @@
+(mapcar
+ (lambda (enabled)
+   (let ((symbols-with-pos-enabled enabled))
+     (mapcar
+      (lambda (arguments)
+        (condition-case error
+            (let ((table (apply #'make-hash-table arguments)))
+              (list (hash-table-test table) (hash-table-weakness table)
+                    (hash-table-size table)))
+          (error (list (car error) (cadr error)))))
+      (list (list :test (position-symbol 'eq 11)
+                  :weakness (position-symbol 'key 12))
+            (list (position-symbol :test 13) 'equal)
+            (list :test 'hash-unregistered-test :size -1)
+            (list :test 47 :size -1)
+            (list :test 'eq :size -1 :weakness 'invalid)
+            (list :test 'eq :size 0 :weakness 'invalid)
+            (list :test 'eq :test 'equal)
+            (list :rehash-size)
+            (list :size 8 :rehash-threshold nil)))))
+ '(nil t))

@@ -261,16 +261,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("next_buffer_id", "carried in the remembered scalars"),
     ("regexp_syntax_class_cache", "a cache"),
     ("syntax_segment_cache", "a cache"),
-    ("equal_hash_tables", "thawed from the hash list"),
-    (
-        "custom_hash_tables",
-        "user-defined tests are refused by the writer",
-    ),
-    (
-        "hash_tables_under_test",
-        "the running comparison's critical section",
-    ),
-    ("immutable_hash_tables", "restored by the thaw"),
     (
         "safe_terminal_coding",
         "terminal state, re-created by init_tty",

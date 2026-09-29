@@ -7,7 +7,6 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 pub(crate) const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
-const HASH_TABLE_RECORD_TYPE: &str = "hash-table";
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const JSON_SERIALIZATION_MAX_DEPTH: usize = 50;
 
@@ -598,13 +597,8 @@ pub(crate) fn serialize(
     })
 }
 
-pub(crate) fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
-    match value.kind() {
-        Kind::Record(id) => interp
-            .find_record(id)
-            .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::HashTable),
-        _ => false,
-    }
+pub(crate) fn is_hash_table(_interp: &Interpreter, value: &Value) -> bool {
+    matches!(value.kind(), Kind::HashTable(_))
 }
 
 pub(crate) fn make_hash_table(
@@ -621,109 +615,43 @@ pub(crate) fn make_hash_table_with_capacity(
     entries: Vec<(Value, Value)>,
     capacity: usize,
 ) -> Value {
-    let requested_capacity = capacity;
     let capacity = crate::lisp::eval::gnu_hash_grown_capacity(capacity, entries.len());
-    crate::lisp::native_comp::note_lisp_allocation(
-        crate::lisp::eval::gnu_hash_table_storage_bytes(capacity),
-    );
-    let (user_compare, user_hash) = if matches!(test, "eq" | "eql" | "equal") {
-        (Value::Nil, Value::Nil)
-    } else {
-        crate::lisp::primitives::hash_table_user_test_functions(interp, test)
-            .unwrap_or((Value::Nil, Value::Nil))
+    let env = crate::lisp::types::Env::new();
+    let value = crate::lisp::primitives::make_hash_table_value(
+        interp,
+        Value::symbol(test),
+        capacity,
+        Value::Nil,
+        Value::Nil,
+        &env,
+    )
+    .expect("validated internal hash-table test");
+    let Kind::HashTable(table) = value.kind() else {
+        unreachable!()
     };
-    let table = interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::HashTable,
-        HASH_TABLE_RECORD_TYPE,
-        vec![
-            Value::Symbol(test.to_string().into()),
-            // Indexed runtime storage below is the counterpart of GNU's
-            // key_and_value arrays.  Do not also retain a Lisp cons-list:
-            // that would invent live Lisp objects and distort GC accounting.
-            Value::Nil,
-            Value::Integer(requested_capacity as i64),
-            // fns.c:make_hash_table owns the selected test descriptor.
-            // These existing slots retain its Lisp functions across GC and
-            // copy-hash-table; operations never reread the symbol property.
-            user_compare,
-            user_hash,
-            Value::Nil,
-            Value::Nil,
-        ],
-    );
-    if let Kind::Record(id) = table.kind() {
-        interp.replace_hash_table_runtime_entries(id.id, test, entries);
-        Value::Record(id)
-    } else {
-        table
+    for (key, value) in entries {
+        assert!(
+            interp.equal_hash_put(table, key, value, &env),
+            "internal constructor uses a standard test"
+        );
     }
-}
-
-pub(crate) fn hash_table_entry_list_len(value: &Value) -> usize {
-    let mut cursor = *value;
-    let mut len = 0;
-    while let Kind::Cons(cell) = cursor.kind() {
-        len += 1;
-        let Ok(next) = Value::Cons(cell).cdr() else {
-            return 0;
-        };
-        cursor = next;
-    }
-    if cursor.is_nil() { len } else { 0 }
+    value
 }
 
 pub(crate) fn hash_table_entries(
-    interp: &Interpreter,
+    _interp: &Interpreter,
     value: &Value,
 ) -> Option<(String, Vec<(Value, Value)>)> {
-    let Kind::Record(id) = value.kind() else {
+    let Kind::HashTable(table) = value.kind() else {
         return None;
     };
-    let record = interp.find_record(id)?;
-    if record.kind != crate::lisp::eval::RecordKind::HashTable {
-        return None;
-    }
-    let test = record
-        .slots
-        .first()
-        .and_then(|value| value.as_symbol().ok())
-        .unwrap_or("eql")
-        .to_string();
-    if let Some(entries) = interp.hash_table_runtime_entries(id.id) {
-        return Some((test, entries.clone()));
-    }
-    let entries = record
-        .slots
-        .get(1)
-        .map(list_to_entries)
-        .transpose()
-        .ok()?
-        .unwrap_or_default();
-    Some((test, entries))
-}
-
-/// fns.c:Fhash_table_count: `h->count', read from the table's state, no
-/// entry copied (the entry list `hash_table_entries' builds put every key
-/// and value through this thread's frames, and a word left there kept a
-/// dead key alive under the conservative scan).
-pub(crate) fn hash_table_count(interp: &Interpreter, value: &Value) -> Option<usize> {
-    let Kind::Record(id) = value.kind() else {
-        return None;
-    };
-    let record = interp.find_record(id)?;
-    if record.kind != crate::lisp::eval::RecordKind::HashTable {
-        return None;
-    }
-    if let Some(entries) = interp.hash_table_runtime_entries(id.id) {
-        return Some(entries.len());
-    }
-    let mut count = 0usize;
-    let mut tail = record.slots.get(1).copied().unwrap_or(Value::Nil);
-    while let Kind::Cons(cell) = tail.kind() {
-        count += 1;
-        tail = cell.cdr.get();
-    }
-    Some(count)
+    Some((
+        table.test_name().as_symbol().ok()?.to_owned(),
+        table
+            .entries()
+            .map(|(_, key, value)| (key, value))
+            .collect(),
+    ))
 }
 
 fn convert_source(text: &str, multibyte: bool) -> Result<ConvertedSource, LispError> {
@@ -874,9 +802,7 @@ fn serialize_value(
             }
             _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
         },
-        Kind::Record(_) if is_hash_table(interp, value) => {
-            serialize_hash_table(interp, value, options, depth)
-        }
+        Kind::HashTable(_) => serialize_hash_table(interp, value, options, depth),
         // json.c lisp_to_json: a vector is a JSON array.  (The merged vector
         // representation is `Value::Vector'; the `vector-literal' list below
         // is the older spelling that reader forms can still produce.)
@@ -1143,18 +1069,6 @@ fn utf8_bytes_to_unibyte_text(bytes: &[u8]) -> String {
         }
     }
     text
-}
-
-fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
-    value
-        .to_vec()?
-        .into_iter()
-        .map(|entry| {
-            entry
-                .cons_values()
-                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry))
-        })
-        .collect()
 }
 
 fn list_to_flat_pairs(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {

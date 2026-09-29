@@ -310,25 +310,22 @@ mod tests {
 
     #[inline(never)]
     fn weak_entries(interpreter: &mut Interpreter, table: &Value) -> usize {
-        let Kind::Record(id) = table.kind() else {
+        let Kind::HashTable(id) = table.kind() else {
             panic!("hash table must be a record");
         };
         primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect actual roots");
-        interpreter
-            .hash_table_runtime_entries(id.id)
-            .expect("live weak table")
-            .len()
+        id.count()
     }
 
     #[inline(never)]
     fn weak_key_table(interpreter: &mut Interpreter, root: &str) -> Value {
         let table = json::make_hash_table(interpreter, "eq", Vec::new());
-        let Kind::Record(id) = table.kind() else {
+        let Kind::HashTable(id) = table.kind() else {
             panic!("hash table must be a record");
         };
-        interpreter.find_record_mut(id).expect("weak table").slots[5] = Value::symbol("key");
-        interpreter.set_global_binding(root, Value::Record(id));
+        id.set_weakness(1);
+        interpreter.set_global_binding(root, Value::HashTable(id));
         table
     }
 
@@ -414,12 +411,13 @@ mod tests {
                     1,
                     "the parked Rust scope remains a root"
                 );
-                let Kind::Record(id) = table.kind() else {
+                let Kind::HashTable(id) = table.kind() else {
                     panic!("hash table must be a record");
                 };
-                let entries = active
-                    .hash_table_runtime_entries(id.id)
-                    .expect("live weak table");
+                let entries = id
+                    .entries()
+                    .map(|(_, key, value)| (key, value))
+                    .collect::<Vec<_>>();
                 assert!(primitives::values_eq_in_env(
                     &active,
                     &entries[0].0,

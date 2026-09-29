@@ -3279,19 +3279,6 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
     assert_oracle_contract_matches_interpreter(program, expected, "dump-emacs-portable prelude");
 }
 
-/// The printed RememberedScalars group without its `(next-record-id . N)'
-/// entry, and N.
-fn without_next_record_id(text: &str) -> (String, i64) {
-    let start = text
-        .find("(next-record-id . ")
-        .expect("the group names next-record-id");
-    let end = start + text[start..].find(')').expect("the entry closes") + 1;
-    let value = text[start + "(next-record-id . ".len()..end - 1]
-        .parse::<i64>()
-        .expect("next-record-id is an integer");
-    (format!("{}{}", &text[..start], &text[end..]), value)
-}
-
 #[test]
 fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     // Runtime boundary control, not a claim of full GNU image parity.
@@ -3432,7 +3419,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     assert!(image.symbols.len() >= image.obarray.len());
     assert_eq!(image.native_units.is_empty(), !has_native_functions);
     assert_eq!(image.native_functions.is_empty(), !has_native_functions);
-    let native_unit_count = image.native_units.len() as i64;
     drop(target);
 
     // pdumper_load: the same image into a fresh process-state interpreter
@@ -3480,22 +3466,11 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         )
         .expect("print the restored group");
         let target_text = string_like(&target_text).expect("printed").text;
-        if *slot == RootSlot::RememberedScalars {
-            // The late phase gives every reopened unit a fresh
-            // `lambda_gc_guard_h' (dump_do_dump_relocation's
-            // Fmake_hash_table), one record each: the remembered
-            // allocator restored, then advanced by exactly the unit count.
-            let (source_rest, source_next) = without_next_record_id(source_text);
-            let (target_rest, target_next) = without_next_record_id(&target_text);
-            assert_eq!(source_rest, target_rest, "root group {slot:?}");
-            assert_eq!(
-                target_next - source_next,
-                native_unit_count,
-                "next-record-id"
-            );
-        } else {
-            assert_eq!(source_text, &target_text, "root group {slot:?}");
-        }
+        // GNU's late native-unit relocation allocates lambda_gc_guard_h
+        // with Fmake_hash_table. Hash tables now have their own allocation,
+        // so reopening units must preserve every remembered scalar,
+        // including next-record-id, instead of advancing the record allocator.
+        assert_eq!(source_text, &target_text, "root group {slot:?}");
         compared += 1;
     }
     assert!(compared > 30);
@@ -7233,6 +7208,42 @@ fn hash_copy_preserves_stored_codes_after_key_mutation() {
         include_str!("../../../tests/fixtures/hash-copy-stored-codes.el"),
         include_str!("../../../tests/fixtures/hash-copy-stored-codes.expected"),
         "hash-copy-stored-codes",
+    );
+}
+
+#[test]
+fn hash_buckets_preserve_identity_matching_and_empty_clear_slot_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-authoritative-buckets.el"),
+        include_str!("../../../tests/fixtures/hash-authoritative-buckets.expected"),
+        "hash-authoritative-buckets",
+    );
+}
+
+#[test]
+fn hash_purecopy_preserves_stored_codes_without_calling_hash_functions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-purecopy-stored-codes.el"),
+        include_str!("../../../tests/fixtures/hash-purecopy-stored-codes.expected"),
+        "hash-purecopy-stored-codes",
+    );
+}
+
+#[test]
+fn hash_constructor_preserves_keyword_positions_and_error_precedence() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-constructor-validation.el"),
+        include_str!("../../../tests/fixtures/hash-constructor-validation.expected"),
+        "hash-constructor-validation",
+    );
+}
+
+#[test]
+fn hash_descriptors_capture_the_first_eq_function_pair() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-descriptor-position-functions.el"),
+        include_str!("../../../tests/fixtures/hash-descriptor-position-functions.expected"),
+        "hash-descriptor-position-functions",
     );
 }
 

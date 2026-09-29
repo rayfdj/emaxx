@@ -492,19 +492,20 @@ impl CclMachine {
             return Err(self.error(self.pc.saturating_sub(1)));
         };
         let table = table.get();
-        let Some((test, entries)) = json::hash_table_entries(interp, &table) else {
+        let Kind::HashTable(table) = table.kind() else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };
         let key = Value::Integer(i64::from(self.registers[key_register]));
-        for (candidate, value) in entries {
-            if hash_table_key_matches(interp, &table, &test, &candidate, &key, env)? {
-                let value = i32::try_from(value.as_integer()?)
-                    .map_err(|_| self.error(self.pc.saturating_sub(1)))?;
-                self.registers[key_register] = CHARSET_UNICODE;
-                self.registers[value_register] = value;
-                self.registers[7] = 1;
-                return Ok(());
-            }
+        // ccl.c uses hash_lookup, including the table's captured hash and
+        // comparator; it does not compare every key in a copied entry list.
+        if let (_, Some(slot)) = hash_table_lookup(interp, table, &key, env)? {
+            let (_, value) = table.entry(slot).expect("matched live entry");
+            let value = i32::try_from(value.as_integer()?)
+                .map_err(|_| self.error(self.pc.saturating_sub(1)))?;
+            self.registers[key_register] = CHARSET_UNICODE;
+            self.registers[value_register] = value;
+            self.registers[7] = 1;
+            return Ok(());
         }
         self.registers[7] = 0;
         Ok(())

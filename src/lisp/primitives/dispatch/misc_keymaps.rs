@@ -654,78 +654,65 @@ define_dispatch!(
                 Ok(spec)
             }
             "make-hash-table" => {
-                let mut test = "eql".to_string();
-                // fns.c:DEFAULT_HASH_SIZE is zero.  Storage is allocated on
-                // the first insertion via maybe_resize_hash_table.
-                let mut size = Value::Integer(0);
-                let mut weakness = Value::Nil;
-                // fns.c still accepts `:purecopy'; print.c:2609 reports it
-                // back, so the flag has to be recorded rather than dropped.
-                let mut purecopy = Value::Nil;
-                let mut index = 0usize;
-                while index + 1 < args.len() {
-                    let key = args[index].as_symbol()?;
-                    match key {
-                        ":test" => {
-                            test = match args[index + 1].kind() {
-                                Kind::Symbol(name) => name.to_string(),
-                                Kind::BuiltinFunc(name) => name.to_string(),
-                                other => {
-                                    return Err(LispError::WrongTypeArgument(
-                                        "symbolp".into(),
-                                        other.value(),
-                                    ));
-                                }
-                            };
-                        }
-                        ":size" => size = args[index + 1],
-                        // fns.c accepts these obsolete keyword/value pairs
-                        // but deliberately ignores their values.
-                        ":rehash-size" | ":rehash-threshold" => {}
-                        ":weakness" => {
-                            weakness = match args[index + 1].kind() {
-                                Kind::T => Value::Symbol("key-and-value".into()),
-                                other => other.value(),
-                            };
-                        }
-                        ":purecopy" => purecopy = args[index + 1],
-                        _ => {
-                            return Err(LispError::Signal(format!(
-                                "Invalid hash table parameter: {key}"
-                            )));
+                let mut used = vec![false; args.len()];
+                let mut argument = |keyword: &str, default: Value| {
+                    let keyword = Value::symbol(keyword);
+                    for index in 0..args.len().saturating_sub(1) {
+                        if !used[index] && values_eq_in_env(interp, &args[index], &keyword, env) {
+                            used[index] = true;
+                            used[index + 1] = true;
+                            return args[index + 1];
                         }
                     }
-                    index += 2;
-                }
-                if !matches!(test.as_str(), "eq" | "eql" | "equal")
-                    && hash_table_user_test_functions(interp, &test).is_none()
-                {
-                    return Err(LispError::Signal("Invalid hash table test".into()));
-                }
-                let capacity = size
-                    .as_integer()
-                    .ok()
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| LispError::WrongTypeArgument("wholenump".into(), size))?;
-                let table =
-                    json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
-                let Kind::Record(id) = table.kind() else {
-                    unreachable!("hash tables are represented as records")
+                    default
                 };
-                let record = interp
-                    .find_record_mut(id)
-                    .expect("make_hash_table should create a record");
-                if record.slots.len() < 7 {
-                    record.slots.resize(7, Value::Nil);
+                let test = argument(":test", Value::symbol("eql"));
+                // fns.c resolves the descriptor before checking size or
+                // weakness, and allocates the table only after all keywords.
+                let descriptor = hash_table_test_descriptor(interp, test, env)?;
+                let purecopy = argument(":purecopy", Value::Nil);
+                let size = argument(":size", Value::Nil);
+                let weakness = argument(":weakness", Value::Nil);
+                let capacity = if size.is_nil() {
+                    0
+                } else {
+                    size.as_fixnum()
+                        .ok()
+                        .and_then(|size| usize::try_from(size).ok())
+                        .ok_or_else(|| {
+                            LispError::SignalValue(Value::list([
+                                Value::symbol("error"),
+                                Value::string("Invalid hash table size"),
+                                size,
+                            ]))
+                        })?
+                };
+                let weak = hash_table_weakness(interp, weakness, env)?;
+                let mut index = 0;
+                while index < args.len() {
+                    if !used[index] {
+                        if [":rehash-size", ":rehash-threshold"]
+                            .into_iter()
+                            .any(|name| {
+                                values_eq_in_env(interp, &args[index], &Value::symbol(name), env)
+                            })
+                        {
+                            index += 2;
+                            continue;
+                        }
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("error"),
+                            Value::string("Invalid argument list"),
+                            args[index],
+                        ])));
+                    }
+                    index += 1;
                 }
-                record.slots[2] = size;
-                record.slots[5] = weakness;
-                record.slots[6] = purecopy;
-                Ok(table)
+                hash_table_from_test(descriptor, capacity, weak, purecopy)
             }
             "hash-table-p" => {
                 need_args(name, args, 1)?;
-                Ok(if json::is_hash_table(interp, &args[0]) {
+                Ok(if matches!(args[0].kind(), Kind::HashTable(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -733,255 +720,73 @@ define_dispatch!(
             }
             "copy-hash-table" => {
                 need_args(name, args, 1)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                let Some(record) = interp.find_record(id) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                if record.kind != crate::lisp::eval::RecordKind::HashTable {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                }
-                // fns.c:copy_hash_table copies the existing hash codes and
-                // indices. Rehashing would make a mutated key spuriously
-                // reachable and change dynamically positioned-symbol keys.
-                interp.copy_record(id.id)
+                Ok(Value::HashTable(check_hash_table(&args[0])?.copy()))
             }
             "gethash" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let default = args.get(2).cloned().unwrap_or(Value::Nil);
-                if let Kind::Record(id) = args[1].kind()
-                    && let Some(value) = interp.equal_hash_lookup(id.id, &args[0], env)
-                {
-                    return Ok(value.unwrap_or(default));
-                }
-                if let Kind::Record(id) = args[1].kind()
-                    && interp.has_custom_hash_table_index(id.id)
-                {
-                    let test = interp
-                        .find_record(id)
-                        .and_then(|record| record.slots.first())
-                        .and_then(|value| value.as_symbol().ok())
-                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
-                        .to_string();
-                    return Ok(custom_hash_lookup_indexed(
-                        interp, &args[1], id.id, &test, &args[0], env,
-                    )?
-                    .unwrap_or(default));
-                }
-                let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
-                };
-                for (existing_key, value) in entries {
-                    if hash_table_key_matches(
-                        interp,
-                        &args[1],
-                        &test,
-                        &existing_key,
-                        &args[0],
-                        env,
-                    )? {
-                        return Ok(value);
-                    }
-                }
-                Ok(default)
+                need_arg_range(name, args, 2, 3)?;
+                let table = check_hash_table(&args[1])?;
+                let (_, slot) = hash_table_lookup(interp, table, &args[0], env)?;
+                Ok(slot
+                    .and_then(|slot| table.entry(slot))
+                    .map(|(_, value)| value)
+                    .unwrap_or_else(|| args.get(2).copied().unwrap_or(Value::Nil)))
             }
             "puthash" => {
                 need_args(name, args, 3)?;
-                if let Kind::Record(id) = args[2].kind()
-                    && !interp.hash_table_is_mutable(id.id)
-                {
-                    return Err(LispError::Signal("hash table test modifies table".into()));
-                }
-                if let Kind::Record(id) = args[2].kind()
-                    && interp.equal_hash_put(id.id, args[0], args[1], env)
-                {
-                    return Ok(args[1]);
-                }
-                if let Kind::Record(id) = args[2].kind()
-                    && interp.has_custom_hash_table_index(id.id)
-                {
-                    let test = interp
-                        .find_record(id)
-                        .and_then(|record| record.slots.first())
-                        .and_then(|value| value.as_symbol().ok())
-                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
-                        .to_string();
-                    if custom_hash_put_indexed(
-                        interp, &args[2], id.id, &test, args[0], args[1], env,
-                    )? {
-                        return Ok(args[1]);
-                    }
-                }
-                let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[2]));
-                };
-                touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
-                let mut replaced = false;
-                for (existing_key, existing_value) in &mut entries {
-                    if hash_table_key_matches(interp, &args[2], &test, existing_key, &args[0], env)?
-                    {
-                        *existing_value = args[1];
-                        replaced = true;
-                        break;
-                    }
-                }
-                if !replaced {
-                    entries.push((args[0], args[1]));
-                }
-                set_hash_table_entries(interp, &args[2], entries)?;
-                if let Kind::Record(id) = args[2].kind() {
-                    interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
-                }
+                let table = check_hash_table(&args[2])?;
+                hash_table_put(interp, table, args[0], args[1], env)?;
                 Ok(args[1])
             }
             "maphash" => {
                 need_args(name, args, 2)?;
-                if let Kind::Record(id) = args[1].kind()
-                    && interp.hash_table_entry_at_or_after(id.id, 0).is_some()
-                {
-                    let mut slot = 0;
-                    loop {
-                        let Some(capacity) = interp.gnu_hash_table_capacity(id.id) else {
-                            return Err(LispError::WrongTypeArgument(
-                                "hash-table-p".into(),
-                                args[1],
-                            ));
-                        };
-                        if slot >= capacity {
-                            break;
-                        }
-                        let Some((entry_slot, key, value)) =
-                            interp.hash_table_entry_at_or_after(id.id, slot).flatten()
-                        else {
-                            break;
-                        };
-                        if entry_slot >= capacity {
-                            break;
-                        }
-                        slot = entry_slot + 1;
-                        call_function_value(interp, &args[0], &[key, value], env)?;
-                    }
-                    return Ok(Value::Nil);
-                }
-                let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
-                };
-                for (key, value) in entries {
+                let table = check_hash_table(&args[1])?;
+                let mut slot = 0;
+                while let Some((index, key, value)) = table.entry_at_or_after(slot) {
+                    slot = index + 1;
                     call_function_value(interp, &args[0], &[key, value], env)?;
                 }
                 Ok(Value::Nil)
             }
             "remhash" => {
                 need_args(name, args, 2)?;
-                if let Kind::Record(id) = args[1].kind()
-                    && !interp.hash_table_is_mutable(id.id)
-                {
-                    return Err(LispError::Signal("hash table test modifies table".into()));
-                }
-                if let Kind::Record(id) = args[1].kind()
-                    && interp.equal_hash_remove(id.id, &args[0], env).is_some()
-                {
-                    return Ok(Value::Nil);
-                }
-                if let Kind::Record(id) = args[1].kind()
-                    && interp.has_custom_hash_table_index(id.id)
-                {
-                    let test = interp
-                        .find_record(id)
-                        .and_then(|record| record.slots.first())
-                        .and_then(|value| value.as_symbol().ok())
-                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
-                        .to_string();
-                    if custom_hash_remove_indexed(interp, &args[1], id.id, &test, &args[0], env)? {
-                        return Ok(Value::Nil);
-                    }
-                }
-                let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1]));
-                };
-                let mut retained = Vec::new();
-                for (existing_key, value) in entries {
-                    if !hash_table_key_matches(
-                        interp,
-                        &args[1],
-                        &test,
-                        &existing_key,
-                        &args[0],
-                        env,
-                    )? {
-                        retained.push((existing_key, value));
-                    }
-                }
-                set_hash_table_entries(interp, &args[1], retained)?;
-                if let Kind::Record(id) = args[1].kind() {
-                    interp.reindex_hash_table_runtime_entries_in_env(id.id, env);
+                let table = check_hash_table(&args[1])?;
+                check_hash_table_mutable(table)?;
+                if let (_, Some(slot)) = hash_table_lookup(interp, table, &args[0], env)? {
+                    table.remove(slot);
                 }
                 Ok(Value::Nil)
             }
             "clrhash" => {
                 need_args(name, args, 1)?;
-                if let Kind::Record(id) = args[0].kind()
-                    && !interp.hash_table_is_mutable(id.id)
-                {
-                    return Err(LispError::Signal("hash table test modifies table".into()));
-                }
-                if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                }
-                if let Kind::Record(id) = args[0].kind()
-                    && interp.clear_custom_hash_table(id.id)
-                {
-                    return Ok(args[0]);
-                }
-                set_hash_table_entries(interp, &args[0], Vec::new())?;
+                let table = check_hash_table(&args[0])?;
+                check_hash_table_mutable(table)?;
+                table.clear();
                 Ok(args[0])
             }
             "hash-table-count" => {
                 need_args(name, args, 1)?;
-                let Some(count) = json::hash_table_count(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                Ok(Value::Integer(count as i64))
+                Ok(Value::Integer(check_hash_table(&args[0])?.count() as i64))
             }
-            "hash-table-rehash-size" => {
+            "hash-table-rehash-size" | "hash-table-rehash-threshold" => {
                 need_args(name, args, 1)?;
-                if !json::is_hash_table(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                }
-                Ok(Value::float(1.5))
-            }
-            "hash-table-rehash-threshold" => {
-                need_args(name, args, 1)?;
-                if !json::is_hash_table(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                }
-                Ok(Value::float(0.8125))
+                check_hash_table(&args[0])?;
+                Ok(Value::float(if name == "hash-table-rehash-size" {
+                    1.5
+                } else {
+                    0.8125
+                }))
             }
             "hash-table-size" => {
                 need_args(name, args, 1)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                let capacity = interp
-                    .gnu_hash_table_capacity(id.id)
-                    .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
-                Ok(Value::Integer(capacity as i64))
+                Ok(Value::Integer(check_hash_table(&args[0])?.capacity() as i64))
             }
             "hash-table-test" => {
                 need_args(name, args, 1)?;
-                Ok(hash_table_metadata_slot(
-                    interp,
-                    &args[0],
-                    0,
-                    Value::Symbol("eql".into()),
-                )?)
+                Ok(check_hash_table(&args[0])?.test_name())
             }
             "hash-table-weakness" => {
                 need_args(name, args, 1)?;
-                Ok(hash_table_metadata_slot(interp, &args[0], 5, Value::Nil)?)
+                Ok(hash_table_weakness_value(check_hash_table(&args[0])?))
             }
             "try-completion" => try_completion(interp, args, env),
             "all-completions" => all_completions(interp, args, env),
@@ -989,31 +794,59 @@ define_dispatch!(
             "internal-complete-buffer" => internal_complete_buffer(interp, args, env),
             "internal--hash-table-index-size" => {
                 need_args(name, args, 1)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                let capacity = interp
-                    .gnu_hash_table_capacity(id.id)
-                    .ok_or_else(|| LispError::WrongTypeArgument("hash-table-p".into(), args[0]))?;
                 Ok(Value::Integer(
-                    crate::lisp::eval::gnu_hash_table_index_slots(capacity) as i64,
+                    check_hash_table(&args[0])?.index_size() as i64
                 ))
             }
             "internal--hash-table-histogram" => {
                 need_args(name, args, 1)?;
-                if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
+                let table = check_hash_table(&args[0])?;
+                let mut frequencies = vec![0; table.capacity()];
+                for bucket in 0..table.index_size() {
+                    let mut slot = table.bucket_head(bucket);
+                    let mut count = 0;
+                    while slot >= 0 {
+                        count += 1;
+                        slot = table.next_in_bucket(slot as usize);
+                    }
+                    if count > 0 {
+                        frequencies[count - 1] += 1;
+                    }
                 }
-                Ok(Value::Nil)
+                Ok(Value::list(
+                    frequencies
+                        .into_iter()
+                        .enumerate()
+                        .filter(|&(_, frequency)| frequency > 0)
+                        .map(|(index, frequency)| {
+                            Value::cons(
+                                Value::Integer((index + 1) as i64),
+                                Value::Integer(frequency),
+                            )
+                        }),
+                ))
             }
             "internal--hash-table-buckets" => {
                 need_args(name, args, 1)?;
-                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0]));
-                };
-                Ok(Value::list(entries.into_iter().map(|(key, value)| {
-                    Value::list([Value::cons(key, value)])
-                })))
+                let table = check_hash_table(&args[0])?;
+                let mut buckets = Vec::new();
+                for bucket in 0..table.index_size() {
+                    let mut slot = table.bucket_head(bucket);
+                    let mut entries = Vec::new();
+                    while slot >= 0 {
+                        let index = slot as usize;
+                        let (key, _) = table.entry(index).expect("live collision chain");
+                        entries.push(Value::cons(
+                            key,
+                            Value::Integer(i64::from(table.stored_hash(index))),
+                        ));
+                        slot = table.next_in_bucket(index);
+                    }
+                    if !entries.is_empty() {
+                        buckets.push(Value::list(entries));
+                    }
+                }
+                Ok(Value::list(buckets))
             }
             "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
                 Value::T
@@ -1545,6 +1378,7 @@ define_dispatch!(
                     Kind::Marker(_) => "marker",
                     Kind::Overlay(_) => "overlay",
                     Kind::CharTable(_) => "char-table",
+                    Kind::HashTable(_) => "hash-table",
                     Kind::SubCharTable(_) => "sub-char-table",
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",

@@ -1197,7 +1197,6 @@ pub(crate) enum RecordKind {
     Closure,
     Font,
     Process,
-    HashTable,
     Obarray,
     Window,
     WindowConfiguration,
@@ -1226,7 +1225,6 @@ impl RecordKind {
             // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
-            Self::HashTable => 9,
             Self::Obarray => 3,
             // Both configured structs are 88 bytes on the supported GNU
             // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
@@ -1314,7 +1312,7 @@ pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
 /// Temporary host pseudovector storage, reached through `RecordRef'.
 /// Generic Lisp records use `LispRecordRef` and have no host state. The id
 /// is the name the owning interpreter's side tables know it by (the
-/// hash-table states, the type index, the caches), until those live in
+/// type index and the remaining caches), until those live in
 /// the object as C's do; the owner tells whose id space it is.
 #[derive(Clone, Debug)]
 pub struct RecordState {
@@ -1821,8 +1819,7 @@ pub(crate) enum FunctionResolution {
     Resolved(Value),
 }
 
-/// Which standard hash-table test a runtime-accelerated table uses; custom
-/// user tests stay on the entry-list slow path.
+/// The standard tests use the same allocated arrays as user-defined tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum RuntimeHashTest {
     Eq,
@@ -1830,131 +1827,6 @@ pub(crate) enum RuntimeHashTest {
     #[default]
     Eql,
     Equal,
-}
-
-#[derive(Clone, Debug, Default)]
-struct EqualHashTableState {
-    test: RuntimeHashTest,
-    /// fns.c:Lisp_Hash_Table.table_size.  This is allocated capacity, not
-    /// entry count; removals and `clrhash' deliberately retain it.
-    capacity: usize,
-    entries: Vec<(Value, Value)>,
-    // fns.c stores entries in stable key/value slots.  Removing an entry
-    // links its slot onto a LIFO free list; reinsertion reuses that slot,
-    // and DOHASH/maphash walk slots in numeric order.  Keep the compact Rust
-    // entry vector sorted by these slot numbers so public iteration has the
-    // same order without giving up contiguous storage.
-    slot_indices: Vec<usize>,
-    free_slots: Vec<usize>,
-    next_slot: usize,
-    /// The bucket key of each entry, beside it (fns.c keeps the hash codes
-    /// in `hash' beside `key_and_value' for the same reason): a removal
-    /// or a reused slot never hashes the other keys again.
-    hashes: Vec<Option<i64>>,
-    /// Bucket key to the slots of the entries with that key.  Slots are
-    /// stable across removals and reused-slot insertions, where an index
-    /// into the compact vectors shifts; `index_of_slot' translates.
-    key_index: HashMap<Option<i64>, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
-}
-
-impl EqualHashTableState {
-    /// The entry index of a live slot.
-    fn index_of_slot(&self, slot: usize) -> Option<usize> {
-        self.slot_indices.binary_search(&slot).ok()
-    }
-
-    /// The first entry of the bucket whose key `matches' (the table's test
-    /// decides; the bucket only narrows the candidates).
-    fn bucket_entry(&self, hash: Option<i64>, matches: impl Fn(&Value) -> bool) -> Option<usize> {
-        self.key_index
-            .get(&hash)?
-            .iter()
-            .filter_map(|slot| self.index_of_slot(*slot))
-            .find(|index| matches(&self.entries[*index].0))
-    }
-
-    /// A new entry in the slot fns.c would use (the free list is LIFO,
-    /// else the next unused slot), kept in slot order; its slot joins
-    /// the bucket.  O(bucket) beyond the vector insertion.
-    fn insert_new(&mut self, key: Value, value: Value, hash: Option<i64>) {
-        let slot = self.free_slots.pop().unwrap_or_else(|| {
-            let slot = self.next_slot;
-            self.next_slot += 1;
-            slot
-        });
-        let index = self
-            .slot_indices
-            .binary_search(&slot)
-            .unwrap_or_else(|index| index);
-        self.slot_indices.insert(index, slot);
-        self.entries.insert(index, (key, value));
-        self.hashes.insert(index, hash);
-        self.key_index.entry(hash).or_default().push(slot);
-    }
-
-    /// Remove the entry at `index': its slot goes onto the free list and
-    /// leaves its bucket.  O(bucket) beyond the vector removal; the
-    /// rebuild this replaces hashed every remaining key (2 ms a `remhash'
-    /// on tramp's 5,000-entry cache).
-    fn remove_at(&mut self, index: usize) {
-        self.entries.remove(index);
-        let hash = self.hashes.remove(index);
-        let slot = self.slot_indices.remove(index);
-        self.free_slots.push(slot);
-        if let Some(bucket) = self.key_index.get_mut(&hash) {
-            if let Some(position) = bucket.iter().position(|candidate| *candidate == slot) {
-                bucket.swap_remove(position);
-            }
-            if bucket.is_empty() {
-                self.key_index.remove(&hash);
-            }
-        }
-    }
-
-    /// The buckets from the stored hashes, after those were recomputed.
-    fn rebuild_index(&mut self) {
-        self.key_index.clear();
-        for (hash, slot) in self.hashes.iter().zip(&self.slot_indices) {
-            self.key_index.entry(*hash).or_default().push(*slot);
-        }
-    }
-}
-
-/// Indexed storage for hash tables with an Elisp-defined test.  GNU fns.c
-/// calls the Elisp hash function once for a probe, follows only that bucket,
-/// and calls the Elisp comparator for collisions.  Keep the returned hashes
-/// beside the entries so existing keys are not re-hashed on every lookup.
-#[derive(Clone)]
-struct CustomHashTableState {
-    /// fns.c:Lisp_Hash_Table.table_size.
-    capacity: usize,
-    entries: Vec<(Value, Value)>,
-    hashes: Vec<i64>,
-    slot_indices: Vec<usize>,
-    free_slots: Vec<usize>,
-    next_slot: usize,
-    key_index: HashMap<i64, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
-}
-
-impl CustomHashTableState {
-    fn empty(capacity: usize) -> Self {
-        Self {
-            capacity,
-            entries: Vec::new(),
-            hashes: Vec::new(),
-            slot_indices: Vec::new(),
-            free_slots: Vec::new(),
-            next_slot: 0,
-            key_index: HashMap::default(),
-        }
-    }
-
-    fn rebuild_index(&mut self) {
-        self.key_index.clear();
-        for (index, hash) in self.hashes.iter().copied().enumerate() {
-            self.key_index.entry(hash).or_default().push(index);
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2806,6 +2678,7 @@ struct ImageGraphCopier {
     terminals: std::collections::HashMap<usize, Value>,
     frame_objects: std::collections::HashMap<usize, Value>,
     positioned_symbols: std::collections::HashMap<usize, Value>,
+    hash_tables: Vec<crate::lisp::types::HashTableRef>,
     /// The clone's id space: its copies of the records carry it.
     record_owner: u32,
 }
@@ -2827,6 +2700,7 @@ impl ImageGraphCopier {
             terminals: Default::default(),
             frame_objects: Default::default(),
             positioned_symbols: Default::default(),
+            hash_tables: Vec::new(),
             record_owner,
         }
     }
@@ -3042,6 +2916,35 @@ impl ImageGraphCopier {
                 }
                 copied
             }
+            Kind::HashTable(table) => {
+                let identity = table.identity();
+                if let Some(value) = self.vectors.get(&identity) {
+                    return *value;
+                }
+                let copy = table.copy();
+                let value = Value::HashTable(copy);
+                self.vectors.insert(identity, value);
+                self.hash_tables.push(copy);
+                for (slot, key, entry) in table.entries() {
+                    copy.set_key(slot, self.copy(&key));
+                    copy.set_value(slot, self.copy(&entry));
+                }
+                let test = table.test();
+                if test.standard_test().is_none() {
+                    let name = self.copy(&test.name);
+                    let compare = self.copy(&test.user_compare);
+                    let hash = self.copy(&test.user_hash);
+                    copy.set_test(crate::lisp::alloc::vectors::hash_tables::descriptor(
+                        name,
+                        compare,
+                        hash,
+                        None,
+                        |left, right| left.word() == right.word(),
+                    ));
+                }
+                copy.set_mutable(table.is_mutable());
+                value
+            }
             Kind::StringObject(state) => {
                 let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
@@ -3229,25 +3132,15 @@ impl ImageGraphCopier {
 
 /// Finding 110: the live-object counts behind `garbage-collect'.
 ///
-/// GNU's numbers come from allocator bookkeeping (gcstat), not from a
-/// heap walk; emaxx keeps the equivalent books in types.rs -- a live
-/// cons-cell counter maintained at construction and Drop, and Weak
-/// registries of string allocations swept lazily.  What each field means
-/// here, where the object models differ:
+/// Allocator books count conses, strings, floats and vector allocations.
+/// Migrated pseudovectors include their rounded payload; hash-table arrays
+/// and overlay nodes add their actual separately allocated bytes.
 ///
-/// - `conses' counts every live cons cell, vector-literal spines
-///   included: vectors ride on conses internally, so cons cells are where
-///   their storage truthfully is.  `vectors'/`vector_slots' use GNU's
-///   configured C layout for ordinary vectors and fixed-layout
-///   pseudovectors represented by records.
-/// - `floats' counts allocator-owned one-word float cells.
-/// - `intervals' counts text-property spans (buffer spans plus string
-///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers, overlays, and finalizers are allocator-owned pseudovectors.
-///   Overlays' separately owned interval nodes are counted as native bytes.
-///   Rooted char-tables still use a C footprint for their host state. Frames,
-///   terminals, buffers, and fixed-layout records with a direct GNU
-///   pseudovector counterpart are included as well.
+/// This GNU-compatible collection census is not complete physical memory
+/// accounting. Remaining host pseudovectors contribute modeled C layouts,
+/// and `intervals' counts property spans rather than GNU interval nodes.
+/// Host ownership metadata and process-lifetime hash descriptors are not
+/// included in the collection total.
 #[derive(Default)]
 pub(crate) struct LiveObjectCensus {
     pub(crate) conses: usize,
@@ -3289,12 +3182,13 @@ pub(crate) struct LispReachability {
     /// alloc.c's `mark_stk': the objects reached and not yet traced,
     /// copied as words.
     pending: Vec<Value>,
+    weak_tables: Vec<crate::lisp::types::HashTableRef>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
     epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
-    /// every record is traced, a weak table's entry mirror included, so
+    /// every record is traced, a weak table's actual entries included, so
     /// the objects a never-swept record holds stay allocated.
     retaining: bool,
 }
@@ -3324,6 +3218,7 @@ impl LispReachability {
     fn default_without_epoch() -> Self {
         Self {
             pending: Vec::new(),
+            weak_tables: Vec::new(),
             retaining: false,
             epoch: 0,
         }
@@ -3337,7 +3232,7 @@ pub(crate) struct WeakHashReachability {
     pub(crate) tables: Vec<WeakHashTableReachability>,
 }
 
-pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
+pub(crate) type WeakHashTableReachability = (crate::lisp::types::HashTableRef, Vec<usize>);
 
 impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
@@ -3357,6 +3252,7 @@ impl LispReachability {
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
+            Kind::HashTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
@@ -3442,6 +3338,7 @@ impl LispReachability {
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
+            Kind::HashTable(table) => table.mark_bit().mark(self.epoch),
             Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
@@ -3545,6 +3442,19 @@ impl LispReachability {
                     self.enqueue(value);
                 }
             }
+            Kind::HashTable(table) => {
+                // alloc.c traces strong arrays in place and defers weak
+                // arrays to fns.c's fixed point. Descriptors have their own
+                // process-lifetime roots, also visited before this phase.
+                if table.weakness() != 0 && !self.retaining {
+                    self.weak_tables.push(table);
+                } else {
+                    for (_, key, value) in table.entries() {
+                        self.enqueue(&key);
+                        self.enqueue(&value);
+                    }
+                }
+            }
             Kind::LispRecord(record) => {
                 for field in record.slots() {
                     self.enqueue(&field);
@@ -3553,40 +3463,9 @@ impl LispReachability {
             Kind::Record(record) => {
                 // The remaining host pseudovector adapter owns its slots.
                 let record: &RecordState = &record;
-                let weak_hash = record.kind == RecordKind::HashTable
-                    && record.slots.get(5).is_some_and(Value::is_truthy);
-                // alloc.c's mark_vectorlike reads the slots in place.  A
-                // vector of their copies per record, dropped after, was a
-                // quarter of a collection over the boot heap (every
-                // byte-code function is a record).
                 self.enqueue(&record.type_tag);
-                for (index, slot) in record.slots.iter().enumerate() {
-                    // A weak table's entry mirror (slot 1) holds its keys
-                    // and values weakly: the fixed point below decides
-                    // them, and the weak sweep rewrites the mirror.
-                    if record.kind == RecordKind::HashTable
-                        && index == 1
-                        && weak_hash
-                        && !self.retaining
-                    {
-                        continue;
-                    }
+                for slot in &record.slots {
                     self.enqueue(slot);
-                }
-                if record.kind == RecordKind::HashTable && (!weak_hash || self.retaining) {
-                    if let Some(entries) = interp.hash_table_runtime_entries(record.id) {
-                        for (key, value) in entries {
-                            self.enqueue(key);
-                            self.enqueue(value);
-                        }
-                    } else if let Some((_, entries)) =
-                        crate::lisp::json::hash_table_entries(interp, value)
-                    {
-                        for (key, value) in &entries {
-                            self.enqueue(key);
-                            self.enqueue(value);
-                        }
-                    }
                 }
                 // A dead thread is no longer an independent GC root
                 // (thread.c:run_thread unlinks it). Its result and injected
@@ -3795,9 +3674,6 @@ impl Interpreter {
                     self.record_ids_by_type_index.remove(type_name);
                 }
             }
-            self.equal_hash_tables.remove(&id);
-            self.custom_hash_tables.remove(&id);
-            self.immutable_hash_tables.remove(&id);
             self.forget_keymap_public_view(id);
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -4072,58 +3948,49 @@ impl Interpreter {
         // alloc.c marks doomed functions before its weak-table fixed point.
         prepare_finalizers_in_live_states(self, &mut marked);
 
-        let weak_tables = self
-            .records
-            .iter()
-            .flatten()
-            .filter(|record| record.kind == RecordKind::HashTable)
-            .filter_map(|record| {
-                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
-                let entries =
-                    crate::lisp::json::hash_table_entries(self, &Value::Record(*record))?.1;
-                Some((*record, weakness, entries))
-            })
-            .collect::<Vec<_>>();
-
+        crate::lisp::alloc::vectors::hash_tables::visit_descriptor_roots(|value| {
+            marked.mark(self, value);
+        });
         loop {
             let mut changed = false;
-            for (record, weakness, entries) in &weak_tables {
-                if !record.mark_bit().is_marked(marked.epoch) {
-                    continue;
-                }
-                for (key, value) in entries {
-                    let strong_key = marked.contains(key);
-                    let strong_value = marked.contains(value);
-                    let keep = match weakness.as_str() {
-                        "key" => strong_key,
-                        "value" => strong_value,
-                        "key-and-value" => strong_key && strong_value,
-                        "key-or-value" => strong_key || strong_value,
+            let mut index = 0;
+            // Marking a retained value can discover another weak table.
+            // Read the growing work list one handle at a time.
+            while index < marked.weak_tables.len() {
+                let table = marked.weak_tables[index];
+                for (_, key, value) in table.entries() {
+                    let strong_key = marked.contains(&key);
+                    let strong_value = marked.contains(&value);
+                    let keep = match table.weakness() {
+                        1 => strong_key,
+                        2 => strong_value,
+                        3 => strong_key || strong_value,
+                        4 => strong_key && strong_value,
                         _ => true,
                     };
                     if keep {
-                        changed |= marked.mark(self, key);
-                        changed |= marked.mark(self, value);
+                        changed |= marked.mark(self, &key);
+                        changed |= marked.mark(self, &value);
                     }
                 }
+                index += 1;
             }
             if !changed {
                 break;
             }
         }
-
-        let tables = weak_tables
-            .into_iter()
-            .map(|(record, _, entries)| {
-                let keep = if record.mark_bit().is_marked(marked.epoch) {
-                    entries
-                        .iter()
-                        .map(|(key, value)| marked.contains(key) && marked.contains(value))
-                        .collect()
-                } else {
-                    vec![false; entries.len()]
-                };
-                (record.id, entries, keep)
+        let tables = marked
+            .weak_tables
+            .iter()
+            .map(|&table| {
+                let remove = table
+                    .bucket_slots()
+                    .filter(|&slot| {
+                        let (key, value) = table.entry(slot).expect("live collision chain");
+                        !marked.contains(&key) || !marked.contains(&value)
+                    })
+                    .collect();
+                (table, remove)
             })
             .collect();
         WeakHashReachability {
@@ -4521,29 +4388,22 @@ impl Interpreter {
     }
 
     fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
-        let mut bytes = 0_usize;
+        let mut bytes = crate::lisp::alloc::vectors::hash_tables::live_array_bytes();
         for record in self.records.iter().flatten() {
-            match record.kind {
-                RecordKind::HashTable => {
-                    let capacity = self.gnu_hash_table_capacity(record.id).unwrap_or(0);
-                    bytes = bytes.saturating_add(gnu_hash_table_storage_bytes(capacity));
-                }
-                RecordKind::Obarray => {
-                    let capacity = if record.id == self.standard_obarray_id {
-                        let mut capacity = 1_usize << 15;
-                        while symbol_count > capacity {
-                            capacity = capacity.saturating_mul(2);
-                        }
-                        capacity
-                    } else {
-                        // lread.c:obarray_default_bits is 3.  Nonstandard
-                        // obarray growth is accounted when its symbol arena is
-                        // moved out of the encoded namespace representation.
-                        1_usize << 3
-                    };
-                    bytes = bytes.saturating_add(capacity.saturating_mul(8));
-                }
-                _ => {}
+            if record.kind == RecordKind::Obarray {
+                let capacity = if record.id == self.standard_obarray_id {
+                    let mut capacity = 1_usize << 15;
+                    while symbol_count > capacity {
+                        capacity = capacity.saturating_mul(2);
+                    }
+                    capacity
+                } else {
+                    // lread.c:obarray_default_bits is 3.  Nonstandard
+                    // obarray growth is accounted when its symbol arena is
+                    // moved out of the encoded namespace representation.
+                    1_usize << 3
+                };
+                bytes = bytes.saturating_add(capacity.saturating_mul(8));
             }
         }
         bytes
@@ -4735,12 +4595,6 @@ impl Interpreter {
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
-            for table in clone.equal_hash_tables.values_mut() {
-                for (key, value) in &mut table.entries {
-                    *key = c.copy(key);
-                    *value = c.copy(value);
-                }
-            }
             for coding in &mut clone.coding_systems {
                 coding.plist = c.copy(&coding.plist.clone());
                 coding.charset_list = c.copy(&coding.charset_list);
@@ -4905,21 +4759,21 @@ impl Interpreter {
         // rebuilds the record from its (copied) view on first use.
         clone.keymap_public_view_watch.clear();
 
-        // `eq'/`eql' hash tables bucket conses and lambdas by cell
-        // identity; the copies have new identities, so rebuild every
-        // bucket index from the rewritten entries.
-        let mut tables = std::mem::take(&mut clone.equal_hash_tables);
-        for table in tables.values_mut() {
-            table.hashes = table
-                .entries
-                .iter()
-                .map(|(key, _)| {
-                    crate::lisp::primitives::runtime_hash_bucket_key(&clone, table.test, key)
-                })
-                .collect();
+        // Identity-bearing keys acquire new addresses in the test image.
+        // Rehash copied standard tables only after the complete graph is
+        // relocated, preserving cycles and sharing through the copier memo.
+        for table in copier.hash_tables {
+            let Some(test) = table.test().standard_test() else {
+                continue;
+            };
+            for (slot, key, _) in table.entries() {
+                table.set_stored_hash(
+                    slot,
+                    crate::lisp::primitives::standard_hash_code(&clone, test, &key, &Env::new()),
+                );
+            }
             table.rebuild_index();
         }
-        clone.equal_hash_tables = tables;
 
         clone
     }
@@ -5238,20 +5092,6 @@ pub struct InterpreterState {
     /// entry objects whose in-place changes bypass the table mutation door.
     regexp_syntax_class_cache: RefCell<Vec<RegexpSyntaxClassCache>>,
     syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
-    /// Indexed storage for GNU `equal' hash tables.  Record slots retain
-    /// metadata compatibility, while this sidecar gives structured Lisp keys
-    /// the same hashed lookup shape as Emacs's native implementation.
-    /// Keyed by dense record id with the shared identity hasher: SipHash
-    /// showed up at 6% of a `puthash'/`gethash' kernel just locating the
-    /// table per operation.
-    equal_hash_tables: HashMap<u64, EqualHashTableState, crate::lisp::types::IdentityBuildHasher>,
-    custom_hash_tables: HashMap<u64, CustomHashTableState, crate::lisp::types::IdentityBuildHasher>,
-    /// Hash tables whose user-defined hash or comparison function is on the
-    /// stack.  GNU fns.c flips the table's `mutable` bit for exactly this
-    /// critical section; mutation primitives reject the table instead of
-    /// copying and comparing all of its entries around every callback.
-    hash_tables_under_test: HashSet<u64, crate::lisp::types::IdentityBuildHasher>,
-    immutable_hash_tables: HashSet<u64, crate::lisp::types::IdentityBuildHasher>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -5989,10 +5829,6 @@ impl Interpreter {
             next_buffer_id: 2,
             regexp_syntax_class_cache: RefCell::new(Vec::new()),
             syntax_segment_cache: RefCell::new(None),
-            equal_hash_tables: HashMap::default(),
-            custom_hash_tables: HashMap::default(),
-            hash_tables_under_test: HashSet::default(),
-            immutable_hash_tables: HashSet::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
                 ("ascii".into(), 0),

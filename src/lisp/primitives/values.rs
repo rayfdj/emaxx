@@ -313,6 +313,7 @@ fn values_equal_recursive_with_env(
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => markers_equal(a, b),
+        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Overlay(a), Kind::Overlay(b)) => overlays_equal(interp, a, b, seen, env),
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => {
             char_tables_equal(interp, left_id, right_id, seen, env)
@@ -375,7 +376,6 @@ fn values_equal_recursive_with_env(
             if matches!(
                 left_record.kind,
                 crate::lisp::eval::RecordKind::Process
-                    | crate::lisp::eval::RecordKind::HashTable
                     | crate::lisp::eval::RecordKind::Obarray
                     | crate::lisp::eval::RecordKind::Window
                     | crate::lisp::eval::RecordKind::WindowConfiguration
@@ -490,6 +490,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
+        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
         (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
@@ -565,6 +566,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
+        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
         (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
@@ -850,7 +852,6 @@ pub(crate) fn values_equal_including_properties_recursive(
             if matches!(
                 left_record.kind,
                 crate::lisp::eval::RecordKind::Process
-                    | crate::lisp::eval::RecordKind::HashTable
                     | crate::lisp::eval::RecordKind::Obarray
                     | crate::lisp::eval::RecordKind::Window
                     | crate::lisp::eval::RecordKind::WindowConfiguration
@@ -1173,7 +1174,6 @@ pub(crate) fn compare_record_values(
         }
         crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
-        | crate::lisp::eval::RecordKind::HashTable
         | crate::lisp::eval::RecordKind::Obarray
         | crate::lisp::eval::RecordKind::Window
         | crate::lisp::eval::RecordKind::WindowConfiguration
@@ -1222,10 +1222,15 @@ pub(crate) fn value_ordering(
         return Err(type_mismatch_signal(left, right));
     }
 
-    if matches!(left.kind(), Kind::CharTable(_)) || matches!(right.kind(), Kind::CharTable(_)) {
+    // fns.c:value_cmp treats distinct pseudovectors without a dedicated
+    // ordering (including hash and character tables) as unordered. Their
+    // contents do not order them; different pseudovector types still signal.
+    if matches!(left.kind(), Kind::CharTable(_) | Kind::HashTable(_))
+        || matches!(right.kind(), Kind::CharTable(_) | Kind::HashTable(_))
+    {
         return if matches!(
             (left.kind(), right.kind()),
-            (Kind::CharTable(_), Kind::CharTable(_))
+            (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::HashTable(_), Kind::HashTable(_))
         ) {
             Ok(ValueOrder::Unordered)
         } else {
@@ -1586,10 +1591,6 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     }
 }
 
-pub(crate) fn sxhash_value(interp: &Interpreter, value: &Value, mode: HashMode) -> i64 {
-    sxhash_value_with_symbol_positions(interp, value, mode, false)
-}
-
 pub(crate) fn sxhash_value_in_env(
     interp: &Interpreter,
     value: &Value,
@@ -1624,7 +1625,11 @@ fn sxhash_value_with_symbol_positions(
 /// the portion GNU's `sxhash_obj' will inspect: depth is capped at three and a
 /// list contributes at most seven elements.  Walking the entire key first is
 /// both unnecessary and unlike fns.c, especially for compiler IR lists.
-pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> Option<i64> {
+pub(crate) fn equal_hash_table_key_hash_in_env(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Option<i64> {
     fn indexable(value: &Value, depth: u32) -> bool {
         if depth > SXHASH_MAX_DEPTH {
             return true;
@@ -1637,7 +1642,6 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Kind::Overlay(_)
             | Kind::CharTable(_)
             | Kind::Lambda(_)
-            | Kind::SymbolWithPos(_)
             | Kind::ReaderForm(_) => false,
             Kind::Cons(_) => {
                 let mut tail = *value;
@@ -1670,7 +1674,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
         }
     }
 
-    indexable(value, 0).then(|| sxhash_value(interp, value, HashMode::Equal))
+    indexable(value, 0).then(|| sxhash_value_in_env(interp, value, HashMode::Equal, env))
 }
 
 /// Bucket key for a runtime-accelerated hash table.  The invariant is that
@@ -1689,7 +1693,7 @@ pub(crate) fn runtime_hash_bucket_key(
 ) -> Option<i64> {
     use crate::lisp::eval::RuntimeHashTest;
     if test == RuntimeHashTest::Equal {
-        return equal_hash_table_key_hash(interp, value);
+        return equal_hash_table_key_hash_in_env(interp, value, &Env::new());
     }
     let mut state = 0xcbf2_9ce4_8422_2325u64;
     if let Kind::SymbolWithPos(object) = value.kind() {
@@ -1845,6 +1849,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         Kind::Overlay(overlay) => {
             hash_mix(state, 10);
             hash_mix(state, overlay.identity() as u64);
+        }
+        Kind::HashTable(table) => {
+            hash_mix(state, 52);
+            hash_mix(state, table.identity() as u64);
         }
         Kind::CharTable(table) => {
             hash_mix(state, 11);
@@ -2075,6 +2083,10 @@ pub(crate) fn hash_value_equal_at(
             );
         }
         Kind::SubCharTable(_) => hash_mix(state, 42),
+        Kind::HashTable(table) => {
+            hash_mix(state, 52);
+            hash_mix(state, table.identity() as u64);
+        }
         Kind::CharTable(id) => {
             hash_char_table_equal(
                 interp,
@@ -2194,7 +2206,6 @@ pub(crate) fn hash_record_equal(
             }
         }
         crate::lisp::eval::RecordKind::Process
-        | crate::lisp::eval::RecordKind::HashTable
         | crate::lisp::eval::RecordKind::Obarray
         | crate::lisp::eval::RecordKind::Window
         | crate::lisp::eval::RecordKind::WindowConfiguration

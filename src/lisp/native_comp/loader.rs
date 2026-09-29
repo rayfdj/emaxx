@@ -618,11 +618,11 @@ fn comp_unit_relocations_match(
             if interpreter.find_record(id).is_some_and(|record|
                 record.kind == RecordKind::NativeCompiledFunction));
         if native_function {
-            let Kind::Record(guard_id) = guard.kind() else {
+            let Kind::HashTable(guard_id) = guard.kind() else {
                 return false;
             };
             if interpreter
-                .equal_hash_lookup(guard_id.id, &actual, environment)
+                .equal_hash_lookup(guard_id, &actual, environment)
                 .flatten()
                 .is_none()
             {

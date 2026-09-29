@@ -1,10 +1,32 @@
 # Resume the compact runtime goal here
 
+**Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
+after the complete goal. Source 133 replaces the host record and four side maps
+with one GNU-compatible allocation and owned arrays shared by all execution
+engines, GC and image loading. Both complete gates exposed an obsolete dump
+counter assertion; source 135 requires exact restoration of every remembered
+scalar. Both fresh gates then exposed missing unordered hash-table comparison
+handling. Source 139 repairs that production dispatch without changing the test:
+154 debug and 154 release controls, strict checks and nine ordinary exact GNU
+comparisons pass. Complete macOS and [Linux gates](https://github.com/rayfdj/emaxx/actions/runs/36530994726)
+now pass on PR #76, integration `75b69738`: 2,999 and 3,011 tests respectively,
+with two existing terminal ignores each. Native artifact identity passes.
+[Complete receipts](docs/handover/2026-09-29-hash-complete/manifest.json),
+[original failures](docs/handover/2026-09-29-hash-gate-repair/manifest.json) and
+[ordering repair evidence](docs/handover/2026-09-29-hash-ordering-repair/manifest.json)
+remain preserved. Separate keymap callback/error diagnostics also fail on the
+retained previous main executable; compatibility repairs continue independently.
+This validated checkpoint does not complete the full goal.
+
 **Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
 combines two measured ordinary-path improvements, with 232 debug and 232 release
 passes, strict static checks and all 16 workload result/mode checks. Complete
 gates for this newer source now pass: 2,993 tests on macOS and 3,005 on Linux,
-with two existing ignores each. PR #75 integrates this follow-up. The previous checkpoint is already
+with two existing ignores each. PR #75 integrates this follow-up at `49d0c25b`.
+Its fresh full terminal run passes all 223 scenarios against source-matched GNU.
+The Linux frozen comparison fails after 500 of 519 files: two differ, then the
+keymap report's invalid UTF-8 stops parsing; 18 later files never run. Complete
+raw evidence and limits are linked from the checkpoint. The previous checkpoint is already
 merged into `main` at `bf483660` through PR #74. Full goal completion remains open.
 
 **Newest continuation:** read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md)
@@ -93,6 +115,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [shared hash-table allocation checkpoint](docs/runtime-representation-hash-allocation-checkpoint.md).
    Then read the [current task-branch follow-up](docs/runtime-representation-call-window-checkpoint.md).
    Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).
    Then read the [newest regexp, VM and completed Linux continuation](docs/runtime-representation-regexp-checkpoint.md).

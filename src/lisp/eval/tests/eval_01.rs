@@ -6150,34 +6150,23 @@ fn equal_hash_tables_match_positioned_and_bare_keys_while_enabled() {
     // GNU's byte compiler builds pcase jump tables from positioned source
     // forms, then replaces TAG values through equivalent bare keys.  The
     // dynamic `equal' contract must prevent duplicate table entries.
+    // After insertion, toggling the hash mode can leave the identical key
+    // in the same bucket by chance. GNU checks EQ before the stored hash,
+    // so its lookup can either hit or miss. A copy must retain that result;
+    // distinct bare keys must miss while positions remain significant.
     assert_eq!(
-        eval_str(
-            "(let* ((symbols-with-pos-enabled t)
-                    (positioned (read-positioning-symbols \"(read-esc)\"))
-                    (table (make-hash-table :test 'equal)))
-               (puthash positioned '(TAG 207 . 3) table)
-               (puthash '(read-esc) 207 table)
-               (let ((copy (copy-hash-table table)))
-                 (list
-                  (hash-table-count table)
-                  (gethash positioned table 'missing)
-                  (gethash '(read-esc) table 'missing)
-                  (let ((symbols-with-pos-enabled nil))
-                    (list (gethash positioned table 'missing)
-                          (gethash '(read-esc) table 'missing)
-                          (gethash positioned copy 'missing)
-                          (gethash '(read-esc) copy 'missing)))
-                  (gethash '(read-esc) copy 'missing))))"
-        ),
+        eval_str(include_str!(
+            "../../../../tests/fixtures/hash-positioned-equality-copy.el"
+        )),
         Value::list([
             Value::Integer(1),
             Value::Integer(207),
             Value::Integer(207),
             Value::list([
+                Value::T,
                 Value::Symbol("missing".into()),
                 Value::Symbol("missing".into()),
-                Value::Symbol("missing".into()),
-                Value::Symbol("missing".into()),
+                Value::Nil,
             ]),
             Value::Integer(207),
         ])
@@ -6395,18 +6384,16 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
             ]),
         ])
     );
-    let Kind::Record(comp_units_id) = interp
+    let Kind::HashTable(comp_units) = interp
         .lookup_var("comp-loaded-comp-units-h", &env)
         .expect("comp.c initializes the loaded-unit table")
         .kind()
     else {
-        panic!("comp-loaded-comp-units-h is not a hash table record")
+        panic!("comp-loaded-comp-units-h is not a hash table")
     };
     assert_eq!(
-        interp
-            .find_record(comp_units_id)
-            .and_then(|record| record.slots.get(5)),
-        Some(&Value::symbol("value"))
+        crate::lisp::primitives::hash_table_weakness_value(comp_units),
+        Value::symbol("value")
     );
 }
 

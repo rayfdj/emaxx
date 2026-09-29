@@ -43,6 +43,7 @@ pub(crate) enum ObjectKey {
     Marker(usize),
     Overlay(usize),
     CharTable(usize),
+    HashTable(usize),
     SubCharTable(usize),
     Frame(usize),
     Terminal(usize),
@@ -82,6 +83,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
         Kind::CharTable(table) => ObjectKey::CharTable(table.identity()),
+        Kind::HashTable(table) => ObjectKey::HashTable(table.identity()),
         Kind::SubCharTable(table) => ObjectKey::SubCharTable(table.identity()),
         Kind::Frame(id) => ObjectKey::Frame(id.identity()),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
@@ -114,7 +116,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::Closure => 3,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
-        RecordKind::HashTable => 7,
         RecordKind::Obarray => 8,
         RecordKind::Window => 9,
         RecordKind::WindowConfiguration => 10,
@@ -142,7 +143,6 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
-        7 => RecordKind::HashTable,
         8 => RecordKind::Obarray,
         9 => RecordKind::Window,
         10 => RecordKind::WindowConfiguration,
@@ -549,6 +549,7 @@ impl DumpContext {
             Kind::BuiltinFunc(_) => DumpType::Subr,
             Kind::Lambda(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
+            Kind::HashTable(_) => DumpType::HashTable,
             Kind::SubCharTable(_) => DumpType::SubCharTable,
             Kind::Record(id) if id.id == self.main_thread_id => DumpType::MainThread,
             Kind::Buffer(_) => DumpType::Buffer,
@@ -1049,6 +1050,7 @@ impl DumpContext {
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
             Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
+            Kind::HashTable(table) => (self.dump_hash_table(table, object)?, DumpType::HashTable),
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
             Kind::Record(id) => self.dump_record(interp, id.id, object)?,
             Kind::LispRecord(record) => (self.dump_lisp_record(record)?, DumpType::LispRecord),
@@ -1326,10 +1328,6 @@ impl DumpContext {
                 } else {
                     Err(self.unsupported(object, "thread"))
                 }
-            }
-            RecordKind::HashTable => {
-                let offset = self.dump_hash_table(interp, id, object, &type_tag, &slots)?;
-                Ok((offset, DumpType::HashTable))
             }
             RecordKind::WindowConfiguration => {
                 Err(self.unsupported(object, "window configuration"))
@@ -1873,46 +1871,51 @@ impl DumpContext {
     /// mutability; thawed on load.
     fn dump_hash_table(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
+        table: crate::lisp::types::HashTableRef,
         object: &Value,
-        type_tag: &Value,
-        slots: &[Value],
     ) -> Result<u32, DumpError> {
-        let test_name = slots
-            .first()
-            .and_then(|value| value.as_symbol().ok())
-            .unwrap_or("eql")
-            .to_owned();
-        let test_code = match test_name.as_str() {
-            "eq" => HASH_TEST_EQ,
-            "eql" => HASH_TEST_EQL,
-            "equal" => HASH_TEST_EQUAL,
-            _ => {
-                // hash_table_std_test (Bug#36769).
+        use crate::lisp::eval::RuntimeHashTest;
+        let test_code = match table.test().standard_test() {
+            Some(RuntimeHashTest::Eq) => HASH_TEST_EQ,
+            Some(RuntimeHashTest::Eql) => HASH_TEST_EQL,
+            Some(RuntimeHashTest::Equal) => HASH_TEST_EQUAL,
+            None => {
                 return Err(LispError::Signal(
                     "cannot dump hash tables with user-defined tests".into(),
                 )
                 .into());
             }
         };
-        let entries = crate::lisp::json::hash_table_entries(interp, object)
-            .map(|(_, entries)| entries)
-            .unwrap_or_default();
-        let weakness = slots.get(5).cloned().unwrap_or(Value::Nil);
-        let mutable = interp.hash_table_is_mutable(id);
+        let entries = table
+            .entries()
+            .map(|(_, key, value)| (key, value))
+            .collect::<Vec<_>>();
+        let weakness = crate::lisp::primitives::hash_table_weakness_value(table);
+        let mutable = table.is_mutable();
+        // Preserve the existing wire format. These temporary serialization
+        // fields are never installed as a host record on either side.
+        let id = 0;
+        let type_tag = Value::symbol("hash-table");
+        let slots = [
+            table.test_name(),
+            Value::Nil,
+            Value::Integer(table.capacity() as i64),
+            Value::Nil,
+            Value::Nil,
+            weakness,
+            if table.purecopy() {
+                Value::T
+            } else {
+                Value::Nil
+            },
+        ];
         if self.flags.dump_object_contents {
             self.hash_tables.push(*object);
         }
         let start = self.object_start()?;
-        let mut words = vec![
-            id,
-            u64::from(record_kind_code(RecordKind::HashTable)),
-            0,
-            slots.len() as u64,
-        ];
-        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
-        for slot in slots {
+        let mut words = vec![id, 7, 0, slots.len() as u64];
+        self.field_lv(start, &mut words, 2, &type_tag, WEIGHT_STRONG);
+        for slot in &slots {
             let index = words.len();
             words.push(0);
             self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
@@ -2322,9 +2325,8 @@ pub(crate) const HASH_TEST_EQ: u64 = 0;
 pub(crate) const HASH_TEST_EQL: u64 = 1;
 pub(crate) const HASH_TEST_EQUAL: u64 = 2;
 
-fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record| record.kind == RecordKind::HashTable))
+fn is_hash_table(_interp: &Interpreter, value: &Value) -> bool {
+    matches!(value.kind(), Kind::HashTable(_))
 }
 
 fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {

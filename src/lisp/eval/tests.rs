@@ -258,25 +258,25 @@ fn gnu_hash_storage_layout_and_growth_match_fns_c() {
 #[test]
 fn gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary() {
     let mut interp = Interpreter::new();
-    let Kind::Record(id) =
+    let Kind::HashTable(id) =
         crate::lisp::json::make_hash_table_with_capacity(&mut interp, "eql", Vec::new(), 0).kind()
     else {
-        unreachable!("hash-table constructor must return a record")
+        unreachable!("hash-table constructor must return a hash table")
     };
     let env = crate::lisp::types::Env::new();
-    assert_eq!(interp.gnu_hash_table_capacity(id.id), Some(0));
+    assert_eq!(Some(id.capacity()), Some(0));
 
     for key in 0..6 {
-        assert!(interp.equal_hash_put(id.id, Value::Integer(key), Value::Integer(key), &env,));
+        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
     }
-    assert_eq!(interp.gnu_hash_table_capacity(id.id), Some(6));
-    interp.replace_hash_table_runtime_entries(id.id, "eql", Vec::new());
-    assert_eq!(interp.gnu_hash_table_capacity(id.id), Some(6));
+    assert_eq!(Some(id.capacity()), Some(6));
+    id.clear();
+    assert_eq!(Some(id.capacity()), Some(6));
 
     for key in 0..7 {
-        assert!(interp.equal_hash_put(id.id, Value::Integer(key), Value::Integer(key), &env,));
+        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
     }
-    assert_eq!(interp.gnu_hash_table_capacity(id.id), Some(24));
+    assert_eq!(Some(id.capacity()), Some(24));
 }
 
 mod eval_01;

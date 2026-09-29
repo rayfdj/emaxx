@@ -1485,483 +1485,99 @@ impl Interpreter {
         )))
     }
 
-    pub fn replace_hash_table_runtime_entries(
-        &mut self,
-        id: u64,
-        test: &str,
-        entries: Vec<(Value, Value)>,
-    ) {
-        let requested = self
-            .find_record(id)
-            .and_then(|record| record.slots.get(2))
-            .and_then(|value| value.as_integer().ok())
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(0);
-        let previous_capacity = self.gnu_hash_table_capacity(id).unwrap_or(requested);
-        let capacity = super::gnu_hash_grown_capacity(previous_capacity, entries.len());
-        let test = match test {
-            "eq" => RuntimeHashTest::Eq,
-            "eql" => RuntimeHashTest::Eql,
-            "equal" => RuntimeHashTest::Equal,
-            _ => {
-                self.equal_hash_tables.remove(&id);
-                if entries.is_empty() {
-                    self.custom_hash_tables
-                        .insert(id, CustomHashTableState::empty(capacity));
-                } else {
-                    // Restoring a serialized custom table has no saved hash
-                    // codes.  Leave it on the correct linear fallback until
-                    // it is cleared; ordinary construction starts empty and
-                    // stays on the indexed path.
-                    self.custom_hash_tables.remove(&id);
-                }
-                return;
-            }
-        };
-        self.custom_hash_tables.remove(&id);
-        let hashes = entries
-            .iter()
-            .map(|(key, _)| crate::lisp::primitives::runtime_hash_bucket_key(self, test, key))
-            .collect::<Vec<_>>();
-        let mut state = EqualHashTableState {
-            test,
-            capacity,
-            slot_indices: (0..entries.len()).collect(),
-            next_slot: entries.len(),
-            entries,
-            free_slots: Vec::new(),
-            hashes,
-            key_index: HashMap::default(),
-        };
-        state.rebuild_index();
-        self.equal_hash_tables.insert(id, state);
-    }
-
-    /// fns.c:hash_table_thaw: the index is recomputed from the compact
-    /// contents and the allocation is minimal, with no room for growth.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn thaw_hash_table(&mut self, id: u64, test: &str, entries: Vec<(Value, Value)>) {
-        let count = entries.len();
-        self.replace_hash_table_runtime_entries(id, test, entries);
-        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
-            state.capacity = count;
-        }
-    }
-
-    pub(crate) fn gnu_hash_table_capacity(&self, id: u64) -> Option<usize> {
-        let record = self
-            .find_record(id)
-            .filter(|record| record.kind == RecordKind::HashTable)?;
-        if let Some(state) = self.equal_hash_tables.get(&id) {
-            return Some(state.capacity);
-        }
-        if let Some(state) = self.custom_hash_tables.get(&id) {
-            return Some(state.capacity);
-        }
-        let requested = record
-            .slots
-            .get(2)
-            .and_then(|value| value.as_integer().ok())
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(0);
-        let high_water = record
-            .slots
-            .get(1)
-            .map(crate::lisp::json::hash_table_entry_list_len)
-            .unwrap_or(0);
-        Some(super::gnu_hash_grown_capacity(requested, high_water))
-    }
-
-    fn note_gnu_hash_table_growth(&self, before: usize, after: usize) {
-        let old_bytes = super::gnu_hash_table_storage_bytes(before);
-        let new_bytes = super::gnu_hash_table_storage_bytes(after);
-        crate::lisp::native_comp::note_lisp_allocation(new_bytes.saturating_sub(old_bytes));
-    }
-
-    pub fn hash_table_runtime_entries(&self, id: u64) -> Option<&Vec<(Value, Value)>> {
-        self.equal_hash_tables
-            .get(&id)
-            .map(|state| &state.entries)
-            .or_else(|| self.custom_hash_tables.get(&id).map(|state| &state.entries))
-    }
-
-    /// Return the first live key/value slot at or after `minimum_slot`.
-    /// fns.c:DOHASH_SAFE advances through the hash table's numeric storage
-    /// slots and reloads each entry after the preceding callback, rather than
-    /// snapshotting the whole table.  The compact Rust vectors are maintained
-    /// in that same slot order, so a partition point recovers the next GNU
-    /// slot without scanning unused capacity.
-    pub(crate) fn hash_table_entry_at_or_after(
+    /// Standard tests read the table's actual arrays. No id-to-state lookup
+    /// or entry snapshot is involved in ordinary lookup or mutation.
+    pub(crate) fn equal_hash_entry(
         &self,
-        id: u64,
-        minimum_slot: usize,
+        table: crate::lisp::types::HashTableRef,
+        key: &Value,
+        env: &Env,
     ) -> Option<Option<(usize, Value, Value)>> {
-        let (entries, slot_indices) = if let Some(state) = self.equal_hash_tables.get(&id) {
-            (&state.entries, &state.slot_indices)
-        } else {
-            let state = self.custom_hash_tables.get(&id)?;
-            (&state.entries, &state.slot_indices)
-        };
-        let index = slot_indices.partition_point(|slot| *slot < minimum_slot);
-        Some(
-            entries
-                .get(index)
-                .zip(slot_indices.get(index))
-                .map(|((key, value), slot)| (*slot, *key, *value)),
-        )
+        let test = table.test().standard_test()?;
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, key, env);
+        Some(self.standard_hash_entry(table, test, hash, key, env))
     }
 
-    pub(crate) fn has_custom_hash_table_index(&self, id: u64) -> bool {
-        self.custom_hash_tables.contains_key(&id)
-    }
-
-    pub(crate) fn custom_hash_candidates(
+    fn standard_hash_entry(
         &self,
-        id: u64,
-        hash: i64,
-    ) -> Option<Vec<(usize, Value, Value)>> {
-        let state = self.custom_hash_tables.get(&id)?;
-        Some(
-            state
-                .key_index
-                .get(&hash)
-                .into_iter()
-                .flatten()
-                .filter_map(|&index| {
-                    state
-                        .entries
-                        .get(index)
-                        .map(|(key, value)| (index, *key, *value))
-                })
-                .collect(),
-        )
-    }
-
-    pub(crate) fn custom_hash_put_at(
-        &mut self,
-        id: u64,
-        hash: i64,
-        existing_index: Option<usize>,
-        key: Value,
-        value: Value,
-    ) -> bool {
-        let capacity_before = self.gnu_hash_table_capacity(id).unwrap_or(0);
-        let Some(state) = self.custom_hash_tables.get_mut(&id) else {
-            return false;
-        };
-        if let Some(index) = existing_index {
-            let Some((_, existing_value)) = state.entries.get_mut(index) else {
-                return false;
-            };
-            *existing_value = value;
-            return true;
-        }
-
-        let slot = state.free_slots.pop().unwrap_or_else(|| {
-            let slot = state.next_slot;
-            state.next_slot += 1;
-            slot
-        });
-        let index = state
-            .slot_indices
-            .binary_search(&slot)
-            .unwrap_or_else(|index| index);
-        let inserted_in_middle = index != state.entries.len();
-        state.slot_indices.insert(index, slot);
-        state.entries.insert(index, (key, value));
-        state.hashes.insert(index, hash);
-        if inserted_in_middle {
-            state.rebuild_index();
-        } else {
-            state.key_index.entry(hash).or_default().push(index);
-        }
-        if let Some(state) = self.custom_hash_tables.get_mut(&id) {
-            state.capacity = super::gnu_hash_grown_capacity(capacity_before, state.next_slot);
-        }
-        let capacity_after = self.gnu_hash_table_capacity(id).unwrap_or(capacity_before);
-        self.note_gnu_hash_table_growth(capacity_before, capacity_after);
-        true
-    }
-
-    pub(crate) fn custom_hash_remove_at(&mut self, id: u64, index: usize) -> bool {
-        let Some(state) = self.custom_hash_tables.get_mut(&id) else {
-            return false;
-        };
-        if index >= state.entries.len() {
-            return false;
-        }
-        state.entries.remove(index);
-        state.hashes.remove(index);
-        let freed_slot = state.slot_indices.remove(index);
-        state.free_slots.push(freed_slot);
-        state.rebuild_index();
-        true
-    }
-
-    pub(crate) fn clear_custom_hash_table(&mut self, id: u64) -> bool {
-        let Some(state) = self.custom_hash_tables.get_mut(&id) else {
-            return false;
-        };
-        state.entries.clear();
-        state.hashes.clear();
-        state.slot_indices.clear();
-        state.free_slots.clear();
-        state.next_slot = 0;
-        state.key_index.clear();
-        true
-    }
-
-    /// fns.c:sweep_weak_table removes entries inside the collector.  It does
-    /// not call `remhash', consult the public mutability guard, or invoke a
-    /// user hash function.  Preserve allocated capacity and slot/free-list
-    /// state while rebuilding only the derived lookup index.
-    pub(crate) fn sweep_weak_hash_table(
-        &mut self,
-        id: u64,
-        entries: Vec<(Value, Value)>,
-        keep: &[bool],
-    ) {
-        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
-            for index in (0..state.entries.len()).rev() {
-                if !keep.get(index).copied().unwrap_or(false) {
-                    state.remove_at(index);
-                }
+        table: crate::lisp::types::HashTableRef,
+        test: RuntimeHashTest,
+        hash: u32,
+        key: &Value,
+        env: &Env,
+    ) -> Option<(usize, Value, Value)> {
+        let mut slot = table.first_in_bucket(hash);
+        while slot >= 0 {
+            let index = slot as usize;
+            let (stored, value) = table.entry(index).expect("live hash chain");
+            if crate::lisp::primitives::values_eq_in_env(self, key, &stored, env)
+                || (table.stored_hash(index) == hash
+                    && self.runtime_hash_keys_match(test, key, &stored, env))
+            {
+                return Some((index, stored, value));
             }
-            return;
+            slot = table.next_in_bucket(index);
         }
-        if let Some(mut state) = self.custom_hash_tables.remove(&id) {
-            for index in (0..state.entries.len()).rev() {
-                if !keep.get(index).copied().unwrap_or(false) {
-                    state.entries.remove(index);
-                    state.hashes.remove(index);
-                    let freed_slot = state.slot_indices.remove(index);
-                    state.free_slots.push(freed_slot);
-                }
-            }
-            state.rebuild_index();
-            self.custom_hash_tables.insert(id, state);
-            return;
-        }
-
-        let retained = entries
-            .into_iter()
-            .zip(keep.iter().copied())
-            .filter_map(|(entry, keep)| keep.then_some(entry))
-            .collect::<Vec<_>>();
-        if let Some(record) = self.find_record_mut(id)
-            && record.kind == RecordKind::HashTable
-        {
-            if record.slots.len() < 2 {
-                record.slots.resize(2, Value::Nil);
-            }
-            record.slots[1] = crate::lisp::primitives::hash_table_entries_to_value(retained);
-        }
-    }
-
-    /// Enter GNU fns.c's immutable critical section for a user-defined hash
-    /// or comparison call.  A nested callback on the same table observes the
-    /// existing section and must not restore mutability when it returns.
-    pub(crate) fn enter_hash_table_test(&mut self, id: u64) -> bool {
-        self.hash_tables_under_test.insert(id)
-    }
-
-    pub(crate) fn leave_hash_table_test(&mut self, id: u64, entered: bool) {
-        if entered {
-            self.hash_tables_under_test.remove(&id);
-        }
-    }
-
-    pub(crate) fn hash_table_is_mutable(&self, id: u64) -> bool {
-        !self.hash_tables_under_test.contains(&id) && !self.immutable_hash_tables.contains(&id)
-    }
-
-    pub(crate) fn mark_hash_table_immutable(&mut self, id: u64) {
-        self.immutable_hash_tables.insert(id);
-    }
-
-    fn value_contains_positioned_symbol(
-        &self,
-        value: &Value,
-        visited: &mut std::collections::HashSet<usize>,
-    ) -> bool {
-        if crate::lisp::primitives::symbol_with_pos_parts(self, value).is_some() {
-            return true;
-        }
-        let Kind::Cons(cell) = value.kind() else {
-            return false;
-        };
-        let identity = crate::lisp::types::ConsCell::identity(&cell);
-        if !visited.insert(identity) {
-            return false;
-        }
-        self.value_contains_positioned_symbol(&cell.car.get(), visited)
-            || self.value_contains_positioned_symbol(&cell.cdr.get(), visited)
-    }
-
-    pub fn reindex_hash_table_runtime_entries_in_env(&mut self, id: u64, env: &Env) {
-        let Some(state) = self.equal_hash_tables.get(&id) else {
-            return;
-        };
-        let test = state.test;
-        let positions_enabled = test == RuntimeHashTest::Equal
-            && crate::lisp::primitives::symbols_with_pos_enabled(self, env);
-        let hashes = state
-            .entries
-            .iter()
-            .map(|(key, _)| {
-                if positions_enabled
-                    && self.value_contains_positioned_symbol(
-                        key,
-                        &mut std::collections::HashSet::new(),
-                    )
-                {
-                    // GNU hashes the bare-symbol projection while the dynamic
-                    // mode is enabled.  This reserved bucket is internal and
-                    // deliberately unreachable by the ordinary, disabled
-                    // structural hash; enabled operations use the exact
-                    // env-aware scan below.  Thus toggling the mode preserves
-                    // GNU's stale-bucket miss instead of finding the wrapper
-                    // under a hash that was never used to insert it.
-                    Some(i64::MIN)
-                } else {
-                    crate::lisp::primitives::runtime_hash_bucket_key(self, test, key)
-                }
-            })
-            .collect::<Vec<_>>();
-        let state = self
-            .equal_hash_tables
-            .get_mut(&id)
-            .expect("hash table disappeared while reindexing");
-        state.hashes = hashes;
-        state.rebuild_index();
+        None
     }
 
     fn runtime_hash_keys_match(
         &self,
         test: RuntimeHashTest,
-        stored: &Value,
-        probe: &Value,
+        left: &Value,
+        right: &Value,
         env: &Env,
     ) -> bool {
         match test {
             RuntimeHashTest::Eq => {
-                crate::lisp::primitives::values_eq_in_env(self, stored, probe, env)
+                crate::lisp::primitives::values_eq_in_env(self, left, right, env)
             }
             RuntimeHashTest::Eql => {
-                crate::lisp::primitives::values_eql_in_env(self, stored, probe, env)
+                crate::lisp::primitives::values_eql_in_env(self, left, right, env)
             }
             RuntimeHashTest::Equal => {
-                crate::lisp::primitives::values_equal_in_env(self, stored, probe, env)
+                crate::lisp::primitives::values_equal_in_env(self, left, right, env)
             }
         }
     }
 
-    pub fn equal_hash_lookup(&self, id: u64, key: &Value, env: &Env) -> Option<Option<Value>> {
-        self.equal_hash_entry(id, key, env)
-            .map(|entry| entry.map(|(_, value)| value))
+    pub(crate) fn equal_hash_lookup(
+        &self,
+        table: crate::lisp::types::HashTableRef,
+        key: &Value,
+        env: &Env,
+    ) -> Option<Option<Value>> {
+        self.equal_hash_entry(table, key, env)
+            .map(|entry| entry.map(|(_, _, value)| value))
     }
 
-    pub(crate) fn equal_hash_lookup_key(&self, id: u64, key: &Value, env: &Env) -> Option<Value> {
-        self.equal_hash_entry(id, key, env)?.map(|(key, _)| key)
+    pub(crate) fn equal_hash_lookup_key(
+        &self,
+        table: crate::lisp::types::HashTableRef,
+        key: &Value,
+        env: &Env,
+    ) -> Option<Value> {
+        self.equal_hash_entry(table, key, env)?
+            .map(|(_, key, _)| key)
     }
 
-    fn equal_hash_entry(&self, id: u64, key: &Value, env: &Env) -> Option<Option<(Value, Value)>> {
-        let state = self.equal_hash_tables.get(&id)?;
-        // `equal' dynamically treats a symbol-with-position as its bare
-        // symbol while this byte-compiler switch is enabled.  Scan the
-        // authoritative entries rather than returning a fallback sentinel:
-        // internal C-equivalent callers such as purecopy use this API
-        // directly and must retain complete hash-table behavior too.
-        if state.test == RuntimeHashTest::Equal
-            && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-        {
-            return Some(
-                state
-                    .entries
-                    .iter()
-                    .find(|(existing, _)| {
-                        self.runtime_hash_keys_match(state.test, existing, key, env)
-                    })
-                    .copied(),
-            );
-        }
-        let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
-        Some(
-            state
-                .bucket_entry(hash, |existing| {
-                    self.runtime_hash_keys_match(state.test, existing, key, env)
-                })
-                .map(|index| state.entries[index]),
-        )
-    }
-
-    pub fn equal_hash_put(&mut self, id: u64, key: Value, value: Value, env: &Env) -> bool {
-        let capacity_before = self.gnu_hash_table_capacity(id).unwrap_or(0);
-        let Some(state) = self.equal_hash_tables.get(&id) else {
+    pub(crate) fn equal_hash_put(
+        &self,
+        table: crate::lisp::types::HashTableRef,
+        key: Value,
+        value: Value,
+        env: &Env,
+    ) -> bool {
+        let Some(test) = table.test().standard_test() else {
             return false;
         };
-        let test = state.test;
-        let positioned_equal = test == RuntimeHashTest::Equal
-            && crate::lisp::primitives::symbols_with_pos_enabled(self, env);
-        let hash = if positioned_equal
-            && self.value_contains_positioned_symbol(&key, &mut std::collections::HashSet::new())
-        {
-            Some(i64::MIN)
+        let hash = crate::lisp::primitives::standard_hash_code(self, test, &key, env);
+        if let Some((slot, _, _)) = self.standard_hash_entry(table, test, hash, &key, env) {
+            table.set_value(slot, value);
         } else {
-            crate::lisp::primitives::runtime_hash_bucket_key(self, test, &key)
-        };
-        let existing_index = if positioned_equal {
-            state
-                .entries
-                .iter()
-                .position(|(existing, _)| self.runtime_hash_keys_match(test, existing, &key, env))
-        } else {
-            state.bucket_entry(hash, |existing| {
-                self.runtime_hash_keys_match(test, existing, &key, env)
-            })
-        };
-
-        let state = self
-            .equal_hash_tables
-            .get_mut(&id)
-            .expect("equal hash table disappeared during lookup");
-        if let Some(index) = existing_index {
-            state.entries[index].1 = value;
-        } else {
-            state.insert_new(key, value, hash);
+            table.insert(hash, key, value);
         }
-        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
-            state.capacity = super::gnu_hash_grown_capacity(capacity_before, state.next_slot);
-        }
-        let capacity_after = self.gnu_hash_table_capacity(id).unwrap_or(capacity_before);
-        self.note_gnu_hash_table_growth(capacity_before, capacity_after);
         true
-    }
-
-    pub fn equal_hash_remove(&mut self, id: u64, key: &Value, env: &Env) -> Option<bool> {
-        let state = self.equal_hash_tables.get(&id)?;
-        let test = state.test;
-        let positioned_equal = test == RuntimeHashTest::Equal
-            && crate::lisp::primitives::symbols_with_pos_enabled(self, env);
-        let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
-        let existing_index = if positioned_equal {
-            state
-                .entries
-                .iter()
-                .position(|(existing, _)| self.runtime_hash_keys_match(test, existing, key, env))
-        } else {
-            state.bucket_entry(hash, |existing| {
-                self.runtime_hash_keys_match(test, existing, key, env)
-            })
-        };
-        let Some(existing_index) = existing_index else {
-            return Some(false);
-        };
-        self.equal_hash_tables
-            .get_mut(&id)
-            .expect("equal hash table disappeared during removal")
-            .remove_at(existing_index);
-        Some(true)
     }
 
     #[inline]
@@ -2483,46 +2099,11 @@ impl Interpreter {
     }
 
     pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
-        let hash_entries = self.hash_table_runtime_entries(id).cloned();
-        let equal_hash_state = self.equal_hash_tables.get(&id).cloned();
-        let custom_hash_state = self.custom_hash_tables.get(&id).cloned();
         let record = self
             .find_record(id)
             .cloned()
             .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-        let mut slots = record.slots;
-        if let Some(entries) = &hash_entries
-            && slots.len() >= 2
-        {
-            // The sidecar below is GNU's key_and_value storage.  A second
-            // Lisp-list representation would create non-GNU cons cells.
-            let _ = entries;
-            slots[1] = Value::Nil;
-        }
-        let test = slots
-            .first()
-            .and_then(|value| value.as_symbol().ok())
-            .unwrap_or("eql")
-            .to_string();
-        let copy = self.create_record_with_kind(record.type_tag, slots, record.kind);
-        if let Kind::Record(copy_id) = copy.kind() {
-            if let Some(state) = custom_hash_state {
-                crate::lisp::native_comp::note_lisp_allocation(
-                    super::gnu_hash_table_storage_bytes(state.capacity),
-                );
-                self.equal_hash_tables.remove(&copy_id.id);
-                self.custom_hash_tables.insert(copy_id.id, state);
-            } else if let Some(state) = equal_hash_state {
-                crate::lisp::native_comp::note_lisp_allocation(
-                    super::gnu_hash_table_storage_bytes(state.capacity),
-                );
-                self.custom_hash_tables.remove(&copy_id.id);
-                self.equal_hash_tables.insert(copy_id.id, state);
-            } else if let Some(entries) = hash_entries {
-                self.replace_hash_table_runtime_entries(copy_id.id, &test, entries);
-            }
-        }
-        Ok(copy)
+        Ok(self.create_record_with_kind(record.type_tag, record.slots, record.kind))
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
