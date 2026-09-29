@@ -1,5 +1,24 @@
 # Resume the compact runtime goal here
 
+**Current repair:** source155 now passes the complete Rust gate on both
+platforms: **3,012 macOS / 3,024 Linux** tests, two existing terminal ignores
+each, and native artifact identity. Its [Linux run](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
+is complete. The full Linux frozen comparison and macOS terminal inventory
+are still running. The terminal run exposes missing Table/Org menu captions;
+the unchanged Org scenario passes on retained main source139 and fails on
+source155. This is a real regression, not a waived platform difference.
+
+Source161 repairs the renderer: GNU's unchanged `keymap-canonicalize` resolves
+composed and inherited menu prefixes before display. Active maps and accumulated
+entries stay rooted through Lisp callbacks. Compiler, formatting, warnings-denied
+Clippy and **72 selected debug controls** pass, including actual Org menus and
+collection during canonicalization. Two old menu tests now load the actual GNU
+Lisp owner; their original assertions remain. Source159's 71 passes/one bare
+runtime setup failure remain preserved. Source161 release, ordinary and complete
+validation are pending. PR #77 remains a draft and main remains `1d1e8cdc`.
+Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
+after the complete goal. No full-goal or performance completion is claimed.
+
 **Current follow-up:** read the [runtime entry and compatibility repairs](docs/runtime-representation-compatibility-checkpoint.md)
 after the complete goal. Source153's complete macOS Rust gate passes **3,011
 tests**, with two existing terminal ignores. Linux passes nine library groups

@@ -2025,100 +2025,56 @@ pub(crate) fn menu_bar_row_items(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Vec<(String, Value, usize)> {
-    let maps = super::call(interp, "current-active-maps", &[Value::T], env)
-        .ok()
-        .and_then(|maps| maps.to_vec().ok())
-        .unwrap_or_default();
-    let menu_bar_key = Value::list([
-        Value::Symbol("vector-literal".into()),
-        Value::Symbol("menu-bar".into()),
-    ]);
-    let same_key = |a: &Value, b: &Value| match (a.kind(), b.kind()) {
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        _ => false,
-    };
-    let mut items: Vec<(Value, String)> = Vec::new();
-    for map in maps.iter().rev() {
-        // keymap.c access_keymap merges every `menu-bar' submap bound
-        // along the map's parent chain into one `(keymap CHILD PARENT)'
-        // reference, so a mode map's own menus and its parent's (shell's
-        // Complete over comint's In/Out and Signals) all reach the bar.
-        // Enumerate the chain child-first; a level without its own
-        // binding answers its parent's submap, which the identity dedup
-        // below drops.
-        let mut chain_menus: Vec<Value> = Vec::new();
-        let mut level = *map;
-        for _ in 0..32 {
-            if let Ok(menu) = super::call(interp, "lookup-key", &[level, menu_bar_key], env)
-                && super::is_keymap_value(interp, &menu)
-            {
-                let identity = super::keymap_record_id(interp, &menu);
-                let duplicate = chain_menus.iter().any(|earlier| {
-                    match (identity, super::keymap_record_id(interp, earlier)) {
-                        (Some(a), Some(b)) => a == b,
-                        _ => false,
-                    }
-                });
-                if !duplicate {
-                    chain_menus.push(menu);
-                }
-            }
-            match super::call(interp, "keymap-parent", &[level], env) {
-                Ok(parent) if parent.is_truthy() => level = parent,
-                _ => break,
-            }
-        }
-        // One keymap contributes to a key only once across its chain,
-        // even when its entry list carries shadowed duplicates.
-        let mut seen: Vec<Value> = Vec::new();
-        for menu in chain_menus {
-            // A runtime keymap answers as its record identity; walk GNU's
-            // public `(keymap ...)' cons projection of it.
-            let menu = {
-                if let Some(id) = super::keymap_record_id(interp, &menu) {
-                    let _ = super::refresh_runtime_keymap_public_view(interp, id);
-                }
-                super::public_keymap_value(interp, &menu)
+    let maps = crate::lisp::alloc::RootedVec::from_vec(
+        super::call(interp, "current-active-maps", &[Value::T], env)
+            .ok()
+            .and_then(|maps| maps.to_vec().ok())
+            .unwrap_or_default(),
+    );
+    let menu_bar_key = Value::vector([Value::symbol("menu-bar")]);
+    let mut items = crate::lisp::alloc::RootedVec::<(Value, String)>::new();
+    interp.with_lisp_stack_roots(&menu_bar_key, |interp| {
+        for map in maps.iter().rev() {
+            let Ok(menu) = super::call(interp, "lookup-key", &[*map, menu_bar_key], env) else {
+                continue;
             };
-            if !matches!(menu.car().map(|v| v.kind()), Ok(Kind::Symbol(tag)) if tag == "keymap") {
+            if !super::is_keymap_value(interp, &menu) {
                 continue;
             }
-            let mut tail = menu.cdr().unwrap_or(Value::Nil);
-            while let Kind::Cons(_) = tail.kind() {
-                let Ok(entry) = tail.car() else { break };
-                let next = tail.cdr().unwrap_or(Value::Nil);
-                match entry.kind() {
-                    // A parent keymap's entries follow through the tail.
-                    Kind::Symbol(tag) if tag == "keymap" => {}
-                    Kind::Cons(_) => {
-                        let key = entry.car().unwrap_or(Value::Nil);
-                        let item = entry.cdr().unwrap_or(Value::Nil);
-                        if !seen.iter().any(|earlier| same_key(earlier, &key)) {
-                            seen.push(key);
-                            if matches!(item.kind(), Kind::Symbol(def) if def == "undefined") {
-                                // An explicit `undefined' discards any
-                                // previously made item for this key.
-                                items.retain(|(existing, _)| !same_key(existing, &key));
-                            } else if let Some(caption) = menu_item_caption(interp, env, &item)
-                                && !items.iter().any(|(existing, _)| same_key(existing, &key))
-                            {
-                                items.push((key, caption));
-                            }
-                        }
+            // keyboard.c:menu_bar_items uses map_keymap_canonical, whose
+            // safe call to unchanged subr.el resolves included maps,
+            // inherited prefixes and duplicate definitions before display.
+            let Ok(menu) = interp.call_function_value(
+                Value::symbol("keymap-canonicalize"),
+                Some("keymap-canonicalize"),
+                &[menu],
+                env,
+            ) else {
+                continue;
+            };
+            let _ = super::map_keymap_own_entries(
+                interp,
+                menu,
+                &mut |interp, key, item, env| {
+                    if matches!(item.kind(), Kind::Symbol(def) if def == "undefined") {
+                        items.retain(|(existing, _)| !existing.eq_value(key));
+                    } else if let Some(caption) = menu_item_caption(interp, env, &item)
+                        && !items.iter().any(|(existing, _)| existing.eq_value(key))
+                    {
+                        items.push((key, caption));
                     }
-                    _ => {}
-                }
-                tail = next;
-            }
+                    Ok(())
+                },
+                env,
+            );
         }
-    }
+    });
     if let Some(final_items) = interp
         .lookup_var("menu-bar-final-items", env)
         .and_then(|value| value.to_vec().ok())
     {
         for name in final_items {
-            if let Some(position) = items.iter().position(|(key, _)| same_key(key, &name)) {
+            if let Some(position) = items.iter().position(|(key, _)| key.eq_value(name)) {
                 let item = items.remove(position);
                 items.push(item);
             }

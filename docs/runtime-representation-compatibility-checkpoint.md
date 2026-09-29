@@ -6,6 +6,38 @@ macOS and Linux Rust gates passing. This follow-up repairs the runtime-entry,
 keymap, casing and error-lifetime paths exposed by its compatibility work.
 The [complete goal](runtime-representation-goal.md) remains open.
 
+## Completed Rust gates and terminal repair — sources 155 and 161
+
+Source155 passes both complete Rust gates: **3,012 macOS** (2,913 library,
+60 binary, 39 integration) and **3,024 Linux** (2,921 library, 61 binary,
+42 integration), with two existing terminal ignores per platform. Native
+artifact identity passes on both. The [Linux run](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
+uses published `f237bfcf`; macOS uses production `72d98598`, with identical
+compiled/test inputs. Eleven post-run macOS artifacts and four Linux artifacts
+are locally rehashed against their manifests. This records post-run files,
+not an inference that each test used every retained image. The fresh full Linux
+sequence passes the original native non-LIFO assertions; exact attribution of
+the prior source153 conservative root remains unproven.
+
+The full source155 terminal inventory is still running, with eleven Org menu
+caption divergences observed so far. An unchanged `org-open` replay passes on
+retained main source139 and fails on source155. Ordinary Lisp lookup returns
+the same composed menu maps as GNU; the terminal renderer was treating their
+included maps as ordinary binding pairs. Source161 follows
+`keyboard.c:menu_bar_items` / `keymap.c:map_keymap_canonical`: call unchanged
+`subr.el:keymap-canonicalize` and traverse the resulting actual entries. It also
+roots the active map list and accumulated entries across collecting callbacks.
+
+Source161 passes strict static checks and all 72 selected debug controls. A new
+control requires GNU's Table/Org/Text menu order and repeats it with collection
+before canonicalization. Two existing menu controls now load the real GNU early
+Lisp owner without changing expected outcomes. Source159's failed coordinate
+control (71 passes/one failure in a bare interpreter) remains preserved.
+Source161 release, ordinary and complete validation are pending. The
+[source155 full frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36590580818)
+is still pending. Neither unfinished run is counted as a pass. PR #77 remains
+a draft; this checkpoint does not complete the architecture or performance goal.
+
 ## Latest complete runs and follow-up — sources 153–155
 
 Source153's complete macOS Rust gate passes **3,011 tests**: 2,912 library,

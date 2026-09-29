@@ -9742,7 +9742,8 @@ fn the_mark_keeps_its_place_across_insertion_at_point() {
 
 #[test]
 fn menu_bar_captions_follow_keymap_order_and_final_items() {
-    let mut interp = Interpreter::new();
+    // Redisplay calls subr.el's real keymap-canonicalize, as GNU does.
+    let mut interp = gnu_early_lisp_interpreter();
     eval_str_with(
         &mut interp,
         "(progn
@@ -9765,6 +9766,30 @@ fn menu_bar_captions_follow_keymap_order_and_final_items() {
         captions,
         vec!["File".to_string(), "Tools".to_string(), "Help".to_string()],
         "definition order with final items moved to the end; invisible and undefined dropped"
+    );
+}
+
+#[test]
+fn menu_bar_captions_include_composed_major_mode_maps() {
+    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["org"]);
+    eval_str_with(&mut interp, "(org-mode)");
+    let mut env = Env::new();
+    let expected = [
+        "File", "Edit", "Options", "Buffers", "Tools", "Table", "Org", "Text", "Help",
+    ];
+    assert_eq!(
+        crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env),
+        expected,
+        "composed Org and text-mode menu prefixes have GNU's visible order"
+    );
+    eval_str_with(
+        &mut interp,
+        "(advice-add 'keymap-canonicalize :before (lambda (&rest _) (garbage-collect)))",
+    );
+    assert_eq!(
+        crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env),
+        expected,
+        "active maps and collected menu entries survive Lisp canonicalization"
     );
 }
 
@@ -9806,7 +9831,7 @@ fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
 
 #[test]
 fn menu_bar_menu_at_x_y_maps_columns_to_bar_items() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     let result = eval_str_with(
         &mut interp,
         "(progn
