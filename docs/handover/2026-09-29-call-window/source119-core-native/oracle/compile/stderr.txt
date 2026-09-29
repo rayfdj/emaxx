@@ -1,0 +1,14 @@
+
+
+In comp-test-40187-2-f:
+comp-test-funcs.el:292:8: Warning: function `comp-test-40187-2-f' defined multiple times in this file
+
+In comp-test-46824-1-f:
+comp-test-funcs.el:508:16: Warning: value from call to `format' is unused
+
+In comp-test-63674-1-f:
+comp-test-funcs.el:543:28: Warning: reference to free variable `pkg'
+
+In comp-test-silly-frame2:
+comp-test-funcs.el:711:10: Warning: reference to free variable `c'
+Warning (native-compiler): Unknown type undeclared-type

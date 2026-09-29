@@ -1,0 +1,69 @@
+{
+  "commands": [
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "119",
+      "native_funcall",
+      "native_apply",
+      "native_mapcar",
+      "native_maphash",
+      "native_runtime",
+      "function_cell",
+      "function_binding",
+      "function_alias",
+      "cyclic_function",
+      "uninterned",
+      "native_execution",
+      "native_preserves",
+      "window",
+      "frame",
+      "undo",
+      "record_index",
+      "pdumper",
+      "threads_retain_lexical_caller_roots",
+      "suspended_bytecode_retains_operand_and_unwind_roots",
+      "--static"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "119",
+      "native_funcall",
+      "native_apply",
+      "native_mapcar",
+      "native_maphash",
+      "native_runtime",
+      "function_cell",
+      "function_binding",
+      "function_alias",
+      "cyclic_function",
+      "uninterned",
+      "native_execution",
+      "native_preserves",
+      "window",
+      "frame",
+      "undo",
+      "record_index",
+      "pdumper",
+      "threads_retain_lexical_caller_roots",
+      "suspended_bytecode_retains_operand_and_unwind_roots",
+      "--release"
+    ],
+    [
+      "python3",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/validate-frame-snapshot-v2.py",
+      "119",
+      "--ordinary"
+    ]
+  ],
+  "cwd": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_BUILD_JOBS": "1",
+    "EMAXX_GC_VERIFY": "1",
+    "EMAXX_GNU_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMAXX_DUMP_SOURCE_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928",
+    "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+  },
+  "scope": "Combined committed native symbol resolver and existing window-index changes. Original native aliases/redefinition/errors, window/frame/undo/image and both suspended-root contracts; verifier enabled. Separate from the source115 main candidate. Selected validation is not full or performance certification."
+}

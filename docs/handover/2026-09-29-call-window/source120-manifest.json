@@ -1,0 +1,5 @@
+{
+  "tools/retain_rust_gate_artifacts.py": "7a013b168d8aeab72ffae44b81ec1331597a24a03bc0fd29471c037646fa3c88",
+  "tools/test_retain_rust_gate_artifacts.py": "5c3152089465989473fb38b06fc9b4eff71785667d5b7f63e8991fe33357c538",
+  ".github/workflows/frozen-run.yml": "59069ee7387db6edc8e0227c465229d8b70e07ab886c9ce19f7a09f791396d20"
+}

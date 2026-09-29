@@ -1,0 +1,87 @@
+{
+  "round": 0,
+  "runner": "oracle",
+  "case_id": "upstream-bindat",
+  "process": {
+    "command": [
+      "/private/tmp/emaxx-runtime-gnu-20260928/src/emacs",
+      "-Q",
+      "--batch",
+      "--eval",
+      "(princ (format \"CORE-PERF-READY %.9f\\n\" (float-time)))",
+      "--eval",
+      "(setq native-comp-jit-compilation nil load-no-native t)",
+      "-L",
+      "/private/tmp/emaxx-runtime-gnu-20260928/test",
+      "-l",
+      "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/compat/core_runtime_perf.el",
+      "--eval",
+      "(core-perf-run \"upstream-bindat\" 3000 0 1 \"/private/tmp/emaxx-runtime-gnu-20260928\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source119-core-native/oracle/comp-test-funcs.eln\" \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source119-core-pilot-all/round-00/upstream-bindat/oracle/report.json\")"
+    ],
+    "environment": {
+      "HOME": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source119-core-pilot-all/environment/oracle/home",
+      "LANG": "C",
+      "LC_ALL": "C",
+      "TZ": "UTC",
+      "EMACS_TEST_DIRECTORY": "/private/tmp/emaxx-runtime-gnu-20260928/test"
+    },
+    "timeout": false,
+    "startup_seconds": 0.17662787437438965,
+    "load_average_before": [
+      3.380859375,
+      3.662109375,
+      4.24853515625
+    ],
+    "exit": 0,
+    "total_seconds": 0.3973780409999996,
+    "user_seconds": 0.329744,
+    "system_seconds": 0.029022,
+    "peak_rss_bytes": 60686336,
+    "load_average_after": [
+      3.380859375,
+      3.662109375,
+      4.24853515625
+    ]
+  },
+  "observations": [
+    {
+      "index": 0,
+      "warmup": false,
+      "seconds": 0.1694650650024414,
+      "gc_count": 8,
+      "gc_seconds": 0.046608,
+      "result": "((header (dest-ip . [192 168 1 100]) (src-ip . [192 168 1 101]) (dest-port . 284) (src-port . 5408)) (items . 2) (item ((type . 2) (opcode . 3) (length . 5) (id . \"ABCDEF\") (data . [1 2 3 4 5])) ((type . 1) (opcode . 4) (length . 7) (id . \"BCDEFG\") (data . [6 7 8 9 10 11 12]))))",
+      "allocation_before": {
+        "status": "available",
+        "counts": [
+          6090722,
+          361,
+          1052256,
+          21545,
+          7641133,
+          42,
+          103291
+        ]
+      },
+      "allocation_after": {
+        "status": "available",
+        "counts": [
+          8696893,
+          376,
+          1119484,
+          21574,
+          7869952,
+          42,
+          112795
+        ]
+      },
+      "heap_before": "((conses 16 45525 96531) (symbols 48 4895 32) (strings 32 9377 605) (string-bytes 1 468222) (vectors 16 4781) (vector-slots 8 38273 18197) (floats 8 12 1) (intervals 56 3 4) (buffers 992 3))"
+    }
+  ],
+  "validation": "completed",
+  "modes": {
+    "driver": "interpreted",
+    "bindat-pack": "interpreted",
+    "bindat-unpack": "interpreted"
+  }
+}

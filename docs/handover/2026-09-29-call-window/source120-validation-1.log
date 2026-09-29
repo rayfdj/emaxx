@@ -1,0 +1,11 @@
+test_failed_prelude_stops_before_target (test_diagnose_rust_gate.DiagnosticTests) ... ok
+test_no_prelude_does_not_invent_startup_history (test_diagnose_rust_gate.DiagnosticTests) ... ok
+test_prelude_runs_first_and_preserves_image_and_binary (test_diagnose_rust_gate.DiagnosticTests) ... ok
+test_successful_process_with_missing_execution_is_rejected (test_diagnose_rust_gate.DiagnosticTests) ... ok
+test_target_failure_keeps_successful_prelude_separate (test_diagnose_rust_gate.DiagnosticTests) ... ok
+test_timed_out_process_cannot_pass (test_diagnose_rust_gate.DiagnosticTests) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 3.134s
+
+OK

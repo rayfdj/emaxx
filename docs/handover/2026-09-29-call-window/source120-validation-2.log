@@ -1,0 +1,18 @@
+test_complete_library_partition_is_exact_and_disjoint (test_grouped_gate.GroupedGateTests) ... ok
+test_eval_scope_selects_only_the_five_known_eval_groups (test_grouped_gate.GroupedGateTests) ... ok
+test_failed_result_is_never_accepted (test_grouped_gate.GroupedGateTests) ... ok
+test_gate_environment_overrides_unsafe_thread_count (test_grouped_gate.GroupedGateTests) ... ok
+test_group_checks_preserve_the_actual_process_outcome (test_grouped_gate.GroupedGateTests) ... ok
+test_inventory_parser_rejects_duplicates (test_grouped_gate.GroupedGateTests) ... ok
+test_lightweight_command_skips_every_classified_prefix (test_grouped_gate.GroupedGateTests) ... ok
+test_new_ignored_outcome_is_never_accepted (test_grouped_gate.GroupedGateTests) ... ok
+test_phase_cleans_up_first_worker_if_second_launch_fails (test_grouped_gate.GroupedGateTests) ... ok
+test_result_validation_checks_inventory_complement (test_grouped_gate.GroupedGateTests) ... ok
+test_template_groups_are_forced_to_one_test_thread (test_grouped_gate.GroupedGateTests) ... ok
+test_test_targets_come_from_cargo_metadata (test_grouped_gate.GroupedGateTests) ... ok
+test_unknown_eval_group_fails_closed (test_grouped_gate.GroupedGateTests) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.383s
+
+OK

@@ -1,0 +1,12 @@
+{
+  "commit": "545353e1",
+  "source_files": 362,
+  "source_unchanged": true,
+  "debug_passes": 232,
+  "release_passes": 232,
+  "strict_static_checks": "passed",
+  "ordinary_image": "fresh, completed",
+  "all16_pilot_modes_and_results": "pass",
+  "full_gate": "pending",
+  "qualification": "The combined follow-up is not the source115 full-gated main checkpoint. Diagnostic pilot times are not performance certification."
+}
