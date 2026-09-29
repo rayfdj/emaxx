@@ -10584,6 +10584,78 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
 }
 
 #[test]
+fn keymap_lookup_runs_each_prefix_filter_once_before_advancing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-prefix-filter-count.el"),
+        include_str!("../../../tests/fixtures/keymap-prefix-filter-count.expected").trim(),
+        "prefix filter callback count across missing and successful lookups",
+    );
+}
+
+#[test]
+fn keymap_lookup_preserves_menu_filter_effects_and_nonlocal_exits() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-filter-effects.el"),
+        include_str!("../../../tests/fixtures/keymap-filter-effects.expected").trim(),
+        "menu filter ordering, collecting callbacks, errors, quit and throw",
+    );
+}
+
+#[test]
+fn keymap_lookup_composes_prefixes_with_gnu_precedence_and_nil_shadowing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-prefix-precedence.el"),
+        include_str!("../../../tests/fixtures/keymap-prefix-precedence.expected").trim(),
+        "composed and inherited prefixes, defaults and explicit nil bindings",
+    );
+}
+
+#[test]
+fn keymap_translated_sequences_keep_gnu_type_and_empty_checks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-translated-sequence-validation.el"),
+        include_str!("../../../tests/fixtures/keymap-translated-sequence-validation.expected"),
+        "redefined key parser result types and collection during translation",
+    );
+}
+
+#[test]
+fn keymap_lookup_validates_the_map_before_the_key_and_resolves_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-lookup-argument-order.el"),
+        include_str!("../../../tests/fixtures/keymap-lookup-argument-order.expected").trim(),
+        "lookup-key argument order and symbol map identity",
+    );
+}
+
+#[test]
+fn unwind_payload_roots_release_after_interpreted_bytecode_and_native_handlers() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/unwind-payload-reclamation.el"),
+        "(t t ((t 0) (t 0) (t 0)))",
+        "pending payload survival and eventual weak-value reclamation in all execution modes",
+    );
+}
+
+#[test]
+fn native_unwind_preserves_pending_values_and_error_payloads_across_cleanup_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/unwind-native-payloads.el"),
+        include_str!("../../../tests/fixtures/unwind-native-payloads.expected").trim(),
+        "native unwind roots across collecting cleanup and replacement exits",
+    );
+}
+
+#[test]
+fn unwind_protect_preserves_pending_values_and_error_payloads_across_cleanup_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/unwind-protected-payloads.el"),
+        include_str!("../../../tests/fixtures/unwind-protected-payloads.expected").trim(),
+        "unwind-protect roots across interpreted and verified bytecode cleanup",
+    );
+}
+
+#[test]
 fn prog1_preserves_the_saved_object_when_its_variable_is_rebound() {
     let program = include_str!("../../../tests/fixtures/prog1-result-identity.el");
     assert_oracle_contract_matches_interpreter(
@@ -17114,6 +17186,42 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
         vec![Value::symbol("M-up")]
+    );
+}
+
+#[test]
+fn keymap_menu_lookup_preserves_exact_bindings_and_gnu_case_fallback() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-menu-fallback.el"),
+        include_str!("../../../tests/fixtures/keymap-menu-fallback.expected"),
+        "menu lookup exact priority, case tables, mutation and collection",
+    );
+}
+
+#[test]
+fn keymap_descriptions_use_the_source_buffer_and_gnu_map_tree_formatter() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-description-context.el"),
+        include_str!("../../../tests/fixtures/keymap-description-context.expected"),
+        "keymap-description-context",
+    );
+}
+
+#[test]
+fn keymap_menu_case_tables_preserve_unicode_priority_and_captured_roots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-menu-case-table-order.el"),
+        include_str!("../../../tests/fixtures/keymap-menu-case-table-order.expected"),
+        "Unicode and local menu case tables after property registry mutation",
+    );
+}
+
+#[test]
+fn string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-make-multibyte-identity.el"),
+        include_str!("../../../tests/fixtures/string-make-multibyte-identity.expected"),
+        "multibyte and ASCII identity, raw bytes and text properties",
     );
 }
 

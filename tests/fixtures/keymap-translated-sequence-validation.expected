@@ -1,0 +1,1 @@
+((wrong-type-argument arrayp nil) (wrong-type-argument arrayp 17) (wrong-type-argument arrayp unexpected) (wrong-type-argument arrayp (97)) (error "Invalid `key-parse' syntax: %S" []) (error "Invalid `key-parse' syntax: %S" "") letter-a letter-a)

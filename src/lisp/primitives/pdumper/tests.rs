@@ -31,6 +31,53 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 }
 
 #[test]
+fn captured_menu_case_table_is_an_independent_image_root() {
+    use crate::lisp::primitives::{restore_unicode_menu_case_table, unicode_menu_case_table};
+    struct Restore(Value);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            restore_unicode_menu_case_table(self.0).expect("restore previous menu table");
+        }
+    }
+    let previous = unicode_menu_case_table();
+    let _restore = Restore(previous);
+    let mut source = Interpreter::new();
+    // This anonymous table is deliberately absent from the Unicode property
+    // alist: GNU's captured static root must survive that registry changing.
+    let table = source.make_char_table(None, Value::Nil);
+    let Kind::CharTable(original) = table.kind() else {
+        panic!("char table")
+    };
+    original.set(81, Value::Integer(122));
+    restore_unicode_menu_case_table(table).expect("install captured table");
+    let roots = source.dump_root_groups();
+    assert!(
+        roots.iter().any(|(slot, value)| {
+            *slot == RootSlot::UnicodeMenuCaseTable && value.eq_value(table)
+        })
+    );
+    let bytes = source.with_lisp_stack_roots(&previous, |source| dump(source, roots));
+    restore_unicode_menu_case_table(Value::Nil).expect("clear before load");
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("restore captured table");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::UnicodeMenuCaseTable)
+        .expect("table root is present")
+        .1;
+    assert!(unicode_menu_case_table().eq_value(loaded));
+    assert!(
+        !loaded.eq_value(table),
+        "the loaded table has its own allocation"
+    );
+    let Kind::CharTable(restored) = loaded.kind() else {
+        panic!("restored char table")
+    };
+    assert_eq!(restored.get(81), Value::Integer(122));
+}
+
+#[test]
 fn text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images() {
     fn check(first: Value, second: Value, original_graph: Value) {
         let Kind::Buffer(first_buffer) = first.kind() else {

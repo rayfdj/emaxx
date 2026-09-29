@@ -1,0 +1,117 @@
+{
+  "status": "UNFINISHED_UNVALIDATED_DRAFT",
+  "source_manifest": "source150-manifest.json",
+  "local_base": "6bed880c9a4eb3b0c85167fe98dcec3c7e35a32f",
+  "portable_base": "c2d328ab7046569a4e15d5c03825f3ae655636a0",
+  "portable_replay": "git archive portable_base; git apply source150.patch; every source150 manifest input verified equal",
+  "scope": "Prototype removal of keymap facade records, owner indexes, snapshots, binding cache, GC process roots and image reconstruction; raw cons/table constructors and mutation, native and image sharing controls, anonymous live/reclamation fixture.",
+  "validation": "Source149 compilation fails;150 compiles with one unused-helper warning. No debug/release test run, ordinary comparison, full gate or performance validation. Do not treat as production or goal completion.",
+  "integration_limit": "Draft predates source153 Meta/textual lookup repair. Integrate that repair explicitly; never overwrite the newer production values.rs with this older draft. Nonallocating ordinary read paths, rooting and all semantics still require review.",
+  "archive": {
+    "path": "draft.tar.gz",
+    "bytes": 102347,
+    "sha256": "a2ca62bf6e1dfbd1810a6c1d4c1d4520e2f670a41a47ee6db88ba777f5e88a9f"
+  },
+  "files": [
+    {
+      "path": "check-keymap-authority.py",
+      "bytes": 2515,
+      "sha256": "508ebaa4a9fd5ce20d9c72af0856c1828a2ab68664f26f3dc7be192494b05260"
+    },
+    {
+      "path": "keymap-anonymous-reclamation.el",
+      "bytes": 691,
+      "sha256": "cc461a113e1dd753036ecc52e36be05df54daabc8b67679f12cd2b491dc6ae5e"
+    },
+    {
+      "path": "keymap-authority-next-step.md",
+      "bytes": 1905,
+      "sha256": "c9c43ba07c337c50db023bd4d86cc8dd34de77c3ff31f56f766576087bcdbf68"
+    },
+    {
+      "path": "keymap-migration-reference-inventory.txt",
+      "bytes": 13801,
+      "sha256": "ce21f7f8d899ebccc3c84a8eb2b90e7eebeb39fc762e5e1fa7028ad0d0cab247"
+    },
+    {
+      "path": "migrate-keymap-authority.py",
+      "bytes": 12136,
+      "sha256": "6efabf572c479a57a52945a82740745f4007be5684be604df9cce956f90f5e20"
+    },
+    {
+      "path": "migrate-keymap-consumers.py",
+      "bytes": 11887,
+      "sha256": "5666770b71146ca304dddf7897af60d1ecfa0d48eda23c0a97ae07422e6b0ed2"
+    },
+    {
+      "path": "migrate-keymap-tests.py",
+      "bytes": 2682,
+      "sha256": "b54a2582f384cbafd61f371e9e1ac19c52527a8f2fa77bf77af3537b7814473f"
+    },
+    {
+      "path": "package-keymap-authority-draft.py",
+      "bytes": 3387,
+      "sha256": "f9abf8fb41dc62116539f16ed450158db4af2cd3856174eee9964b1a10b050a3"
+    },
+    {
+      "path": "source149-base.json",
+      "bytes": 424,
+      "sha256": "cfe1e8129cae02fa5101a806f0937d62f2f050a80797bfb7b1a527d5f083630d"
+    },
+    {
+      "path": "source149-check-command.json",
+      "bytes": 391,
+      "sha256": "7d08cd94edb6abf29ae1d024cd6b7b9e0f5c9773af5caa278ce9b941eab47bab"
+    },
+    {
+      "path": "source149-check-result.json",
+      "bytes": 85,
+      "sha256": "da2e5f44cfcd328cca76fb0df10eddc4698f187cfea318401ae16e435c97f6c9"
+    },
+    {
+      "path": "source149-check.log",
+      "bytes": 2152,
+      "sha256": "2b7f62696004e7b25df7e449824a39d6f81822118a4c5cd382a2115790dabb36"
+    },
+    {
+      "path": "source149-manifest.json",
+      "bytes": 36515,
+      "sha256": "d68214f3179c2ce7834bccad25eebfe8f0653e72bd433a9459b59cc479146831"
+    },
+    {
+      "path": "source149.patch",
+      "bytes": 115161,
+      "sha256": "c2ee5491bfdc1ba573c9cf470a63cb8f95e1294d83ca14613d2ae2ce15efe280"
+    },
+    {
+      "path": "source150-base.json",
+      "bytes": 424,
+      "sha256": "cfe1e8129cae02fa5101a806f0937d62f2f050a80797bfb7b1a527d5f083630d"
+    },
+    {
+      "path": "source150-check-command.json",
+      "bytes": 391,
+      "sha256": "0b1c8e8d10a07872ef9eab5d6547a583c84ec081eff7a4e1692e520dba4291bc"
+    },
+    {
+      "path": "source150-check-result.json",
+      "bytes": 84,
+      "sha256": "a632c84b138e257d15efb6c0e3c0189fb597dfc1a21c9becf868c059e40027fd"
+    },
+    {
+      "path": "source150-check.log",
+      "bytes": 565,
+      "sha256": "3174a8058618cea2a14fb05e0ddd94a64b3330aa5a9286d23cbae61e019a195e"
+    },
+    {
+      "path": "source150-manifest.json",
+      "bytes": 36515,
+      "sha256": "d2084534946948e88a0d11b9337bba9b895d63144982dc5b053bfd0d76a273a9"
+    },
+    {
+      "path": "source150.patch",
+      "bytes": 115924,
+      "sha256": "748f431a13c534496781158671c59aae620dbeb14041611b171d88bf89205eaf"
+    }
+  ]
+}

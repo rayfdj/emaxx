@@ -1,0 +1,330 @@
+# Runtime entry and compatibility repairs — 29 September 2026
+
+The shared hash-table checkpoint is merged into main through
+[PR #76](https://github.com/rayfdj/emaxx/pull/76), at `1d1e8cdc`, with complete
+macOS and Linux Rust gates passing. This follow-up repairs the runtime-entry,
+keymap, casing and error-lifetime paths exposed by its compatibility work.
+The [complete goal](runtime-representation-goal.md) remains open.
+
+## Complete merge-candidate validation — source161
+
+Source161 passes the complete Rust gates: **3,013 macOS** (2,914 library,
+60 binary, 39 integration) and **3,025 Linux** (2,922 library, 61 binary,
+42 integration), with two existing terminal ignores each. Native artifact
+identity passes on both. The [Linux Rust run](https://github.com/rayfdj/emaxx/actions/runs/36596279103)
+and [Linux frozen run](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
+use `d9caac1e`; all 328 compiled/test inputs match the macOS worktree and later
+documentation checkpoint `72b487b1`.
+
+Frozen comparison matches **519/519 files and 7,928/7,928 outcomes**. Each
+editor reports 7,670 passes, 47 existing expected failures, 211 skips and zero
+unexpected outcomes. All 1,038 raw processes succeed without timeouts; their
+file and test inventories are checked. The GNU executable matches the Linux
+pin. The complete default terminal run passes **223 scenarios**, with all
+**651 screen and 28 filesystem comparisons** verified in their original order.
+Its Darwin GNU is source/ABI matched, not the frozen executable.
+
+The [complete receipts](handover/2026-09-30-compatibility-complete/manifest.json)
+retain raw results, commands and checked artifact identities. Fourteen remaining
+macOS Rust artifacts and four Linux artifacts are rehashed; this does not imply
+every test used every retained image. The first macOS full run was launched
+inside the restricted sandbox and failed twelve localhost socket checks after
+2,176 passes. Four later groups and both Cargo stages did not execute. The
+host-permitted complete rerun passes on the identical source and test binary;
+the failed attempt stays preserved. Its initial retainer used the wrong fixture
+directory, so only binary retention is claimed for that failed attempt.
+
+PR #77 is ready for normal merge. Preexisting sequence-type, callback-mutation
+and macro-prefix mismatches remain documented in ordinary negative probes;
+the separately packaged source166 draft repairs them with its own evidence.
+This checkpoint does not complete the architecture or performance goal.
+
+## Previous Rust/frozen runs and terminal repair — sources 155 and 161
+
+Source155 passes both complete Rust gates: **3,012 macOS** (2,913 library,
+60 binary, 39 integration) and **3,024 Linux** (2,921 library, 61 binary,
+42 integration), with two existing terminal ignores per platform. Native
+artifact identity passes on both. The [Linux run](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
+uses published `f237bfcf`; macOS uses production `72d98598`, with identical
+compiled/test inputs. Eleven post-run macOS artifacts and four Linux artifacts
+are rehashed against their manifests. This records post-run files, not an
+inference that each test used every retained image. The fresh full Linux
+sequence passes the original native non-LIFO assertions; exact attribution of
+the prior source153 conservative root remains unproven.
+
+The [source155 full Linux frozen run](https://github.com/rayfdj/emaxx/actions/runs/36590580818)
+also passes: **519/519 files and 7,928/7,928 outcomes match**. Each editor reports
+7,670 passes, 47 existing expected failures, 211 existing skips and zero
+unexpected outcomes. All 1,038 raw processes succeed, start their tests and
+avoid timeouts. The inventory, per-file errors and comparison issues are checked
+against raw reports. GNU's executable matches the committed Linux pin. The
+[5,301 complete Rust/frozen receipts](handover/2026-09-30-compatibility-rust-frozen/manifest.json)
+retain commands, source identities, artifact hashes and full reports. Frozen
+binaries/images themselves are identified by runner provenance, not downloaded.
+
+Source155's full terminal inventory completes with **17 divergent scenarios
+out of 223 started**. Every divergence is the missing Table/Org caption row;
+each affected scenario stops at its first differing checkpoint. An unchanged
+`org-open` replay passes on retained main source139 and fails on source155.
+Ordinary Lisp lookup returns the same composed menu maps as GNU; the renderer
+was treating their included maps as ordinary binding pairs.
+
+Source161 follows `keyboard.c:menu_bar_items` / `keymap.c:map_keymap_canonical`:
+call unchanged `subr.el:keymap-canonicalize` and traverse the resulting actual
+entries. Active maps and accumulated entries stay rooted through collecting
+callbacks. Strict checks, **72 debug and 72 release controls**, fifteen ordinary
+exact GNU comparisons and the unchanged `org-open` terminal replay pass. A new
+control requires GNU's Table/Org/Text menu order and repeats it with collection
+before canonicalization. Two existing menu controls load the real GNU early
+Lisp owner without changing their assertions. Source159's failed coordinate
+control (71 passes/one failure in a bare interpreter) remains preserved in the
+[242 menu repair receipts](handover/2026-09-30-menu-composition-repair/manifest.json).
+
+The complete source161 results are recorded above. Additional ordinary callback-mutation
+probes fail: lookup copies later input events before a callback can change them.
+The original case also fails retained main source139; expanded cases cover
+strings, unibyte Meta, Lucid and translated sequences. This existing mismatch
+and the previously documented initial sequence-type check are handled in the
+separate architecture draft. No architecture or performance completion is claimed.
+
+## Separate authoritative keymap draft — sources 162 through 166
+
+[Source166's portable draft](handover/2026-09-30-keymap-live-authority-draft/manifest.json)
+supersedes the source162 entry point below and includes the source161 menu
+repair. All 339 compiled/test inputs replay from published `d9caac1e`.
+Strict checks, **393 selected plus 69 disjoint command-loop tests per mode**
+(462 debug and 462 release), and all **25 ordinary exact GNU comparisons** pass.
+Complete macOS Rust and terminal runs are active; complete Linux and frozen
+certification remain required.
+
+Lookup reads actual vector/string events when reached, including mutable
+unibyte Meta, Lucid and translated sequences. `key-binding` invokes actual
+lookup on current active maps, preserves collecting prefix/leaf filters and
+ordinary-error versus quit/throw behavior, then reacquires maps for remapping.
+Command readers reuse the resolved binding to decide whether to read a prefix.
+This removes hardcoded C-x/C-c/ESC prefix decisions and a redundant lookup that
+called collecting leaf filters twice. The shared scoped-root mechanism protects
+actual inputs, map lists, events and pending commands through callbacks.
+
+Source163 passes 391 debug and 391 release controls, the unchanged `org-open`
+terminal scenario and 20 of 23 ordinary comparisons; three later comparisons
+remain negative. Source164 fails to compile because a triple root tuple lacks
+the required trait. Source165 uses the existing nested-pair roots, passes 392
+selected plus 69 additional controls per mode and 22 of 25 ordinary comparisons;
+three macro-dispatch cases remain negative. Source166 fixes those cases. All
+failures remain preserved, alongside successful negative replays on retained
+main. The initial retained-main replay's environment setup error is recorded
+separately from its corrected semantic negative results.
+
+This remains packaged continuation material, separate from PR #77 production
+code. Temporary compound-event/enumeration adapters and older bounded paths in
+input decoding and signal handling still require removal or justification.
+The focused source166 review is not the final goal-wide adversarial audit.
+
+[Source162's portable draft](handover/2026-09-30-keymap-authority-draft/manifest.json)
+uses actual Lisp cons and char-table storage and removes private keymap records,
+reverse indexes, mutation snapshots, binding caches and permanent roots. Native
+operations mutate the same binding pairs/tails; restored images preserve actual
+sharing; anonymous maps survive while reachable and are reclaimed after their
+creator returns. Symbol stores resolve aliases and collecting autoloads before
+validating the key, matching GNU. Original key-sequence types are checked before
+the empty shortcut. Strict checks, **386 debug and 386 release controls** and
+eighteen ordinary exact GNU comparisons pass. A nineteenth live-input probe
+fails. All 333 source/test inputs replay from published `f237bfcf` using the
+packaged `source162-from-published.patch`; the local incremental patch has an
+unpublished base and is not the portable entry point.
+
+The bundle preserves source156/157's image-probe failures, source158's three
+symbolic-map store failures, source160's compiler failure and source162's
+remaining live-input mismatch. It predates source161's menu repair and has no
+complete Rust, terminal or frozen certification. Source163 integrates that
+repair and follows GNU's per-event `Faref` traversal, avoiding the eager input
+copy. Its completed results and source166 follow-up are recorded above.
+Residual event/enumeration adapters, symbol
+authority, physical allocation accounting, final audit and locked performance
+validation remain open.
+
+## Latest complete runs and follow-up — sources 153–155
+
+Source153's complete macOS Rust gate passes **3,011 tests**: 2,912 library,
+60 binary and 39 integration tests, with two existing terminal ignores.
+The unchanged native artifact identity contract passes. Production `82fcb6c9`
+and published `900a6b7f` have the same 326 compiled/test inputs.
+
+The [complete Linux Rust gate](https://github.com/rayfdj/emaxx/actions/runs/36544217147)
+passes nine library groups (2,387 tests), then aborts in lightweight on
+`native_continuations_can_return_in_non_lifo_order`: the second collection
+finds two weak keys instead of one. Lightweight has no completed result
+summary; both Cargo stages remain unexecuted. The original test passes in
+[an isolated ordinary replay](https://github.com/rayfdj/emaxx/actions/runs/36588607032)
+and [a debugger replay](https://github.com/rayfdj/emaxx/actions/runs/36588611905).
+These narrower observations do not clear the full-sequence failure.
+
+The [full Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36544220911)
+executes all 519 files and 7,928 outcomes: 7,927 match, one differs. Emaxx passes
+`eglot-test-rust-completion-exit-function`; GNU fails with a JSON-RPC request
+id 2 timeout. The original repeat-command mismatch now matches. The complete
+run remains failed; no timeout, selector or expectation is changed. The
+[completed-run receipts](handover/2026-09-29-compatibility-completed-runs/manifest.json)
+retain both Linux failures and the complete macOS pass, with locally verified
+Rust executable/image identities. Frozen Linux binaries are identified by
+runner provenance and are not included in the downloaded reports.
+
+Source155 uses the existing test-only `clobber_stack` helper before the native
+reclamation collections. This removes words in dead driver stack space while
+leaving live caller frames and suspended coroutine stacks intact. Original
+2-to-1-to-0 counts, native result checks and the single-continuation zero count
+remain unchanged. Exact root attribution for the original Linux failure is
+not established; the completed fresh sequence is recorded above.
+
+Review also found a concrete source153 lookup mismatch: a redefined
+`key-parse` returning nil, an integer or a symbol bypasses GNU's array check.
+The ordinary same-input negative control and full outputs are preserved.
+Source155 applies the GNU type check before checking sequence length and
+adds a collecting-callback differential control covering invalid types, empty
+arrays and valid strings/vectors. Compiler, formatting, warnings-denied Clippy
+and diff checks pass. Source155 also passes six focused debug and six release
+controls, and all fourteen fresh ordinary exact GNU comparisons. The
+[230 repair receipts](handover/2026-09-29-compatibility-final-repair/manifest.json)
+retain its inputs, commands, identities and outcomes. The subsequent complete macOS Rust and
+terminal results on production `72d98598` are recorded above. Published `f237bfcf` has
+identical compiled/test inputs for [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
+and [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36590580818).
+Those complete Rust/frozen runs now pass; the terminal repair remains under
+validation. Source154 passed 382 controls
+in each mode but failed to read the new fixture because of an extra trailing
+parenthesis. Source155 corrects that typo; the complete outputs and expected
+GNU behavior are unchanged. Both failed source154 runs remain preserved.
+
+Source153's earlier **382 debug and 382 release controls** pass, zero failures
+or ignores, including the original parameterized-character control omitted
+from the earlier selected set. All thirteen ordinary GNU comparisons pass.
+The unchanged upstream repeat file passes all three tests, keymap passes all
+46, casing matches ten passes and one existing locale skip, and generalized
+variables match six passes and two existing expected failures, including full
+messages. The [5,618 earlier receipts](handover/2026-09-29-compatibility-gate-repair/manifest.json)
+preserve those inputs, outcomes and original failures. The
+[Linux reclamation replay](https://github.com/rayfdj/emaxx/actions/runs/36544224404)
+passes its original named control, zero failures or ignores.
+
+The original source148 complete Rust gates fail: macOS 2,185 passes/one failure,
+Linux 2,192 passes/two failures. Four later library groups and both Cargo stages
+remain unexecuted. Both platforms expose unbound Meta events returning zero
+instead of GNU nil. `lookup_key_1` must advance by original events while
+`access_keymap_1` handles Meta within one event. Source153 uses that division,
+retains original tests, and delegates textual-vector translation to unchanged
+GNU `key-valid-p` and `key-parse`.
+
+The second Linux assertion fails in GNU itself, before Emaxx runs: the native
+payload is still retained while its enclosing caller is active. The fixture now
+returns from all creating/calling frames before collecting. All live-payload
+checks, actual execution-mode predicates and the required final zero count in
+every mode remain. Three ordinary Darwin GNU runs and the fresh Linux replay
+pass; the complete primitive groups now pass on both platforms as well.
+No ignore or expected failure was added.
+
+The [source148 Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
+finishes all 519 files and compares all 7,928 required outcomes: 7,927 match and
+one differs, `repeat-tests-check-key`. This clears its predecessor's message,
+stdout and malformed-keymap-report failures, while retaining the repeat failure.
+The failed Rust runs are [Linux](https://github.com/rayfdj/emaxx/actions/runs/36539120621)
+and the retained local macOS run. All retained Rust executables/images match
+their recorded hashes. The original results are not converted to passes.
+
+Source152 passes 381 debug tests and fails the existing textual-vector key
+contract; thirteen ordinary comparisons pass. Its superseded full gate is
+cancelled during compilation and establishes no full-test result. Source153
+restores the GNU translation step and all three original failed assertions pass.
+The separate [keymap representation draft149/150](handover/2026-09-29-keymap-authority-draft/manifest.json)
+is historical. Its source150 patch reproduces every manifest input from
+published `c2d328ab`. It has one compiler warning, no executed tests, and
+requires explicit integration of the newer source153 lookup repair. It is
+packaged as unfinished continuation material, not production implementation.
+Source162 above supersedes it while preserving its evidence.
+
+## Changes and GNU reference
+
+The outer serialized Rust runtime entry now installs the existing stack-base
+guard, following `emacs.c:main`. Nested entries preserve the outer bound and
+restore it after a panic. Ordinary batch startup no longer needs the Linux
+stack-bound query that failed inside the upstream stdout-test sandbox. The
+existing operating-system fallback remains available outside a runtime entry.
+Original Linux stdout controls still require fresh validation of this source.
+
+Menu lookup follows `keymap.c:Flookup_key`: exact bindings precede the vector
+menu-bar fallback, Unicode casing precedes buffer-local casing, and event
+symbols preserve the original input vector. The captured Unicode table has an
+explicit process and image root, matching GNU's static root. Unibyte casing
+uses raw-byte character codes and the actual case table; converting an already
+multibyte or ASCII-only string preserves its identity and properties.
+
+Binding descriptions select the supplied buffer's maps in GNU order and call
+unchanged `help--describe-map-tree`. Character ranges preserve both their text
+and `help-key-binding` endpoint properties. Filters retain the source-buffer
+context while text goes to the output buffer.
+
+Key lookup reads one event at a time from the actual Lisp map, following
+`access_keymap_1` and `lookup_key_1`. It composes inherited prefixes before
+advancing, preserves nil/default precedence, and invokes each traversed menu
+filter once. `keyboard.c:menu_item_eval_property` supplies the error contract:
+ordinary filter errors mean no binding; quit and other nonlocal exits propagate.
+The handler is installed before invoking Lisp, so outer error handlers do not
+observe errors GNU absorbs. No comparison output or upstream test is relaxed.
+
+Interpreter `unwind-protect` and native nonlocal exits now keep pending Lisp
+payloads rooted while cleanup runs. This uses the existing scoped root mechanism,
+following `eval.c:unbind_to` and `unwind_to_catch`; cleanup errors still replace
+the older exit. Verified interpreted, bytecode and native controls cover return
+values, signals, throws, replacement errors, survival and eventual reclamation.
+
+## Validation and preserved failures
+
+Combined source 148 passes strict formatting, compiler, warnings-denied Clippy
+and diff checks, and **367 debug and 367 release tests**, with zero failures or
+ignores. A fresh ordinary executable and image pass all twelve exact GNU
+comparisons. All 46 original keymap tests pass; casing matches ten passes and
+one existing locale skip, and generalized variables match six passes and two
+existing expected failures, including their complete messages. The
+[226 checkpoint receipts](handover/2026-09-29-compatibility/manifest.json)
+verify the inventories, executable and image identities and unchanged inputs.
+
+Source148 was published at `7cba6e52` through
+[draft PR #77](https://github.com/rayfdj/emaxx/pull/77). Its complete runs finished
+with the failures recorded above; none is counted as a full pass.
+
+Separate source 144 passes 193 debug and 193 release controls and all 46 upstream
+keymap tests. The casing report matches GNU's ten passes and one existing locale
+skip; the generalized-variable report matches six passes and two existing
+expected failures, including their messages. Source 145 passes 184 debug and
+184 release controls and four exact ordinary GNU root comparisons. The original
+pending-error reproducer that exited -9 on source 139 now succeeds. The separate
+menu-error probe reports a valid error and exit 255 instead of crashing. Combined
+source 148's menu handler now produces GNU's exact output, exit 0 and empty
+stderr on that same original probe.
+
+The [history bundle](handover/2026-09-29-compatibility-history/manifest.json)
+retains 699 receipts, original failed compiler/tests, exact source and executable
+identities, raw outputs and reproduction drivers. Source 147's combined run
+passed 365 tests and failed the existing native keymap-state assertion. Source
+148 restores the production adapter refresh, leaving that test unchanged; its
+367-test run includes the new reclamation regression.
+
+These ordinary macOS comparisons use the source-matched GNU candidate, whose
+native ABI matches. It is not the frozen Darwin executable. Source148's complete Linux frozen run clears the earlier message, stdout and
+invalid-UTF-8 mismatches but still fails the repeat-command test, as recorded above. No speedup or parity claim is
+made for these repairs.
+
+## Remaining representation and completion requirements
+
+Private keymap records, ownership indexes, snapshots and the binding cache remain
+temporary adapters. An additional ordinary probe retains live-map assertions,
+returns from the creating frame, and then collects: GNU reports zero anonymous
+maps remaining; both retained main source 139 and source 145 report two. The
+runtime explicitly roots every keymap facade for process lifetime. This existing
+retention failure is still open. Removing the facade and all its consumers is
+required; merely omitting its refresh does not complete that migration.
+
+Full final-source Linux/macOS and pinned compatibility validation, remaining
+representation and ownership work, complete physical allocation accounting,
+the final adversarial audit and the locked 16-workload performance criterion
+remain mandatory. Earlier pilot slowdowns remain preserved.

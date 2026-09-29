@@ -2401,6 +2401,43 @@ impl Interpreter {
 }
 
 impl Interpreter {
+    /// keyboard.c:menu_item_eval_property establishes its error handler
+    /// before evaluating a menu filter. Ordinary errors mean no binding;
+    /// quit and other nonlocal exits still propagate.
+    pub(crate) fn call_menu_item_filter(
+        &mut self,
+        function: Value,
+        definition: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
+        let handlers = self.push_condition_case_handler(vec![Value::symbol("error")]);
+        let depth = env.len();
+        let result = self.call_function_value(function, None, &[definition], env);
+        self.pop_handler_bindings(handlers);
+        env.truncate(depth);
+        let result = match result {
+            Err(error)
+                if !matches!(
+                    error.kind(),
+                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+                ) && error.condition_type() != "quit"
+                    && self
+                        .error_condition_names(&error.condition_type())
+                        .iter()
+                        .any(|name| name == "error") =>
+            {
+                self.clear_batch_error_backtrace();
+                Ok(Value::Nil)
+            }
+            result => result,
+        };
+        self.with_lisp_stack_roots(&result, |interp| {
+            interp.restore_special_dynamic(restore, env)
+        })?;
+        result
+    }
+
     /// eval.c:safe_funcall: establish the catch before invoking Lisp, so
     /// outer handler-bind handlers and the debugger do not observe muted
     /// errors. Log through add_to_log's sink, without replacing the echo.

@@ -418,6 +418,73 @@ pub(crate) fn casify_value(
     }
     let input = string_like(value)
         .ok_or_else(|| LispError::WrongTypeArgument("char-or-string-p".into(), *value))?;
+    if !input.multibyte {
+        // casefiddle.c:do_casify_unibyte_string uses one-to-one casing,
+        // preserving bytes and intervals. In locales such as Turkish,
+        // an ASCII-to-wide mapping falls back to the Unicode ASCII table.
+        return interp.with_lisp_stack_roots(value, |interp| {
+            let (down, up) = current_case_table_ids(interp)?;
+            let symbols_as_words = case_symbols_as_words_enabled(interp, env);
+            let mut in_word = false;
+            let mut output = String::new();
+            for ch in input.text.chars() {
+                let byte = string_character_code(false, ch) as u32;
+                let code = if byte < 128 {
+                    byte
+                } else {
+                    RAW_BYTE8_BASE + byte
+                };
+                let was_in_word = in_word;
+                in_word = case_word_char(interp, ch, symbols_as_words);
+                let flag = match action {
+                    CaseAction::Capitalize if was_in_word => CaseAction::Down,
+                    CaseAction::UpcaseInitials if was_in_word => {
+                        output.push(ch);
+                        continue;
+                    }
+                    other => other,
+                };
+                // GNU converts high bytes to byte8 character codes before
+                // indexing the table. A Latin-1 mapping at the byte's numeric
+                // value must not act as a fallback for an unset byte8 entry.
+                let table = if flag == CaseAction::Down { down } else { up };
+                let mapped = interp
+                    .char_table_get(table, code)
+                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(code);
+                let mut mapped =
+                    if matches!(flag, CaseAction::Capitalize | CaseAction::UpcaseInitials) {
+                        context.titlecase_char(interp, code).unwrap_or(mapped)
+                    } else {
+                        mapped
+                    };
+                if code < 128 && mapped >= 256 {
+                    let property = if flag == CaseAction::Down {
+                        "lowercase"
+                    } else {
+                        "uppercase"
+                    };
+                    mapped = dispatch::strings::uniprop_table_id(interp, property, env)
+                        .and_then(|table| interp.char_table_get(table, code))
+                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| u32::try_from(value).ok())
+                        .unwrap_or(code);
+                }
+                let byte = (mapped & 0xff) as u8;
+                output.push(if byte < 128 {
+                    char::from(byte)
+                } else {
+                    raw_byte_regex_char(byte)
+                });
+            }
+            Ok(make_shared_string_value_with_multibyte(
+                output,
+                input.props,
+                false,
+            ))
+        });
+    }
     let input_len = input.text.chars().count();
     let output = casify_string_with_context(interp, &input.text, action, env, &context)?;
     // casefiddle.c copies intervals while casing can stay in the source

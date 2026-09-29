@@ -1326,7 +1326,12 @@ impl NativeRuntime {
             while self.handlers.len() > retained_handlers {
                 let boundary = self.handlers.last().expect("inner handler").unwind_depth;
                 while self.unwind.len() > boundary {
-                    if let Err(unwind_error) = self.unwind_one(interpreter, environment) {
+                    // The error is not in pending_error or handler storage
+                    // yet. Cleanup can collect its boxed Lisp payload.
+                    let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
+                        self.unwind_one(interpreter, environment)
+                    });
+                    if let Err(unwind_error) = result {
                         error = unwind_error;
                         continue 'dispatch;
                     }
@@ -1346,7 +1351,10 @@ impl NativeRuntime {
             let boundary =
                 target_index.map_or(unwind_depth, |index| self.handlers[index].unwind_depth);
             while self.unwind.len() > boundary {
-                if let Err(unwind_error) = self.unwind_one(interpreter, environment) {
+                let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
+                    self.unwind_one(interpreter, environment)
+                });
+                if let Err(unwind_error) = result {
                     error = unwind_error;
                     continue 'dispatch;
                 }

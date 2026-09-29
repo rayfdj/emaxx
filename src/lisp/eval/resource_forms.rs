@@ -130,9 +130,15 @@ impl Interpreter {
         // GNU lets that newer exit supersede the protected form's result
         // (including an older error/throw), and does not run later cleanup
         // forms from this unwind-protect.
-        for form in list_forms(&cleanup) {
-            self.eval(&form, env)?;
-        }
+        // GNU unbind_to preserves the protected value while cleanup runs.
+        // Errors keep their Lisp payload inside a Rust box, which the
+        // conservative stack scan cannot follow.
+        self.with_lisp_stack_roots(&result, |interp| {
+            for form in list_forms(&cleanup) {
+                interp.eval(&form, env)?;
+            }
+            Ok::<(), LispError>(())
+        })?;
         result
     }
 

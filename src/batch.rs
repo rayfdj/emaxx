@@ -68,7 +68,7 @@ impl From<EmacsTermination> for BatchRunOutcome {
 
 /// Run the batch interpreter on a guarded stack on the calling OS thread.
 pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    with_batch_stack(|| run_batch(options))?
+    lisp::runtime::with_runtime(|| with_batch_stack(|| run_batch(options)))?
 }
 
 /// Run the batch CLI with its interpreter alive through FINISH.
