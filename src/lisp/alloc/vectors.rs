@@ -22,6 +22,8 @@ pub(crate) mod char_tables;
 pub use char_tables::{CharTableRef, SubCharTableRef};
 pub(crate) mod generic_records;
 pub use generic_records::LispRecordRef;
+pub(crate) mod hash_tables;
+pub use hash_tables::HashTableRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
@@ -81,6 +83,7 @@ pub enum VectorTag {
     SymbolWithPos = 6,
     Frame = 10,
     Buffer = 13,
+    HashTable = 14,
     Terminal = 16,
     Subr = 18,
     Closure = 31,
@@ -104,6 +107,7 @@ impl VectorTag {
             6 => Self::SymbolWithPos,
             10 => Self::Frame,
             13 => Self::Buffer,
+            14 => Self::HashTable,
             16 => Self::Terminal,
             18 => Self::Subr,
             31 => Self::Closure,
@@ -238,6 +242,7 @@ impl VectorHeader {
                     | VectorTag::SubCharTable
                     | VectorTag::SymbolWithPos
                     | VectorTag::Record
+                    | VectorTag::HashTable
             ) {
                 vroundup(bytes)
             } else {
@@ -880,7 +885,8 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::Marker
             | VectorTag::Overlay
             | VectorTag::CharTable
-            | VectorTag::SubCharTable => {
+            | VectorTag::SubCharTable
+            | VectorTag::HashTable => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -960,6 +966,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                 std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
             }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
+            VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
             VectorTag::Record => {
                 let record = body.cast::<crate::lisp::eval::RecordState>();
@@ -1028,7 +1035,8 @@ impl SweepStats {
                 | VectorTag::Marker
                 | VectorTag::Overlay
                 | VectorTag::CharTable
-                | VectorTag::SubCharTable => {
+                | VectorTag::SubCharTable
+                | VectorTag::HashTable => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
@@ -1299,6 +1307,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
+            VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),
             VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {

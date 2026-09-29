@@ -2258,6 +2258,122 @@ fn invoke_native_mapcar(active: &mut ActiveCall, arguments: &[NativeWord]) -> Op
     Some(result)
 }
 
+// Descriptor callbacks are real GNU ABI function pointers, including user
+// callbacks and nonlocal-error propagation through the existing native frame.
+fn hash_table_native_hash(
+    key: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+    standard: Option<crate::lisp::eval::RuntimeHashTest>,
+) -> u32 {
+    with_active(|active| {
+        let table = unsafe { crate::lisp::types::HashTableRef::from_raw(table.cast()) };
+        let key = unsafe { Value::from_word(key) };
+        if let Some(test) = standard {
+            return crate::lisp::primitives::standard_hash_code(
+                unsafe { &*active.interpreter },
+                test,
+                &key,
+                unsafe { &*active.environment },
+            );
+        }
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        match crate::lisp::primitives::hash_table_hash_code(
+            unsafe { &mut *active.interpreter },
+            table,
+            &key,
+            unsafe { &mut *active.environment },
+        ) {
+            Ok(hash) => hash,
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+        }
+    })
+}
+
+pub(crate) extern "C" fn hash_table_hash_eq(
+    key: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> u32 {
+    hash_table_native_hash(key, table, Some(crate::lisp::eval::RuntimeHashTest::Eq))
+}
+pub(crate) extern "C" fn hash_table_hash_eql(
+    key: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> u32 {
+    hash_table_native_hash(key, table, Some(crate::lisp::eval::RuntimeHashTest::Eql))
+}
+pub(crate) extern "C" fn hash_table_hash_equal(
+    key: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> u32 {
+    hash_table_native_hash(key, table, Some(crate::lisp::eval::RuntimeHashTest::Equal))
+}
+pub(crate) extern "C" fn hash_table_hash_user(
+    key: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> u32 {
+    hash_table_native_hash(key, table, None)
+}
+
+fn hash_table_native_compare(
+    left: usize,
+    right: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> usize {
+    with_active(|active| {
+        let table = unsafe { crate::lisp::types::HashTableRef::from_raw(table.cast()) };
+        let left = unsafe { Value::from_word(left) };
+        let right = unsafe { Value::from_word(right) };
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        match crate::lisp::primitives::hash_table_key_matches(
+            unsafe { &mut *active.interpreter },
+            table,
+            &left,
+            &right,
+            unsafe { &mut *active.environment },
+        ) {
+            Ok(equal) => native_boolean(equal),
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+        }
+    })
+}
+pub(crate) extern "C" fn hash_table_compare_eql(
+    left: usize,
+    right: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> usize {
+    hash_table_native_compare(left, right, table)
+}
+pub(crate) extern "C" fn hash_table_compare_equal(
+    left: usize,
+    right: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> usize {
+    hash_table_native_compare(left, right, table)
+}
+pub(crate) extern "C" fn hash_table_compare_user(
+    left: usize,
+    right: usize,
+    table: *mut crate::lisp::alloc::vectors::hash_tables::LispHashTable,
+) -> usize {
+    hash_table_native_compare(left, right, table)
+}
+
 /// fns.c:Fmaphash/DOHASH_SAFE.  The table's numeric slot order is re-read
 /// after every callback because GNU permits replacing or removing the current
 /// entry.  Keep the callback and its arguments in Lisp_Object words so a
@@ -2274,10 +2390,9 @@ fn invoke_native_maphash(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
             return Some(0);
         }
     };
-    let Kind::Record(table_id) = table_value.kind() else {
+    let Kind::HashTable(table_id) = table_value.kind() else {
         return None;
     };
-    unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id.id, 0)?;
 
     static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
     let funcall = *FUNCALL_SUBR_INDEX.get_or_init(|| {
@@ -2288,15 +2403,11 @@ fn invoke_native_maphash(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     });
     let mut slot = 0;
     loop {
-        let capacity = unsafe { &*active.interpreter }
-            .gnu_hash_table_capacity(table_id.id)
-            .expect("a runtime-indexed hash table retains its record storage");
+        let capacity = table_id.capacity();
         if slot >= capacity {
             break;
         }
-        let Some((entry_slot, key, value)) =
-            unsafe { &*active.interpreter }.hash_table_entry_at_or_after(table_id.id, slot)?
-        else {
+        let Some((entry_slot, key, value)) = table_id.entry_at_or_after(slot) else {
             break;
         };
         if entry_slot >= capacity {
@@ -3961,6 +4072,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::SubCharTable
                         | crate::lisp::alloc::VectorTag::Marker
                         | crate::lisp::alloc::VectorTag::Finalizer
+                        | crate::lisp::alloc::VectorTag::HashTable
                         | crate::lisp::alloc::VectorTag::SymbolWithPos
                 )
             {
@@ -8975,10 +9087,10 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Kind::Record(id) = table.kind() else {
+        let Kind::HashTable(id) = table.kind() else {
             panic!("hash table record");
         };
-        interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
+        id.set_weakness(1);
         interpreter.set_global_binding("native-caught-signal-table", table);
         runtime.begin_call(std::ptr::null_mut(), &interpreter);
         let condition = runtime
@@ -8996,10 +9108,7 @@ mod tests {
             crate::lisp::alloc::clobber_stack();
             let reachable = interpreter.weak_hash_reachability(environment, &[]);
             crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachable);
-            interpreter
-                .hash_table_runtime_entries(id.id)
-                .expect("weak table")
-                .len()
+            id.count()
         };
         assert_eq!(
             collect(&mut interpreter, &environment),
@@ -9029,22 +9138,22 @@ mod tests {
             heap: &mut NativeHeap,
             interpreter: &mut Interpreter,
             environment: &Env,
-        ) -> ([usize; 2], Value, u64) {
+        ) -> ([usize; 2], Value, crate::lisp::types::HashTableRef) {
             let key_word = heap.cons((7 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let value_word = heap.cons((8 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let key = heap.decode(key_word).expect("weak table key");
             let value = heap.decode(value_word).expect("weak table value");
             let table = crate::lisp::json::make_hash_table(interpreter, "equal", Vec::new());
-            let Kind::Record(id) = table.kind() else {
+            let Kind::HashTable(id) = table.kind() else {
                 panic!("hash table record");
             };
-            interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-            assert!(interpreter.equal_hash_put(id.id, key, value, environment));
+            id.set_weakness(1);
+            assert!(interpreter.equal_hash_put(id, key, value, environment));
             interpreter.set_global_binding("native-gc-weak-table", table);
             (
                 [key_word ^ HIDE, value_word ^ HIDE],
                 Value::vector([key]),
-                id.id,
+                id,
             )
         }
         let mut interpreter = Interpreter::new();
@@ -9063,16 +9172,13 @@ mod tests {
             &mut interpreter,
             &environment,
         );
-        let native = |word: usize| (word ^ HIDE).wrapping_sub(TAG_CONS) as *const NativeCons;
-        assert!(heap.native_cons_is_live(native(key_word)));
-        assert!(heap.native_cons_is_live(native(value_word)));
-        assert_eq!(
-            interpreter
-                .hash_table_runtime_entries(id)
-                .expect("table entries")
-                .len(),
-            1
-        );
+        // Keep the survival probes' unhidden pointers in their own frame,
+        // just like the reclamation probes below. An inlined check left
+        // the value's address in ARM x22 across the next collection, where
+        // the conservative register spill correctly kept that cell alive.
+        assert!(hidden_cons_is_live(&heap, key_word));
+        assert!(hidden_cons_is_live(&heap, value_word));
+        assert_eq!(id.count(), 1);
 
         let Kind::Vector(vector) = vector.kind() else {
             panic!("key's vector owner");
@@ -9087,12 +9193,7 @@ mod tests {
         );
         assert!(!hidden_cons_is_live(&heap, key_word));
         assert!(!hidden_cons_is_live(&heap, value_word));
-        assert!(
-            interpreter
-                .hash_table_runtime_entries(id)
-                .expect("swept table entries")
-                .is_empty()
-        );
+        assert_eq!(id.count(), 0);
     }
 
     #[test]
@@ -9104,7 +9205,7 @@ mod tests {
             heap: &mut NativeHeap,
             interpreter: &mut Interpreter,
             environment: &Env,
-        ) -> ([usize; 3], Value, Vec<u64>) {
+        ) -> ([usize; 3], Value, Vec<crate::lisp::types::HashTableRef>) {
             let x_word = heap.cons((1 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let y_word = heap.cons((2 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let z_word = heap.cons((3 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
@@ -9114,13 +9215,13 @@ mod tests {
             let mut tables = Vec::new();
             for (name, key, value) in [("weak-first", x, y), ("weak-second", z, x)] {
                 let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
-                let Kind::Record(id) = table.kind() else {
+                let Kind::HashTable(id) = table.kind() else {
                     panic!("hash table record");
                 };
-                interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
-                assert!(interpreter.equal_hash_put(id.id, key, value, environment));
-                interpreter.set_global_binding(name, Value::Record(id));
-                tables.push(id.id);
+                id.set_weakness(1);
+                assert!(interpreter.equal_hash_put(id, key, value, environment));
+                interpreter.set_global_binding(name, Value::HashTable(id));
+                tables.push(id);
             }
             (
                 [x_word ^ HIDE, y_word ^ HIDE, z_word ^ HIDE],
@@ -9151,13 +9252,7 @@ mod tests {
             );
         }
         for id in &tables {
-            assert_eq!(
-                interpreter
-                    .hash_table_runtime_entries(*id)
-                    .expect("live weak table entries")
-                    .len(),
-                1
-            );
+            assert_eq!(id.count(), 1);
         }
         let Kind::Vector(vector) = root_value.kind() else {
             panic!("strong root vector");
@@ -9176,12 +9271,7 @@ mod tests {
             assert!(!hidden_cons_is_live(&heap, word));
         }
         for id in tables {
-            assert!(
-                interpreter
-                    .hash_table_runtime_entries(id)
-                    .expect("swept weak table entries")
-                    .is_empty()
-            );
+            assert!((id.count() == 0));
         }
     }
 
@@ -9923,6 +10013,214 @@ mod tests {
             mismatches.is_empty(),
             "ordinary, first-native and second-native words must identify the same objects: {mismatches:#x?}"
         );
+    }
+
+    #[test]
+    fn native_hash_descriptors_call_captured_functions_and_restore_mutability() {
+        use crate::lisp::alloc::vectors::hash_tables::{HashTableTest, LispHashTable};
+
+        extern "C" fn call_hash(table: NativeWord, key: NativeWord) -> NativeWord {
+            unsafe {
+                let base = (table & !TAG_MASK) as *mut u8;
+                let descriptor = base.add(32).cast::<*const HashTableTest>().read();
+                Value::Integer(i64::from(((*descriptor).hash)(
+                    key,
+                    base.cast::<LispHashTable>(),
+                )))
+                .word()
+            }
+        }
+        extern "C" fn call_compare(
+            table: NativeWord,
+            left: NativeWord,
+            right: NativeWord,
+        ) -> NativeWord {
+            unsafe {
+                let base = (table & !TAG_MASK) as *mut u8;
+                let descriptor = base.add(32).cast::<*const HashTableTest>().read();
+                ((*descriptor).compare.expect("custom comparator"))(left, right, base.cast())
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let name = Value::symbol("native-descriptor-test");
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "define-hash-table-test",
+            &[name, Value::symbol("equal"), Value::symbol("identity")],
+            &mut environment,
+        )
+        .expect("define a custom test");
+        let table = crate::lisp::primitives::make_hash_table_value(
+            &interpreter,
+            name,
+            8,
+            Value::Nil,
+            Value::Nil,
+            &environment,
+        )
+        .expect("custom table");
+        let key = Value::Integer(-39);
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_hash as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[table, key],
+            )
+            .expect("descriptor hash callback");
+        assert_eq!(
+            result,
+            Value::Integer(i64::from(crate::lisp::primitives::reduce_hash_code(
+                (key.word() >> 2) as u64
+            )))
+        );
+        for (other, expected) in [("same", Value::T), ("different", Value::Nil)] {
+            let result = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_compare as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[table, Value::string("same"), Value::string(other)],
+                )
+                .expect("descriptor comparison callback");
+            assert_eq!(result, expected);
+        }
+
+        // Redefining the test affects subsequent tables only. The old
+        // descriptor must still call its captured hash function.
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "define-hash-table-test",
+            &[name, Value::symbol("equal"), Value::symbol("error")],
+            &mut environment,
+        )
+        .expect("redefine the test");
+        let failing = crate::lisp::primitives::make_hash_table_value(
+            &interpreter,
+            name,
+            8,
+            Value::Nil,
+            Value::Nil,
+            &environment,
+        )
+        .expect("new descriptor");
+        assert!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_hash as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[failing, Value::string("native hash callback error")],
+                )
+                .is_err()
+        );
+        let Kind::HashTable(failing_table) = failing.kind() else {
+            unreachable!()
+        };
+        assert!(
+            failing_table.is_mutable(),
+            "unwinding restores table mutability"
+        );
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_hash as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[table, Value::Integer(27)],
+                )
+                .expect("old descriptor still works after error"),
+            Value::Integer(27)
+        );
+    }
+
+    #[test]
+    fn native_hash_tables_expose_the_authoritative_gnu_entry_array() {
+        // lisp.h:Lisp_Hash_Table, verified with the configured GNU C
+        // compiler: 72-byte payload; key_and_value at24, count at48 and
+        // table_size at56. fns.c uses PVEC_HASH_TABLE (14), with no inline
+        // Lisp slots. HASH_VALUE reads the actual out-of-line array.
+        extern "C" fn replace_first_value(table: NativeWord, value: NativeWord) -> NativeWord {
+            // The checked header and dimensions below precede this call.
+            // There is no live Rust borrow of the array during the store.
+            unsafe {
+                let base = (table & !TAG_MASK) as *mut u8;
+                let entries = base.add(24).cast::<*mut NativeWord>().read();
+                entries.add(1).write(value);
+            }
+            table
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let first_key = Value::symbol("native-hash-first-key");
+        let second_key = Value::Integer(-39);
+        let table = crate::lisp::json::make_hash_table_with_capacity(
+            &mut interpreter,
+            "eq",
+            vec![
+                (first_key, Value::Integer(17)),
+                (second_key, Value::Integer(29)),
+            ],
+            8,
+        );
+        let mut runtime = NativeRuntime::default();
+        let word = runtime.heap.encode(&table).expect("ordinary table word");
+        assert_eq!(word, table.word());
+        assert_eq!(
+            runtime
+                .decode_relocation(word)
+                .expect("checked native hash relocation"),
+            table
+        );
+        let base = (word & !TAG_MASK) as *const u8;
+        // Every vectorlike allocation has this header. Refuse the wrong
+        // type before interpreting any subsequent byte as a GNU hash field.
+        let header = unsafe { base.cast::<NativeWord>().read() };
+        assert_eq!((header >> 24) & 0x3f, 14, "GNU PVEC_HASH_TABLE");
+        assert_eq!(header & 0xfff, 0, "no inline Lisp slots");
+        assert_eq!((header >> 12) & 0xfff, 8, "eight non-Lisp payload words");
+        let (count, capacity, entries) = unsafe {
+            (
+                base.add(48).cast::<i32>().read(),
+                base.add(56).cast::<i32>().read(),
+                base.add(24).cast::<*const NativeWord>().read(),
+            )
+        };
+        assert_eq!(count, 2);
+        assert_eq!(capacity, 8);
+        assert!(!entries.is_null());
+        assert_eq!(unsafe { entries.read() }, first_key.word());
+        assert_eq!(unsafe { entries.add(1).read() }, Value::Integer(17).word());
+        assert_eq!(unsafe { entries.add(2).read() }, second_key.word());
+
+        let replacement = Value::vector([table, Value::string("native-hash-payload")]);
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                replace_first_value as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[table, replacement],
+            )
+            .expect("native hash value slot write");
+        assert_eq!(result, table);
+        let observed = crate::lisp::primitives::call(
+            &mut interpreter,
+            "gethash",
+            &[first_key, table],
+            &mut environment,
+        )
+        .expect("ordinary gethash observes the native store");
+        assert_eq!(observed.word(), replacement.word());
+        assert_eq!(crate::lisp::alloc::conservative_value(word), Some(table));
     }
 
     #[test]

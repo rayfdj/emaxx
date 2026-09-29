@@ -382,7 +382,7 @@ impl Interpreter {
 
             // lread.c constructs every nested object before eval_sub.
             // A vector is self-evaluating and keeps its reader identity.
-            Kind::Vector(_) | Kind::LispRecord(_) => Ok(*expr),
+            Kind::Vector(_) | Kind::LispRecord(_) | Kind::HashTable(_) => Ok(*expr),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
@@ -1884,17 +1884,25 @@ mod eval_value_buffer_tests {
                 &env
             ));
             let reachability = interpreter.weak_hash_reachability(&env, &[]);
-            let Kind::Record(id) = table.kind() else {
+            let Kind::HashTable(id) = table.kind() else {
                 panic!("hash table")
             };
-            let (_, entries, retained) = reachability
+            let (_, remove) = reachability
                 .tables
                 .iter()
-                .find(|(key, _, _)| *key == id.id)
+                .find(|(key, _)| *key == id)
                 .expect("weak table participates in root traversal");
+            let entries = id
+                .entries()
+                .map(|(_, key, value)| (key, value))
+                .collect::<Vec<_>>();
+            let retained = id
+                .entries()
+                .map(|(slot, _, _)| !remove.contains(&slot))
+                .collect::<Vec<_>>();
             assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
             assert_eq!(retained.len(), 2);
-            for ((key, _), retained) in entries.iter().zip(retained) {
+            for ((key, _), retained) in entries.iter().zip(&retained) {
                 assert_eq!(
                     *retained,
                     primitives::values_eq_in_env(interpreter, key, &original, &env)
@@ -1917,14 +1925,18 @@ mod eval_value_buffer_tests {
             &env
         ));
         let reachability = interpreter.weak_hash_reachability(&env, &[]);
-        let Kind::Record(id) = table.kind() else {
+        let Kind::HashTable(id) = table.kind() else {
             panic!("hash table")
         };
-        let (_, _, retained) = reachability
+        let (_, remove) = reachability
             .tables
             .iter()
-            .find(|(key, _, _)| *key == id.id)
+            .find(|(key, _)| *key == id)
             .expect("weak table participates in root traversal");
+        let retained = id
+            .entries()
+            .map(|(slot, _, _)| !remove.contains(&slot))
+            .collect::<Vec<_>>();
         assert_eq!(retained.len(), 2);
         assert!(
             retained.iter().all(|retained| !retained),
@@ -2352,7 +2364,7 @@ mod eval_value_buffer_tests {
         // keeping `keys` and the last `puthash` argument here made the
         // supposedly unrooted control an actual conservative stack root.
         #[inline(never)]
-        fn setup(interpreter: &mut Interpreter, env: &mut Env) -> u64 {
+        fn setup(interpreter: &mut Interpreter, env: &mut Env) -> crate::lisp::types::HashTableRef {
             let table = primitives::call(
                 interpreter,
                 "make-hash-table",
@@ -2365,10 +2377,10 @@ mod eval_value_buffer_tests {
                 env,
             )
             .expect("weak-key table");
-            let Kind::Record(table_id) = table.kind() else {
+            let Kind::HashTable(table_id) = table.kind() else {
                 panic!("hash table record")
             };
-            interpreter.set_global_binding("weak-table-root", Value::Record(table_id));
+            interpreter.set_global_binding("weak-table-root", Value::HashTable(table_id));
             let keys: Vec<Value> = (0..9)
                 .map(|n| Value::cons(Value::Integer(n), Value::Nil))
                 .collect();
@@ -2376,7 +2388,11 @@ mod eval_value_buffer_tests {
                 primitives::call(
                     interpreter,
                     "puthash",
-                    &[*key, Value::Integer(index as i64), Value::Record(table_id)],
+                    &[
+                        *key,
+                        Value::Integer(index as i64),
+                        Value::HashTable(table_id),
+                    ],
                     env,
                 )
                 .expect("weak entry");
@@ -2400,19 +2416,32 @@ mod eval_value_buffer_tests {
             interpreter.pending_thread_events.push(keys[5]);
             interpreter.coding_systems[0].charset_list = keys[6];
             interpreter.coding_systems[0].type_args = vec![keys[7]];
-            table_id.id
+            table_id
         }
 
         #[inline(never)]
-        fn check(interpreter: &Interpreter, env: &Env, table_id: u64, quit_live: bool) {
+        fn check(
+            interpreter: &Interpreter,
+            env: &Env,
+            table_id: crate::lisp::types::HashTableRef,
+            quit_live: bool,
+        ) {
             let marked = interpreter.weak_hash_reachability(env, &[]);
-            let (_, entries, keep) = marked
+            let (_, remove) = marked
                 .tables
                 .iter()
-                .find(|(id, _, _)| *id == table_id)
+                .find(|(id, _)| *id == table_id)
                 .expect("marked weak table");
+            let entries = table_id
+                .entries()
+                .map(|(_, key, value)| (key, value))
+                .collect::<Vec<_>>();
+            let keep = table_id
+                .entries()
+                .map(|(slot, _, _)| !remove.contains(&slot))
+                .collect::<Vec<_>>();
             assert_eq!(entries.len(), 9);
-            for ((_, index), retained) in entries.iter().zip(keep) {
+            for ((_, index), retained) in entries.iter().zip(&keep) {
                 assert_eq!(
                     *retained,
                     index != &Value::Integer(8) && (quit_live || index != &Value::Integer(0)),

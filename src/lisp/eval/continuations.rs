@@ -368,11 +368,11 @@ mod tests {
     fn native_continuations_can_return_in_non_lifo_order() {
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Kind::Record(table_id) = table.kind() else {
+        let Kind::HashTable(table_id) = table.kind() else {
             panic!("weak table record")
         };
-        interpreter.find_record_mut(table_id).expect("table").slots[5] = Value::symbol("key");
-        interpreter.set_global_binding("native-suspension-weak-table", Value::Record(table_id));
+        table_id.set_weakness(1);
+        interpreter.set_global_binding("native-suspension-weak-table", Value::HashTable(table_id));
         let mut first =
             ThreadContinuation::with_body(crate::lisp::native_comp::invoke_suspension_probe)
                 .expect("first native stack");
@@ -397,13 +397,7 @@ mod tests {
                 &mut Env::new(),
             )
             .expect("collect all suspended machine stacks");
-            assert_eq!(
-                interpreter
-                    .hash_table_runtime_entries(table_id.id)
-                    .expect("table")
-                    .len(),
-                roots
-            );
+            assert_eq!(table_id.count(), roots);
             interpreter.set_global_binding("symbols-with-pos-enabled", enabled);
             let CoroutineResult::Return(completion) =
                 continuation.resume(interpreter.state.take().expect("state"))
@@ -419,23 +413,18 @@ mod tests {
         }
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after both native stacks return");
-        assert!(
-            interpreter
-                .hash_table_runtime_entries(table_id.id)
-                .expect("table")
-                .is_empty()
-        );
+        assert!((table_id.count() == 0));
     }
 
     #[test]
     fn native_machine_frame_and_unwind_roots_survive_an_actual_stack_switch() {
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Kind::Record(table_id) = table.kind() else {
+        let Kind::HashTable(table_id) = table.kind() else {
             panic!("weak table record");
         };
-        interpreter.find_record_mut(table_id).expect("table").slots[5] = Value::symbol("key");
-        interpreter.set_global_binding("native-suspension-weak-table", Value::Record(table_id));
+        table_id.set_weakness(1);
+        interpreter.set_global_binding("native-suspension-weak-table", Value::HashTable(table_id));
         let mut continuation =
             ThreadContinuation::with_body(crate::lisp::native_comp::invoke_suspension_probe)
                 .expect("guarded native stack");
@@ -448,10 +437,7 @@ mod tests {
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("real GC while native code is suspended");
         assert_eq!(
-            interpreter
-                .hash_table_runtime_entries(table_id.id)
-                .expect("table")
-                .len(),
+            table_id.count(),
             1,
             "the suspended native unwind action owns the weak key"
         );
@@ -480,10 +466,7 @@ mod tests {
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after native frame exits");
         assert!(
-            interpreter
-                .hash_table_runtime_entries(table_id.id)
-                .expect("table")
-                .is_empty(),
+            (table_id.count() == 0),
             "completed native unwind roots must be removed"
         );
     }
@@ -517,7 +500,11 @@ mod tests {
         // it) until it returns: a frame of its own, the stack under the
         // test cleared before the collection that expects the key gone.
         #[inline(never)]
-        fn drive(interpreter: &mut Interpreter, table_id: u64, payload: usize) {
+        fn drive(
+            interpreter: &mut Interpreter,
+            table_id: crate::lisp::types::HashTableRef,
+            payload: usize,
+        ) {
             let mut continuation =
                 ThreadContinuation::with_body(nested).expect("guarded coroutine stack");
             assert!(current_stack_base().is_none());
@@ -534,13 +521,7 @@ mod tests {
                 );
                 crate::lisp::primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
                     .expect("collect while the actual child frame is suspended");
-                assert_eq!(
-                    interpreter
-                        .hash_table_runtime_entries(table_id)
-                        .expect("live weak table")
-                        .len(),
-                    1
-                );
+                assert_eq!(table_id.count(), 1);
                 if index == 0 {
                     interpreter.set_global_binding("continuation-write", Value::Integer(29));
                 }
@@ -563,24 +544,16 @@ mod tests {
         }
         let mut interpreter = Interpreter::new();
         let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Kind::Record(table_id) = table.kind() else {
+        let Kind::HashTable(table_id) = table.kind() else {
             panic!("hash table must be a record")
         };
-        interpreter
-            .find_record_mut(table_id)
-            .expect("weak table")
-            .slots[5] = Value::symbol("key");
-        interpreter.set_global_binding("continuation-table", Value::Record(table_id));
+        table_id.set_weakness(1);
+        interpreter.set_global_binding("continuation-table", Value::HashTable(table_id));
         let payload = std::ptr::from_ref(&*interpreter) as usize;
-        drive(&mut interpreter, table_id.id, payload);
+        drive(&mut interpreter, table_id, payload);
         crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after the child frame and result are released");
-        assert!(
-            interpreter
-                .hash_table_runtime_entries(table_id.id)
-                .expect("live table")
-                .is_empty()
-        );
+        assert!((table_id.count() == 0));
     }
 }

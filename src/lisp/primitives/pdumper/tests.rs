@@ -920,20 +920,18 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
         call_in(&mut target, "hash-table-count", &[eq_table]),
         Value::Integer(3)
     );
-    let Kind::Record(equal_id) = equal_table.kind() else {
+    let Kind::HashTable(equal_id) = equal_table.kind() else {
         panic!("hash table")
     };
-    let keys = target
-        .hash_table_runtime_entries(equal_id.id)
-        .expect("thawed runtime entries")
-        .iter()
-        .map(|(key, _)| string_like(key).map(|s| s.text).unwrap_or_default())
+    let keys = equal_id
+        .entries()
+        .map(|(_, key, _)| string_like(&key).map(|s| s.text).unwrap_or_default())
         .collect::<Vec<_>>();
     // fns.c reuses the slot `remhash' freed: k3 sits in k1's slot 0, so
     // the compact contents (hash_table_contents) walk k3 before k2.
     assert_eq!(keys, vec!["k3".to_owned(), "k2".to_owned()]);
     // hash_table_thaw: the allocation is minimal, count entries.
-    assert_eq!(target.gnu_hash_table_capacity(equal_id.id), Some(2));
+    assert_eq!(Some(equal_id.capacity()), Some(2));
 }
 
 #[test]

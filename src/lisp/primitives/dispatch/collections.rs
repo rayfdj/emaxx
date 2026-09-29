@@ -1439,13 +1439,13 @@ define_dispatch!(
                         hash = json::make_hash_table(interp, "equal", Vec::new());
                         table.set_extra(1, hash);
                     }
-                    let Kind::Record(id) = hash.kind() else {
+                    let Kind::HashTable(id) = hash.kind() else {
                         return Err(LispError::WrongTypeArgument("hash-table-p".into(), hash));
                     };
-                    if let Some(key) = interp.equal_hash_lookup_key(id.id, &value, env) {
+                    if let Some(key) = interp.equal_hash_lookup_key(id, &value, env) {
                         value = key;
                     } else {
-                        interp.equal_hash_put(id.id, value, Value::Nil, env);
+                        interp.equal_hash_put(id, value, Value::Nil, env);
                     }
                     table.set_range(segment_start, segment_end, value);
                 }

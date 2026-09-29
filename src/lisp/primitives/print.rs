@@ -244,7 +244,6 @@ pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<V
         crate::lisp::eval::RecordKind::Thread
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
-        | crate::lisp::eval::RecordKind::HashTable
         | crate::lisp::eval::RecordKind::Process
         | crate::lisp::eval::RecordKind::Obarray => None,
         _ => Some(
@@ -267,6 +266,7 @@ pub(crate) fn print_ref_key(
         Kind::Vector(vector) => Some(PrintRefKey::Vector(vector.identity())),
         Kind::LispRecord(record) => Some(PrintRefKey::Vector(record.identity())),
         Kind::CharTable(table) => Some(PrintRefKey::Vector(table.identity())),
+        Kind::HashTable(table) => Some(PrintRefKey::Vector(table.identity())),
         Kind::SubCharTable(table) => Some(PrintRefKey::Vector(table.identity())),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
@@ -460,14 +460,17 @@ fn walk_print_graph(
                     );
                 }
             }
+            Kind::HashTable(table) => {
+                for slot in (0..table.capacity()).rev() {
+                    if let Some((key, value)) = table.entry(slot) {
+                        pending.push(value);
+                        pending.push(key);
+                    }
+                }
+            }
             Kind::Record(id) => {
                 if let Some(fields) = record_prin1_fields(interp, id.id) {
                     pending.extend(fields.into_iter().rev());
-                } else if let Some((_, entries)) = json::hash_table_entries(interp, &value) {
-                    for (key, entry_value) in entries.into_iter().rev() {
-                        pending.push(entry_value);
-                        pending.push(key);
-                    }
                 }
             }
             Kind::LispRecord(record) => pending.extend(record.slots().rev()),
@@ -911,9 +914,10 @@ pub(crate) fn render_hash_table_prin1(
     // print.c:2588 prints only what the reader needs: the test when it is
     // not `eql', the weakness when the table is weak, `purecopy t' when
     // set, and the data when the table is non-empty.
-    let test = hash_table_metadata_slot(interp, value, 0, Value::Symbol("eql".into()))?;
-    let weakness = hash_table_metadata_slot(interp, value, 5, Value::Nil)?;
-    let purecopy = hash_table_metadata_slot(interp, value, 6, Value::Nil)?;
+    let table = check_hash_table(value)?;
+    let test = table.test_name();
+    let weakness = hash_table_weakness_value(table);
+    let purecopy = table.purecopy();
     let entries = json::hash_table_entries(interp, value)
         .map(|(_, entries)| entries)
         .unwrap_or_default();
@@ -939,7 +943,7 @@ pub(crate) fn render_hash_table_prin1(
             depth + 1,
         )?);
     }
-    if purecopy.is_truthy() {
+    if purecopy {
         rendered.push_str(" purecopy t");
     }
 
@@ -1329,6 +1333,7 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#s({})", fields.join(" ")))
         }
+        Kind::HashTable(_) => render_hash_table_prin1(interp, value, env, context, depth),
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {
                 let rendered = match record.kind {
@@ -1376,9 +1381,6 @@ pub(crate) fn render_prin1_body(
                         .condition_variable_name(id.id)
                         .map(|name| format!("#<condvar {name}>"))
                         .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity())),
-                    crate::lisp::eval::RecordKind::HashTable => {
-                        render_hash_table_prin1(interp, value, env, context, depth)?
-                    }
                     // print.c `print_bool_vector': `#&SIZE"BYTES"', the
                     // bits packed low-order-first and the bytes written
                     // with string escaping rules.
@@ -2128,39 +2130,19 @@ fn hash_table_from_literal_fields(
     // hash/comparison functions here, while the object is read; delaying that
     // work until the first lookup changes both side effects and bucket state.
     let capacity = entries.len();
-    let table =
-        crate::lisp::json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
-    if let Kind::Record(id) = table.kind()
-        && let Some(record) = interp.find_record_mut(id)
-    {
-        if record.slots.len() < 7 {
-            record.slots.resize(7, Value::Nil);
-        }
-        record.slots[2] = Value::Integer(capacity as i64);
-        record.slots[5] = weakness;
-        record.slots[6] = purecopy;
-    }
-    let Kind::Record(id) = table.kind() else {
-        unreachable!("make_hash_table_with_capacity returns a hash-table record")
-    };
+    let table = make_hash_table_value(
+        interp,
+        Value::symbol(&test),
+        capacity,
+        weakness,
+        purecopy,
+        env,
+    )?;
+    let object = check_hash_table(&table)?;
     for (key, value) in entries {
-        if matches!(test.as_str(), "eq" | "eql" | "equal") {
-            if !interp.equal_hash_put(id.id, key, value, env) {
-                return Err(LispError::Signal("Invalid hash table test".into()));
-            }
-        } else if !custom_hash_put_indexed(
-            interp,
-            &Value::Record(id),
-            id.id,
-            &test,
-            key,
-            value,
-            env,
-        )? {
-            return Err(LispError::Signal("Invalid hash table test".into()));
-        }
+        hash_table_put(interp, object, key, value, env)?;
     }
-    Ok(Value::Record(id))
+    Ok(table)
 }
 
 fn read_from_lisp_source_raw(

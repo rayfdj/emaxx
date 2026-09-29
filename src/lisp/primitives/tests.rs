@@ -7237,6 +7237,42 @@ fn hash_copy_preserves_stored_codes_after_key_mutation() {
 }
 
 #[test]
+fn hash_buckets_preserve_identity_matching_and_empty_clear_slot_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-authoritative-buckets.el"),
+        include_str!("../../../tests/fixtures/hash-authoritative-buckets.expected"),
+        "hash-authoritative-buckets",
+    );
+}
+
+#[test]
+fn hash_purecopy_preserves_stored_codes_without_calling_hash_functions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-purecopy-stored-codes.el"),
+        include_str!("../../../tests/fixtures/hash-purecopy-stored-codes.expected"),
+        "hash-purecopy-stored-codes",
+    );
+}
+
+#[test]
+fn hash_constructor_preserves_keyword_positions_and_error_precedence() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-constructor-validation.el"),
+        include_str!("../../../tests/fixtures/hash-constructor-validation.expected"),
+        "hash-constructor-validation",
+    );
+}
+
+#[test]
+fn hash_descriptors_capture_the_first_eq_function_pair() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/hash-descriptor-position-functions.el"),
+        include_str!("../../../tests/fixtures/hash-descriptor-position-functions.expected"),
+        "hash-descriptor-position-functions",
+    );
+}
+
+#[test]
 fn hash_captured_functions_survive_redefinition_copy_and_gc() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/hash-captured-functions.el"),

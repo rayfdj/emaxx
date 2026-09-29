@@ -1,11 +1,11 @@
 use super::*;
 use crate::lisp::types::Kind;
 
-fn purify_table(interp: &Interpreter, env: &Env) -> Option<u64> {
-    let Kind::Record(id) = (interp.lookup_var("purify-flag", env)?).kind() else {
+fn purify_table(interp: &Interpreter, env: &Env) -> Option<crate::lisp::types::HashTableRef> {
+    let Kind::HashTable(id) = (interp.lookup_var("purify-flag", env)?).kind() else {
         return None;
     };
-    json::is_hash_table(interp, &Value::Record(id)).then_some(id.id)
+    Some(id)
 }
 
 fn hash_cons_lookup(interp: &Interpreter, value: &Value, env: &Env) -> Option<Value> {
@@ -83,44 +83,31 @@ fn purecopy_vector(
 
 fn purecopy_hash_table(
     interp: &mut Interpreter,
-    id: u64,
+    table: crate::lisp::types::HashTableRef,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let source = interp.record_value(id);
-    let record = interp
-        .find_record(id)
-        .cloned()
-        .ok_or_else(|| LispError::TypeError("hash-table".into(), format!("record<{id}>")))?;
-    let weakness = record.slots.get(5).cloned().unwrap_or(Value::Nil);
-    let copy_to_pure = record.slots.get(6).is_some_and(Value::is_truthy);
-    if weakness.is_truthy() || !copy_to_pure {
+    let source = Value::HashTable(table);
+    if table.weakness() != 0 || !table.purecopy() {
         return Ok(source);
     }
     if let Some(cached) = hash_cons_lookup(interp, &source, env) {
         return Ok(cached);
     }
 
-    let (_, entries) = json::hash_table_entries(interp, &source)
-        .ok_or_else(|| LispError::TypeError("hash-table".into(), format!("record<{id}>")))?;
-    let mut copied_entries = Vec::with_capacity(entries.len());
-    for (key, value) in &entries {
-        let copied_key = interp.with_lisp_stack_roots(&(&entries, &copied_entries), |interp| {
-            purecopy_inner(interp, key, env)
-        })?;
-        let copied_value = interp
-            .with_lisp_stack_roots(&((&entries, &copied_entries), copied_key), |interp| {
-                purecopy_inner(interp, value, env)
-            })?;
-        copied_entries.push((copied_key, copied_value));
-    }
-
-    let copied = interp.copy_record(id)?;
-    set_hash_table_entries(interp, &copied, copied_entries)?;
-    let Kind::Record(copied_id) = copied.kind() else {
-        unreachable!("copy_record preserves the hash-table representation")
-    };
-    interp.mark_hash_table_immutable(copied_id.id);
-    Ok(hash_cons_insert(interp, Value::Record(copied_id), env))
+    // alloc.c:purecopy_hash_table copies hashes and both chains verbatim.
+    // Purifying keys must not call user hash functions or compact holes.
+    let copy = table.copy();
+    let copied = Value::HashTable(copy);
+    interp.with_lisp_stack_roots(&copied, |interp| {
+        for slot in 0..copy.capacity() {
+            if let Some((key, value)) = copy.entry(slot) {
+                copy.set_key(slot, purecopy_inner(interp, &key, env)?);
+                copy.set_value(slot, purecopy_inner(interp, &value, env)?);
+            }
+        }
+        copy.set_mutable(false);
+        Ok(hash_cons_insert(interp, copied, env))
+    })
 }
 
 fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<Value, LispError> {
@@ -132,9 +119,6 @@ fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<V
         .find_record(id)
         .cloned()
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-    if record.kind == crate::lisp::eval::RecordKind::HashTable {
-        return purecopy_hash_table(interp, id, env);
-    }
     if record.kind != crate::lisp::eval::RecordKind::Closure {
         return Err(LispError::Signal(format!(
             "Don't know how to purify: {} ({:?}, {:?})",
@@ -250,6 +234,7 @@ fn purecopy_inner(
                 Ok::<Value, LispError>(Value::LispRecord(copy))
             })?
         }
+        Kind::HashTable(table) => purecopy_hash_table(interp, table, env)?,
         Kind::Record(id) => {
             return interp
                 .with_lisp_stack_roots(value, |interp| purecopy_record(interp, id.id, env));

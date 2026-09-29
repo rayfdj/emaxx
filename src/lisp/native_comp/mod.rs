@@ -28,6 +28,10 @@ pub(crate) use runtime::{
     decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning, maybe_gc,
     note_lisp_allocation,
 };
+pub(crate) use runtime::{
+    hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user, hash_table_hash_eq,
+    hash_table_hash_eql, hash_table_hash_equal, hash_table_hash_user,
+};
 #[cfg(test)]
 pub(crate) use runtime::{invoke_suspension_companion, invoke_suspension_probe};
 pub(crate) use state::NativeCompilerState;
@@ -85,19 +89,13 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
     ] {
         let table = crate::lisp::json::make_hash_table(interpreter, test, Vec::new());
         if name == "comp-loaded-comp-units-h" {
-            let Kind::Record(id) = table.kind() else {
-                unreachable!("native compiler hash tables use hash-table records")
+            let Kind::HashTable(table) = table.kind() else {
+                unreachable!("native compiler hash tables use hash-table allocations")
             };
-            let record = interpreter
-                .find_record_mut(id)
-                .expect("new native compiler hash table record");
-            if record.slots.len() < 7 {
-                record.slots.resize(7, Value::Nil);
-            }
             // comp.c:5926 uses `:weakness value'.  This is observable through
             // hash-table-weakness and controls whether compilation units keep
             // their Lisp values alive.
-            record.slots[5] = Value::symbol("value");
+            table.set_weakness(2);
         }
         interpreter.define_special_variable(name, table);
     }

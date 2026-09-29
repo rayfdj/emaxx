@@ -444,7 +444,41 @@ impl Loader<'_> {
                         crate::lisp::types::LispRecordRef::filled(Value::Nil, size - 1, Value::Nil);
                     self.objects.insert(offset, Value::LispRecord(record));
                 }
-                DumpType::Record | DumpType::Obarray | DumpType::HashTable => {
+                DumpType::HashTable => {
+                    let nslots = self.reader.word(offset + 24)? as usize;
+                    if nslots != 7 || self.reader.word(offset + 8)? != 7 {
+                        return Err(LoadError::Error(format!(
+                            "invalid frozen hash table at {offset}"
+                        )));
+                    }
+                    let at = offset + 32 + 8 * nslots as u32;
+                    let count = self.reader.word(at)? as usize;
+                    let test = match self.reader.word(at + 16)? {
+                        HASH_TEST_EQ => "eq",
+                        HASH_TEST_EQL => "eql",
+                        HASH_TEST_EQUAL => "equal",
+                        code => {
+                            return Err(LoadError::Error(format!(
+                                "invalid frozen hash test {code}"
+                            )));
+                        }
+                    };
+                    let value = crate::lisp::primitives::make_hash_table_value(
+                        self.interp,
+                        Value::symbol(test),
+                        count,
+                        Value::Nil,
+                        Value::Nil,
+                        &Env::new(),
+                    )
+                    .map_err(|error| LoadError::Error(error.to_string()))?;
+                    let Kind::HashTable(table) = value.kind() else {
+                        unreachable!()
+                    };
+                    self.objects.insert(offset, value);
+                    hash_table_records.push((offset, table, nslots));
+                }
+                DumpType::Record | DumpType::Obarray => {
                     let id = self.reader.word(offset)?;
                     let kind_code = self.reader.word(offset + 8)? as u32;
                     let record_kind = record_kind_from_code(kind_code).ok_or_else(|| {
@@ -461,9 +495,6 @@ impl Loader<'_> {
                     self.objects.insert(offset, self.interp.record_value(id));
                     if kind == DumpType::Obarray {
                         obarray_records.push((offset, id, nslots));
-                    }
-                    if kind == DumpType::HashTable {
-                        hash_table_records.push((offset, id, nslots));
                     }
                     // The native kinds carry their late relocations; a
                     // record of either kind without one is not this
@@ -620,7 +651,7 @@ impl Loader<'_> {
                         record.set(index, field);
                     }
                 }
-                DumpType::Record | DumpType::Obarray | DumpType::HashTable => {
+                DumpType::Record | DumpType::Obarray => {
                     let id = self.reader.word(offset)?;
                     let nslots = self.reader.word(offset + 24)? as usize;
                     let mut slots = Vec::with_capacity(nslots);
@@ -634,50 +665,6 @@ impl Loader<'_> {
                     record.slots = slots;
                 }
                 _ => {}
-            }
-        }
-        // thaw_hash_tables: every table on the hash list, from its frozen
-        // contents.
-        let thaw_list = self.hash_list_tables(&header)?;
-        for (offset, id, nslots) in hash_table_records {
-            if !thaw_list.contains(&id) {
-                return Err(LoadError::Error(format!(
-                    "hash table {id} is not on the hash list"
-                )));
-            }
-            let mut at = offset + 32 + 8 * nslots as u32;
-            let count = self.reader.word(at)? as usize;
-            let weakness = self.value_at(at + 8)?;
-            let test_code = self.reader.word(at + 16)?;
-            let mutable = self.reader.word(at + 24)? != 0;
-            at += 32;
-            let mut entries = Vec::with_capacity(count);
-            for _ in 0..count {
-                let key = self.value_at(at)?;
-                let value = self.value_at(at + 8)?;
-                entries.push((key, value));
-                at += 16;
-            }
-            let test = match test_code {
-                HASH_TEST_EQ => "eq",
-                HASH_TEST_EQL => "eql",
-                HASH_TEST_EQUAL => "equal",
-                other => {
-                    return Err(LoadError::Error(format!(
-                        "hash table {id} has frozen test {other}"
-                    )));
-                }
-            };
-            let record = self
-                .interp
-                .find_record_mut(id)
-                .ok_or_else(|| LoadError::Error(format!("hash table {id} was installed")))?;
-            if record.slots.len() > 5 {
-                record.slots[5] = weakness;
-            }
-            self.interp.thaw_hash_table(id, test, entries);
-            if !mutable {
-                self.interp.mark_hash_table_immutable(id);
             }
         }
         let mut native_functions = Vec::new();
@@ -767,6 +754,42 @@ impl Loader<'_> {
                 }
             };
             finalizer_records.push((id, next));
+        }
+
+        // thaw_hash_tables: every table on the hash list, from its frozen
+        // contents. All object fields must be relocated before hashing keys.
+        let thaw_list = self.hash_list_tables(&header)?;
+        for (offset, table, nslots) in hash_table_records {
+            if !thaw_list.contains(&table) {
+                return Err(LoadError::Error(format!(
+                    "hash table at {offset} is not on the hash list"
+                )));
+            }
+            let mut at = offset + 32 + 8 * nslots as u32;
+            let count = self.reader.word(at)? as usize;
+            let weakness = self.value_at(at + 8)?;
+            let mutable = self.reader.word(at + 24)? != 0;
+            let purecopy = self.value_at(offset + 32 + 8 * 6)?;
+            table.set_weakness(
+                crate::lisp::primitives::hash_table_weakness(self.interp, weakness, &Env::new())
+                    .map_err(|error| LoadError::Error(error.to_string()))?,
+            );
+            table.set_purecopy(purecopy.is_truthy());
+            let test = table.test().standard_test().expect("frozen standard test");
+            at += 32;
+            for _ in 0..count {
+                let key = self.value_at(at)?;
+                let value = self.value_at(at + 8)?;
+                let hash = crate::lisp::primitives::standard_hash_code(
+                    self.interp,
+                    test,
+                    &key,
+                    &Env::new(),
+                );
+                table.insert(hash, key, value);
+                at += 16;
+            }
+            table.set_mutable(mutable);
         }
 
         // Phase 5: the symbol records.
@@ -881,7 +904,10 @@ impl Loader<'_> {
     }
 
     /// The record ids of the vector at `header.hash_list'.
-    fn hash_list_tables(&mut self, header: &DumpHeader) -> Result<Vec<u64>, LoadError> {
+    fn hash_list_tables(
+        &mut self,
+        header: &DumpHeader,
+    ) -> Result<Vec<crate::lisp::types::HashTableRef>, LoadError> {
         if header.hash_list == 0 {
             return Ok(Vec::new());
         }
@@ -890,7 +916,7 @@ impl Loader<'_> {
         let mut ids = Vec::with_capacity(size);
         for index in 0..size {
             match (self.value_at(offset + 8 * (index as u32 + 1))?).kind() {
-                Kind::Record(id) => ids.push(id.id),
+                Kind::HashTable(table) => ids.push(table),
                 other => {
                     return Err(LoadError::Error(format!(
                         "hash list entry is not a hash table: {other:?}"
