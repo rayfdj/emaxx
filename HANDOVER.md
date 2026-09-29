@@ -1,60 +1,47 @@
 # Resume the compact runtime goal here
 
-**Current repair:** source155 now passes the complete Rust gate on both
-platforms: **3,012 macOS / 3,024 Linux** tests, two existing terminal ignores
-each, and native artifact identity. Its [Linux run](https://github.com/rayfdj/emaxx/actions/runs/36590575463)
-is complete. The full Linux frozen comparison and macOS terminal inventory
-are still running. The terminal run exposes missing Table/Org menu captions;
-the unchanged Org scenario passes on retained main source139 and fails on
-source155. This is a real regression, not a waived platform difference.
+**Current merge candidate:** source161 repairs Table/Org captions in composed
+menu maps by calling unchanged GNU `keymap-canonicalize`. It passes strict
+static checks, **72 debug and 72 release controls**, fifteen ordinary exact
+GNU comparisons, and the unchanged `org-open` terminal scenario. Its complete
+macOS Rust/terminal runs and [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36596279103)
+/ [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36596290294) runs are active.
+PR #77 remains a draft; main remains `1d1e8cdc`. The
+[menu repair receipts](docs/handover/2026-09-30-menu-composition-repair/manifest.json)
+preserve source159's initial setup failure and source155's complete terminal
+failure: all 223 scenarios started, 17 diverged on the same missing captions.
+Later checkpoints within each divergent scenario were not executed.
 
-Source161 repairs the renderer: GNU's unchanged `keymap-canonicalize` resolves
-composed and inherited menu prefixes before display. Active maps and accumulated
-entries stay rooted through Lisp callbacks. Compiler, formatting, warnings-denied
-Clippy and **72 selected debug controls** pass, including actual Org menus and
-collection during canonicalization. Two old menu tests now load the actual GNU
-Lisp owner; their original assertions remain. Source159's 71 passes/one bare
-runtime setup failure remain preserved. Source161 release, ordinary and complete
-validation are pending. PR #77 remains a draft and main remains `1d1e8cdc`.
-Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
-after the complete goal. No full-goal or performance completion is claimed.
+Source155 already passes complete Rust gates: **3,012 macOS / 3,024 Linux**,
+two existing terminal ignores each, and native artifact identity. Its full
+Linux frozen comparison also passes: **519 files / 7,928 outcomes**, all 1,038
+runner processes successful. [Complete receipts](docs/handover/2026-09-30-compatibility-rust-frozen/manifest.json)
+retain and verify those results. Source153's earlier native reclamation failure
+and GNU Eglot timeout remain failed historical evidence; their precise causes
+are not established by the later pass. Source161 still requires its own complete
+validation. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
+after the complete goal.
 
-**Current follow-up:** read the [runtime entry and compatibility repairs](docs/runtime-representation-compatibility-checkpoint.md)
-after the complete goal. Source153's complete macOS Rust gate passes **3,011
-tests**, with two existing terminal ignores. Linux passes nine library groups
-(2,387 tests), then aborts on the native non-LIFO reclamation assertion in the
-lightweight group; both Cargo stages remain unexecuted. Its full frozen run
-executes all 519 files and 7,928 outcomes. The previous repeat failure now
-matches; one GNU Eglot request timeout differs from Emaxx's pass. These Linux
-runs remain failed, preserved in the [completed-run receipts](docs/handover/2026-09-29-compatibility-completed-runs/manifest.json).
+**Separate architecture work:** the [source162 keymap draft](docs/handover/2026-09-30-keymap-authority-draft/manifest.json)
+replaces private record keymaps, reverse indexes, snapshots, binding caches and
+process-lifetime roots with actual cons/char-table storage. It passes strict
+checks, **386 debug and 386 release controls** and eighteen ordinary GNU
+comparisons. Its portable patch replays all 333 inputs from published `f237bfcf`.
+It remains an unfinished draft, separate from PR #77's production code; it
+predates the source161 menu repair and has no complete gate certification.
 
-The original native test passes in separate ordinary and debugger Linux
-replays, which do not clear its full-sequence failure. Source155 preserves
-its exact survival/reclamation assertions and uses the existing test helper
-to clear dead driver stack space before collection. A separate negative
-ordinary probe also exposed missing array type validation after a redefined
-`key-parse`; source155 repairs that check and adds the same-input GNU control.
-Source155 passes compiler, formatting, warnings-denied Clippy, six focused
-debug and six release controls, and fourteen exact ordinary GNU comparisons.
-[Repair receipts](docs/handover/2026-09-29-compatibility-final-repair/manifest.json)
-retain its inputs and the original failures. Full macOS Rust and terminal
-validation are running on production `72d98598`, alongside
-[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36590575463) and
-[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36590580818) on
-published `f237bfcf` (identical compiled/test inputs). Source154 passed 382 controls in each
-mode but failed the new fixture on a trailing parenthesis; that fixture typo
-is corrected without changing the expected behavior.
+A nineteenth draft comparison exposes eager copying of key-sequence input:
+a collecting prefix callback changes a later event, but lookup reads the old
+copy. The original case also fails source161 and retained main source139;
+expanded string, Lucid and translated-input cases are retained with the menu
+receipts. Source163 integrates the menu repair and reads each event from the
+actual input when reached. Its strict checks pass; selected debug/release and
+ordinary validation are underway in the isolated keymap worktree. Preserve
+source162's negative results until source163 has its own evidence.
 
-Source153's 382 debug and 382 release controls and thirteen ordinary exact GNU
-fixtures pass. Its unchanged repeat, keymap, casefiddle and gv reports match
-GNU. The focused Linux unwind-payload reclamation control passes. Original
-source148 full failures and the intermediate repairs remain in the
-[earlier receipts](docs/handover/2026-09-29-compatibility-gate-repair/manifest.json).
-Main's hash checkpoint is merged through PR #76 at `1d1e8cdc`; PR #77 is still
-a draft. The [separately packaged keymap draft](docs/handover/2026-09-29-keymap-authority-draft/manifest.json)
-compiles with one warning and has no executed tests. It replays from published
-`c2d328ab`, predates newer lookup repairs, and is not production code in this
-merge candidate. The architecture and performance goal is **not complete**.
+The compact representation, symbol authority, physical allocation accounting,
+final audit, complete final-source compatibility and locked performance goal
+remain unfinished. A validated merge checkpoint does not complete that goal.
 
 **Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
 after the complete goal. Source 133 replaces the host record and four side maps
