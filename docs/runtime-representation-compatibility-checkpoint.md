@@ -44,9 +44,19 @@ values, signals, throws, replacement errors, survival and eventual reclamation.
 ## Validation and preserved failures
 
 Combined source 148 passes strict formatting, compiler, warnings-denied Clippy
-and diff checks, and **367 selected debug tests**, with zero failures or ignores.
-Its release, ordinary executable and complete platform gates are pending at this
-publication checkpoint. These pending stages are not counted as passes.
+and diff checks, and **367 debug and 367 release tests**, with zero failures or
+ignores. A fresh ordinary executable and image pass all twelve exact GNU
+comparisons. All 46 original keymap tests pass; casing matches ten passes and
+one existing locale skip, and generalized variables match six passes and two
+existing expected failures, including their complete messages. The
+[226 checkpoint receipts](handover/2026-09-29-compatibility/manifest.json)
+verify the inventories, executable and image identities and unchanged inputs.
+
+The complete macOS Rust gate, [Linux Rust gate](https://github.com/rayfdj/emaxx/actions/runs/36539120621)
+and [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
+are running on source 148, published at `7cba6e52` through
+[draft PR #77](https://github.com/rayfdj/emaxx/pull/77). These pending stages
+are not counted as passes.
 
 Separate source 144 passes 193 debug and 193 release controls and all 46 upstream
 keymap tests. The casing report matches GNU's ten passes and one existing locale
@@ -54,8 +64,9 @@ skip; the generalized-variable report matches six passes and two existing
 expected failures, including their messages. Source 145 passes 184 debug and
 184 release controls and four exact ordinary GNU root comparisons. The original
 pending-error reproducer that exited -9 on source 139 now succeeds. The separate
-menu-error probe reports a valid error and exit 255 instead of crashing; its
-remaining difference from GNU's exit 0 is addressed by the combined menu handler.
+menu-error probe reports a valid error and exit 255 instead of crashing. Combined
+source 148's menu handler now produces GNU's exact output, exit 0 and empty
+stderr on that same original probe.
 
 The [history bundle](handover/2026-09-29-compatibility-history/manifest.json)
 retains 699 receipts, original failed compiler/tests, exact source and executable

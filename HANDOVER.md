@@ -1,12 +1,14 @@
 # Resume the compact runtime goal here
 
 **Current follow-up:** read the [runtime entry and compatibility repairs](docs/runtime-representation-compatibility-checkpoint.md)
-after the complete goal. Combined source 148 passes strict checks and 367 debug
-controls, with zero failures or ignores. Release, ordinary executable and full
-platform gates are pending. It combines stack-entry, menu/casing/description,
+after the complete goal. Combined source 148 passes strict checks, 367 debug and
+367 release controls, and twelve ordinary exact GNU comparisons. All 46 upstream
+keymap tests pass. Complete macOS/Linux gates and the Linux frozen comparison
+are running on draft PR #77, `7cba6e52`. It combines stack-entry, menu/casing/description,
 single-event keymap lookup and scoped error-payload rooting repairs. The
 [history bundle](docs/handover/2026-09-29-compatibility-history/manifest.json)
-preserves original failures. Main's validated hash checkpoint is already merged
+preserves original failures; the [current receipts](docs/handover/2026-09-29-compatibility/manifest.json)
+record the combined validation. Main's validated hash checkpoint is already merged
 through PR #76 at `1d1e8cdc`. The remaining keymap facade still retains anonymous
 maps; the architecture and performance goal is not complete.
 
