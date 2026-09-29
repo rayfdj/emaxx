@@ -1,16 +1,22 @@
 # Resume the compact runtime goal here
 
 **Current follow-up:** read the [runtime entry and compatibility repairs](docs/runtime-representation-compatibility-checkpoint.md)
-after the complete goal. Combined source 148 passes strict checks, 367 debug and
-367 release controls, and twelve ordinary exact GNU comparisons. All 46 upstream
-keymap tests pass. Complete macOS/Linux gates and the Linux frozen comparison
-are running on draft PR #77, `7cba6e52`. It combines stack-entry, menu/casing/description,
-single-event keymap lookup and scoped error-payload rooting repairs. The
-[history bundle](docs/handover/2026-09-29-compatibility-history/manifest.json)
-preserves original failures; the [current receipts](docs/handover/2026-09-29-compatibility/manifest.json)
-record the combined validation. Main's validated hash checkpoint is already merged
-through PR #76 at `1d1e8cdc`. The remaining keymap facade still retains anonymous
-maps; the architecture and performance goal is not complete.
+after the complete goal. Source 153 passes strict checks, **382 debug and 382
+release controls**, including all three previously failing assertions. It fixes
+Meta event boundaries and preserves GNU's textual-vector key translation. The
+reclamation fixture still requires live survival and eventual collection in all
+three execution modes, now after the creating/calling frames return. Full macOS
+validation is running; fresh Linux validation follows on PR #77.
+
+Source 148's full Rust gates failed: macOS 2,185 passes/one failure and Linux
+2,192 passes/two failures, with later stages unexecuted. Its Linux frozen run
+completed **all 519 files**, with 7,927/7,928 matching outcomes; only
+`repeat-tests-check-key` differs. Those original failures remain preserved.
+The previous [history](docs/handover/2026-09-29-compatibility-history/manifest.json)
+and [source148 receipts](docs/handover/2026-09-29-compatibility/manifest.json)
+remain unchanged. Main's hash checkpoint is merged through PR #76 at `1d1e8cdc`.
+The separate keymap facade migration is parked and is not part of this merge
+candidate. The architecture and performance goal is **not complete**.
 
 **Newest task-branch checkpoint:** read the [shared hash-table allocation](docs/runtime-representation-hash-allocation-checkpoint.md)
 after the complete goal. Source 133 replaces the host record and four side maps

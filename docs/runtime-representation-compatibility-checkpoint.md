@@ -6,6 +6,43 @@ macOS and Linux Rust gates passing. This follow-up repairs the runtime-entry,
 keymap, casing and error-lifetime paths exposed by its compatibility work.
 The [complete goal](runtime-representation-goal.md) remains open.
 
+## Latest gate repair — source 153
+
+Source 153 passes strict compiler, formatting, warnings-denied Clippy and diff
+checks, plus **382 debug and 382 release controls**, zero failures or ignores.
+It includes the original parameterized-character control omitted from the earlier
+selected set. Ordinary comparisons and the complete macOS gate are underway;
+fresh Linux validation is still required before merging this repair.
+
+The original source148 complete Rust gates fail: macOS 2,185 passes/one failure,
+Linux 2,192 passes/two failures. Four later library groups and both Cargo stages
+remain unexecuted. Both platforms expose unbound Meta events returning zero
+instead of GNU nil. `lookup_key_1` must advance by original events while
+`access_keymap_1` handles Meta within one event. Source153 uses that division,
+retains original tests, and delegates textual-vector translation to unchanged
+GNU `key-valid-p` and `key-parse`.
+
+The second Linux assertion fails in GNU itself, before Emaxx runs: the native
+payload is still retained while its enclosing caller is active. The fixture now
+returns from all creating/calling frames before collecting. All live-payload
+checks, actual execution-mode predicates and the required final zero count in
+every mode remain. Three ordinary Darwin GNU runs pass; the revised Linux
+contract still requires validation. No ignore or expected failure was added.
+
+The [source148 Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
+finishes all 519 files and compares all 7,928 required outcomes: 7,927 match and
+one differs, `repeat-tests-check-key`. This clears its predecessor's message,
+stdout and malformed-keymap-report failures, while retaining the repeat failure.
+The failed Rust runs are [Linux](https://github.com/rayfdj/emaxx/actions/runs/36539120621)
+and the retained local macOS run. All retained Rust executables/images match
+their recorded hashes. The original results are not converted to passes.
+
+Source152 passes 381 debug tests and fails the existing textual-vector key
+contract; thirteen ordinary comparisons pass. Its superseded full gate is
+cancelled during compilation and establishes no full-test result. Source153
+restores the GNU translation step and all three original failed assertions pass.
+The separate keymap representation draft149/150 remains parked locally.
+
 ## Changes and GNU reference
 
 The outer serialized Rust runtime entry now installs the existing stack-base
@@ -52,11 +89,9 @@ existing expected failures, including their complete messages. The
 [226 checkpoint receipts](handover/2026-09-29-compatibility/manifest.json)
 verify the inventories, executable and image identities and unchanged inputs.
 
-The complete macOS Rust gate, [Linux Rust gate](https://github.com/rayfdj/emaxx/actions/runs/36539120621)
-and [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36539124065)
-are running on source 148, published at `7cba6e52` through
-[draft PR #77](https://github.com/rayfdj/emaxx/pull/77). These pending stages
-are not counted as passes.
+Source148 was published at `7cba6e52` through
+[draft PR #77](https://github.com/rayfdj/emaxx/pull/77). Its complete runs finished
+with the failures recorded above; none is counted as a full pass.
 
 Separate source 144 passes 193 debug and 193 release controls and all 46 upstream
 keymap tests. The casing report matches GNU's ten passes and one existing locale
@@ -76,9 +111,8 @@ passed 365 tests and failed the existing native keymap-state assertion. Source
 367-test run includes the new reclamation regression.
 
 These ordinary macOS comparisons use the source-matched GNU candidate, whose
-native ABI matches. It is not the frozen Darwin executable. The earlier Linux
-frozen comparison's message, stdout and invalid-UTF-8 failures remain failures
-until a complete fresh run establishes otherwise. No speedup or parity claim is
+native ABI matches. It is not the frozen Darwin executable. Source148's complete Linux frozen run clears the earlier message, stdout and
+invalid-UTF-8 mismatches but still fails the repeat-command test, as recorded above. No speedup or parity claim is
 made for these repairs.
 
 ## Remaining representation and completion requirements
