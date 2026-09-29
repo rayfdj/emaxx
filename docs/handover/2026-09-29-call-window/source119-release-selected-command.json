@@ -1,0 +1,34 @@
+{
+  "command": [
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source119-release-libtest",
+    "native_funcall",
+    "native_apply",
+    "native_mapcar",
+    "native_maphash",
+    "native_runtime",
+    "function_cell",
+    "function_binding",
+    "function_alias",
+    "cyclic_function",
+    "uninterned",
+    "native_execution",
+    "native_preserves",
+    "window",
+    "frame",
+    "undo",
+    "record_index",
+    "pdumper",
+    "threads_retain_lexical_caller_roots",
+    "suspended_bytecode_retains_operand_and_unwind_roots",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "working_directory": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx",
+  "environment_overrides": {
+    "CARGO_TARGET_DIR": "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation",
+    "RUST_MIN_STACK": "134217728",
+    "RUST_TEST_THREADS": "1",
+    "EMAXX_FIXTURE_IMAGE_DIR": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images"
+  },
+  "binary_sha256": "2aa8a0cdc79375507ceb24fcf341201e68a0d6651d8963d35f27a77fd3f0476b"
+}

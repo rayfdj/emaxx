@@ -1,0 +1,17 @@
+{
+  "group": "compat_runtime",
+  "command": [
+    "/private/tmp/emaxx-runtime-frames-gsnnjxa_/emaxx/target/frame-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+    "lisp::primitives::compat_runtime_tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 86,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 17.140595790999896,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/full-gate-source119/repeat-01-compat_runtime.log"
+}

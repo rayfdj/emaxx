@@ -1,0 +1,17 @@
+{
+  "group": "compat_runtime",
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "lisp::primitives::compat_runtime_tests::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 86,
+  "expected_ignored": 0,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 11.428908852999939,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-compat_runtime.log"
+}

@@ -1,0 +1,51 @@
+{
+  "command": [
+    "python3",
+    "tools/retain_rust_gate_artifacts.py",
+    "--summary",
+    "target/runtime-goal/resume-2026-09-28/source120-real-artifacts/summary.json",
+    "--fixture-directory",
+    "/private/tmp/emaxx-runtime-reader-streams/emaxx/target/grouped-gate/fixture-images"
+  ],
+  "exit_code": 0,
+  "summary_unchanged": true,
+  "retention": {
+    "gate_status": "passed",
+    "gate_summary_sha256": "8e476eaa6fe8d622444a5f1ccff0baec5fba5e203e237cae472ab1b6d87e5d06",
+    "qualification": "Post-run files; no inference that every test used every image.",
+    "status": "retained",
+    "files": [
+      {
+        "original": "/private/tmp/emaxx-runtime-stream-validation/gate/deps/emaxx-2172bc5d2c1706ff",
+        "artifact": "libtest",
+        "sha256": "3dee0f8edc08fb30364ca438ef3eaaa28400ec6f1c4db44a958391721e95ad39",
+        "bytes": 29045152
+      },
+      {
+        "original": "/private/tmp/emaxx-runtime-reader-streams/emaxx/target/grouped-gate/fixture-images/loadup-3dee0f8e-31909f4d.pdmp",
+        "artifact": "fixture-images/loadup-3dee0f8e-31909f4d.pdmp",
+        "sha256": "aa596a998f6e95aa9e933bb4f19a8846e28925b93d3b5715913c16d2fa8ddcbc",
+        "bytes": 23467344
+      },
+      {
+        "original": "/private/tmp/emaxx-runtime-reader-streams/emaxx/target/grouped-gate/fixture-images/loadup-7cc7824a-31909f4d.pdmp",
+        "artifact": "fixture-images/loadup-7cc7824a-31909f4d.pdmp",
+        "sha256": "269d2f4c7e6a92a7698d583561239eddefe1d75bb8ac9c1ab1b148c6d02a989a",
+        "bytes": 23467376
+      },
+      {
+        "original": "/private/tmp/emaxx-runtime-reader-streams/emaxx/target/grouped-gate/fixture-images/loadup-dbf322e1-31909f4d.pdmp",
+        "artifact": "fixture-images/loadup-dbf322e1-31909f4d.pdmp",
+        "sha256": "daafd273cb441d3708546769b310cccef1450d7662c0e34085a453e310ea7726",
+        "bytes": 23469696
+      },
+      {
+        "original": "/private/tmp/emaxx-runtime-reader-streams/emaxx/target/grouped-gate/fixture-images/loadup-e2241880-31909f4d.pdmp",
+        "artifact": "fixture-images/loadup-e2241880-31909f4d.pdmp",
+        "sha256": "0279bf91b8c8a1243bf99678d921364a4fdf888c2ee1e6ba4aec7e91fbf0f7b1",
+        "bytes": 23469680
+      }
+    ]
+  },
+  "qualification": "Exercise the artifact collector on the completed source115 macOS run; this does not rerun or certify additional tests."
+}

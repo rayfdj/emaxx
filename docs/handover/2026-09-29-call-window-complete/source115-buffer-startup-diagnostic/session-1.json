@@ -1,0 +1,123 @@
+{
+  "command": [
+    "/private/tmp/emaxx-runtime-stream-validation/release/emaxx",
+    "/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/ttydiff-buffer-list-77z1ioay.dat"
+  ],
+  "pid": 74647,
+  "events": [
+    {
+      "kind": "output",
+      "wall": 1790651546.4913511,
+      "monotonic": 0.709090416,
+      "bytes": 14
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.612328,
+      "monotonic": 0.83007025,
+      "bytes": 475
+    },
+    {
+      "kind": "output",
+      "wall": 1790651546.765463,
+      "monotonic": 0.983206208,
+      "bytes": 18
+    },
+    {
+      "kind": "wait_boot",
+      "arguments": [
+        120.0
+      ],
+      "wall_start": 1790651546.491328,
+      "monotonic_start": 0.709067666,
+      "status": "completed",
+      "wall_seconds": 0.47919583320617676,
+      "monotonic_seconds": 0.47920137500000004
+    },
+    {
+      "kind": "output",
+      "wall": 1790651548.821663,
+      "monotonic": 3.039425916,
+      "bytes": 646
+    },
+    {
+      "kind": "output",
+      "wall": 1790651548.9402611,
+      "monotonic": 3.158025833,
+      "bytes": 18
+    },
+    {
+      "kind": "output",
+      "wall": 1790651549.2962701,
+      "monotonic": 3.514038583,
+      "bytes": 18
+    },
+    {
+      "kind": "wait_for_screen_text",
+      "arguments": [
+        "ttydiff-buffer-l",
+        120.0,
+        0.5
+      ],
+      "wall_start": 1790651548.821574,
+      "monotonic_start": 3.039336875,
+      "status": "completed",
+      "wall_seconds": 0.9797580242156982,
+      "monotonic_seconds": 0.9797682080000003
+    },
+    {
+      "kind": "output",
+      "wall": 1790651551.836889,
+      "monotonic": 6.054681666,
+      "bytes": 609
+    },
+    {
+      "kind": "output",
+      "wall": 1790651551.9906502,
+      "monotonic": 6.208443666,
+      "bytes": 18
+    },
+    {
+      "kind": "output",
+      "wall": 1790651552.3564,
+      "monotonic": 6.574198291,
+      "bytes": 18
+    },
+    {
+      "kind": "output",
+      "wall": 1790651554.1629791,
+      "monotonic": 8.380794083,
+      "bytes": 130
+    },
+    {
+      "kind": "output",
+      "wall": 1790651554.3167691,
+      "monotonic": 8.534585166,
+      "bytes": 19
+    },
+    {
+      "kind": "output",
+      "wall": 1790651554.8770812,
+      "monotonic": 9.094902833,
+      "bytes": 19
+    },
+    {
+      "kind": "output",
+      "wall": 1790651554.879013,
+      "monotonic": 9.096834333,
+      "bytes": 153
+    },
+    {
+      "kind": "output",
+      "wall": 1790651555.032754,
+      "monotonic": 9.250577166,
+      "bytes": 19
+    },
+    {
+      "kind": "output",
+      "wall": 1790651555.434038,
+      "monotonic": 9.651864458,
+      "bytes": 19
+    }
+  ]
+}

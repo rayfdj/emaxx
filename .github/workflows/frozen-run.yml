@@ -434,6 +434,11 @@ jobs:
       - name: Collect only this run's raw compatibility evidence
         if: always()
         run: |
+          if [ -f target/frozen-ci/rust/summary.json ]; then
+            python3 tools/retain_rust_gate_artifacts.py \
+              --summary target/frozen-ci/rust/summary.json \
+              --fixture-directory target/grouped-gate/fixture-images
+          fi
           python3 - <<'PY'
           import re, shutil
           from pathlib import Path

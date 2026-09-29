@@ -1,5 +1,12 @@
 # Resume the compact runtime goal here
 
+**Current task-branch follow-up:** the [native-call and window traversal checkpoint](docs/runtime-representation-call-window-checkpoint.md)
+combines two measured ordinary-path improvements, with 232 debug and 232 release
+passes, strict static checks and all 16 workload result/mode checks. Complete
+gates for this newer source now pass: 2,993 tests on macOS and 3,005 on Linux,
+with two existing ignores each. PR #75 integrates this follow-up. The previous checkpoint is already
+merged into `main` at `bf483660` through PR #74. Full goal completion remains open.
+
 **Newest continuation:** read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md)
 after the complete goal. Source 115 now passes the complete macOS gate with
 2,993 passes and the complete Linux gate with 3,005 passes; each retains the
@@ -86,6 +93,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [current task-branch follow-up](docs/runtime-representation-call-window-checkpoint.md).
    Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).
    Then read the [newest regexp, VM and completed Linux continuation](docs/runtime-representation-regexp-checkpoint.md).
 2. [Latest combined-source continuation and profiling limits](docs/runtime-representation-integration-checkpoint.md).

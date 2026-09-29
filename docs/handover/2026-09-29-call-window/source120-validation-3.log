@@ -1,0 +1,12 @@
+usage: retain_rust_gate_artifacts.py [-h] --summary SUMMARY
+                                     --fixture-directory FIXTURE_DIRECTORY
+
+Retain a finished Rust gate's executable and remaining fixture images. This
+records evidence without rerunning tests or changing their outcome summary.
+Images are the files present after the run, not a per-test image-use
+transcript.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --summary SUMMARY
+  --fixture-directory FIXTURE_DIRECTORY

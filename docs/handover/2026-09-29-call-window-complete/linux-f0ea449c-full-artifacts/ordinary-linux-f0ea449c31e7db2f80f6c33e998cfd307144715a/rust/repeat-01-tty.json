@@ -1,0 +1,17 @@
+{
+  "group": "tty",
+  "command": [
+    "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+    "tty::",
+    "--test-threads",
+    "1"
+  ],
+  "expected_tests": 59,
+  "expected_ignored": 2,
+  "template": true,
+  "test_threads": 1,
+  "elapsed_seconds": 3.4087519300001077,
+  "exit_code": 0,
+  "timed_out": false,
+  "log": "/home/runner/work/emaxx/emaxx/emaxx/target/frozen-ci/rust/repeat-01-tty.log"
+}
