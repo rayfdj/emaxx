@@ -428,7 +428,6 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         if pending_keys.is_empty()
             && matches!(event.kind(), Kind::Symbol(_))
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
-            && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(code);
             let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
@@ -439,7 +438,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         pending_events.push(event);
         let binding_key = pending_keys.join(" ");
         let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
+        if key_binding_is_prefix(interp, &binding, env) {
             load_autoloaded_prefix_map(interp, &binding, env)?;
             continue;
         }
@@ -600,7 +599,6 @@ fn read_minibuffer_text_from_unread_events_inner(
             && let Kind::Symbol(name) = event.kind()
             && let Some(translated) = function_key_default_translation(&name)
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
-            && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(translated);
             let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
@@ -661,7 +659,7 @@ fn read_minibuffer_text_from_unread_events_inner(
         let binding_key = pending_keys.join(" ");
 
         let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
+        if key_binding_is_prefix(interp, &binding, env) {
             load_autoloaded_prefix_map(interp, &binding, env)?;
             continue;
         }
@@ -819,7 +817,6 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if pending_keys.is_empty()
             && let Some(translated_event) = default_translation
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
-            && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = translated_event;
             let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
@@ -832,7 +829,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         pending_events.push(event);
         let binding_key = pending_keys.join(" ");
         let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
+        if key_binding_is_prefix(interp, &binding, env) {
             load_autoloaded_prefix_map(interp, &binding, env)?;
             if from_macro {
                 advance_kbd_macro_index(interp, 1, env);
@@ -1230,26 +1227,10 @@ define_dispatch!(
                 Ok(args[0])
             }
             "list" => Ok(Value::list(args.iter().cloned())),
-            "nconc" => {
-                let projected = args
-                    .iter()
-                    .map(|value| {
-                        keymap_list_items(interp, value)
-                            .map(|items| items.map(Value::list).unwrap_or_else(|| *value))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                nconc_values(&projected)
-            }
+            "nconc" => nconc_values(args),
             "append" => {
                 let mut items: Vec<Value> = Vec::new();
                 for (i, a) in args.iter().enumerate() {
-                    let projected;
-                    let a = if let Some(keymap_items) = keymap_list_items(interp, a)? {
-                        projected = Value::list(keymap_items);
-                        &projected
-                    } else {
-                        a
-                    };
                     let is_last = i == args.len() - 1;
                     if is_last {
                         // `append` copies all preceding args and reuses the
@@ -1297,11 +1278,7 @@ define_dispatch!(
             "length" => direct_length(interp, args, env),
             "safe-length" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(
-                    keymap_record_list_items(interp, &args[0])?
-                        .map(|items| items.len() as i64)
-                        .unwrap_or_else(|| safe_list_length(&args[0])),
-                ))
+                Ok(Value::Integer(safe_list_length(&args[0])))
             }
             "length<" | "length>" | "length=" => {
                 need_args(name, args, 2)?;
@@ -2296,7 +2273,7 @@ define_dispatch!(
 
 /// The `car-safe' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_car_safe(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
@@ -2304,15 +2281,13 @@ pub(super) fn direct_car_safe(
     need_args(name, args, 1)?;
     Ok(match args[0].kind() {
         Kind::Cons(cell) => cell.car.get(),
-        value => runtime_keymap_public_view(interp, &value.value())
-            .and_then(|view| view.car().ok())
-            .unwrap_or(Value::Nil),
+        _ => Value::Nil,
     })
 }
 
 /// The `cdr-safe' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_cdr_safe(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
@@ -2320,46 +2295,29 @@ pub(super) fn direct_cdr_safe(
     need_args(name, args, 1)?;
     Ok(match args[0].kind() {
         Kind::Cons(cell) => cell.cdr.get(),
-        value => runtime_keymap_public_view(interp, &value.value())
-            .and_then(|view| view.cdr().ok())
-            .unwrap_or(Value::Nil),
+        _ => Value::Nil,
     })
 }
 
 /// The `nth' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_nth(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "nth";
     need_args(name, args, 2)?;
-    if let Some(items) = keymap_record_list_items(interp, &args[1])? {
-        nth_list_element(&Value::list(items), &args[0])
-    } else {
-        nth_list_element(&args[1], &args[0])
-    }
+    nth_list_element(&args[1], &args[0])
 }
 
 /// The `nthcdr' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_nthcdr(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "nthcdr";
     need_args(name, args, 2)?;
-    if let Some(items) = keymap_record_list_items(interp, &args[1])? {
-        if matches!(args[0].kind(), Kind::Integer(count) if count <= 0)
-            || matches!(args[0].kind(), Kind::BigInteger(count) if *count <= BigInt::from(0))
-        {
-            // Runtime keymaps project to GNU's cons-list surface,
-            // but nthcdr with a nonpositive count returns the
-            // original object, including its identity.
-            return Ok(args[1]);
-        }
-        return nthcdr_value(&args[0], &Value::list(items));
-    }
     nthcdr_value(&args[0], &args[1])
 }
 
@@ -2497,13 +2455,7 @@ pub(super) fn direct_assq_family(
     need_args(name, args, 2)?;
     let want_car = name == "assq";
     let key = &args[0];
-    let projected;
-    let alist = if let Some(items) = keymap_list_items(interp, &args[1])? {
-        projected = Value::list(items);
-        &projected
-    } else {
-        &args[1]
-    };
+    let alist = &args[1];
     let mut seen = crate::lisp::types::CycleGuard::new();
     // Walk by cons cells rather than by cloned Values: one Rc
     // bump per step and no whole-Value churn.
@@ -2602,35 +2554,27 @@ pub(super) fn direct_cons(
 /// The subr behind `car', by pointer (data.c/fns.c: called through
 /// the function cell).
 pub(super) fn direct_car(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "car";
     need_args(name, args, 1)?;
-    if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-        view.car()
-    } else {
-        args[0]
-            .car()
-            .map_err(|_| wrong_type_argument("listp", args[0]))
-    }
+    args[0]
+        .car()
+        .map_err(|_| wrong_type_argument("listp", args[0]))
 }
 
 /// The subr behind `cdr', by pointer (data.c/fns.c: called through
 /// the function cell).
 pub(super) fn direct_cdr(
-    interp: &mut Interpreter,
+    _interp: &mut Interpreter,
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "cdr";
     need_args(name, args, 1)?;
-    if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
-        view.cdr()
-    } else {
-        args[0]
-            .cdr()
-            .map_err(|_| wrong_type_argument("listp", args[0]))
-    }
+    args[0]
+        .cdr()
+        .map_err(|_| wrong_type_argument("listp", args[0]))
 }

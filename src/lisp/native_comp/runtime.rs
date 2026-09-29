@@ -4432,8 +4432,8 @@ mod tests {
     #[test]
     fn raw_cons_store_changes_keymap_parent_and_char_table_readers() {
         let mut interpreter = Interpreter::new();
-        let child = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, None);
-        let parent = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, None);
+        let child = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, Value::Nil);
+        let parent = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, Value::Nil);
         let table = interpreter.make_char_table(Some("keymap".into()), Value::Nil);
         assert!(crate::lisp::primitives::keymap_parent_values(&interpreter, &child).is_empty());
         assert!(crate::lisp::primitives::keymap_char_table_value(&interpreter, &child).is_none());
@@ -4443,8 +4443,7 @@ mod tests {
                 .add(1)
                 .write(tail.word());
         }
-        // Read without going through a primitive that synchronizes the
-        // derived keymap record first, as key-binding's internal walkers do.
+        // Internal readers see the same native-written words directly.
         assert_eq!(
             crate::lisp::primitives::keymap_parent_values(&interpreter, &child),
             vec![parent]
@@ -4456,7 +4455,10 @@ mod tests {
         child
             .set_car(Value::symbol("no-longer-a-keymap"))
             .expect("ordinary field store");
-        assert!(crate::lisp::primitives::keymap_record_id(&interpreter, &child).is_none());
+        assert_eq!(
+            child.car().expect("native cons head"),
+            Value::symbol("no-longer-a-keymap")
+        );
         assert!(!crate::lisp::primitives::is_keymap_value(
             &interpreter,
             &child
@@ -6027,7 +6029,7 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
-        let keymap = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, None);
+        let keymap = crate::lisp::primitives::make_runtime_keymap(&mut interpreter, Value::Nil);
         let definition = Value::symbol("describe-chinese-environment-map");
         let tail = Value::list([Value::cons(Value::symbol("Chinese"), definition)]);
 
@@ -6045,9 +6047,7 @@ mod tests {
         );
 
         assert!(matches!(keymap.kind(), Kind::Cons(_)));
-        // The historical selector required eager rebuilding of the private
-        // record. With direct stores, a reader must consult the actual list
-        // or validate its derived view before using it.
+        // Both internal readers and Lisp lookup see the actual native store.
         let bindings = crate::lisp::primitives::keymap_direct_bindings(&interpreter, &keymap)
             .expect("direct reader sees the native store");
         assert_eq!(bindings.len(), 1);
@@ -6062,15 +6062,12 @@ mod tests {
             .expect("ordinary keymap lookup after native mutation"),
             definition
         );
-        let keymap_id = crate::lisp::primitives::keymap_record_id(&interpreter, &keymap)
-            .expect("private keymap lookup state");
-        let record = interpreter
-            .find_record(keymap_id)
-            .expect("runtime keymap record");
-        let bindings =
-            crate::lisp::primitives::keymap_bindings(record).expect("synchronized keymap bindings");
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].value, definition);
+        // Reading a keymap must preserve its spine and binding pair identity.
+        assert!(keymap.cdr().expect("actual tail").eq_value(tail));
+        let entry = tail.car().expect("actual binding");
+        assert_eq!(entry.car().expect("event"), Value::symbol("Chinese"));
+        assert_eq!(entry.cdr().expect("definition"), definition);
+        assert!(tail.cdr().expect("one binding").is_nil());
     }
 
     #[test]

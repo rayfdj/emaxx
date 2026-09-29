@@ -6,11 +6,6 @@ pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
-    if matches!(value.kind(), Kind::Record(_))
-        && let Some(public) = runtime_keymap_public_view(interp, value)
-    {
-        return copy_sequence_value(interp, &public);
-    }
     if let Some(string) = string_like(value) {
         return Ok(make_shared_string_value_with_multibyte(
             string.text,

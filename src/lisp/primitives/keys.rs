@@ -632,8 +632,6 @@ pub(crate) fn sequence_values(
 ) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
         Ok(string_sequence_values(&string))
-    } else if let Some(items) = keymap_list_items(interp, sequence)? {
-        Ok(items)
     } else if matches!(sequence.kind(), Kind::Nil | Kind::Cons(_)) {
         sequence.to_vec()
     } else if is_bool_vector_value(interp, sequence) {
@@ -1024,17 +1022,50 @@ pub(crate) fn resolve_keymap_without_autoload(
     object: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    resolve_keymap(interp, object, false, env)
+}
+
+pub(crate) fn resolve_keymap_with_autoload(
+    interp: &mut Interpreter,
+    object: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    resolve_keymap(interp, object, true, env)
+}
+
+fn resolve_keymap(
+    interp: &mut Interpreter,
+    object: &Value,
+    autoload: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "keymap");
     if is_keymap_list(object) {
         return Ok(*object);
     }
     if object.as_symbol().is_ok() {
-        let function = call(
+        let mut function = call(
             interp,
             "indirect-function",
             std::slice::from_ref(object),
             env,
         )?;
+        // keymap.c:get_keymap loads only stubs whose fifth element is
+        // `keymap'. autoload-do-load retains its ordinary failure checks.
+        while autoload
+            && function
+                .car()
+                .is_ok_and(|head| head.eq_value(Value::symbol("autoload")))
+            && function
+                .cdr()?
+                .cdr()?
+                .cdr()?
+                .cdr()?
+                .car()?
+                .eq_value(Value::symbol("keymap"))
+        {
+            function = call(interp, "autoload-do-load", &[function, *object], env)?;
+        }
         if is_keymap_list(&function) {
             return Ok(function);
         }
@@ -1056,65 +1087,6 @@ pub(crate) fn copy_keymap_value(
     copy_keymap_1(interp, keymap, 0, env)
 }
 
-/// The copy of a keymap Emaxx owns through a runtime record (its public
-/// `(keymap ...)' cons is a view of the record): a new record with the
-/// same name, the parent shared, every binding's definition and the
-/// char-table sent through `copy_keymap_item', and a fresh public view.
-fn copy_runtime_keymap(
-    interp: &mut Interpreter,
-    id: u64,
-    depth: usize,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let (name, parent, bindings, char_table) = {
-        let record = interp.find_record(id).ok_or_else(|| {
-            LispError::WrongTypeArgument("keymapp".into(), interp.record_value(id))
-        })?;
-        (
-            record.slots.first().cloned().unwrap_or(Value::Nil),
-            record
-                .slots
-                .get(KEYMAP_PARENT_SLOT)
-                .cloned()
-                .unwrap_or(Value::Nil),
-            record
-                .slots
-                .get(KEYMAP_BINDINGS_SLOT)
-                .cloned()
-                .unwrap_or(Value::Nil),
-            keymap_char_table(record),
-        )
-    };
-    let name = string_like(&name).map(|string| string.text);
-    let copy = make_runtime_keymap(interp, name.as_deref());
-    let copy_id = keymap_record_id(interp, &copy)
-        .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), copy))?;
-    let mut copied_bindings = Vec::new();
-    for entry in bindings.to_vec()? {
-        let mut items = entry.to_vec()?;
-        if items.len() >= 2 {
-            items[1] = copy_keymap_item(interp, &items[1], depth + 1, env)?;
-        }
-        copied_bindings.push(Value::list(items));
-    }
-    let char_table = match char_table {
-        Some(table) => Some(copy_keymap_char_table(interp, &table, depth + 1, env)?),
-        None => None,
-    };
-    if let Some(record) = interp.find_record_mut(copy_id) {
-        if record.slots.len() <= KEYMAP_CHAR_TABLE_SLOT {
-            record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
-        }
-        record.slots[KEYMAP_PARENT_SLOT] = parent;
-        record.slots[KEYMAP_BINDINGS_SLOT] = Value::list(copied_bindings);
-        if let Some(table) = char_table {
-            record.slots[KEYMAP_CHAR_TABLE_SLOT] = table;
-        }
-    }
-    refresh_runtime_keymap_public_view(interp, copy_id)?;
-    Ok(runtime_keymap_public_view(interp, &copy).unwrap_or(copy))
-}
-
 fn copy_keymap_1(
     interp: &mut Interpreter,
     keymap: &Value,
@@ -1126,13 +1098,7 @@ fn copy_keymap_1(
             "Possible infinite recursion when copying keymap".into(),
         ));
     }
-    if let Some(id) = keymap_record_id(interp, keymap) {
-        return copy_runtime_keymap(interp, id, depth, env);
-    }
     let keymap = resolve_keymap_without_autoload(interp, keymap, env)?;
-    if let Some(id) = keymap_record_id(interp, &keymap) {
-        return copy_runtime_keymap(interp, id, depth, env);
-    }
     let mut items = Vec::new();
     let mut tail = keymap.cdr()?;
     while let Some((elt, rest)) = tail.cons_values() {

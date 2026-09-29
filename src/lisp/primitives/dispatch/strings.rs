@@ -82,10 +82,7 @@ define_dispatch!(
                 }
                 Ok(make_runtime_full_keymap(
                     interp,
-                    args.first()
-                        .and_then(string_like)
-                        .map(|string| string.text)
-                        .as_deref(),
+                    args.first().copied().unwrap_or(Value::Nil),
                 ))
             }
             "make-sparse-keymap" => {
@@ -94,10 +91,7 @@ define_dispatch!(
                 }
                 Ok(make_runtime_keymap(
                     interp,
-                    args.first()
-                        .and_then(string_like)
-                        .map(|string| string.text)
-                        .as_deref(),
+                    args.first().copied().unwrap_or(Value::Nil),
                 ))
             }
             "vconcat" => {
@@ -109,11 +103,7 @@ define_dispatch!(
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
-                crate::lisp::primitives::values::ensure_runtime_keymap_current(interp, &args[0])?;
-                // keymap.c Fcopy_keymap (copy_keymap_1): a runtime keymap
-                // gets a new owner record and public view, a plain
-                // `(keymap ...)' list is copied cell by cell.  Returning a
-                // list keymap unchanged left `(eq (copy-keymap m) m)' true.
+                // keymap.c:Fcopy_keymap copies own entries and shares the parent.
                 crate::lisp::primitives::keys::copy_keymap_value(interp, &args[0], env)
             }
             "record" => {

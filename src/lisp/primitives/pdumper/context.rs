@@ -128,7 +128,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::TreeSitterNode => 17,
         RecordKind::TreeSitterCompiledQuery => 18,
         RecordKind::Sqlite => 19,
-        RecordKind::Keymap => 20,
         RecordKind::ModuleFunction => 21,
         RecordKind::UserPointer => 22,
     }
@@ -155,7 +154,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         17 => RecordKind::TreeSitterNode,
         18 => RecordKind::TreeSitterCompiledQuery,
         19 => RecordKind::Sqlite,
-        20 => RecordKind::Keymap,
+        // Former keymap facade record code 20 is unsupported.
         _ => return None,
     })
 }
@@ -1305,7 +1304,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Closure | RecordKind::Font | RecordKind::Keymap => {
+            RecordKind::Closure | RecordKind::Font => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }

@@ -247,8 +247,8 @@ pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
 /// Whether VALUE has GNU cons identity despite Emaxx's internal runtime-keymap
 /// projection.  Ordinary vectors have their own object class and never enter
 /// this predicate.
-pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Cons(_)) || keymap_record_id(interp, value).is_some()
+pub(crate) fn is_cons_value(_interp: &Interpreter, value: &Value) -> bool {
+    matches!(value.kind(), Kind::Cons(_))
 }
 
 pub(crate) fn symbol_with_pos_parts(_interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
@@ -2389,12 +2389,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
     menu: &Value,
     title: &str,
 ) -> TtyMenuPane {
-    let menu = {
-        if let Some(id) = super::keymap_record_id(interp, menu) {
-            let _ = super::refresh_runtime_keymap_public_view(interp, id);
-        }
-        super::public_keymap_value(interp, menu)
-    };
+    let menu = *menu;
     #[allow(clippy::type_complexity)]
     let mut raw: Vec<(Value, String, Value, bool, Option<(String, bool)>)> = Vec::new();
     let mut tail = menu.cdr().unwrap_or(Value::Nil);

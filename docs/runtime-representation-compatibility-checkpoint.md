@@ -34,7 +34,8 @@ host-permitted complete rerun passes on the identical source and test binary;
 the failed attempt stays preserved. Its initial retainer used the wrong fixture
 directory, so only binary retention is claimed for that failed attempt.
 
-PR #77 is ready for normal merge. Preexisting sequence-type, callback-mutation
+[PR #77](https://github.com/rayfdj/emaxx/pull/77) is merged at main
+`e9bbd598e14003d82ff23be4abcf05b0489164ca`. Preexisting sequence-type, callback-mutation
 and macro-prefix mismatches remain documented in ordinary negative probes;
 the separately packaged source166 draft repairs them with its own evidence.
 This checkpoint does not complete the architecture or performance goal.
@@ -116,8 +117,10 @@ failures remain preserved, alongside successful negative replays on retained
 main. The initial retained-main replay's environment setup error is recorded
 separately from its corrected semantic negative results.
 
-This remains packaged continuation material, separate from PR #77 production
-code. Temporary compound-event/enumeration adapters and older bounded paths in
+This was packaged continuation material, separate from PR #77 production
+code. It is now applied as the next task-branch candidate; see the
+[live keymap checkpoint](runtime-representation-live-keymap-checkpoint.md).
+Temporary compound-event/enumeration adapters and older bounded paths in
 input decoding and signal handling still require removal or justification.
 The focused source166 review is not the final goal-wide adversarial audit.
 

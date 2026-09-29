@@ -1,6 +1,7 @@
 # Resume the compact runtime goal here
 
-**Validated merge candidate:** source161 passes complete Rust gates:
+**Main now contains source161:** [PR #77](https://github.com/rayfdj/emaxx/pull/77)
+merged at `e9bbd598e14003d82ff23be4abcf05b0489164ca`. It passes complete Rust gates:
 **3,013 macOS / 3,025 Linux**, with two existing terminal ignores each and native
 artifact identity passing. Its [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
 matches **519 files / 7,928 outcomes**, with all 1,038 processes successful.
@@ -8,8 +9,7 @@ All **223 terminal scenarios, 651 screen comparisons and 28 filesystem
 comparisons** match source/ABI-matched GNU. The [complete receipts](docs/handover/2026-09-30-compatibility-complete/manifest.json)
 verify raw inventories, outcomes and artifact hashes. All 328 compiled/test
 inputs match published `d9caac1e`, documentation checkpoint `72b487b1` and the
-macOS worktree. PR #77 is ready for normal merge; main is still `1d1e8cdc`
-at this evidence checkpoint. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
+macOS worktree. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
 after the complete goal.
 
 Source161 repairs Table/Org captions by calling unchanged GNU
@@ -21,7 +21,10 @@ That failure, source155's 17 terminal divergences and source153's native
 reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
-**Separate architecture work:** the [source166 portable keymap draft](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json)
+**Current task-branch candidate:** source166 is now applied on top of that main
+checkpoint. Read the [live keymap checkpoint](docs/runtime-representation-live-keymap-checkpoint.md)
+and its [portable draft evidence](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json).
+It
 replaces private record keymaps, reverse indexes, snapshots, binding caches and
 permanent roots with actual cons/char-table storage. It integrates source161's
 menu repair, reads live input events through collecting callbacks, shares the
@@ -30,8 +33,9 @@ decisions and duplicate filter calls. Strict checks, **462 debug and 462 release
 controls** and all **25 ordinary GNU comparisons** pass. Its portable patch
 replays all 339 inputs from published `d9caac1e`.
 
-Source166 remains separate from PR #77 production code. Its complete macOS Rust
-and terminal runs are active; Linux/frozen certification is not yet available.
+Source166 was separate continuation material in PR #77 and is now the next
+production candidate. Its complete macOS Rust and terminal runs are active;
+Linux/frozen certification is not yet available.
 The source162/163/165 negative comparisons, source164 compiler failure and
 retained-main callback/dispatch failures remain in the linked draft history.
 Source166's selected passes do not substitute for complete validation.

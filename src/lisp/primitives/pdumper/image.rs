@@ -448,9 +448,7 @@ pub(crate) enum RootSlot {
     /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
     /// from (eval/dump_roots.rs).
     RememberedScalars = 54,
-    /// Not GNU: Emaxx's keymap facade records, reachable only through
-    /// the view-to-record index (GNU's keymaps are the lists themselves).
-    KeymapRecords = 55,
+    // Former keymap facade root code 55 is unsupported.
     SyntaxCodeObjects = 56,
     UnicodeMenuCaseTable = 57,
 }
@@ -511,7 +509,6 @@ impl RootSlot {
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,
             54 => Self::RememberedScalars,
-            55 => Self::KeymapRecords,
             56 => Self::SyntaxCodeObjects,
             57 => Self::UnicodeMenuCaseTable,
             _ => return None,

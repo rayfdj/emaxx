@@ -590,12 +590,9 @@ define_dispatch!(
             "listp" => direct_listp(interp, args, env),
             "proper-list-p" => {
                 need_args(name, args, 1)?;
-                Ok(match keymap_list_items(interp, &args[0])? {
-                    Some(items) => Value::Integer(items.len() as i64),
-                    None => match proper_list_length(&args[0]) {
-                        Some(length) => Value::Integer(length as i64),
-                        None => Value::Nil,
-                    },
+                Ok(match proper_list_length(&args[0]) {
+                    Some(length) => Value::Integer(length as i64),
+                    None => Value::Nil,
                 })
             }
             "bufferp" => {
@@ -727,9 +724,7 @@ define_dispatch!(
             "atom" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if (args[0].is_cons() && !is_vector_like_value(interp, &args[0]))
-                        || keymap_list_items(interp, &args[0])?.is_some()
-                    {
+                    if args[0].is_cons() && !is_vector_like_value(interp, &args[0]) {
                         Value::Nil
                     } else {
                         Value::T
@@ -740,9 +735,7 @@ define_dispatch!(
             "nlistp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if (args[0].is_list() && !is_vector_like_value(interp, &args[0]))
-                        || keymap_list_items(interp, &args[0])?.is_some()
-                    {
+                    if args[0].is_list() && !is_vector_like_value(interp, &args[0]) {
                         Value::Nil
                     } else {
                         Value::T

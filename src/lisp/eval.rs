@@ -1211,9 +1211,6 @@ pub(crate) enum RecordKind {
     TreeSitterNode,
     TreeSitterCompiledQuery,
     Sqlite,
-    /// Identity-bearing host facade whose public Elisp representation is a
-    /// list.  GNU itself therefore never exposes this as a pseudovector.
-    Keymap,
 }
 
 impl RecordKind {
@@ -1248,8 +1245,6 @@ impl RecordKind {
             // complete C structs: 9 and 8 words respectively.
             Self::Mutex => 9,
             Self::ConditionVariable => 8,
-            // Keymaps are Lisp cons structures in GNU, not pseudovectors.
-            Self::Keymap => 0,
             // These fixed-layout host objects are added as their C allocation
             // sites are mapped; never substitute the Rust struct size.
             Self::Font
@@ -3674,7 +3669,6 @@ impl Interpreter {
                     self.record_ids_by_type_index.remove(type_name);
                 }
             }
-            self.forget_keymap_public_view(id);
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
             // the tree-sitter parser, node and query states, a finished
@@ -3689,9 +3683,6 @@ impl Interpreter {
             self.condition_variables
                 .retain(|condvar| condvar.record_id != id);
             if let Some(slot) = self.bytecode_program_cache.get_mut(index) {
-                *slot = None;
-            }
-            if let Some(slot) = self.keymap_bindings_cache.get_mut().get_mut(index) {
                 *slot = None;
             }
         }
@@ -4007,8 +3998,7 @@ impl Interpreter {
     /// minibuffer state remembers (`minibuf_selected_window',
     /// `Vminibuf_scroll_window'), the previously selected window, the
     /// native compilation units and subrs the loader holds (comp.c's
-    /// loaded-units table and the subrs' unit slots), and the keymap
-    /// facade records (not C: the facade lives while the process does).
+    /// loaded-units table and the subrs' unit slots).
     /// A mutex, a condition variable, a tree-sitter object or a module
     /// function is not held here: C collects them when nothing reaches
     /// them, and the side tables that know them by id are purged with
@@ -4028,11 +4018,6 @@ impl Interpreter {
         }
         for id in self.native_compiler.held_record_ids() {
             hold(id);
-        }
-        for record in self.records.iter().flatten() {
-            if record.kind == RecordKind::Keymap {
-                mark(&Value::Record(*record));
-            }
         }
     }
 
@@ -4726,38 +4711,11 @@ impl Interpreter {
         // stale.  All of these repopulate lazily.
         crate::lisp::primitives::forget_buffer_views();
         clone.bytecode_program_cache.clear();
-        clone.keymap_bindings_cache.get_mut().clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
         clone.bc_live_programs.clear();
-
-        // The public-cons registry for keymap records is keyed by cons cell
-        // identity; remap each identity to its copy.  A registered cons the
-        // copy never reached is unreachable from the clone -- drop it.
-        let remap_cons_identity = |copier: &ImageGraphCopier, identity: usize| -> Option<usize> {
-            match copier.cons.get(&identity).map(|v| v.kind()) {
-                Some(Kind::Cons(cell)) => Some(crate::lisp::types::ConsCell::identity(&cell)),
-                _ => None,
-            }
-        };
-        clone.keymap_public_cons_owners = clone
-            .keymap_public_cons_owners
-            .drain()
-            .filter_map(|(identity, owners)| {
-                remap_cons_identity(&copier, identity).map(|identity| (identity, owners))
-            })
-            .collect();
-        for identities in clone.keymap_public_cons_ids.values_mut() {
-            *identities = identities
-                .drain(..)
-                .filter_map(|identity| remap_cons_identity(&copier, identity))
-                .collect();
-        }
-        // The snapshots name the template's cells; a missing snapshot
-        // rebuilds the record from its (copied) view on first use.
-        clone.keymap_public_view_watch.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash copied standard tables only after the complete graph is
@@ -5040,19 +4998,6 @@ pub struct InterpreterState {
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
-    /// Runtime keymaps keep stable record identity internally while exposing
-    /// GNU's mutable cons-list surface to Lisp. This temporary reverse index
-    /// resolves public roots to their records. Ordinary field stores do not
-    /// consult it. It leaves with the remaining derived keymap records.
-    keymap_public_cons_owners: HashMap<usize, Vec<u64>>,
-    /// Forward half of `keymap_public_cons_owners', used to unregister one
-    /// refreshed keymap without scanning every live public cons view.
-    keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
-    /// Per keymap record, weak dependencies of its public view's spine and
-    /// binding pairs. Both ordinary and generated stores write the actual
-    /// words without notification. A record whose snapshot is not
-    /// current (or missing) is rebuilt from its view before it is read.
-    keymap_public_view_watch: HashMap<u64, crate::lisp::types::ConsMutationSnapshot>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
@@ -5174,13 +5119,6 @@ pub struct InterpreterState {
     /// (see bytecode::vm).
     pub(crate) bytecode_program_cache:
         Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
-    /// Materialized, ordered keymap bindings per keymap record, invalidated
-    /// exactly like the byte-code cache: `find_record_mut' is the only
-    /// mutation door for records, so `define-key' drops the slot.  Key
-    /// lookup walks every active map per keystroke; re-parsing each map's
-    /// string entries per lookup made `key-binding' cost milliseconds.
-    pub(crate) keymap_bindings_cache:
-        std::cell::RefCell<Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     /// bytecode.c's per-thread bytecode stack, its activations' specpdl
@@ -5395,7 +5333,7 @@ pub(crate) enum ActiveHandler {
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
-    let map = primitives::make_runtime_keymap(interp, Some("visual-line-mode-map"));
+    let map = primitives::make_runtime_keymap(interp, Value::string("visual-line-mode-map"));
     for (command, replacement) in [
         ("kill-line", "kill-visual-line"),
         ("move-beginning-of-line", "beginning-of-visual-line"),
@@ -5802,9 +5740,6 @@ impl Interpreter {
             variable_watchers: Vec::new(),
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,
-            keymap_public_cons_owners: HashMap::new(),
-            keymap_public_cons_ids: HashMap::new(),
-            keymap_public_view_watch: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
             minibuffer_selected_window_id: None,
@@ -5942,7 +5877,6 @@ impl Interpreter {
             gc_elapsed_total: 0.0,
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
-            keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_unwinds: Vec::new(),
             bc_live_programs: Vec::new(),
@@ -6538,10 +6472,10 @@ impl Interpreter {
         // `C-x b' -> `switch-to-buffer' from the reconstructed image.
         // keymap.c's own DEFVAR_LISP map is the one exception.
         let minibuffer_local_map =
-            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
+            primitives::make_runtime_keymap(&mut interp, Value::string("minibuffer-local-map"));
         interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
         let input_decode_map =
-            primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
+            primitives::make_runtime_keymap(&mut interp, Value::string("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
         // keyboard.c creates these identity-bearing translation/event maps
         // before bindings.el is dumped.  Keep the native map family together
@@ -6552,7 +6486,7 @@ impl Interpreter {
             "function-key-map",
             "key-translation-map",
         ] {
-            let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
+            let keymap = primitives::make_runtime_keymap(&mut interp, Value::string(name));
             interp.define_special_variable(name, keymap);
         }
         // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
