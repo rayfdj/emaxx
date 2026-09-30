@@ -21,7 +21,8 @@ remains separate from the unfinished task branch.
 
 The task branch is **runtime-char-tables**, [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
-The current **source207** adds direct evaluator words and a separate cold error
+The current **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
+adds direct evaluator words and a separate cold error
 constructor after the exact Linux diagnosis below. Its **410 runtime and test
 inputs** match the isolated candidate; only `src/lisp/eval/core.rs` changes from
 runtime204. The candidate also includes the shared command reader, authoritative
@@ -81,17 +82,33 @@ replay all 410 inputs from main, including file modes. Its
 [audited focused validation](docs/handover/2026-09-30-shared-reader-draft/source207-eval-focused-manifest.json)
 passes strict checks with zero warnings and all nine focused gate controls.
 The ARM64 gate evaluator uses 176 rather than 208 stack bytes; this is static
-evidence, not a timing or Linux repair result. Supervisor **52334** continues
-broader gate/release controls and a fresh ordinary build. Preserve this
-checkout and its helpers while that process or its children remain live.
+evidence, not a timing or Linux repair result. Its
+[complete selected audit and full-gate launch](docs/handover/2026-09-30-shared-reader-draft/source207-eval-selected-validation-manifest.json)
+verify **596 gate / 596 release passes**, nine focused controls per profile,
+**40 exact ordinary comparisons**, and fresh executable/image identities.
+Supervisor **52334 has exited**. Complete macOS Rust supervisor **54295** and
+terminal supervisor **54296** are running. Linux
+[Rust 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045) and
+[frozen 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711)
+run on exact published `092fef67`. Preserve the checkout and helpers while
+those processes or their children remain live.
 The original census assertions and expectations are unchanged. This isolated
 candidate now occupies the task branch. Linux confirmation and full candidate
 validation remain required; source204's full passes do not certify source207.
 
 ## Separate unfinished bytecode draft
 
-**Source206** in `target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx`
-adds only tests/fixtures to unchanged runtime204. Its
+The current **source208** in
+`target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx` carries evaluator207
+and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
+and [audited controls](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-results-manifest.json)
+retain twelve ordinary negative constructor cases. Strict checks pass; six gate
+controls yield **two passes / four failures**. Constructor validation and shared
+constants pass; both layout and both live-code mutation controls still fail.
+The result archive also preserves the wrapper's later log-print filename error.
+Supervisor **53789 has exited**. No bytecode repair is applied to the task branch.
+
+The preserved **source206** baseline adds only tests/fixtures to runtime204. Its
 [portable patch and negative controls](docs/handover/2026-09-30-shared-reader-draft/source206-bytecode-negative-controls-manifest.json)
 replay **416 inputs** from main `21d20f0e`. Fresh gate build succeeds: **one pass /
 four failures**. Both layout controls and both code-string mutation controls fail;

@@ -2,12 +2,12 @@
 
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
-This is an isolated negative baseline, **not an applied repair**. Source205 adds
+This is a separate unfinished draft, **not an applied task-branch repair**. Source205 adds
 only two tests in `src/lisp/native_comp/runtime/record_layout_tests.rs`, in
 `target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx`. Its runtime is
 identical to published source204 `d186d40b`. No associated process remains live.
 
-The current isolated checkout is **source206**, which retains those two tests
+The preserved **source206** retains those two tests
 and adds three permanent GNU differential controls with the unchanged ordinary
 programs and expected results below. Its
 [portable patch and audited gate](handover/2026-09-30-shared-reader-draft/source206-bytecode-negative-controls-manifest.json)
@@ -17,6 +17,35 @@ assertions and both mutation contracts fail. Constant sharing, cloning, GC and
 rejected closure `aset` pass. Runtime204 is unchanged; only tests and six fixture
 files differ. Supervisor **51384 has exited**. These are preserved failures,
 not expected-failure annotations or a repair.
+
+The current isolated checkout is **source208**. Its
+[418-input patch and constructor negative baseline](handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
+carry evaluator207 and add GNU `alloc.c:Fmake_byte_code`'s four field checks
+before allocation: fixnum/cons/nil arguments, an unibyte code string, a normal
+constants vector and nonnegative fixnum stack depth. The original slots still
+use detached host storage. No layout or live-code mutation repair is included.
+
+The same ordinary input makes GNU reject twelve malformed constructors that
+source204 accepts. Both editors exit zero with empty stderr; executable/image
+and source identities are unchanged. Valid controls preserve seven descriptors,
+including negative fixnums and dotted/cyclic conses; code/constant identity;
+and closure lengths 4, 5, 6, 7 and 9. GNU accepts these descriptors and extra
+slots at construction without validating their later execution. Its ASCII
+`string-make-multibyte` case is also accepted. The new control preserves all
+those distinctions rather than imposing stricter checks than GNU.
+
+Source208's [closed control audit](handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-results-manifest.json)
+verifies zero-warning strict checks, a fresh gate executable, all 418 unchanged
+source inputs and **two passes / four failures** across all six controls.
+Constructor validation and constant-sharing/cloning/GC pass. Both original
+layout and both mutation assertions fail with their original actual/expected
+values. Raw libtest exits 101. After saving those complete results, the wrapper
+tries to print an obsolete baseline filename and exits 1 with FileNotFoundError;
+that failure and the executed helper are preserved. The corrected
+`test-bytecode-controls-next.py` helper is separately retained for future runs.
+No test was rerun or converted to an expected failure to repair reporting.
+Supervisor **53789 has exited**; this separate checkout is available for the
+next representation change after verifying its current manifest.
 
 The [portable evidence](handover/2026-09-30-shared-reader-draft/source205-bytecode-negative-baseline-manifest.json)
 contains the complete patch from main `21d20f0e`, all 410 compiled/test input
@@ -57,6 +86,7 @@ interpreted closures already have inline PVEC_CLOSURE storage. A shared closure
 layout must cover predicates, interpreter/VM/native access, printing, cloning,
 GC and image restoration. Mutable unibyte strings currently use Rust text
 storage, which also needs scrutiny before adopting a direct byte cursor.
-No migration or mutation repair has been implemented. Linux census diagnosis,
+Only constructor field validation is repaired in the separate draft; no layout
+migration or live mutation repair has been implemented. Linux evaluator validation,
 symbol authority, physical accounting, final validation/audit and the locked
 performance criterion all remain open.

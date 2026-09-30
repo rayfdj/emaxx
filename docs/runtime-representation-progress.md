@@ -13,12 +13,15 @@ Rust fails two census assertions after 2,232 passes; their exact retained-artifa
 diagnosis reproduces both failures. Its first debugger run hits an observer
 limit; the revised run completes and traces a stale closure pointer in unused
 evaluator error-path stack space. Source207 removes value reconstruction and
-outlines that error construction. It passes strict checks and nine focused
-macOS gate controls; broader checks and Linux confirmation remain pending.
+outlines that error construction. Published as `092fef67`, it passes strict
+checks, 596 gate / 596 release controls and 40 ordinary GNU comparisons. Full
+macOS Rust/terminal and Linux Rust/frozen validation are running.
 Complete terminal validation passes all
 226 scenarios / 686 comparisons; Linux frozen matches 519 files / 7,928 outcomes.
 The separate [bytecode baseline](runtime-representation-bytecode-draft.md) also
 exposes detached closure storage and stale execution after code-string mutation.
+Its separate source208 adds constructor validation: two controls pass while both
+layout and both live-code mutation controls remain failed.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 

@@ -179,7 +179,27 @@ from 4,176 to 3,280 bytes. This static result is not elapsed timing or measured
 instructions per operation. Source204 also passed the local census controls;
 the new local passes do not establish Linux repair. All 410 candidate hashes
 now match the task branch. No test, expected result, collector rule or image
-input changes. Broader validation and Linux confirmation remain required.
+input changes.
+
+Source207 is published as **`092fef676e7667332349b12fd9b63539dd39072b`**. Its
+[complete selected audit and launch receipts](handover/2026-09-30-shared-reader-draft/source207-eval-selected-validation-manifest.json)
+verify **596 gate / 596 release passes**, nine focused controls in each profile,
+40 ordinary exact GNU comparisons and fresh executable/image identities. The
+added ordinary control covers twelve malformed argument-tail types, four invalid
+callee types, original error-datum identity, error ordering and cyclic argument
+identity across forced GC. Existing ordinary fixtures and expected results are
+unchanged. The purecopy callback contract remains in the full terminal suite;
+its earlier invalid-mode batch result remains failed. All 410 source inputs
+match the isolated checkout and task branch. Supervisor 52334 has exited.
+
+Complete macOS Rust supervisor **54295** and complete terminal supervisor
+**54296** are running in the frozen `eval-frames/emaxx` checkout. Preserve their
+source, helpers and artifacts while either process or children remain live.
+[Linux Rust 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045)
+and [Linux frozen 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711)
+are running on exact `092fef67`. Source204's complete passes do not certify this
+evaluator change; Linux confirmation and complete candidate validation remain
+required before promoting PR #79.
 
 [Complete Linux frozen compatibility](handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json)
 now passes all 519 files / 7,928 matching outcomes / 1,038 successful processes
