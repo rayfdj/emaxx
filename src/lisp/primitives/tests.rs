@@ -12426,8 +12426,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
 }
 
 #[cfg(unix)]
-#[test]
-fn process_tls_state_survives_collection_before_and_after_async_handshake() {
+fn assert_local_tls_fixture(fixture: &str, expected: &str, label: &str) {
     struct Server(std::process::Child);
     impl Drop for Server {
         fn drop(&mut self) {
@@ -12456,15 +12455,27 @@ fn process_tls_state_survives_collection_before_and_after_async_handshake() {
             .expect("start the same local GnuTLS server for both interpreters"),
     );
     wait_for_local_test_server(&mut server.0, port, "TLS collection control");
-    // process.h keeps pending boot parameters in the marked Lisp slots.
-    // Our retained peer report must also survive while its process owns it.
-    // No Lisp variable holds the report across the explicit collections.
-    let program = include_str!("../../../tests/fixtures/process-tls-gc.el")
-        .replace("@PORT@", &port.to_string());
-    assert_oracle_contract_matches_interpreter(
-        &program,
-        include_str!("../../../tests/fixtures/process-tls-gc.expected").trim(),
+    let program = fixture.replace("@PORT@", &port.to_string());
+    assert_oracle_contract_matches_interpreter(&program, expected.trim(), label);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_tls_state_survives_collection_before_and_after_async_handshake() {
+    assert_local_tls_fixture(
+        include_str!("../../../tests/fixtures/process-tls-gc.el"),
+        include_str!("../../../tests/fixtures/process-tls-gc.expected"),
         "process-owned TLS state across collection",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_tls_peer_reports_are_independent_values_from_the_live_session() {
+    assert_local_tls_fixture(
+        include_str!("../../../tests/fixtures/process-tls-report.el"),
+        include_str!("../../../tests/fixtures/process-tls-report.expected"),
+        "independent TLS reports across caller mutation and collection",
     );
 }
 

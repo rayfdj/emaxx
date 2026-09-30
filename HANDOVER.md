@@ -22,6 +22,18 @@ reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
 **Current task-branch continuation:** read the
+[independent TLS report checkpoint](docs/runtime-representation-tls-report-checkpoint.md).
+Source172 removes the process-owned report cache and returns fresh mutable
+Lisp strings from the live TLS session. Strict checks, **414 debug and 414
+release controls**, and two exact ordinary GNU comparisons pass. All 345
+compiled/test inputs match the isolated checkout. Its
+[portable receipts](docs/handover/2026-09-30-tls-peer-reports/manifest.json)
+preserve source171's failed string-mutation probe and both helper invocation
+failures. Complete source172 validation remains required. Source173's
+call-metadata repair is still isolated under validation; input decoding,
+post-deinit TLS behavior and the full goal remain unfinished.
+
+**Previous task-branch candidate:** read the
 [event and TLS root checkpoint](docs/runtime-representation-event-roots-checkpoint.md).
 Source170 extends source166 with rooted notification batches, traced/cloned
 TLS Lisp state and live special-event lookup. All strict checks, **482 debug

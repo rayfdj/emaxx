@@ -257,7 +257,6 @@ impl Interpreter {
             let was_active = process.gnutls.active;
             if was_active {
                 process.gnutls.session = None;
-                process.gnutls.peer_status = Value::Nil;
                 process.gnutls.active = false;
                 if process.gnutls.initstage >= GNUTLS_STAGE_INIT {
                     process.gnutls.initstage = GNUTLS_STAGE_INIT - 1;
@@ -272,7 +271,8 @@ impl Interpreter {
         record_id: u64,
         session: ProcessGnuTlsSession,
         initstage: i64,
-        peer_status: Value,
+        peer_verification: u32,
+        peer_is_x509: bool,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
@@ -281,7 +281,8 @@ impl Interpreter {
         process.gnutls.session = Some(session);
         process.gnutls.initstage = initstage;
         process.gnutls.active = true;
-        process.gnutls.peer_status = peer_status;
+        process.gnutls.peer_verification = peer_verification;
+        process.gnutls.peer_is_x509 = peer_is_x509;
         Ok(())
     }
 
@@ -305,21 +306,33 @@ impl Interpreter {
     pub(crate) fn finish_process_gnutls_handshake(
         &mut self,
         record_id: u64,
-        peer_status: Value,
+        peer_verification: u32,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.initstage = 9;
-        process.gnutls.peer_status = Self::stored_value(peer_status);
+        process.gnutls.peer_verification = peer_verification;
         process.gnutls.boot_parameters = Value::Nil;
         Ok(())
     }
 
-    pub(crate) fn process_gnutls_peer_status(&self, record_id: u64) -> Option<Value> {
-        self.find_process_state(record_id)
-            .map(|process| process.gnutls.peer_status)
+    /// The caller may query the session without invoking Lisp or yielding.
+    /// It remains owned by this process throughout that synchronous query.
+    pub(crate) fn process_gnutls_peer_state(
+        &self,
+        record_id: u64,
+    ) -> Option<(*mut std::ffi::c_void, u32, bool)> {
+        let tls = &self.find_process_state(record_id)?.gnutls;
+        if tls.initstage != 9 {
+            return None;
+        }
+        Some((
+            tls.session.as_ref()?.raw_state(),
+            tls.peer_verification,
+            tls.peer_is_x509,
+        ))
     }
 
     pub(crate) fn process_gnutls_bye(
@@ -1163,7 +1176,6 @@ impl Interpreter {
         if closed {
             process.gnutls.session = None;
             process.gnutls.active = false;
-            process.gnutls.peer_status = Value::Nil;
             process.status = ProcessStatus::Closed;
             process.network = None;
             process.serial = None;
@@ -1673,7 +1685,6 @@ impl Interpreter {
         process.traffic_stopped = false;
         process.gnutls.session = None;
         process.gnutls.active = false;
-        process.gnutls.peer_status = Value::Nil;
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }

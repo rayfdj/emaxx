@@ -2201,7 +2201,8 @@ impl Clone for ProcessGnuTlsState {
             initstage: self.initstage,
             active: self.active,
             session: None,
-            peer_status: self.peer_status,
+            peer_verification: self.peer_verification,
+            peer_is_x509: self.peer_is_x509,
         }
     }
 }
@@ -2211,7 +2212,8 @@ struct ProcessGnuTlsState {
     initstage: i64,
     active: bool,
     session: Option<ProcessGnuTlsSession>,
-    peer_status: Value,
+    peer_verification: u32,
+    peer_is_x509: bool,
 }
 
 impl Default for ProcessGnuTlsState {
@@ -2221,7 +2223,8 @@ impl Default for ProcessGnuTlsState {
             initstage: 0,
             active: false,
             session: None,
-            peer_status: Value::Nil,
+            peer_verification: 0,
+            peer_is_x509: false,
         }
     }
 }
@@ -4286,7 +4289,6 @@ impl Interpreter {
                 &process.plist,
                 &process.contact,
                 &process.gnutls.boot_parameters,
-                &process.gnutls.peer_status,
             ] {
                 mark(value);
             }
@@ -4711,7 +4713,6 @@ impl Interpreter {
                 process.plist = c.copy(&process.plist.clone());
                 process.contact = c.copy(&process.contact.clone());
                 process.gnutls.boot_parameters = c.copy(&process.gnutls.boot_parameters);
-                process.gnutls.peer_status = c.copy(&process.gnutls.peer_status);
             }
         }
 

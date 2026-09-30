@@ -1318,29 +1318,38 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(serial) = x509_serial_number(api, certificate.pointer) {
                 details.extend([
                     Value::symbol(":serial-number"),
-                    Value::String(serial.into()),
+                    string_like_value(serial, Vec::new()),
                 ]);
             }
             if let Some(issuer) =
                 x509_distinguished_name(api.x509_crt_get_issuer_dn, certificate.pointer)
             {
-                details.extend([Value::symbol(":issuer"), Value::String(issuer.into())]);
+                details.extend([
+                    Value::symbol(":issuer"),
+                    string_like_value(issuer, Vec::new()),
+                ]);
             }
             if let Some(valid_from) =
                 x509_date(api.x509_crt_get_activation_time, certificate.pointer)
             {
                 details.extend([
                     Value::symbol(":valid-from"),
-                    Value::String(valid_from.into()),
+                    string_like_value(valid_from, Vec::new()),
                 ]);
             }
             if let Some(valid_to) = x509_date(api.x509_crt_get_expiration_time, certificate.pointer)
             {
-                details.extend([Value::symbol(":valid-to"), Value::String(valid_to.into())]);
+                details.extend([
+                    Value::symbol(":valid-to"),
+                    string_like_value(valid_to, Vec::new()),
+                ]);
             }
             if let Some(subject) = x509_distinguished_name(api.x509_crt_get_dn, certificate.pointer)
             {
-                details.extend([Value::symbol(":subject"), Value::String(subject.into())]);
+                details.extend([
+                    Value::symbol(":subject"),
+                    string_like_value(subject, Vec::new()),
+                ]);
             }
             let mut public_key_bits = 0;
             // SAFETY: CERTIFICATE is live and PUBLIC_KEY_BITS is writable.
@@ -1351,7 +1360,7 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.pk_algorithm_name)(public_key)) } {
                 details.extend([
                     Value::symbol(":public-key-algorithm"),
-                    Value::String(name.into()),
+                    string_like_value(name, Vec::new()),
                 ]);
             }
             // SAFETY: PUBLIC_KEY and PUBLIC_KEY_BITS came from this certificate;
@@ -1361,7 +1370,7 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.sec_param_name)(security_parameter)) } {
                 details.extend([
                     Value::symbol(":certificate-security-level"),
-                    Value::String(name.into()),
+                    string_like_value(name, Vec::new()),
                 ]);
             }
             // SAFETY: CERTIFICATE is live and the name pointer is static.
@@ -1369,11 +1378,11 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if let Some(name) = unsafe { c_string((api.sign_algorithm_name)(signature)) } {
                 details.extend([
                     Value::symbol(":signature-algorithm"),
-                    Value::String(name.into()),
+                    string_like_value(name, Vec::new()),
                 ]);
             }
             if let Some(pem) = x509_pem(api, certificate.pointer) {
-                details.extend([Value::symbol(":pem"), Value::String(pem.into())]);
+                details.extend([Value::symbol(":pem"), string_like_value(pem, Vec::new())]);
             }
             Some(Value::list(details))
         })
@@ -1438,18 +1447,20 @@ fn negotiated_peer_status(
         // algorithm-name functions return static strings.
         let value = unsafe { c_string(name(get(state))) };
         if let Some(value) = value {
-            result.extend([Value::symbol(key), Value::String(value.into())]);
+            // gnutls.c builds fresh mutable strings for each report. Host
+            // text would make subsequent Lisp `aset' silently ineffective.
+            result.extend([Value::symbol(key), string_like_value(value, Vec::new())]);
         }
     }
     Value::list(result)
 }
 
 enum PeerVerification {
-    Ready(Value),
+    Ready(c_uint),
     GnuTlsError(c_int),
 }
 
-fn completed_peer_status(
+fn completed_peer_verification(
     api: &GnuTlsApi,
     state: *mut c_void,
     is_x509: bool,
@@ -1482,12 +1493,7 @@ fn completed_peer_status(
             )));
         }
     }
-    Ok(PeerVerification::Ready(negotiated_peer_status(
-        api,
-        state,
-        verification,
-        is_x509,
-    )))
+    Ok(PeerVerification::Ready(verification))
 }
 
 #[cfg(unix)]
@@ -1717,19 +1723,26 @@ fn gnutls_boot(
         false,
     );
     let result = session.handshake(complete)?;
-    let peer_status = if result == 0 {
-        match completed_peer_status(&api, session.raw_state(), is_x509, &hostname, &verify_error)? {
-            PeerVerification::Ready(status) => status,
+    let peer_verification = if result == 0 {
+        match completed_peer_verification(
+            &api,
+            session.raw_state(),
+            is_x509,
+            &hostname,
+            &verify_error,
+        )? {
+            PeerVerification::Ready(verification) => verification,
             PeerVerification::GnuTlsError(error) => return Ok(gnutls_result(error)),
         }
     } else {
-        Value::Nil
+        0
     };
     interp.install_process_gnutls(
         process_id,
         session,
         if result == 0 { 9 } else { 8 },
-        peer_status,
+        peer_verification,
+        is_x509,
     )?;
     Ok(gnutls_result(result))
 }
@@ -1806,19 +1819,19 @@ pub(crate) fn progress_async_gnutls(
                     )
                 })?;
             let verify_error = contact_plist_get(&parameter_list, ":verify-error");
-            let status = match completed_peer_status(
+            let verification = match completed_peer_verification(
                 &library.api,
                 state,
                 is_x509,
                 &hostname,
                 &verify_error,
             )? {
-                PeerVerification::Ready(status) => status,
+                PeerVerification::Ready(verification) => verification,
                 PeerVerification::GnuTlsError(error) => {
                     return Ok(AsyncGnuTlsProgress::Failed(gnutls_result(error)));
                 }
             };
-            interp.finish_process_gnutls_handshake(process_id, status)?;
+            interp.finish_process_gnutls_handshake(process_id, verification)?;
             Ok(AsyncGnuTlsProgress::Ready)
         }
         -28 | -52 => Ok(AsyncGnuTlsProgress::Pending),
@@ -2035,9 +2048,21 @@ define_dispatch!(
             "gnutls-peer-status" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
-                    .process_gnutls_peer_status(process_id)
-                    .unwrap_or(Value::Nil))
+                let Some((state, verification, is_x509)) =
+                    interp.process_gnutls_peer_state(process_id)
+                else {
+                    return Ok(Value::Nil);
+                };
+                // gnutls.c:Fgnutls_peer_status constructs a new Lisp report
+                // from the session on each call. No report is a process root,
+                // and a caller's mutation cannot change a later query.
+                let library = gnutls_library()?;
+                Ok(negotiated_peer_status(
+                    &library.api,
+                    state,
+                    verification,
+                    is_x509,
+                ))
             }
             "gnutls-peer-status-warning-describe" => {
                 need_args(name, args, 1)?;
