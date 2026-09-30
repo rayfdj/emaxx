@@ -20,10 +20,66 @@ import serial_grouped_gate
 
 
 EXPECTED_BINARY = '502ef50058a36ef75c8de7a2188a74469198ffc7452c68570eb02a94fa58a5a7'
+FULL_GATE_BINARY = '89058fe557e1d3138199c8c6d905c9ca502b03af38b218a6485c723254d19a65'
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def retained_full_gate(directory, revision, selector):
+    """Read a completed full gate without losing its original artifact identity."""
+    original = json.loads((directory / 'summary.json').read_text())
+    retained = directory / 'retained-inputs'
+    manifest = json.loads((retained / 'manifest.json').read_text())
+    if original['scope'] != 'full' or original['git'] != {'head': revision, 'dirty': False}:
+        raise RuntimeError('full gate source does not match the requested clean revision')
+    if original['status'] != 'failed' or manifest['gate_status'] != original['status']:
+        raise RuntimeError('expected the original failed full gate')
+    if manifest['status'] != 'retained' or manifest['gate_summary_sha256'] != sha(directory / 'summary.json'):
+        raise RuntimeError('retained manifest does not identify the original gate summary')
+    for entry in manifest['files']:
+        relative = Path(entry['artifact'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise RuntimeError('retained artifact path leaves its directory')
+        artifact = retained / relative
+        if artifact.stat().st_size != entry['bytes'] or sha(artifact) != entry['sha256']:
+            raise RuntimeError('retained full-gate artifact hash or size differs')
+    binary = next(entry for entry in manifest['files'] if entry['artifact'] == 'libtest')
+    if binary['sha256'] != FULL_GATE_BINARY or original['test_binary']['sha256'] != FULL_GATE_BINARY:
+        raise RuntimeError('full-gate executable does not match the inspected ABI')
+    if binary['original'] != original['test_binary']['path']:
+        raise RuntimeError('retained executable path differs from its gate')
+    inventory = serial_grouped_gate.gate.parse_inventory((directory / 'inventory.txt').read_text())
+    digest = hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest()
+    if digest != original['inventory']['sha256']:
+        raise RuntimeError('full-gate test inventory differs')
+    names = [name for name in inventory if selector in name]
+    if names != ['lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots']:
+        raise RuntimeError('this inspected full-gate diagnosis requires the original reclamation test')
+    environment = serial_grouped_gate.gate.gate_environment(True)
+    images = []
+    for entry in manifest['files']:
+        if entry['artifact'] == 'libtest':
+            continue
+        source = Path(entry['original'])
+        expected = Path(environment['EMAXX_FIXTURE_IMAGE_DIR']) / source.name
+        if source.resolve() != expected.resolve():
+            raise RuntimeError('retained image has an unexpected original fixture path')
+        images.append({'artifact': entry['artifact'], 'sha256': entry['sha256']})
+    if not images:
+        raise RuntimeError('full-gate diagnosis requires its retained fixture image')
+    return {
+        **original,
+        'test_binary': {**original['test_binary'], 'artifact': 'libtest'},
+        'expected_tests': names,
+        'fixture_images': images,
+        'environment': {
+            **original['environment'],
+            'EMAXX_IMAGE_TEMPLATE': environment['EMAXX_IMAGE_TEMPLATE'],
+            'EMAXX_FIXTURE_IMAGE_DIR': environment['EMAXX_FIXTURE_IMAGE_DIR'],
+        },
+    }, retained
 
 
 def main():
@@ -48,13 +104,19 @@ def main():
     try:
         subprocess.run(['gh', 'run', 'download', args.artifact_run, '--repo', 'rayfdj/emaxx',
                         '--dir', str(output / 'original')], check=True)
-        summaries = list((output / 'original').rglob('rust-replay/summary.json'))
+        summaries = [*list((output / 'original').rglob('rust-replay/summary.json')),
+                     *list((output / 'original').rglob('rust/summary.json'))]
         if len(summaries) != 1:
-            raise RuntimeError('expected one original Rust replay summary')
-        original = json.loads(summaries[0].read_text())
-        original_dir = summaries[0].parent
+            raise RuntimeError('expected one original Rust replay or full-gate summary')
+        if summaries[0].parent.name == 'rust':
+            original, original_dir = retained_full_gate(summaries[0].parent, args.revision, args.filter)
+            expected_binary = FULL_GATE_BINARY
+        else:
+            original = json.loads(summaries[0].read_text())
+            original_dir = summaries[0].parent
+            expected_binary = EXPECTED_BINARY
         source_binary = original_dir / original['test_binary']['artifact']
-        if sha(source_binary) != EXPECTED_BINARY or original['test_binary']['sha256'] != EXPECTED_BINARY:
+        if sha(source_binary) != expected_binary or original['test_binary']['sha256'] != expected_binary:
             raise RuntimeError('retained executable does not match the inspected ABI')
         # Recreate the original execution path, not a renamed test executable.
         binary = Path(original['test_binary']['path'])
@@ -118,7 +180,7 @@ def main():
         record['debugger_environment_override'] = overrides
         record['debugger'] = execute(command, environment, output / 'debugger.log')
         record['source_unchanged'] = compiled_inputs(root) == inputs
-        record['binary_unchanged'] = sha(binary) == EXPECTED_BINARY
+        record['binary_unchanged'] = sha(binary) == expected_binary
         traces = [json.loads(line.removeprefix('EXACT_ROOT '))
                   for line in (output / 'debugger.log').read_text(errors='replace').splitlines()
                   if line.startswith('EXACT_ROOT ')]

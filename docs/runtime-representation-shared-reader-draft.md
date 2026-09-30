@@ -6,7 +6,8 @@ merge of [PR #78](https://github.com/rayfdj/emaxx/pull/78). Production remains
 the [fully validated source174 checkpoint](runtime-representation-call-validation-complete.md).
 The preceding source196 is published as `ece02f9522d4e0d6d7a6a0cf6648dd109885780b` in
 [draft PR #79](https://github.com/rayfdj/emaxx/pull/79). Source198 now occupies
-the task worktree with selected validation complete, ready for publication.
+the task worktree and is [published as `7e45db47438a39e97658bddaceba903e0e41c186`](handover/2026-09-30-shared-reader-draft/source198-publication-manifest.json)
+in the same draft PR, with selected validation complete.
 The source196 complete macOS Rust gate fails with 2,221 passes and one keyboard-input
 failure. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36741202335)
 also fails the same fixture after 2,229 passes. Its [audited receipts](handover/2026-09-30-shared-reader-draft/source196-linux-rust-failure-manifest.json)
@@ -16,7 +17,11 @@ Source196's [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/ru
 now matches 519 files and 7,928 outcomes, with all 1,038 processes successful.
 Its [audited receipts](handover/2026-09-30-shared-reader-draft/source196-linux-frozen-manifest.json)
 retain 7,670 passes, 47 expected failures and 211 skips for each editor.
-Full source196 terminal validation is still running. The
+Full source196 terminal validation now passes all **226 scenarios / 686
+comparisons** (658 screens and 28 filesystem checks). The
+[closed terminal receipts](handover/2026-09-30-shared-reader-draft/source196-complete-terminal-manifest.json)
+verify every checkpoint, artifact hash and all 401 source inputs. All source196
+supervisors have exited. The
 [closed failure receipts](handover/2026-09-30-shared-reader-draft/source196-macos-gate-failure-manifest.json)
 verify every executed test name/verdict, the same-binary failure replay and all
 ten original contracts matching in ordinary GNU/Emaxx batch execution. Four
@@ -152,9 +157,41 @@ records full queue 22463 and Rust supervisor 22464. Complete Rust starts after
 the audited selected Rust/ordinary prerequisites. The queue separately waits
 for source196's actual terminal process to exit, runs source198's 17 selected
 terminal scenarios, audits their raw checkpoints, then starts all 226 scenarios.
-Both checkouts remain frozen while their processes run. Source198 needs its
-own complete Linux validation after publication; source196's frozen pass does
-not certify the macro saved-state change.
+The [selected terminal receipts](handover/2026-09-30-shared-reader-draft/source198-selected-terminal-manifest.json)
+now verify all 17 scenarios and 34 screen comparisons. Supervisor 23578 has
+exited and the queue has started full terminal supervisor 24260. Keep source198
+and its artifacts frozen while its processes run. Its own
+[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36748039991) and
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36748047488) are running
+against exact published `7e45db47`; source196's frozen pass does not certify the
+macro saved-state change.
+
+Source198's [complete macOS Rust receipts](handover/2026-09-30-shared-reader-draft/source198-macos-complete-rust-manifest.json)
+now verify 2,952 library passes, two existing terminal ignores, 60 binary passes
+and 39 integration passes: **3,051 passes**, including native artifact identity.
+Every raw library name/verdict and Cargo result is checked; all 405 source
+inputs match published `7e45db47`. Its
+[Linux Rust run](https://github.com/rayfdj/emaxx/actions/runs/36748039991) fails
+the unchanged suspended-bytecode reclamation assertion after 2,231 passes.
+The [audited failure](handover/2026-09-30-shared-reader-draft/source198-linux-rust-failure-manifest.json)
+shows GNU passes, while Emaxx retains the second key after the thread finishes:
+`((1 t 0) (1 t 1))` instead of `((1 t 0) (1 t 0))`. Four subsequent groups and
+both Cargo stages do not run. The nested failed-child summary also causes the
+strict grouped parser to reject the log; this is a real assertion failure,
+not only a reporting error.
+
+The [standalone Linux replay](https://github.com/rayfdj/emaxx/actions/runs/36751309990)
+passes with the exact same executable hash
+`89058fe557e1d3138199c8c6d905c9ca502b03af38b218a6485c723254d19a65`, but creates
+a different startup image. The full run retains image `93471768...`; the replay
+creates `dea01c00...`. That pass does not clear the original failure or establish
+its cause. [Instrumented root tracing](https://github.com/rayfdj/emaxx/actions/runs/36751314826)
+is still running. The [replay and debugger preparation receipts](handover/2026-09-30-shared-reader-draft/source198-reclamation-replay-and-debugger-manifest.json)
+retain the raw standalone pass, distinct image hashes, inspected disassembly
+and five rejected malformed-input controls. The existing exact debugger helper now accepts the full gate's
+retained artifacts after verifying their hashes, source and inventory, with an
+explicit guard for this inspected executable's ABI. Original assertions and
+timeouts stay unchanged. The candidate remains in draft.
 
 The raw evidence establishes the following selected results, not complete
 new-source validation:
@@ -178,9 +215,9 @@ new-source validation:
 | 193 | Removes duplicate macro state and adds the live-array, nesting and image-startup controls. Compilation fails because the pending `Result<(), LispError>` does not implement the scoped root trait. No runtime tests run. |
 | 194 | Roots a `Result<Value, LispError>` instead. Test compilation fails because the new image assertions expected Option from a Result-returning API. No runtime tests run. |
 | 195 | Corrects the new assertions without changing their expected behavior or existing coverage. Strict checks, 535 gate tests, 535 release tests, all 25 selected ordinary GNU comparisons and 17 terminal scenarios / 34 screen comparisons pass. An additional unread-wrapper comparison fails, and complete runs are deferred for its correction. |
-| 196 | Reuses the existing unread-event unwrapping in the common pending reader and adds the ordinary GNU fixture plus a Rust control with a terminal poller installed. Its complete patch replays all 401 inputs. The first ordinary run fails using a stale source195 executable. A separately recorded clean rebuild passes strict checks, 536 gate / 536 release controls, all 26 ordinary GNU comparisons and 17 terminal scenarios / 34 screen comparisons. The complete macOS Rust run fails with 2,221 passes and one keyboard-input fixture failure; four later groups and both Cargo stages do not run. Full terminal and Linux validation remain running. |
+| 196 | Reuses the existing unread-event unwrapping in the common pending reader and adds the ordinary GNU fixture plus a Rust control with a terminal poller installed. Its complete patch replays all 401 inputs. The first ordinary run fails using a stale source195 executable. A separately recorded clean rebuild passes strict checks, 536 gate / 536 release controls, all 26 ordinary GNU comparisons and 17 terminal scenarios / 34 screen comparisons. The complete macOS Rust run fails with 2,221 passes and one keyboard-input fixture failure; four later groups and both Cargo stages do not run. Full terminal validation and Linux frozen comparison pass; Linux Rust fails the same fixture. |
 | 197 | Removes the macro saved-state host vector and global root registration. Strict checks pass. The first gate has 30 passes and two missing-fixture-path failures; restoring the sibling GNU path makes the identical 32-test gate pass. All 32 release controls and eight ordinary comparisons pass. Complete validation remains required. |
-| 198 | Preserves source197 runtime and changes the keyboard-input fixture to actual batch startup, retaining every assertion. Adds a GNU-verified control for live bound/unbound mouse-down input. Its 405-input patch replays exactly; strict checks, three focused controls in both profiles, all 542 gate / 542 release tests and 28 ordinary GNU comparisons pass. Complete Rust is running and terminal validation is queued. |
+| 198 | Preserves source197 runtime and changes the keyboard-input fixture to actual batch startup, retaining every assertion. Adds a GNU-verified control for live bound/unbound mouse-down input. Its 405-input patch replays exactly; strict checks, three focused controls in both profiles, all 542 gate / 542 release tests and 28 ordinary GNU comparisons pass. Complete macOS Rust passes 3,051 tests; Linux Rust fails the unchanged suspended-bytecode reclamation assertion after 2,231 passes. Full terminal and Linux frozen validation remain running. |
 
 Source196 passes all strict checks and its eight focused gate and release tests. The
 [focused receipts](handover/2026-09-30-shared-reader-draft/source196-focused-manifest.json)
@@ -350,7 +387,7 @@ selected supervisor 8612 and selected terminal supervisor 8613 have finished
 successfully. Complete-run queue 8614 launched macOS Rust supervisor 12611 and
 terminal supervisor 12612 after those passes. Rust supervisor 12611 has exited
 after the failed gate recorded above; terminal supervisor 12612 and queue 8614
-remain live. The full terminal inventory is 226 scenarios. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36741202335)
+have now exited after all 226 terminal scenarios passed. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36741202335)
 has finished with the same fixture failure, while
 [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36741207263) has passed
 on the published `ece02f95` head. Keep the isolated checkout and its
@@ -372,6 +409,18 @@ interactive callback/macro-termination behavior. GNU's actual C `noninteractive`
 flag differs from the mutable Lisp `noninteractive1` variable: the saved batch
 probe does not establish interactive bell behavior merely by rebinding Lisp
 `noninteractive` to nil. The raw XTerm terminal-control output gap also remains.
+
+The [allocation review and ordinary positive census control](handover/2026-09-30-shared-reader-draft/vector-allocation-rounding-review-manifest.json)
+find unnecessary 16-byte vector rounding even though the tagged pointer and
+payloads need only eight-byte alignment. Fifteen vector sizes and three closure
+widths already have identical GNU/Emaxx Lisp census deltas; those statistics must
+not be changed to count Rust padding. The initial proposal would double the
+bitmap words, but that is unnecessary: distinct allocations are at least 16
+bytes apart. The [isolated source200 allocator draft](runtime-representation-vector-allocation-draft.md)
+keeps the existing 40-byte bitmap and passes strict checks plus seven focused
+controls. It removes physical padding, corrects separate pseudovector census
+differences against GNU, and retains the larger free-list table in its cost
+accounting. Broader validation is running; no timing improvement is claimed.
 
 The complete goal still requires symbol/object authority, truthful physical
 allocation and collection accounting, post-deinit TLS behavior, final adversarial

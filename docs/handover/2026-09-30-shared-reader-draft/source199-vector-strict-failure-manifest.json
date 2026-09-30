@@ -1,0 +1,162 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed",
+    "verified_source_inputs": 410,
+    "check": 0,
+    "fmt": 0,
+    "clippy": 101,
+    "diff": 0,
+    "failure": "manual_div_ceil in the updated buffer-footprint test expression",
+    "runtime_tests_executed": false,
+    "qualification": "No runtime candidate pass. Fix the expression without suppressing the lint or weakening its exact physical-footprint assertion."
+  },
+  "archive": {
+    "path": "source199-vector-strict-failure.tar.gz",
+    "bytes": 81228,
+    "sha256": "3b5408fad6f2e02c3bb08e61d2fbc4bfff68bcee49c281ea54302ae1f246749b"
+  },
+  "files": [
+    {
+      "path": "audit-source199-patch.py",
+      "bytes": 2787,
+      "sha256": "70f96042ea51f46ee94ca38e63c81db3e738adf9f4f6954fc295ecd3f4a6588f"
+    },
+    {
+      "path": "build-reader199.py",
+      "bytes": 2418,
+      "sha256": "a09201614bf2ab8feddf52ddec1805b72b57702ecf6c4c1a7ddf0001da05bfe2"
+    },
+    {
+      "path": "check-reader199.py",
+      "bytes": 2024,
+      "sha256": "21156bbfa87996a436afbee7866bcee7a2f4a56d3c81398239b3dbc463472bf1"
+    },
+    {
+      "path": "freeze-vector-candidate.py",
+      "bytes": 2065,
+      "sha256": "573d051a48c0488c80b1510e607334ea9f7a881c345329f25db67b4a3b59c671"
+    },
+    {
+      "path": "queue-source199-validation.py",
+      "bytes": 2322,
+      "sha256": "a62b5fe1bf3ac147a2f57783a53465978bcfba7c47b06e9da891eba80af3c098"
+    },
+    {
+      "path": "source199-base.json",
+      "bytes": 3767,
+      "sha256": "04dd262574198f6816262f72cd7b5748a9f1e713a854f07f7c0f3492ef45e9ce"
+    },
+    {
+      "path": "source199-check-command.json",
+      "bytes": 477,
+      "sha256": "f755697d1b3bc75425bf50b97e4db34c98444608674917d7db1111be8daa1861"
+    },
+    {
+      "path": "source199-check-result.json",
+      "bytes": 83,
+      "sha256": "7eb39a78e196686cc819cf48711a1faba7126fd1203596a4db6546408d5e7f7d"
+    },
+    {
+      "path": "source199-check.log",
+      "bytes": 193,
+      "sha256": "bb146f61cb7919994569a10df5922f4fb5ce9640c1b1a4c8d4ef6159503feba6"
+    },
+    {
+      "path": "source199-clippy-command.json",
+      "bytes": 465,
+      "sha256": "739078da8f82d6ff3bf674ad9fa85415191ff07be623bda3c56dfb91959d3ef3"
+    },
+    {
+      "path": "source199-clippy-result.json",
+      "bytes": 82,
+      "sha256": "5d4c9aaa78f293dfdd5a427cb0510047f445e34550af6af342fb55467ee8a5f7"
+    },
+    {
+      "path": "source199-clippy.log",
+      "bytes": 1102,
+      "sha256": "71877297b05f8b5100399d8a05e25ede69a7976eb18010e3540291a8412b58d4"
+    },
+    {
+      "path": "source199-complete.patch",
+      "bytes": 244030,
+      "sha256": "90e296d12b80a8206d077cd80f1824e26c1cc1fff16e7e720441d633b6c3309a"
+    },
+    {
+      "path": "source199-diff-command.json",
+      "bytes": 381,
+      "sha256": "f015f67b6af694a987058a023ea8ed0417a2fd2878797b3f142c9c3937d219e4"
+    },
+    {
+      "path": "source199-diff-result.json",
+      "bytes": 90,
+      "sha256": "93f8cb5c593f1ec281d0123cf85dea5c77010ac6865aca9f7580a40d87b59c37"
+    },
+    {
+      "path": "source199-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source199-fmt-command.json",
+      "bytes": 405,
+      "sha256": "62c1015512f58610d21d6af67a52e632750f2742d2b3f4cfe08b199eaa435644"
+    },
+    {
+      "path": "source199-fmt-result.json",
+      "bytes": 82,
+      "sha256": "ffe9ab41819e5bdbc9db1070898841c231d19dc7f17a8ab7e289365d449102a2"
+    },
+    {
+      "path": "source199-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source199-manifest.json",
+      "bytes": 46477,
+      "sha256": "9fa0b64b0191e82612455658417557cb2b746a47b70dd780f83155b5fe55955a"
+    },
+    {
+      "path": "source199-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "d77294736d350be3908181257bc6535b27959cf4417179f21751a80a930dd881"
+    },
+    {
+      "path": "source199-preparation.json",
+      "bytes": 1170,
+      "sha256": "30a5bd347ffe98a0962546d3a6296311236980d492881ba7ba90dee558397c38"
+    },
+    {
+      "path": "source199-selected-supervisor.json",
+      "bytes": 203,
+      "sha256": "478368bbc54fc019e70eec4d98864fd22a9b3155f45e0d61c3e29b6eadb3a2d3"
+    },
+    {
+      "path": "source199-selected-supervisor.log",
+      "bytes": 852,
+      "sha256": "0a2e9a917996e7c52e686686c01cd6f2cc055de8abc7765e488ddfb9c7f1582e"
+    },
+    {
+      "path": "source199-selected-validation-result.json",
+      "bytes": 727,
+      "sha256": "980afe532969c121da0b43b33afd5276155481c891d58c9bc5063b477d93b9f6"
+    },
+    {
+      "path": "source199-strict-failure-audit.json",
+      "bytes": 378,
+      "sha256": "da94a02eecf37668293b5ea789b887f2a92d4171353211572322f4fd8af15565"
+    },
+    {
+      "path": "static-reader199.py",
+      "bytes": 1549,
+      "sha256": "cf301afbc0e05439d17f4c9494ee760e31b1363def837526fe9578e6a4762102"
+    },
+    {
+      "path": "test-reader199.py",
+      "bytes": 5082,
+      "sha256": "d5fbd5ba93bf7518e9c47f63f2af80993d26bde0ee1db2141f2bb229a39eed9e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

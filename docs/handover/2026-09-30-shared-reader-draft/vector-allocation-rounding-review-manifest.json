@@ -1,0 +1,91 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "review and positive ordinary census evidence; no allocation change implemented",
+    "observations": [
+      "Fifteen vector lengths and three interpreted closure widths have identical GNU/Emaxx vector-slot census deltas after explicit collection. Changing the Lisp census to count 16-byte padding would introduce a difference.",
+      "Emaxx alloc/vectors.rs rounds allocation footprints to 16 bytes. Value tags use three low bits, and VectorlikeRef::allocate statically requires every generic payload alignment to be at most the eight-byte word size.",
+      "GNU alloc.c derives its vector rounding from object/word alignment; ordinary source-matched GNU reports unrounded word counts for the probed sizes.",
+      "ClosureRef currently charges rounded storage to the GC allocation counter. Six visible slots charge 64 bytes here, while GNU allocate_vectorlike tallies 56 logical bytes."
+    ],
+    "proposed_next_change": "Test one-word vector allocation granularity, preserving header layout and existing bitmap/large-mark ownership. Verify physical footprints, free-list splitting, bitmap boundaries, survival and reclamation, native ABI and image restoration. Do not alter the already-matching Lisp census merely to account for Rust padding.",
+    "costs_to_measure": {
+      "current_bitmap_bytes_per_block": 40,
+      "current_usable_bytes_per_block": 4048,
+      "proposed_bitmap_bytes_per_block": 72,
+      "proposed_usable_bytes_per_block": 4024,
+      "current_large_mark_reservation": 16,
+      "proposed_large_mark_reservation": 8
+    },
+    "source_hashes": {
+      "/Users/nbmhqa186/projects/emaxx/src/lisp/alloc/vectors.rs": "b75d1505d59fb97ad6a1d7e82a90139452d7f3c760dbee0edad660afbcca0111",
+      "/Users/nbmhqa186/projects/emaxx/src/lisp/types.rs": "a8fba2c54e455592263533100a386c45911b26b4914ad3e6fec89f486a14b09b",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/emacs/src/alloc.c": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/emacs/src/eval.c": "0c73c3b1723cc969dc3e98bd9ed551ae64cc7e00ee4f36cd1daa0986e2781e01"
+    },
+    "qualification": "Static layout calculations and ordinary semantic control only. Physical allocation instrumentation, candidate runtime checks and performance measurements are still required. No source199 candidate exists yet."
+  },
+  "archive": {
+    "path": "vector-allocation-rounding-review.tar.gz",
+    "bytes": 2809,
+    "sha256": "62c061b215ddee4fc3171973c95f841faa89f551f9185b9e1f06e532f84e4883"
+  },
+  "files": [
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-comparison.json",
+      "bytes": 695,
+      "sha256": "14e69f1271d596c82b218ea9bb5a99087e782ffa55267743afd660dc2b3acb11"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-emaxx.command.json",
+      "bytes": 2137,
+      "sha256": "a143d5c6e8eb3c0911ef5f5a0ee1229e573e8830f11bd2f65eea4e353d0e0812"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "906044c28992cc9520f252d0ba40295b711bb3a165f6385d05a5016425c7627f"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-gnu.command.json",
+      "bytes": 2014,
+      "sha256": "e4002233358826c079d8ab6f64c8c1af492d5d9ed8fe0f886e8ccb0a56b54fa8"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-gnu.result.json",
+      "bytes": 266,
+      "sha256": "f32de46f135f7f5cee2a9f65370a293c9b830c75e084acc17bf1c3232dff0cba"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-fresh-ordinary-vector-closure-rounded-census-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "vector-allocation-rounding-review.json",
+      "bytes": 2383,
+      "sha256": "f4cbcffaa954ad8626859215eeef6148055a532e7cf034486e5155e86c5f5057"
+    },
+    {
+      "path": "vector-closure-rounded-census.el",
+      "bytes": 928,
+      "sha256": "28053095f61cce87faea99593053438fdab31fe85abc2c1c0439be95d460fb69"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -67,7 +67,10 @@ verify the clean published head and retained binary/image identities.
 matches **519 files / 7,928 outcomes**, with all **1,038 processes successful**.
 The [audited frozen receipts](docs/handover/2026-09-30-shared-reader-draft/source196-linux-frozen-manifest.json)
 retain the 47 expected failures and 211 skips separately from 7,670 passes.
-Source196's complete 226-scenario terminal run is still running.
+Source196's [complete terminal run](docs/handover/2026-09-30-shared-reader-draft/source196-complete-terminal-manifest.json)
+now passes all **226 scenarios / 686 comparisons** (658 screens and 28 filesystem
+checks), with every raw checkpoint and all 401 source inputs audited. Its full
+supervisors have exited; the failed Rust results remain failed.
 Complete source195 runs were deferred before launch to use this candidate.
 Its complete patch replays all 401 recorded inputs. The candidate is applied in the local
 task worktree and is published on `runtime-char-tables` for complete validation.
@@ -88,13 +91,39 @@ pass, including all ten unchanged keyboard-input assertions, live binding
 mutation and macro reclamation. All **542 gate / 542 release controls and 28
 ordinary GNU comparisons** now pass, with [raw inventories and artifact identities audited](docs/handover/2026-09-30-shared-reader-draft/source198-selected-validation-manifest.json).
 Supervisor 20015 has exited. The exact 405 inputs are now applied to the task
-worktree for publication on `runtime-char-tables`. Its
+worktree and [published as `7e45db47`](docs/handover/2026-09-30-shared-reader-draft/source198-publication-manifest.json)
+on `runtime-char-tables` in draft PR #79. Its
 [complete validation launch](docs/handover/2026-09-30-shared-reader-draft/source198-complete-validation-start-manifest.json)
-records queue 22463 and full Rust supervisor 22464. The queue starts selected
-terminal validation after source196's existing terminal process exits, audits
-that result, then starts all 226 scenarios for source198. Keep both isolated
-checkouts and their artifacts frozen while their processes are active.
-Complete Linux validation of the newer published candidate remains required.
+records queue 22463 and full Rust supervisor 22464. The
+[selected terminal run](docs/handover/2026-09-30-shared-reader-draft/source198-selected-terminal-manifest.json)
+passes all **17 scenarios / 34 screen comparisons**, with raw checkpoints and
+input hashes audited. Full terminal supervisor 24260 is now running all 226
+scenarios. Keep the source198 checkout and artifacts frozen while its processes
+are active. The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source198-macos-complete-rust-manifest.json)
+now verifies **3,051 passes**, two existing terminal ignores and native artifact
+identity, with all 405 inputs matching published `7e45db47`.
+[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36748039991) fails with
+**2,231 passes / one suspended-bytecode reclamation failure**; its
+[raw audit](docs/handover/2026-09-30-shared-reader-draft/source198-linux-rust-failure-manifest.json)
+retains the failed child and four unexecuted groups plus both Cargo stages.
+A [standalone replay](https://github.com/rayfdj/emaxx/actions/runs/36751309990)
+passes with the same executable hash but a newly created, different startup
+image. It does not clear the full failure. A
+[separate root trace](https://github.com/rayfdj/emaxx/actions/runs/36751314826)
+is running; the exact debugger helper now supports restoring this failed
+full run's retained executable and image. [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36748047488)
+is still running. Keep PR #79 in draft.
+The [vector allocation review](docs/handover/2026-09-30-shared-reader-draft/vector-allocation-rounding-review-manifest.json)
+identifies excess 16-byte rounding for eight-byte-aligned payloads. Its ordinary
+GNU census comparison already matches, so changing Lisp statistics to include
+that padding would introduce a difference. The [isolated source200 allocator draft](docs/runtime-representation-vector-allocation-draft.md)
+now removes that padding while preserving the original 40-byte bitmap by indexing
+the minimum object footprint. Strict checks and seven focused gate controls pass;
+broader gate/release and 36 ordinary comparisons are running under supervisor
+29761. It fixes a separate GNU pseudovector census difference in the focused
+controls and exposes the larger free-list head table as a remaining cost.
+The source199 baseline assertions, failed ordinary comparison and strict Clippy
+failure remain preserved. The allocator draft is not applied to the task branch.
 Broader reader contracts, symbol authority, allocation accounting, final audit,
 complete final-source validation and locked performance parity remain open.
 **The full goal remains active; this checkpoint is not completion.**

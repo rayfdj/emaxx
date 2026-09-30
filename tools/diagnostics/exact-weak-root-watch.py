@@ -1,6 +1,9 @@
-"""GDB-only hardware watchpoints for the retained source166 Linux executable.
+"""GDB-only hardware watchpoints for the inspected source166/source198 binaries.
 
-The driver checks its exact SHA-256 before using these inspected ABI offsets.
+The driver checks an exact SHA-256 before using these inspected ABI offsets.
+Both binaries use the same three entry symbols and argument registers, 0x48
+native stack-bottom offset, rbx root cursor, and cons metadata layout. These
+are specific inspected binaries, not assumptions about arbitrary Rust builds.
 No inferior function is called and no runtime source or heap value is changed.
 """
 
