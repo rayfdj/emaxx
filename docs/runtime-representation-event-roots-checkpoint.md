@@ -7,8 +7,21 @@ warnings-denied Clippy and diff checks pass, along with **482 debug and 482
 release controls** and **27 exact ordinary GNU comparisons**. The
 [portable receipts](handover/2026-09-30-event-roots/manifest.json) cross-check
 raw test inventories, verdicts, process exits and artifact hashes.
-The complete macOS Rust gate now fails; full Linux and terminal validation are
-pending. The goal remains open.
+The complete macOS Rust gate fails. Full Linux Rust and terminal validation
+pass; the full frozen comparison has one unexpected GNU outcome. The goal
+remains open.
+
+The [complete full-run receipts](handover/2026-09-30-event-root-full-validation/manifest.json)
+verify **3,034 Linux Rust passes** (2,931 library, 61 binary and 42 integration),
+two existing terminal ignores, and native artifact identity. All **223 terminal
+scenarios, 651 screen comparisons and 28 filesystem comparisons** match
+source/ABI-matched GNU. Linux frozen executes all **519 files / 7,928 outcomes**
+with 1,038 successful processes. **7,927 outcomes match**; Emaxx has 7,670 passes,
+47 existing expected failures, 211 skips and no unexpected outcomes. GNU has
+one unexpected `jsonrpc-error` timeout in
+`eglot-test-rust-completion-exit-function`; that outcome differs and the full
+comparison remains failed. Both source166 autorevert and network-stream
+mismatch files now match in their complete original inventories.
 
 The full macOS gate passes 2,195 tests and fails the unchanged
 `suspended_bytecode_retains_operand_and_unwind_roots` assertion: the first key
@@ -21,18 +34,29 @@ hashes. Selected debug/release passes did not predict this gate-profile result.
 The [exact original Linux executable](https://github.com/rayfdj/emaxx/actions/runs/36666863766)
 also reproduces its source166 failure under GDB hardware watchpoints. The first
 key is marked from `weak_hash_reachability`'s native-root array at epochs 2–5.
-That array combines relocation/handler/parked roots and a native stack scan;
-the retaining input is not yet identified. Neither the debugger nor the
+Further [root provenance](https://github.com/rayfdj/emaxx/actions/runs/36668646203)
+identifies a stale lexical-environment pointer in the native stack, at
+`eval_call` offset `0xa8`. The inspected original assembly writes only one
+byte there at ELF address `0x97ea7e`, leaving old upper pointer bytes while
+executing `setq` and `let`. Neither the debugger nor the
 instrumented trace3 pass clears the ordinary failure. The archive preserves
-both traces and the inspected assembly. A follow-up diagnosis records each
-root's original range without recompiling the failing executable.
+all three exact-binary diagnoses and the inspected assembly. The unchanged
+source170 macOS executable passes a standalone replay; that pass does not
+establish a fix for its full-gate failure. Source173, an isolated pending
+candidate, uses the authoritative subr's arity and UNEVALLED classification,
+removing the copied optional metadata and repeated function decoding.
 
 Two fresh source170 input-decoding probes fail against source/ABI-matched GNU
 on menu-filter lookup. Another ordinary probe demonstrates that TLS peer-report
 queries share a mutable cached result where GNU returns independent reports.
 These negative comparisons are preserved in the same archive. A separate
-source171 checkout removes that cache; its validation is still in progress
-and it has not been applied to this production candidate.
+source171 checkout removes that cache and passes 414 debug and 414 release
+controls, plus the ordinary report-identity and original GC probes. A stronger
+ordinary probe reveals that mutation of its returned cipher string silently
+does nothing. Source172 uses mutable Lisp strings and extends the new fixture
+to require the mutation itself, while preserving its independence and GC
+checks. Source172 validation is pending; neither candidate has been applied
+to this production candidate.
 
 Queued file notifications now trace raw events, descriptors and callbacks.
 A dispatch batch remains rooted after leaving the interpreter's queue, so

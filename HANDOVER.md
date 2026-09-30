@@ -28,15 +28,26 @@ TLS Lisp state and live special-event lookup. All strict checks, **482 debug
 and 482 release controls**, and **27 ordinary GNU comparisons** pass. The full
 macOS Rust gate now **fails**: 2,195 tests pass, then the unchanged suspended
 bytecode reclamation assertion fails; four later groups and both Cargo stages
-do not execute. Full Linux and terminal validation are still pending. The
+do not execute. Full Linux Rust passes **3,034 tests**, including native
+artifact identity; all **223 terminal scenarios / 679 checkpoints** match.
+The full Linux frozen comparison has **7,927/7,928 matching outcomes**:
+Emaxx has no unexpected outcomes, while GNU times out in one Eglot JSON-RPC
+test. The comparison remains failed. Both earlier autorevert and network-stream
+files now match. The [complete source170 receipts](docs/handover/2026-09-30-event-root-full-validation/manifest.json)
+retain all successes and failures. The
 [new failure and debugger evidence](docs/handover/2026-09-30-gc-retention-diagnosis/manifest.json)
 reproduces the original source166 Linux failure using its exact executable.
-The first weak key is retained from the native-root array; its owning input
-still needs diagnosis. This is a lead, not a repair. The earlier
+Further exact-binary diagnosis locates the retaining word in `eval_call`:
+a one-byte flag store leaves stale upper pointer bytes at stack offset `0xa8`.
+Isolated source173 removes copied optional call metadata and repeated function
+decoding; its validation is pending. Source172 separately removes the cached
+TLS report and allocates mutable report strings; validation is also pending.
+An unchanged source170 macOS binary passes a standalone replay, which does not
+clear its full-gate failure or certify either repair. The earlier
 [portable evidence](docs/handover/2026-09-30-event-roots/manifest.json)
 preserves source168's compiler and source169's new-test failures, negative
 source166 comparisons and an unresolved post-deinit TLS difference. This does
-not yet clear the original Linux failures and is not ready for main.
+not clear the macOS reclamation failure and is not ready for main.
 
 The recovered source166 macOS gate passes **3,019 tests**, including native
 artifact identity, with two existing terminal ignores. Its second terminal
