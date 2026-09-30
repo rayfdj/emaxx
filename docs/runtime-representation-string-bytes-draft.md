@@ -53,11 +53,25 @@ lengths 1, 17, 257 and 4097. Their existence is not a passing test result.
 The [portable source220 draft](handover/2026-09-30-shared-reader-draft/source220-canonical-string-byte-draft-manifest.json)
 replays all **421 source/test inputs** and file modes from main `21d20f0e`.
 Compiler, formatting, strict Clippy and diff checks pass with zero warnings.
-Supervisor **67724** runs a fresh gate build, twelve focused controls and all
-tests in the bytecode/native-runtime/pdumper/primitives/reader/types modules.
-The known active-call mutation failure remains in both inventories. Keep the
-checkout and helpers frozen while that supervisor or its children run. No
-runtime outcome is assigned by this draft archive.
+The [focused audit and broader launch](handover/2026-09-30-shared-reader-draft/source220-string-controls-and-broad-launch-manifest.json)
+verify a fresh zero-warning gate build and **ten passes / two failures** across
+all twelve controls. The direct payload/store control passes. Active-call code
+mutation still fails. The new ordinary differential fails during Emaxx evaluation
+with `Invalid character: 55296`: the unchanged `string` producer still routes
+its characters through `char_for_codepoint`/Rust `char`. Later expressions in
+that failed control are not passing coverage. Its expected GNU result is intact.
+The next constructor repair must build actual encoded bytes from Lisp character
+codes, including surrogates and non-Unicode characters, without a Rust-char
+conversion or replacement character.
+
+Supervisor **67724 has exited**. Its continuation check used an old source219
+receipt filename, so it never ran the intended broader stage. That failed
+wrapper and all its outputs are preserved. The unexecuted stage now runs once
+under supervisor **68772**, selecting all **927 tests** in the original affected
+bytecode/native-runtime/pdumper/primitives/reader/types modules. No failing test
+is excluded. Source220 and the original helpers stay unchanged. Keep this
+checkout frozen while the supervisor or its children run. Neither the earlier
+draft archive nor the focused audit assigns the broader run's outcome.
 
 The bundle preserves source217's twelve compiler errors, source218's compiler
 pass, and source219's three strict test-diagnostic lint errors. None of those

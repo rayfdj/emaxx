@@ -161,10 +161,18 @@ continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/e
 It replaces stored Rust text/extended-character payloads with actual GNU-encoded
 bytes, updates direct string stores/conversion and image bytes, and adds ordinary
 GNU/physical-payload controls. All 421 inputs and file modes replay exactly;
-strict checks pass with zero warnings. Supervisor **67724** runs a fresh gate
-build, twelve focused controls and the broader affected modules. Preserve that
-checkout and its helpers. The [portable draft](docs/handover/2026-09-30-shared-reader-draft/source220-canonical-string-byte-draft-manifest.json)
-contains no runtime verdict. Direct VM execution, plain-string migration, compact
+strict checks and a fresh gate build pass with zero warnings. The
+[focused audit and broader launch](docs/handover/2026-09-30-shared-reader-draft/source220-string-controls-and-broad-launch-manifest.json)
+record **ten passes / two failures** across all twelve controls. Direct byte
+storage passes; active-call mutation still fails, and the new GNU differential
+hits the old string constructor's rejection of surrogate character 55296.
+Later expressions in that failed control are unverified. Supervisor **67724 has
+exited** after a stale receipt filename prevented its broader stage. The
+unexecuted **927-test** stage now runs once under supervisor **68772**, with
+unchanged source, helpers and expectations. Preserve that checkout and its
+helpers. The earlier [portable draft](docs/handover/2026-09-30-shared-reader-draft/source220-canonical-string-byte-draft-manifest.json)
+contains no runtime verdict; the focused archive does not assign the broader
+outcome. Direct VM execution, plain-string migration, compact
 string headers, physical accounting and final correctness/performance remain open.
 
 The preserved **source208** carries evaluator207

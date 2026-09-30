@@ -1,0 +1,128 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed focused runtime controls",
+    "passed": 10,
+    "failed": 2,
+    "ignored": 0,
+    "inputs_verified": 421,
+    "binary_sha256": "657e635f76c4d7e75ce9c834e41ac676a1f7152a32cd0332aec99e1d6e2a8470",
+    "failing_names": [
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu",
+      "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear"
+    ],
+    "direct_byte_payload_control": "passed: original storage bytes, sizes and in-place stores at 1/17/257/4097 bytes",
+    "original_supervisor": "67724 exited after focused controls; stale source219 receipt check prevented the planned broad stage",
+    "qualification": "The ordinary GNU fixture passes, but Emaxx evaluation rejects character 55296 (a surrogate) through the remaining character-to-Rust-char producer. Later expressions in that failed test are not passing coverage. Active-call code mutation remains (41 194), expected (67 194). The separately launched broader stage retains every affected-module name. No complete string/bytecode architecture or performance claim.",
+    "raw_hashes": {
+      "source220-gate-controls-command.json": "ab9f01672c46e090ac87ff6cc524b4dba33a5128d18ad402859200ceb034c36a",
+      "source220-gate-controls-result.json": "61e36cee516d2e3f8d047e9c2c5be78bf149c641a7c235533f8923c05bac9837",
+      "source220-gate-controls.log": "338cfaba6e8dec1bf7bed4ff546e275c1e1a2702cdc02ebdb2c98d3041a84f6c",
+      "source220-validation-result.json": "123274993b764af5e541222b64121ff23acc266c7c7bd7c93e24be2d6d322ca4",
+      "run-source220-validation.py": "c9f22daeec9af4cd3809e55a2177a5ca5c91d2e8458982c120b4fb72b23c3a3c"
+    },
+    "broader_stage": {
+      "supervisor": 68772,
+      "inventory": 927,
+      "outcome": "running; no runtime verdict in this archive"
+    }
+  },
+  "archive": {
+    "path": "source220-string-controls-and-broad-launch.tar.gz",
+    "bytes": 114674,
+    "sha256": "62fb7e8f78910736919386ce491076f4e9627ef0c3a162bbee17f032b1347d82"
+  },
+  "files": [
+    {
+      "path": "audit-source220-controls.py",
+      "bytes": 2775,
+      "sha256": "67be5d629ff5ba21c0f5ecc61f2449e9d769855b20b45be643ba27080cc96d00"
+    },
+    {
+      "path": "package-source220-controls.py",
+      "bytes": 1550,
+      "sha256": "c0a9bd1977fe13fb59599627fdd8261557b0f34c26c85cee46d6c69841186ca4"
+    },
+    {
+      "path": "run-source220-broad.py",
+      "bytes": 799,
+      "sha256": "f32fc7e440d6a27f10c43fbe836803e500a01aad08803f5d4e3c64e8c87fb797"
+    },
+    {
+      "path": "run-source220-validation.py",
+      "bytes": 1166,
+      "sha256": "c9f22daeec9af4cd3809e55a2177a5ca5c91d2e8458982c120b4fb72b23c3a3c"
+    },
+    {
+      "path": "source220-broad-launch.json",
+      "bytes": 462,
+      "sha256": "fbd744935004bf7522536dd8e75bd29653168f8328c2f0d8f31c493bd46e99c5"
+    },
+    {
+      "path": "source220-controls-audit.json",
+      "bytes": 1657,
+      "sha256": "5372545978257f58cc6e10564f5432b3b6043be11fd12c72f994daec0d2c250e"
+    },
+    {
+      "path": "source220-gate-broad-command.json",
+      "bytes": 168734,
+      "sha256": "4b63dc809d6cf898f36d27453a14532db191cc6eb2464a22e6ecd44d4b0a5bce"
+    },
+    {
+      "path": "source220-gate-build-command.json",
+      "bytes": 1152,
+      "sha256": "f6ffc42a989afa11d4c9fcda41aaee7d06fff8bf2d6f9aac28069c5c2eb20c62"
+    },
+    {
+      "path": "source220-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "0c2e659cb88e1382186be77dc6413e04cd39aa35e86ca46981083e8e22656856"
+    },
+    {
+      "path": "source220-gate-build.log",
+      "bytes": 219526,
+      "sha256": "83385408e7c88d4b9c39e1567b989572ebc175d0a58615d963a229a583224c02"
+    },
+    {
+      "path": "source220-gate-controls-command.json",
+      "bytes": 3594,
+      "sha256": "ab9f01672c46e090ac87ff6cc524b4dba33a5128d18ad402859200ceb034c36a"
+    },
+    {
+      "path": "source220-gate-controls-result.json",
+      "bytes": 91,
+      "sha256": "61e36cee516d2e3f8d047e9c2c5be78bf149c641a7c235533f8923c05bac9837"
+    },
+    {
+      "path": "source220-gate-controls.log",
+      "bytes": 2094,
+      "sha256": "338cfaba6e8dec1bf7bed4ff546e275c1e1a2702cdc02ebdb2c98d3041a84f6c"
+    },
+    {
+      "path": "source220-gate-inventory.txt",
+      "bytes": 262026,
+      "sha256": "a294e64529626f9c03a79aaf08c6d5cac93db75235bde9e94e4a1d2763ed56d1"
+    },
+    {
+      "path": "source220-validation-driver.log",
+      "bytes": 3300,
+      "sha256": "93ff6e8d9b3253334a6faeb07d899b849692c7f9b87d7c7cf9bb0b98da2d46f8"
+    },
+    {
+      "path": "source220-validation-result.json",
+      "bytes": 758,
+      "sha256": "123274993b764af5e541222b64121ff23acc266c7c7bd7c93e24be2d6d322ca4"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls219.py",
+      "bytes": 3920,
+      "sha256": "5c60a5086929202427b0647850e63bb5c9d5d7bca116f0578bb4c45704137647"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

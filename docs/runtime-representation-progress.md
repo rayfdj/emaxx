@@ -40,7 +40,10 @@ failure, and all 848 broader tests yield 847 passes/one failure, with zero ignor
 Active-call mutation remains failed. The [source220 string-byte draft](runtime-representation-string-bytes-draft.md)
 now stores actual GNU-encoded shared-string bytes and adds differential and
 physical-payload controls. Its 421-input patch replays exactly and strict checks
-pass; runtime tests are running in its separate checkout. Direct VM execution,
+pass. Twelve controls yield ten passes/two failures: active-call mutation and
+the old string constructor's surrogate rejection. Its direct payload/store test
+passes. A wrapper's stale receipt path stopped the initial driver; the unexecuted
+927-test broader stage now runs separately, preserving all failures. Direct VM execution,
 plain-string migration and compact headers remain required. No draft runtime is
 applied to the task branch.
 Main remains the fully validated
