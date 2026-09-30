@@ -397,7 +397,8 @@ jobs:
                   --artifact-run "${VALIDATION_FILE:-36656497828}" \
                   --revision "${VALIDATION_TRACE_REVISION:-3bada057ce99da19609909d97088e73d69cd27f3}" \
                   --filter "${VALIDATION_RUST_FILTER:-suspended_bytecode_retains_operand_and_unwind_roots}" \
-                  --key-head runtime-key --output target/frozen-ci/rust-exact-roots
+                  --key-head runtime-key --debugger-runs 5 \
+                  --output target/frozen-ci/rust-exact-roots
               ;;
             rust-tail)
               # Explicit continuation after the documentation-only failure in

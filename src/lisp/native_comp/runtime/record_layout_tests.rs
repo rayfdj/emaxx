@@ -78,9 +78,9 @@ fn generic_record_slots_are_the_public_native_payload_and_gc_edges() {
 fn generic_record_census_includes_header_and_physical_rounding() {
     let interpreter = Interpreter::new();
     let type_tag = Value::symbol("record-census");
-    // GNU alloc.c:pseudovector_nbytes / sweep_vectors, in eight-byte words.
+    // GNU alloc.c:pseudovector_nbytes / sweep_vectors, with word alignment.
     // Block bitmap and large mark metadata are separate from Lisp vector slots.
-    for (data_slots, physical_words) in [(0, 2), (1, 4), (2, 4), (9, 12), (257, 260), (4094, 4096)]
+    for (data_slots, physical_words) in [(0, 2), (1, 3), (2, 4), (9, 11), (257, 259), (4094, 4096)]
     {
         let before = interpreter.live_object_census();
         let record = crate::lisp::types::LispRecordRef::filled(type_tag, data_slots, Value::Nil);

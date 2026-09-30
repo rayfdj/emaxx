@@ -1,24 +1,43 @@
 # Word-aligned vector allocation draft — 1 October 2026
 
-**Source200 is isolated unfinished work.** Main remains source174. The task
-branch still contains source198's runtime in [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
+**Source201 is the unfinished task-branch candidate.** Main remains source174.
+The allocator follows source198's reader/macro runtime in
+[draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
 Read the [complete goal](runtime-representation-goal.md) and the
 [shared-reader handover](runtime-representation-shared-reader-draft.md) first.
 Source198 passes the complete macOS Rust gate but fails the original Linux
 suspended-bytecode reclamation assertion. The allocator draft does not clear it.
 
-The [portable source200 draft and focused receipts](handover/2026-09-30-shared-reader-draft/source200-vector-allocation-focused-manifest.json)
+The [portable source201 selected results](handover/2026-09-30-shared-reader-draft/source201-vector-selected-validation-manifest.json)
 contain the complete patch from main `21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199`,
-all 410 build/test input hashes, exact patch/mode replay, strict checks and seven
-focused gate passes. The isolated checkout is
-`target/runtime-goal/recovered-2026-09-30/macro-reader/emaxx`. Supervisor 29761
-is running its broader gate/release and 36 ordinary comparisons. Keep that
-checkout and its artifacts frozen while the supervisor or its children run.
+all 410 build/test input hashes, exact patch/mode replay, strict checks,
+**454 gate / 454 release controls and 36 ordinary exact GNU comparisons**.
+Eight focused controls pass in both profiles. Raw names, verdicts, process
+results, source inputs and executable/image hashes are audited. Five corrupt-log
+controls are rejected. Selected supervisor 31780 has exited; all 410 inputs are
+now applied to the task worktree.
+
+The frozen validation checkout is
+`target/runtime-goal/recovered-2026-09-30/macro-reader/emaxx`. Complete macOS Rust
+supervisor **33431** and complete terminal supervisor **33432** have started
+after those selected passes. Their [portable launch receipts and diagnostic controls](handover/2026-09-30-shared-reader-draft/source201-complete-validation-start-manifest.json)
+retain exact helper hashes and the applied-source audit. The prior source198
+terminal supervisor has exited.
+Keep the checkout, helpers and artifacts frozen while these processes or their
+children run. Complete Linux validation of this candidate remains required.
+
+The [source200 broad failure](handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
+is preserved: **453 gate passes / one old record-footprint expectation failure**;
+release and ordinary stages did not run. Same-input GNU evidence independently
+checks all six original record sizes. Source201 preserves the allocator runtime
+and all six original assertions, correcting the expected word counts for data
+lengths 1, 9 and 257 from 4, 12 and 260 to GNU's 3, 11 and 259. Its ordinary
+pseudovector fixture now also includes those boundary sizes and 4094.
 
 GNU `alloc.c:roundup_size` uses the common alignment of Lisp words and allocated
 object fields. Emaxx's three pointer tag bits, inline words and Rust payloads
 require eight-byte alignment, already enforced for generic pseudovector fields.
-The allocator nevertheless rounded every footprint to 16 bytes. Source200 uses
+The allocator nevertheless rounded every footprint to 16 bytes. Source201 uses
 word alignment and adds static checks for its other typed metadata and hash
 table layout. Header and payload offsets stay the same.
 
@@ -34,11 +53,11 @@ preserve two failing new architectural assertions on the unchanged source198
 runtime and an ordinary GNU/Emaxx census difference. Both editors execute the
 same program. Records with odd data-slot counts, char-tables with even extra-slot
 counts, positioned symbols and hash tables report one excess vector slot in
-Emaxx. Source200 removes the physical padding that caused those differences;
+Emaxx. Source201 removes the physical padding that caused those differences;
 it does not replace the counters with invented smaller figures. The already
 matching ordinary vector/closure census stays unchanged.
 
-| Allocator quantity | Baseline | Source200 |
+| Allocator quantity | Baseline | Source201 |
 | --- | ---: | ---: |
 | Two-slot vector footprint | 32 bytes | 24 bytes |
 | Six-slot vector/closure footprint | 64 bytes | 56 bytes |
@@ -62,7 +81,16 @@ footprint, without a lint suppression. The baseline helper's initial relative
 executable-path failure is also retained; its separate absolute-path comparison
 is the actual GNU/Emaxx census evidence.
 
-Complete source200 validation, the Linux reclamation diagnosis, broader object
+The [exact retained Linux replay](handover/2026-09-30-shared-reader-draft/source198-exact-retained-failure-manifest.json)
+reproduces source198's original reclamation failure with its exact executable
+and retained startup image. A separate debugger process passes but reports 498
+address-read overflow errors; it does not establish the retaining root. The
+diagnostic helper now records rejected name reads and preserves up to five
+separate debugger processes, their outcomes, traces and image hashes. Its local
+callback and malformed-artifact controls pass; actual Linux diagnosis remains
+required. Source201's macOS selected passes do not clear that original failure.
+
+Complete source201 validation, the Linux reclamation diagnosis, broader object
 authority and allocation accounting, final adversarial audit and the locked
 performance criterion remain open. A focused allocator pass does not complete
 the full runtime goal.

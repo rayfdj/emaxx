@@ -19341,8 +19341,7 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
         after.vector_slots - before.vector_slots,
         (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
             + std::mem::size_of::<crate::lisp::types::BufferValue>())
-        .next_multiple_of(16)
-            / std::mem::size_of::<Value>()
+        .div_ceil(std::mem::size_of::<Value>())
             + 6 // configured GNU Lisp_Marker: header plus five payload words
     );
     interp.kill_buffer_id(id);
@@ -19351,6 +19350,24 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+}
+
+#[test]
+fn native_vector_and_closure_census_matches_gnu_word_layout() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/vector-closure-rounded-census.el"),
+        include_str!("../../../tests/fixtures/vector-closure-rounded-census.expected").trim(),
+        "vector and closure word counts across allocation boundaries",
+    );
+}
+
+#[test]
+fn native_pseudovector_census_matches_gnu_word_layout() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/vector-pseudovector-word-census.el"),
+        include_str!("../../../tests/fixtures/vector-pseudovector-word-census.expected").trim(),
+        "records, char tables, positioned symbols and hash tables use their actual word counts",
+    );
 }
 
 #[test]
@@ -19367,7 +19384,7 @@ fn native_overlay_and_char_table_census_uses_gnu_layouts() {
     assert_eq!(after.vectors - before.vectors, 2);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        70 + 4 // char-table header + 68 Lisp slots, rounded to 16 bytes
+        69 + 4 // char-table header + 68 Lisp slots; GNU uses word alignment
     );
 }
 

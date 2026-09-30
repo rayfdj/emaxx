@@ -10416,7 +10416,7 @@ mod tests {
         let after = crate::lisp::types::census_live_vectors();
         let bytes = (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
             + std::mem::size_of::<crate::lisp::types::TerminalValue>())
-        .next_multiple_of(16);
+        .next_multiple_of(std::mem::size_of::<Value>());
         assert_eq!(after.count, before.count + 1);
         assert_eq!(
             after.slots,
@@ -10996,6 +10996,23 @@ mod tests {
                 heap.decode(word ^ HIDE).is_err(),
                 "formerly reachable graph"
             );
+        }
+    }
+
+    #[test]
+    fn interpreted_closure_allocation_charges_its_gnu_lisp_words() {
+        let measured: Vec<_> = (3..=6)
+            .map(|len| {
+                let before = lisp_allocated_bytes();
+                let closure = crate::lisp::alloc::ClosureRef::allocate(&vec![Value::Nil; len]);
+                let charged = lisp_allocated_bytes() - before;
+                assert_eq!(closure.public_len(), len);
+                (len, charged)
+            })
+            .collect();
+        println!("closure allocation charge (slots, bytes): {measured:?}");
+        for (len, charged) in measured {
+            assert_eq!(charged as usize, (len + 1) * std::mem::size_of::<Value>());
         }
     }
 
@@ -11693,8 +11710,7 @@ mod tests {
         let after = crate::lisp::alloc::vectors::live_vector_census();
         let words = (std::mem::size_of::<crate::lisp::types::FrameValue>()
             + std::mem::size_of::<usize>())
-        .next_multiple_of(16)
-            / std::mem::size_of::<usize>();
+        .div_ceil(std::mem::size_of::<Value>());
         assert_eq!(after, (before.0 + 1, before.1 + words));
         assert!(!frame.is_live());
         assert!(

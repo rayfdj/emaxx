@@ -27,6 +27,9 @@ pub use hash_tables::HashTableRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
+#[cfg(test)]
+mod tests;
+
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
 use std::cell::{Cell, RefCell};
@@ -36,8 +39,9 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// alloc.c's `VECTOR_BLOCK_SIZE'.
 pub(crate) const VECTOR_BLOCK_SIZE: usize = 4096;
-/// alloc.c's `roundup_size': every vector's footprint is a multiple.
-const ROUNDUP_SIZE: usize = 16;
+/// alloc.c's `roundup_size': the common alignment of object fields and Lisp
+/// words. Three tag bits and all allocated payloads require one word here.
+const ROUNDUP_SIZE: usize = WORD_SIZE;
 
 const fn vroundup(bytes: usize) -> usize {
     (bytes + ROUNDUP_SIZE - 1) & !(ROUNDUP_SIZE - 1)
@@ -47,7 +51,11 @@ const fn vroundup(bytes: usize) -> usize {
 /// per-vector epoch words; no Lisp payload contains this metadata.
 const VECTOR_BLOCK_BYTES: usize =
     (VECTOR_BLOCK_SIZE - std::mem::size_of::<VectorBlockMarks>()) & !(ROUNDUP_SIZE - 1);
-const VECTOR_MARK_WORDS: usize = (VECTOR_BLOCK_SIZE / ROUNDUP_SIZE).div_ceil(usize::BITS as usize);
+// Distinct objects are at least VBLOCK_BYTES_MIN bytes apart even when their
+// starts have only word alignment. One bit per minimum footprint is sufficient;
+// reducing allocation padding need not enlarge the block bitmap.
+const VECTOR_MARK_WORDS: usize =
+    (VECTOR_BLOCK_SIZE / VBLOCK_BYTES_MIN).div_ceil(usize::BITS as usize);
 const LARGE_MARK_BYTES: usize = vroundup(std::mem::size_of::<MarkBit>());
 const HEADER_SIZE: usize = std::mem::size_of::<VectorHeader>();
 const WORD_SIZE: usize = std::mem::size_of::<usize>();
@@ -129,7 +137,13 @@ pub struct VectorHeader {
     size: usize,
 }
 
-const _: () = assert!(HEADER_SIZE == WORD_SIZE);
+const _: () = {
+    assert!(HEADER_SIZE == WORD_SIZE);
+    assert!(std::mem::align_of::<Value>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<VectorHeader>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<MarkBit>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<VectorBlockMarks>() <= ROUNDUP_SIZE);
+};
 
 struct VectorBlockMarks {
     epoch: Cell<u32>,
@@ -207,7 +221,7 @@ impl VectorHeader {
             }));
         }
         let base = address & !(VECTOR_BLOCK_SIZE - 1);
-        let index = (address - base) / ROUNDUP_SIZE;
+        let index = (address - base) / VBLOCK_BYTES_MIN;
         // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE;
         // their initialized bitmap occupies the reserved tail of the block.
         let block = unsafe { &*((base + VECTOR_BLOCK_BYTES) as *const VectorBlockMarks) };
@@ -634,8 +648,8 @@ impl ClosureRef {
     pub(crate) fn allocate(slots: &[Value]) -> Self {
         assert!((3..=6).contains(&slots.len()));
         let nbytes = vroundup(HEADER_SIZE + slots.len() * WORD_SIZE);
-        // Account for the Lisp allocation, including the one-word header
-        // and allocator rounding. Block metadata is shared by small vectors.
+        // GNU allocate_vectorlike charges the header and actual Lisp words.
+        // Word alignment adds no payload padding; block metadata is separate.
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
         let header = allocate_vectorlike(nbytes);
         // SAFETY: freshly allocated NBYTES, aligned for the header and slots.

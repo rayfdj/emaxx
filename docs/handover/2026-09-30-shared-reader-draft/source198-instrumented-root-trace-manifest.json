@@ -1,0 +1,171 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "instrumented selected pass",
+    "raw_passed": 1,
+    "raw_failed": 0,
+    "source_inputs_verified": 398,
+    "instrumented_files": [
+      "src/lisp/alloc.rs",
+      "src/lisp/eval.rs"
+    ],
+    "instrumentation_patch_replayed": true,
+    "binary_sha256": "096c81908a13ea80c2797a3050b60c44b96bfe601a11bfd8c31fbb878e4149cb",
+    "root_files": [
+      {
+        "path": "roots/gc-roots-6661.log",
+        "lines": 51033,
+        "sha256": "0a099e4d4a338c5cb2610b8ca85f3a8c0e3dd85fb13e9a459411b9a0245b11c0"
+      }
+    ],
+    "runtime_key_trace": [
+      {
+        "epoch": 147,
+        "table": "7fecf0b3a0a5",
+        "key": "7fecf1343f83",
+        "live": true,
+        "root_edges": [
+          "GC_EDGE value=7fecf1343f83 parent=7fecf1343e83 phase=\"conservative roots\" slot=0 raw=0",
+          "GC_EDGE value=7fecf1343e83 parent=7fecf1343e63 phase=\"conservative roots\" slot=0 raw=0",
+          "GC_EDGE value=7fecf1343e63 parent=0 phase=\"parked coroutine stack\" slot=7fece7ffea20 raw=7fecf1343e63"
+        ]
+      },
+      {
+        "epoch": 148,
+        "table": "7fecf0b3a0a5",
+        "key": "7fecf1343f83",
+        "live": false,
+        "root_edges": [
+          "GC_EDGE value=7fecf1343f83 no recorded owner"
+        ]
+      },
+      {
+        "epoch": 149,
+        "table": "7fecf03a4b45",
+        "key": "7fecf3c0bc03",
+        "live": true,
+        "root_edges": [
+          "GC_EDGE value=7fecf3c0bc03 parent=0 phase=\"parked coroutine stack\" slot=7fece7ffee00 raw=7fecf3c0bc03"
+        ]
+      },
+      {
+        "epoch": 150,
+        "table": "7fecf03a4b45",
+        "key": "7fecf3c0bc03",
+        "live": false,
+        "root_edges": [
+          "GC_EDGE value=7fecf3c0bc03 no recorded owner"
+        ]
+      }
+    ],
+    "qualification": "Both original live-key and dead-key assertions pass in the instrumented executable; child trace records parked coroutine roots followed by reclamation. The executable and fresh startup image differ from the original failed full run. This establishes no retaining root in the failed ordinary executable and does not clear that failure."
+  },
+  "archive": {
+    "path": "source198-instrumented-root-trace.tar.gz",
+    "bytes": 328312,
+    "sha256": "0fcd89d4090c7161f50ce0467e8ce1eec4b276c38a9490ad62fcf5b6810d19d4"
+  },
+  "files": [
+    {
+      "path": "driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "instrumentation.patch",
+      "bytes": 11142,
+      "sha256": "37789fd9579f2eddb185a56b5bbed217e4a7683561fbef824a6fab2f2d22845f"
+    },
+    {
+      "path": "receipts/audit-and-package-source198-root-trace-original.py",
+      "bytes": 6649,
+      "sha256": "87f33e4a252415978d6d54e7e64778bb198f07013387f7049844b2e96524ef1d"
+    },
+    {
+      "path": "receipts/audit-and-package-source198-root-trace.py",
+      "bytes": 6782,
+      "sha256": "b0bb5221d390f04af856d8be3f541b546a3f0f0ab56f28d8e7b1d832287bbba0"
+    },
+    {
+      "path": "receipts/audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "receipts/package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "receipts/source198-linux-root-trace-audit.json",
+      "bytes": 2003,
+      "sha256": "04d9791a039074f539b9297268b84ad3595906d7979157901384d950ac80f1dc"
+    },
+    {
+      "path": "receipts/source198-linux-root-trace-download.json",
+      "bytes": 323,
+      "sha256": "3b513af2f4fbcabd3e80c3e5c701e8b514def8fac4dd56291a76e3e55b4e609c"
+    },
+    {
+      "path": "receipts/source198-linux-root-trace-final-state.json",
+      "bytes": 4100,
+      "sha256": "ff64c0cbc2e9bb6a99b948bd9306b44187ccee4f6a997ffda9f638e6c09f7c85"
+    },
+    {
+      "path": "receipts/source198-root-trace-audit-invocation-failure.json",
+      "bytes": 529,
+      "sha256": "cc057d5de818616efed43bc3b89d387af31e9fbea12fc21015e95fcf51b98ef0"
+    },
+    {
+      "path": "replay/build.log",
+      "bytes": 175145,
+      "sha256": "eaa8c7e94556c938055adac1849ec646c1a69f42c717e7ef99545be996895899"
+    },
+    {
+      "path": "replay/full-inventory.log",
+      "bytes": 261143,
+      "sha256": "f8df2e25f1897a2309296e0ce274aace8dcfcd77daa85713ff7872561e44a9b4"
+    },
+    {
+      "path": "replay/ignored-inventory.log",
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    {
+      "path": "replay/replay.log",
+      "bytes": 205,
+      "sha256": "8ee5e453f8cc271cfd0a94f4cf0b6392c4b439cde687cfba94074c3cd7a18f86"
+    },
+    {
+      "path": "replay/selected-inventory.log",
+      "bytes": 105,
+      "sha256": "b66043150192ee58a02b7ebb177841960e1394ed1c90c29c796d07840a0111b6"
+    },
+    {
+      "path": "replay/summary.json",
+      "bytes": 2379,
+      "sha256": "9e582ad026a69a112cddde584505fdd30763121813bf7c1ac23b849f24f7fef7"
+    },
+    {
+      "path": "roots/gc-roots-6661.log",
+      "bytes": 3843732,
+      "sha256": "0a099e4d4a338c5cb2610b8ca85f3a8c0e3dd85fb13e9a459411b9a0245b11c0"
+    },
+    {
+      "path": "source-before.json",
+      "bytes": 45122,
+      "sha256": "76e7b9ac8cc9fd898f6a00b42c67171aa96517b576645aab93d428db1c7aa74d"
+    },
+    {
+      "path": "source-instrumented.json",
+      "bytes": 45122,
+      "sha256": "270b79d116116fdf535d2d166abefdc68cca99d0f0432d68d66ae813ecfd2b41"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 1280,
+      "sha256": "7daaac59c43e1be4a0825463408fb6ca96010ffdb6772bb9fdd9845a6f16da4f"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -89,6 +90,8 @@ def main():
     parser.add_argument('--revision', required=True)
     parser.add_argument('--filter', required=True)
     parser.add_argument('--key-head', required=True)
+    parser.add_argument('--debugger-runs', type=int, choices=range(1, 6), default=1,
+                        help='bounded separate debugger processes; retain every outcome')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
@@ -129,11 +132,14 @@ def main():
         if not fixture_directory.is_relative_to(root / 'target'):
             raise RuntimeError('original image directory is outside this CI checkout target')
         fixture_directory.mkdir(parents=True, exist_ok=True)
+        restored_images = {}
         for image in original['fixture_images']:
             source = original_dir / image['artifact']
             if sha(source) != image['sha256']:
                 raise RuntimeError('retained fixture image hash differs')
             shutil.copy2(source, fixture_directory / source.name)
+            restored_images[str(fixture_directory / source.name)] = image['sha256']
+        record['restored_images'] = restored_images
         # The selected binary embeds its original source paths. Restore only
         # its compiled inputs in this disposable diagnosis job; tools stay at
         # the current revision. No active validation checkout is modified.
@@ -165,6 +171,11 @@ def main():
         record['binary_sha256'] = sha(binary)
         record['original_environment'] = original['environment']
         record['plain'] = execute(command, environment, output / 'plain.log')
+        record['images_unchanged_after_plain'] = all(
+            sha(Path(name)) == digest for name, digest in restored_images.items()
+        )
+        if not record['images_unchanged_after_plain']:
+            raise RuntimeError('retained fixture image changed during the plain replay')
         save()
         names = original['expected_tests']
         if len(names) != 1:
@@ -178,19 +189,45 @@ def main():
                    '-x', str(root / 'tools/diagnostics/exact-weak-root-watch.py'),
                    '--args', str(binary), '--exact', names[0], '--test-threads=1', '--nocapture']
         record['debugger_environment_override'] = overrides
-        record['debugger'] = execute(command, environment, output / 'debugger.log')
+        record['debugger_runs'] = []
+        for index in range(args.debugger_runs):
+            label = 'debugger' if index == 0 else f'debugger-{index + 1:02d}'
+            log = output / f'{label}.log'
+            result = execute(command, environment, log)
+            raw = log.read_text(errors='replace')
+            traces = [json.loads(line.removeprefix('EXACT_ROOT '))
+                      for line in raw.splitlines() if line.startswith('EXACT_ROOT ')]
+            trace_name = 'trace-events.json' if index == 0 else f'{label}-trace-events.json'
+            (output / trace_name).write_text(json.dumps(traces, indent=2) + '\n')
+            result.update(
+                log=log.name, trace=trace_name, trace_events=len(traces),
+                callback_errors=re.findall(
+                    r'^(?:Python Exception|Traceback \(most recent call last\):).*$',
+                    raw, re.MULTILINE,
+                ),
+                watched_keys=[event['key'] for event in traces
+                              if event.get('event') == 'watch installed'],
+                images_unchanged=all(sha(Path(name)) == digest
+                                     for name, digest in restored_images.items()),
+            )
+            record['debugger_runs'].append(result)
+            if index == 0:
+                record['debugger'] = result
+                record['trace_events'] = len(traces)
+            save()
+            if not result['images_unchanged']:
+                raise RuntimeError('retained fixture image changed during a debugger process')
         record['source_unchanged'] = compiled_inputs(root) == inputs
         record['binary_unchanged'] = sha(binary) == expected_binary
-        traces = [json.loads(line.removeprefix('EXACT_ROOT '))
-                  for line in (output / 'debugger.log').read_text(errors='replace').splitlines()
-                  if line.startswith('EXACT_ROOT ')]
-        (output / 'trace-events.json').write_text(json.dumps(traces, indent=2) + '\n')
-        record['trace_events'] = len(traces)
         record['status'] = 'diagnosis recorded; inspect original failures and debugger trace'
         if not record['source_unchanged'] or not record['binary_unchanged']:
             raise RuntimeError('diagnostic inputs changed during execution')
         # Preserve the original failure as this diagnosis job's result.
-        return record['plain']['exit_code'] or record['debugger']['exit_code']
+        return record['plain']['exit_code'] or next(
+            (result['exit_code'] or 2 for result in record['debugger_runs']
+             if result['exit_code'] or result['timed_out'] or result['callback_errors']
+             or len(result['watched_keys']) != 2), 0,
+        )
     except BaseException as error:
         record.update(status='diagnostic error', error=repr(error))
         raise

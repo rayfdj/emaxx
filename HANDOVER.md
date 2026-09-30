@@ -1,5 +1,30 @@
 # Resume the compact runtime goal here
 
+**Current task-branch candidate: source201's word-aligned vector allocator.**
+Read the [allocator continuation](docs/runtime-representation-vector-allocation-draft.md)
+after the complete goal and shared-reader handover. Its
+[audited selected results](docs/handover/2026-09-30-shared-reader-draft/source201-vector-selected-validation-manifest.json)
+pass all strict checks, **454 gate / 454 release controls and 36 ordinary exact
+GNU comparisons**. All 410 inputs match the task worktree. Complete macOS Rust
+and terminal supervisors **33431 / 33432** are running in the frozen
+`macro-reader/emaxx` checkout. Main remains source174; PR #79 remains draft.
+
+Source198's [complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source198-complete-terminal-manifest.json)
+now passes **226 scenarios / 686 comparisons**, and its
+[complete Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source198-linux-frozen-manifest.json)
+matches **519 files / 7,928 outcomes / 1,038 successful processes**. Its full
+Linux Rust failure remains open. The [exact retained replay](docs/handover/2026-09-30-shared-reader-draft/source198-exact-retained-failure-manifest.json)
+reproduces that failure with the original executable and startup image. The
+separate debugger process passes with 498 address-read overflow errors, so the
+cause remains unestablished. The [instrumented trace](docs/handover/2026-09-30-shared-reader-draft/source198-instrumented-root-trace-manifest.json)
+also passes with different artifacts and cannot clear the failure.
+
+Source200's [453-pass / one-failure gate](docs/handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
+is preserved. Source201 keeps its runtime and corrects the old record word-count
+expectations against GNU, preserving all original sizes and assertions.
+Complete candidate validation, the reclamation repair, object/symbol authority,
+physical allocation accounting, final audit and GNU performance parity remain open.
+
 **Latest validated checkpoint: source174**, merged into main at `21d20f0e` in
 [PR #78](https://github.com/rayfdj/emaxx/pull/78), with the validated tree verified
 unchanged from `2a156a5d` (runtime source `178fdf37`). Read the
@@ -11,7 +36,7 @@ screen and filesystem comparisons**. The original full-run reclamation
 assertion passes on both platforms. All prior failures and evidence limits
 remain preserved in the [portable receipts](docs/handover/2026-09-30-call-validation-complete/manifest.json).
 
-**Current unfinished work: source198's shared command reader and macro state**, described in
+**Reader stage preceding source201: source198's shared command reader and macro state**, described in
 the [current draft handover](docs/runtime-representation-shared-reader-draft.md).
 It extends the [source178 decoder](docs/runtime-representation-input-decoder-draft.md)
 to frame, menu, macro and both live/simulated minibuffer loops. Source185 passes
@@ -97,9 +122,9 @@ on `runtime-char-tables` in draft PR #79. Its
 records queue 22463 and full Rust supervisor 22464. The
 [selected terminal run](docs/handover/2026-09-30-shared-reader-draft/source198-selected-terminal-manifest.json)
 passes all **17 scenarios / 34 screen comparisons**, with raw checkpoints and
-input hashes audited. Full terminal supervisor 24260 is now running all 226
-scenarios. Keep the source198 checkout and artifacts frozen while its processes
-are active. The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source198-macos-complete-rust-manifest.json)
+input hashes audited. Full terminal supervisor 24260 now passes all 226
+scenarios and has exited; its complete audited evidence is linked above.
+The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source198-macos-complete-rust-manifest.json)
 now verifies **3,051 passes**, two existing terminal ignores and native artifact
 identity, with all 405 inputs matching published `7e45db47`.
 [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36748039991) fails with
@@ -110,20 +135,20 @@ A [standalone replay](https://github.com/rayfdj/emaxx/actions/runs/36751309990)
 passes with the same executable hash but a newly created, different startup
 image. It does not clear the full failure. A
 [separate root trace](https://github.com/rayfdj/emaxx/actions/runs/36751314826)
-is running; the exact debugger helper now supports restoring this failed
-full run's retained executable and image. [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36748047488)
-is still running. Keep PR #79 in draft.
+passes with different artifacts. The exact retained replay now reproduces the
+failure; its separate debugger pass has the read errors described above.
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36748047488) now passes
+the complete audited inventory. Keep PR #79 in draft.
 The [vector allocation review](docs/handover/2026-09-30-shared-reader-draft/vector-allocation-rounding-review-manifest.json)
 identifies excess 16-byte rounding for eight-byte-aligned payloads. Its ordinary
 GNU census comparison already matches, so changing Lisp statistics to include
-that padding would introduce a difference. The [isolated source200 allocator draft](docs/runtime-representation-vector-allocation-draft.md)
-now removes that padding while preserving the original 40-byte bitmap by indexing
-the minimum object footprint. Strict checks and seven focused gate controls pass;
-broader gate/release and 36 ordinary comparisons are running under supervisor
-29761. It fixes a separate GNU pseudovector census difference in the focused
-controls and exposes the larger free-list head table as a remaining cost.
+that padding would introduce a difference. The [source201 allocator candidate](docs/runtime-representation-vector-allocation-draft.md)
+removes that padding while preserving the original 40-byte bitmap by indexing
+the minimum object footprint. Its selected results and source200's preserved
+broad-gate failure are recorded above. It fixes separate GNU pseudovector census
+differences and accounts for the larger free-list head table as a remaining cost.
 The source199 baseline assertions, failed ordinary comparison and strict Clippy
-failure remain preserved. The allocator draft is not applied to the task branch.
+failure remain preserved. Source201 now occupies the task branch.
 Broader reader contracts, symbol authority, allocation accounting, final audit,
 complete final-source validation and locked performance parity remain open.
 **The full goal remains active; this checkpoint is not completion.**

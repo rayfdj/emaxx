@@ -1,5 +1,10 @@
 # Shared command reader draft — 30 September 2026
 
+The [source201 allocator continuation](runtime-representation-vector-allocation-draft.md)
+now occupies the task branch on top of the reader/macro changes described here.
+Its strict checks, 454 gate controls, 454 release controls and 36 ordinary exact
+GNU comparisons pass; complete validation is running. Main remains source174.
+
 **Source198 is an unfinished candidate, not production.** Its complete
 patch is based on main `21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199`, the verified
 merge of [PR #78](https://github.com/rayfdj/emaxx/pull/78). Production remains
@@ -159,12 +164,14 @@ for source196's actual terminal process to exit, runs source198's 17 selected
 terminal scenarios, audits their raw checkpoints, then starts all 226 scenarios.
 The [selected terminal receipts](handover/2026-09-30-shared-reader-draft/source198-selected-terminal-manifest.json)
 now verify all 17 scenarios and 34 screen comparisons. Supervisor 23578 has
-exited and the queue has started full terminal supervisor 24260. Keep source198
-and its artifacts frozen while its processes run. Its own
-[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36748039991) and
-[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36748047488) are running
-against exact published `7e45db47`; source196's frozen pass does not certify the
-macro saved-state change.
+exited. Full terminal supervisor 24260 and queue 22463 have now also exited;
+the [complete terminal audit](handover/2026-09-30-shared-reader-draft/source198-complete-terminal-manifest.json)
+verifies all 226 scenarios and 686 comparisons (658 screens and 28 filesystem
+checks). Its own [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36748047488)
+now matches 519 files and 7,928 outcomes on exact published `7e45db47`. The
+[raw frozen audit](handover/2026-09-30-shared-reader-draft/source198-linux-frozen-manifest.json)
+checks all 1,038 process results and preserves 7,670 passes, 47 expected failures
+and 211 skips for each editor. Linux Rust fails as recorded below.
 
 Source198's [complete macOS Rust receipts](handover/2026-09-30-shared-reader-draft/source198-macos-complete-rust-manifest.json)
 now verify 2,952 library passes, two existing terminal ignores, 60 binary passes
@@ -186,12 +193,21 @@ passes with the exact same executable hash
 a different startup image. The full run retains image `93471768...`; the replay
 creates `dea01c00...`. That pass does not clear the original failure or establish
 its cause. [Instrumented root tracing](https://github.com/rayfdj/emaxx/actions/runs/36751314826)
-is still running. The [replay and debugger preparation receipts](handover/2026-09-30-shared-reader-draft/source198-reclamation-replay-and-debugger-manifest.json)
+now passes; its [audited child trace](handover/2026-09-30-shared-reader-draft/source198-instrumented-root-trace-manifest.json)
+records both keys surviving on parked coroutine stacks and then being reclaimed.
+That instrumented executable and fresh image differ from the original failure.
+The [replay and debugger preparation receipts](handover/2026-09-30-shared-reader-draft/source198-reclamation-replay-and-debugger-manifest.json)
 retain the raw standalone pass, distinct image hashes, inspected disassembly
 and five rejected malformed-input controls. The existing exact debugger helper now accepts the full gate's
 retained artifacts after verifying their hashes, source and inventory, with an
 explicit guard for this inspected executable's ABI. Original assertions and
-timeouts stay unchanged. The candidate remains in draft.
+timeouts stay unchanged. The [exact retained replay](https://github.com/rayfdj/emaxx/actions/runs/36753517998)
+now reproduces the original assertion with the retained executable and image.
+Its [audited raw evidence](handover/2026-09-30-shared-reader-draft/source198-exact-retained-failure-manifest.json)
+also preserves the separate debugger pass and its 498 address-read overflow
+errors. No retaining root or repair is established. The diagnostic helper now
+records rejected name reads and can preserve five separate debugger runs with
+every outcome, trace and image identity. The candidate remains in draft.
 
 The raw evidence establishes the following selected results, not complete
 new-source validation:
@@ -416,11 +432,14 @@ payloads need only eight-byte alignment. Fifteen vector sizes and three closure
 widths already have identical GNU/Emaxx Lisp census deltas; those statistics must
 not be changed to count Rust padding. The initial proposal would double the
 bitmap words, but that is unnecessary: distinct allocations are at least 16
-bytes apart. The [isolated source200 allocator draft](runtime-representation-vector-allocation-draft.md)
-keeps the existing 40-byte bitmap and passes strict checks plus seven focused
-controls. It removes physical padding, corrects separate pseudovector census
-differences against GNU, and retains the larger free-list table in its cost
-accounting. Broader validation is running; no timing improvement is claimed.
+bytes apart. The [source201 allocator candidate](runtime-representation-vector-allocation-draft.md)
+keeps the existing 40-byte bitmap and passes strict checks, 454 gate controls,
+454 release controls and 36 ordinary comparisons. Source200's failed old record
+expectation remains preserved; source201 corrects it against GNU while retaining
+all original sizes and assertions. The candidate removes physical padding,
+corrects separate pseudovector census differences and retains the larger
+free-list table in its cost accounting. Complete validation is running; no
+timing improvement is claimed.
 
 The complete goal still requires symbol/object authority, truthful physical
 allocation and collection accounting, post-deinit TLS behavior, final adversarial
