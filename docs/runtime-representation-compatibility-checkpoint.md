@@ -95,8 +95,9 @@ supersedes the source162 entry point below and includes the source161 menu
 repair. All 339 compiled/test inputs replay from published `d9caac1e`.
 Strict checks, **393 selected plus 69 disjoint command-loop tests per mode**
 (462 debug and 462 release), and all **25 ordinary exact GNU comparisons** pass.
-Complete macOS Rust and terminal runs are active; complete Linux and frozen
-certification remain required.
+The first complete macOS attempts were subsequently interrupted; the
+[live checkpoint](runtime-representation-live-keymap-checkpoint.md) records their
+raw evidence and recovery. Complete Linux Rust and frozen runs are active.
 
 Lookup reads actual vector/string events when reached, including mutable
 unibyte Meta, Lucid and translated sequences. `key-binding` invokes actual

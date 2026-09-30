@@ -35,8 +35,18 @@ Debug and release each pass **393 selected plus 69 disjoint command-loop
 controls**, with no failures or ignores. All **25 ordinary GNU comparisons**
 match exact output and successful process status. Native shared-pair/tail,
 image sharing, forced collection, mutation, redefinition, quit/throw and
-reclamation controls remain covered. Complete macOS Rust and terminal runs
-are active; full Linux Rust and frozen certification remain pending.
+reclamation controls remain covered. [PR #78](https://github.com/rayfdj/emaxx/pull/78)
+publishes these inputs at `3bada057`. Its [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
+and [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) runs are active.
+
+The initial full macOS runs were interrupted. Five Rust groups pass (1,607
+tests), then primitives receives SIGTERM before its result summary; later
+groups and Cargo stages do not execute. The terminal log stops during scenario
+33/223, without a final result or post-run hash verification. The
+[interrupted-run receipts](handover/2026-09-30-keymap-interrupted-runs/manifest.json)
+remain incomplete. Their interruption cause is not established. On continuation,
+the old temporary worktrees/GNU source were absent. Persistent project checkouts
+and a fresh source/ABI-matched GNU build are being restored for complete reruns.
 
 Earlier failures stay preserved: source162's live-input mismatch, source163's
 three ordinary mismatches, source164's compile error and source165's three

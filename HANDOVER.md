@@ -34,8 +34,14 @@ controls** and all **25 ordinary GNU comparisons** pass. Its portable patch
 replays all 339 inputs from published `d9caac1e`.
 
 Source166 was separate continuation material in PR #77 and is now the next
-production candidate. Its complete macOS Rust and terminal runs are active;
-Linux/frozen certification is not yet available.
+production candidate in [PR #78](https://github.com/rayfdj/emaxx/pull/78), published
+at `3bada057`. The first full macOS runs were interrupted: Rust received SIGTERM
+in primitives after five completed groups; the terminal log ends during scenario
+33/223. Their [raw evidence](docs/handover/2026-09-30-keymap-interrupted-runs/manifest.json)
+is preserved. Former temporary worktrees and GNU source are absent. Recovery uses
+persistent `target/runtime-goal/recovered-2026-09-30` checkouts and a fresh GNU
+candidate, with complete macOS reruns required. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
+and [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) are active.
 The source162/163/165 negative comparisons, source164 compiler failure and
 retained-main callback/dispatch failures remain in the linked draft history.
 Source166's selected passes do not substitute for complete validation.

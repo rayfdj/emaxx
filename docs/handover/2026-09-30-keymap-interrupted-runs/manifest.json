@@ -1,0 +1,125 @@
+{
+  "status": "INCOMPLETE_INTERRUPTED_NOT_PASSED",
+  "published_source": "3bada057ce99da19609909d97088e73d69cd27f3",
+  "rust": "Five evaluation groups complete with 1,607 passes. The primitives process exits with signal 15 before a result summary. Four later library groups and both Cargo stages do not execute. The driver reports source unchanged and preserves an immutable test executable. The interruption cause is not established by these logs.",
+  "terminal": "33 of 223 scenarios start; the log stops during page-up-after-down. The first 32 scenarios have matching reports. No final result or post-run input rehash exists; this is not a complete pass.",
+  "recovery_observation": "On continuation at 2026-09-29 23:58 UTC, the former /private/tmp GNU source and worktrees are absent, and their tool process IDs are unavailable. Commits, source manifests, copied executables/images and these raw logs remain in the project. Rebuild in target/runtime-goal/recovered-2026-09-30 and execute fresh complete checks; never relabel the interrupted runs.",
+  "linux_runs": {
+    "rust": 36647925886,
+    "frozen": 36647928962
+  },
+  "qualification": "Source166 selected validation remains separate; main source161 complete results remain separate. Darwin pin, full final-source validation, architecture, allocation accounting, audit and performance requirements are unchanged.",
+  "retained_test_binary_sha256": "888eb95411cefca451c1a3c9a334ee3f2e6bf7d35675dd19a7ba43f48808bada",
+  "archive": {
+    "path": "receipts.tar.gz",
+    "bytes": 123075,
+    "sha256": "f31260f5cf98cf007434679a1c967af473a4db077eceb1283132eec4da233046"
+  },
+  "files": [
+    {
+      "path": "full-gate-source166/build.log",
+      "bytes": 183969,
+      "sha256": "5c408852b778a03f11aa0aad0bed2785349698e3d5de46ffa4b3a91841a3a1a7"
+    },
+    {
+      "path": "full-gate-source166/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source166/inventory.txt",
+      "bytes": 257472,
+      "sha256": "ded495850d87522985d3c573c0794b916313b37f2fbaf3adee0f5be1188d4ad1"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_01.json",
+      "bytes": 487,
+      "sha256": "3b8e872281f729a429e627ad28a5abdffb8689ba11e892209d069ff2eab6fc3c"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "e215a5260ac1ebdbfb9e9cdf5555fc8c785980e8a72377a3dba93980567a725f"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_02.json",
+      "bytes": 492,
+      "sha256": "00ab053d44b34941611cb082ca62ad5580aef28eeeb3da7ac1ee0f72c817a283"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_02.log",
+      "bytes": 71451,
+      "sha256": "ed16098c46e3a50b25be10e719ab90ee59a324843397dc074aba450e5d3110d5"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_03.json",
+      "bytes": 492,
+      "sha256": "46a7feabd8cecb5d80f305c442a31d48ceb585d5ff0551adb084521b7216bf79"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_03.log",
+      "bytes": 30420,
+      "sha256": "cf466416503c01b8f952feec758b1d98f6fb749c76c4ca0beb302af8b2cde429"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_04.json",
+      "bytes": 492,
+      "sha256": "efa2276fd8844519f1c606566ef160a7b046bc632f825db64e82871d51b3301a"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "5a39c62f2635fd69814a8df0846582d7f1847888df33a75052f2b21a9f261ff9"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_05.json",
+      "bytes": 486,
+      "sha256": "ebfe04e9061b3cd37e05bc09f55c1ba5a3e4fc8e1e115a55155ac2e10319ce17"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-eval_05.log",
+      "bytes": 73285,
+      "sha256": "256190e02cbef3d415754c21f97b5080d0e0644f2d609eb923b1455e2255bf03"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-primitives.json",
+      "bytes": 497,
+      "sha256": "d980111b75b16428e64562d42933ed6f2c2965e7ac3b822404d2f13a0257aec6"
+    },
+    {
+      "path": "full-gate-source166/repeat-01-primitives.log",
+      "bytes": 42306,
+      "sha256": "f679e9d3670f086234ac209771cfa1b488164483f48096c7367b2ad66b53aa78"
+    },
+    {
+      "path": "full-gate-source166/summary.json",
+      "bytes": 1928,
+      "sha256": "e4da11d9cee4d3346221eb98f31f5b1fac3e8b99939284b4365a491ecd3153ab"
+    },
+    {
+      "path": "source166-full-gate-command.json",
+      "bytes": 1037,
+      "sha256": "7dbb9754fdbc6c85c186fb6729670dcceda736aec26b179a2674a6bb9bc9e3ac"
+    },
+    {
+      "path": "source166-full-gate-result.json",
+      "bytes": 2416,
+      "sha256": "b9640eef22fa5cac8e55d3411533638bed6ba88fa1d4caaf7195aae26a6e9fa0"
+    },
+    {
+      "path": "source166-full-gate.log",
+      "bytes": 624,
+      "sha256": "f8b1967e1b3bde42e24325d39091ecc0885ce9a0913885b2e5af5fa1f262295f"
+    },
+    {
+      "path": "source166-full-ttydiff-command.json",
+      "bytes": 8334,
+      "sha256": "eeacd7332a6489bdc1879dd8b07875c004f9babe89f643cb78a6c704adb5dcba"
+    },
+    {
+      "path": "source166-full-ttydiff.log",
+      "bytes": 2691,
+      "sha256": "3da11247a3e0e7dbae0d5445edd5be249abb6bac94bbfa64db7494a9e5f8aa8e"
+    }
+  ]
+}
