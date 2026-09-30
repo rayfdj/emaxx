@@ -1,13 +1,14 @@
 # Shared command reader draft — 30 September 2026
 
+The [source204 cons repair](runtime-representation-cons-roots-draft.md) now occupies
+the task branch on top of the reader/macro and source201 allocator changes.
+Its strict checks, 596 gate / 596 release controls, 39 ordinary batch comparisons
+and one ordinary terminal fixture pass; complete validation is running.
 The [source201 allocator continuation](runtime-representation-vector-allocation-draft.md)
-now occupies the task branch on top of the reader/macro changes described here.
-Its strict checks, 454 gate controls, 454 release controls and 36 ordinary exact
-GNU comparisons pass. Complete Rust audits now pass 3,056 macOS and 3,068 Linux
-tests; terminal and Linux frozen validation remain running. The
-[cons field/root continuation](runtime-representation-cons-roots-draft.md)
-records the original Linux failure's retaining root and a separate repair
-candidate with seven focused gate passes. Main remains source174.
+records complete audits of 3,056 macOS / 3,068 Linux Rust passes, 226 terminal
+scenarios / 686 comparisons, and 519 Linux frozen files / 7,928 matching outcomes.
+Source204 addresses the original Linux failure's diagnosed retaining root; its
+complete Linux repair confirmation remains required. Main remains source174.
 
 **Source198 is an unfinished candidate, not production.** Its complete
 patch is based on main `21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199`, the verified

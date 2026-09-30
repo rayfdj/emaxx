@@ -3,11 +3,14 @@
 Read the [complete goal](runtime-representation-goal.md), the
 [reader handover](runtime-representation-shared-reader-draft.md) and the
 [allocator continuation](runtime-representation-vector-allocation-draft.md).
-**Source204 is a separate unfinished candidate.** The task branch still contains
-source201, and main remains source174. Source201 now passes complete macOS and
-Linux Rust gates (3,056 / 3,068 tests, two existing ignores each). Its terminal
-and Linux frozen comparisons remain running. Those passes do not resolve the
-source198 reclamation failure described below.
+**Source204 is the current task-branch candidate, with complete validation running.**
+All 410 inputs match the separately frozen `cons-roots/emaxx` checkout. Main remains
+source174 and PR #79 remains draft. The preceding source201 passes complete macOS
+and Linux Rust gates (3,056 / 3,068 tests, two existing ignores each), all 226
+terminal scenarios / 686 comparisons, and the
+[complete Linux frozen comparison](handover/2026-09-30-shared-reader-draft/source201-linux-frozen-manifest.json)
+(519 files / 7,928 matching outcomes / 1,038 successful processes). These passes
+do not establish a repair for source198's layout-sensitive defect below.
 
 The [environment-controlled retained-artifact diagnosis](handover/2026-09-30-shared-reader-draft/source198-exact-environment-root-diagnosis-manifest.json)
 uses the exact failed source198 executable and startup image. The ordinary
@@ -61,13 +64,36 @@ runtime tests executed. Source204 corrects that import. Its
 retain the complete 410-input patch and a smaller follow-up patch from
 runtime201. Exact replay and executable modes are verified. Compiler, formatting,
 Clippy and diff checks pass with zero warnings; all **seven focused gate
-controls** pass, including both original reclamation assertions. Broader gate,
-release and 40 ordinary GNU comparisons run under supervisor **41205** in
-`target/runtime-goal/recovered-2026-09-30/cons-roots/emaxx`. Receipts are in
-`target/runtime-goal/resume-2026-09-28`, using `queue-source204-validation.py`
-and the `*-cons204.py` helpers. Preserve the checkout and artifacts while any
-associated process remains live. These focused passes do not replace complete
-candidate validation or Linux confirmation of the repair.
+controls** pass, including both original reclamation assertions. The
+[complete selected audit](handover/2026-09-30-shared-reader-draft/source204-cons-selected-validation-manifest.json)
+verifies **596 gate / 596 release passes**, seven focused controls in each
+profile, **39 ordinary batch comparisons and one ordinary terminal fixture**.
+The raw inventories, executable/image identities and all 410 source inputs are
+checked; five deliberately corrupt raw logs are rejected.
+
+The original 40-fixture batch attempt remains failed. Both editors returned
+identical purecopy results with zero message callbacks: GNU's batch message path
+does not run the interactive callback required by this fixture. The unchanged
+fixture and original expected counts (1, 1, 1, 2, 2) pass in both editors through
+ordinary `-nw -Q` commands, including collection in every callback. This separate
+replay does not turn the original batch attempt into a pass. Two incomplete audit
+invocations are preserved: one omitted the expected fixture-file newline rule,
+and one omitted the existing receipt-directory fixture path. Neither changed
+runtime code, assertions or expected output.
+
+Static ARM64 release disassembly shows `cons_values` using a direct payload load
+without its former selector spills and stack frame (112 to 72 function-code
+bytes). This is static evidence of removed wrapper work, not a measured speedup
+or instructions-per-operation result. The prior and new binaries are retained.
+
+The [complete validation launch](handover/2026-09-30-shared-reader-draft/source204-complete-validation-start-manifest.json)
+records macOS Rust supervisor **43352** and terminal supervisor **43354** in
+`target/runtime-goal/recovered-2026-09-30/cons-roots/emaxx`. The earlier selected
+supervisor **41205** has exited. Preserve the frozen checkout, helpers and
+artifacts while any associated child remains live. Exact published-head Linux
+Rust and frozen comparisons are required next. Receipts and reproduction helpers
+are in `target/runtime-goal/resume-2026-09-28`. These selected passes do not replace
+complete candidate validation or Linux confirmation of the repair.
 
 No timing, RSS or GNU performance-parity claim follows from the smaller field
 handle. Full candidate validation, Linux confirmation of the repair, remaining

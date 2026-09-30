@@ -13,6 +13,7 @@ use std::{
     iter::FromIterator,
     ops::Deref,
     path::Path,
+    ptr::NonNull,
 };
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
@@ -1418,56 +1419,79 @@ enum ConsField {
 
 /// A retained reference to one mutable field of a cons.
 ///
-/// This is deliberately the only field-address abstraction exported by the
-/// Lisp value layer.  Callers cannot depend on the physical layout of
-/// `ConsCell`, so future value-representation work stays localized here.
+/// Like GNU's address of XCAR/XCDR, this is the actual field address.
+/// The collector recognizes either word of a cons as a root. There is no
+/// separate selector or padded enum for an ordinary load/store to inspect.
+#[repr(transparent)]
 #[derive(Clone, Debug)]
 pub struct ConsSlot {
-    cell: SharedCons,
-    field: ConsField,
+    slot: NonNull<Cell<Value>>,
 }
 
 impl ConsSlot {
+    #[inline]
     pub(crate) fn car(cell: &SharedCons) -> Self {
         Self {
-            cell: *cell,
-            field: ConsField::Car,
+            slot: NonNull::from(&cell.car),
         }
     }
 
+    #[inline]
     pub(crate) fn cdr(cell: &SharedCons) -> Self {
         Self {
-            cell: *cell,
-            field: ConsField::Cdr,
+            slot: NonNull::from(&cell.cdr),
         }
     }
 
+    #[inline]
+    fn cell(&self) -> SharedCons {
+        // ConsBlock's slots start at its aligned base and are exactly two
+        // words each. Subtracting the field offset preserves provenance in
+        // the same allocation; no registry lookup is needed.
+        let offset = self.slot.as_ptr() as usize & (std::mem::size_of::<ConsCell>() - 1);
+        debug_assert!(offset == 0 || offset == std::mem::offset_of!(ConsCell, cdr));
+        // SAFETY: constructors use only the two fields of an allocated cons.
+        // The retained interior pointer keeps that cons alive like ConsRef.
+        unsafe { SharedCons::from_raw(self.slot.as_ptr().byte_sub(offset).cast::<ConsCell>()) }
+    }
+
+    #[inline]
+    fn field(&self) -> &Cell<Value> {
+        // Retain ConsRef's allocated-bit check in checked builds.
+        #[cfg(debug_assertions)]
+        let _ = &*self.cell();
+        // SAFETY: the shared field address roots its containing cons; stores
+        // use Cell's interior mutability under the runtime entry boundary.
+        unsafe { self.slot.as_ref() }
+    }
+
+    #[inline]
     pub fn get(&self) -> Value {
-        match self.field {
-            ConsField::Car => self.cell.car.get(),
-            ConsField::Cdr => self.cell.cdr.get(),
-        }
+        self.field().get()
     }
 
+    #[inline]
     pub fn set(&self, value: Value) {
-        match self.field {
-            ConsField::Car => self.cell.car.set(value),
-            ConsField::Cdr => self.cell.cdr.set(value),
-        }
+        self.field().set(value);
     }
 
     pub fn cell_id(&self) -> usize {
-        ConsCell::identity(&self.cell)
+        ConsCell::identity(&self.cell())
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        self.field == other.field && SharedCons::ptr_eq(&self.cell, &other.cell)
+        self.slot == other.slot
     }
 
     pub fn downgrade(&self) -> WeakConsSlot {
+        let cell = self.cell();
         WeakConsSlot {
-            cell: self.cell.downgrade(),
-            field: self.field,
+            cell: cell.downgrade(),
+            field: if self.slot == NonNull::from(&cell.car) {
+                ConsField::Car
+            } else {
+                ConsField::Cdr
+            },
         }
     }
 }
@@ -1480,9 +1504,10 @@ pub struct WeakConsSlot {
 
 impl WeakConsSlot {
     pub fn upgrade(&self) -> Option<ConsSlot> {
-        Some(ConsSlot {
-            cell: self.cell.upgrade()?,
-            field: self.field,
+        let cell = self.cell.upgrade()?;
+        Some(match self.field {
+            ConsField::Car => ConsSlot::car(&cell),
+            ConsField::Cdr => ConsSlot::cdr(&cell),
         })
     }
 }
@@ -2585,7 +2610,10 @@ impl Value {
     }
 
     pub fn cons_values(&self) -> Option<(Value, Value)> {
-        self.cons_cells().map(|(car, cdr)| (car.get(), cdr.get()))
+        match self.kind() {
+            Kind::Cons(cell) => Some((cell.car.get(), cell.cdr.get())),
+            _ => None,
+        }
     }
 
     /// Convert a proper list to a Vec.
@@ -3686,6 +3714,38 @@ mod tests {
         };
 
         assert!(buffer.ptr_eq(&cloned_buffer));
+    }
+
+    #[test]
+    fn retained_cons_fields_use_one_word_and_preserve_slot_identity() {
+        assert_eq!(
+            std::mem::size_of::<super::ConsSlot>(),
+            std::mem::size_of::<usize>(),
+            "a retained car/cdr field needs only its actual field address",
+        );
+        let pair = Value::cons(Value::Integer(13), Value::Integer(29));
+        let (car, cdr) = pair.cons_cells().expect("cons");
+        let weak_car = car.downgrade();
+        let weak_cdr = cdr.downgrade();
+        assert_eq!(car.cell_id(), pair.cons_id().expect("cell identity"));
+        assert_eq!(car.cell_id(), cdr.cell_id());
+        assert!(car.ptr_eq(&weak_car.upgrade().expect("live car")));
+        assert!(cdr.ptr_eq(&weak_cdr.upgrade().expect("live cdr")));
+        assert!(!car.ptr_eq(&cdr));
+        car.set(pair);
+        cdr.set(Value::Integer(53));
+        let values = pair.cons_values().expect("shared fields");
+        assert_eq!(values.0.word(), pair.word());
+        assert_eq!(values.1, Value::Integer(53));
+        assert_eq!(
+            weak_car.upgrade().expect("same car").get().word(),
+            pair.word()
+        );
+        assert_eq!(
+            weak_cdr.upgrade().expect("same cdr").get(),
+            Value::Integer(53)
+        );
+        car.set(Value::Nil);
     }
 
     #[test]

@@ -1321,6 +1321,9 @@ impl ConsMetadata {
 const _: () = {
     assert!(CELL_SIZE == 16);
     assert!(std::mem::size_of::<ConsBlock>() == CONS_BLOCK_ALIGN);
+    assert!(std::mem::offset_of!(ConsBlock, cells) == 0);
+    assert!(std::mem::offset_of!(ConsCell, car) == 0);
+    assert!(std::mem::offset_of!(ConsCell, cdr) == std::mem::size_of::<Value>());
 };
 
 pub(crate) struct ConsMark<'a> {
@@ -2083,7 +2086,16 @@ const TAG_BITS: usize = 7;
 pub(crate) fn conservative_value(word: usize) -> Option<Value> {
     // SAFETY: mem_find validates the allocation before any payload is read.
     Some(match unsafe { mem_find(word & !TAG_BITS) }? {
-        Found::Cons(cell) => Value::Cons(unsafe { ConsRef::from_raw(cell) }),
+        Found::Cons(cell) => {
+            // alloc.c:live_cons_holding accepts the cell, its Lisp tag,
+            // or the actual cdr field address. Clearing arbitrary tag bits
+            // must not turn padding or a byte-sized selector into a root.
+            let offset = word.checked_sub(cell as usize)?;
+            if offset != 0 && offset != 3 && offset != std::mem::offset_of!(ConsCell, cdr) {
+                return None;
+            }
+            Value::Cons(unsafe { ConsRef::from_raw(cell) })
+        }
         Found::Float(cell) => Value::Float(FloatRef(unsafe { NonNull::new_unchecked(cell) })),
         Found::String(cell) => Value::String(TextRef(unsafe { NonNull::new_unchecked(cell) })),
         Found::Vectorlike(header) => unsafe { vectors::value_of(header) },

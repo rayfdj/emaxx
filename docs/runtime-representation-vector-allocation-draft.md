@@ -1,6 +1,6 @@
 # Word-aligned vector allocation draft — 1 October 2026
 
-**Source201 is the unfinished task-branch candidate.** Main remains source174.
+**Source201 is the preceding allocator checkpoint.** The [cons repair](runtime-representation-cons-roots-draft.md) now occupies the task branch; main remains source174.
 The allocator follows source198's reader/macro runtime in
 [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
 Read the [complete goal](runtime-representation-goal.md) and the
@@ -39,8 +39,16 @@ The [complete Linux Rust audit](handover/2026-09-30-shared-reader-draft/source20
 also passes: 2,965 library, 61 binary and 42 integration tests, totaling **3,068**
 passes, with the same two existing ignores. All 2,967 raw library names/verdicts,
 native artifact identity and retained hashes are verified on clean `320d0a2e`.
-Both original survival/reclamation assertions pass. Terminal and Linux frozen
-results remain pending; no GNU performance parity is established.
+Both original survival/reclamation assertions pass. The
+[complete terminal audit](handover/2026-09-30-shared-reader-draft/source201-complete-terminal-manifest.json)
+now verifies all **226 scenarios / 686 comparisons**: 658 screen and 28 filesystem
+checks. Supervisor 33432 has exited; all 410 source inputs and eight execution
+inputs remain unchanged. GNU matches source/native ABI but is not the frozen
+Darwin executable. The [complete Linux frozen audit](handover/2026-09-30-shared-reader-draft/source201-linux-frozen-manifest.json)
+now matches 519 files / 7,928 outcomes with all 1,038 processes successful on
+published `320d0a2e`. It preserves 7,670 passes, 47 expected failures and 211 skips
+per editor. This completes these source201 gates; no GNU performance parity or
+complete source204 validation is established.
 
 The [source200 broad failure](handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved: **453 gate passes / one old record-footprint expectation failure**;
@@ -127,7 +135,7 @@ old pointer bytes. GNU rejects that cons offset; Emaxx accepts it. The
 preserves the complete diagnosis, negative controls and separate repair draft.
 Source201's passes do not establish that this layout-sensitive defect is fixed.
 
-Complete source201 validation, the Linux reclamation diagnosis, broader object
-authority and allocation accounting, final adversarial audit and the locked
-performance criterion remain open. A focused allocator pass does not complete
+Complete source204 validation and Linux confirmation of its reclamation repair,
+broader object authority and allocation accounting, final adversarial audit and
+the locked performance criterion remain open. A focused allocator pass does not complete
 the full runtime goal.

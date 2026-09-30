@@ -4383,6 +4383,83 @@ mod tests {
     }
 
     #[test]
+    fn retained_cons_field_addresses_survive_collection_and_then_reclaim() {
+        #[inline(never)]
+        fn make_field(cdr: bool) -> (crate::lisp::types::ConsSlot, usize) {
+            let pair = Value::cons(Value::Integer(37), Value::Integer(59));
+            let (car_slot, cdr_slot) = pair.cons_cells().expect("cons");
+            (if cdr { cdr_slot } else { car_slot }, pair.word() ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn use_field(
+            heap: &mut NativeHeap,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_top: *const NativeWord,
+            cdr: bool,
+        ) -> usize {
+            let (slot, hidden) = make_field(cdr);
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(stack_top, &[], interpreter, environment);
+            assert_eq!(slot.get(), Value::Integer(if cdr { 59 } else { 37 }));
+            slot.set(Value::Integer(71));
+            assert_eq!(slot.get(), Value::Integer(71));
+            assert!(hidden_cons_is_live(heap, hidden));
+            hidden
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        for cdr in [false, true] {
+            let hidden = use_field(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+                cdr,
+            );
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            assert!(
+                !hidden_cons_is_live(&heap, hidden),
+                "released field must not retain its cons"
+            );
+        }
+    }
+
+    #[test]
+    fn conservative_cons_roots_accept_only_gnu_field_and_tag_offsets() {
+        // alloc.c:live_cons_holding accepts the object, its Lisp tag and
+        // the cdr field. Arbitrary bytes inside a cons are not roots.
+        for contents in [0, 17, -91, 4097] {
+            let pair = Value::cons(Value::Integer(contents), Value::Integer(contents + 1));
+            let base = pair.word() & !TAG_MASK;
+            for offset in 0..std::mem::size_of::<crate::lisp::types::ConsCell>() {
+                let found = crate::lisp::alloc::conservative_value(base + offset);
+                if [0, TAG_CONS, std::mem::size_of::<Value>()].contains(&offset) {
+                    assert_eq!(found.map(|value| value.word()), Some(pair.word()));
+                } else {
+                    assert!(
+                        found.is_none(),
+                        "non-pointer byte offset {offset} retained a cons"
+                    );
+                }
+            }
+            std::hint::black_box(pair);
+        }
+    }
+
+    #[test]
     fn cons_interior_pointers_root_the_cell_but_are_not_valid_lisp_words() {
         let pair = Value::cons(Value::Integer(17), Value::Integer(31));
         let cdr_address = (pair.word() & !TAG_MASK) + 8;

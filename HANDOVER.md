@@ -1,23 +1,35 @@
 # Resume the compact runtime goal here
 
-**Current task-branch candidate: source201's word-aligned vector allocator.**
-Read the [allocator continuation](docs/runtime-representation-vector-allocation-draft.md)
-after the complete goal and shared-reader handover. Its
-[audited selected results](docs/handover/2026-09-30-shared-reader-draft/source201-vector-selected-validation-manifest.json)
-pass all strict checks, **454 gate / 454 release controls and 36 ordinary exact
-GNU comparisons**. All 410 inputs match the task worktree. Its
-[complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source201-macos-complete-rust-manifest.json)
-passes **3,056 tests** and its
-[complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source201-linux-complete-rust-manifest.json)
-passes **3,068 tests**, including native artifact identity and both original
-reclamation assertions, with two existing ignores on each platform. Every raw
-library name/verdict is checked. macOS supervisor **33431** has exited; terminal
-supervisor **33432** remains live in the frozen `macro-reader/emaxx` checkout.
-Runtime source201 is
-[published as **`320d0a2e`**](docs/handover/2026-09-30-shared-reader-draft/source201-publication-manifest.json).
-Its [complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36756877353)
-and [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36756885097)
-are dispatched against that exact head. Main remains source174; PR #79 remains draft.
+**Current task-branch candidate: source204's direct cons fields and GNU cons-root validation.**
+Read the [cons continuation](docs/runtime-representation-cons-roots-draft.md)
+after the complete goal, shared-reader handover and allocator continuation.
+Its [audited selected results](docs/handover/2026-09-30-shared-reader-draft/source204-cons-selected-validation-manifest.json)
+pass strict zero-warning checks, **596 gate / 596 release tests**, seven focused
+controls in each profile, **39 ordinary batch comparisons and one ordinary
+terminal fixture**. All 410 source inputs match the task worktree and frozen
+`cons-roots/emaxx` checkout. The original purecopy batch attempt remains failed:
+both editors produced identical results but no interactive callbacks. The same
+fixture and original expectations pass with collecting callbacks in both editors'
+real terminal sessions. Two incomplete auditor invocations are also preserved.
+
+[Complete macOS validation has started](docs/handover/2026-09-30-shared-reader-draft/source204-complete-validation-start-manifest.json):
+Rust supervisor **43352** and terminal supervisor **43354**. Keep the candidate
+checkout, helpers and artifacts frozen while their children run. Exact-head Linux
+validation is required after publication. Main remains source174; PR #79 remains draft.
+
+The preceding source201 allocator now has complete audited results:
+**3,056 macOS / 3,068 Linux Rust passes** (two existing ignores each),
+**226 terminal scenarios / 686 comparisons**, and **519 Linux frozen files /
+7,928 matching outcomes / 1,038 successful processes**. See its
+[macOS Rust receipts](docs/handover/2026-09-30-shared-reader-draft/source201-macos-complete-rust-manifest.json),
+[Linux Rust receipts](docs/handover/2026-09-30-shared-reader-draft/source201-linux-complete-rust-manifest.json),
+[terminal receipts](docs/handover/2026-09-30-shared-reader-draft/source201-complete-terminal-manifest.json)
+and [Linux frozen receipts](docs/handover/2026-09-30-shared-reader-draft/source201-linux-frozen-manifest.json).
+The frozen comparison preserves **7,670 passes, 47 expected failures and 211
+skips** per editor; the latter are not counted as passes. Native artifact identity
+and both original reclamation assertions pass in both full Rust gates. These are
+source201 results, not complete certification of the new cons repair. Runtime201
+was [published as `320d0a2e`](docs/handover/2026-09-30-shared-reader-draft/source201-publication-manifest.json).
 
 Source198's [complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source198-complete-terminal-manifest.json)
 now passes **226 scenarios / 686 comparisons**, and its
@@ -43,12 +55,12 @@ the observer environment variable makes the direct child pass, explaining the
 earlier passing debugger layout. The source201 passes do not establish a repair.
 Read the new [cons field and root continuation](docs/runtime-representation-cons-roots-draft.md)
 next. Source202's two new controls fail on unchanged runtime201; source203's
-compiler failure is preserved. Source204 corrects the import and validates in
-the separate `cons-roots/emaxx` checkout under supervisor **41205**. Its
-[strict checks and seven focused gate controls](docs/handover/2026-09-30-shared-reader-draft/source204-cons-field-root-focused-manifest.json)
-pass, including both original reclamation assertions. The archive contains its
-complete replay-verified patch and all 410 input hashes. Broader gate, release
-and ordinary results remain pending under that supervisor; keep the checkout frozen.
+compiler failure is preserved. Source204 corrects the import and has completed the selected validation described
+above. Its original selected supervisor **41205** has exited. The
+[focused archive](docs/handover/2026-09-30-shared-reader-draft/source204-cons-field-root-focused-manifest.json)
+retains the complete replay-verified patch and all 410 input hashes; the newer
+selected archive adds both complete selected profiles and the ordinary comparisons.
+Full candidate runs now use the same frozen `cons-roots/emaxx` checkout.
 
 Source200's [453-pass / one-failure gate](docs/handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved. Source201 keeps its runtime and corrects the old record word-count
