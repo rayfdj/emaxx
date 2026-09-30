@@ -2,7 +2,8 @@
 
 Inspected entry ABI: cleanup_vector's header is rdi; NativeHeap collection
 receives heap/stack-top/runtime-root-pointer/root-count in rdi/rsi/rdx/rcx.
-The heap's stack-bottom field is at byte 0x48. No inferior calls or stores.
+The heap's stack-bottom field is at byte 0x48. At mark_stack+0x8e, rax/rbx
+are the running thread's conservative scan bounds. No inferior calls or stores.
 """
 
 import json
@@ -83,8 +84,12 @@ class Collection(gdb.Breakpoint):
         collection += 1
         removed = []
         emit("explicit collection")
-        cleanup.enabled = collection <= 4
+        # The first sweep includes unrelated startup garbage, not the objects
+        # behind the measured first-to-second census delta. Retain its roots
+        # and observe cleanup in collections 2..4 without an unbounded log.
+        cleanup.enabled = 2 <= collection <= 4
         capture.enabled = collection <= 4
+        host_stack.enabled = collection <= 4
         report.enabled = collection <= 4
         return False
 
@@ -120,8 +125,17 @@ class Cleanup(gdb.Breakpoint):
         matches = [dict(kind=kind, address=hex(base + i * 8), word=hex(value))
                    for kind, base, values in sources for i, value in enumerate(values)
                    if header <= (value & ~7) < header + (slots + 1) * 8]
-        removed.append(dict(header=hex(header), size=hex(size), tag=tag, slots=slots,
-                            payload=[hex(v) for v in payload], direct_root_matches=matches))
+        record = dict(header=hex(header), size=hex(size), tag=tag, slots=slots,
+                      payload=[hex(v) for v in payload], direct_root_matches=matches)
+        # Inspected RecordState payload starts with Rust Vec(capacity, ptr,
+        # length), then its id, type tag and owner/kind. Inline Lisp records
+        # have traced header slots; host records have only rest words.
+        if tag == 34 and size & 4095 == 0:
+            capacity, pointer, length = payload[:3]
+            if length > capacity or length > 4096 or pointer & 7:
+                raise ValueError("unexpected host record slot layout")
+            record["record_fields"] = [hex(v) for v in words(pointer, length)]
+        removed.append(record)
         if len(removed) > 4096:
             raise ValueError("cleanup inventory exceeds bounded observer")
         return False
@@ -129,9 +143,24 @@ class Cleanup(gdb.Breakpoint):
 
 class Report(gdb.Breakpoint):
     def stop(self):
-        emit("swept vectors", objects=removed)
+        emit("swept vectors", cleanup_observed=collection >= 2, objects=removed)
         cleanup.enabled = False
         capture.enabled = False
+        host_stack.enabled = False
+        return False
+
+
+class HostStack(gdb.Breakpoint):
+    def stop(self):
+        start, end = reg("rax") & ~7, reg("rbx")
+        values = words(start, (end - start) // 8)
+        sources.append(("host conservative stack", start, values))
+        frames = []
+        frame = gdb.newest_frame()
+        while frame:
+            frames.append(dict(function=frame.name(), pc=hex(frame.pc()), sp=hex(int(frame.read_register("rsp")))))
+            frame = frame.older()
+        emit("host stack", start=hex(start), end=hex(end), words=[hex(v) for v in values], frames=frames)
         return False
 
 
@@ -147,6 +176,7 @@ Collection("*_RNvNtNtNtNtCsa7TutTRCzEQ_5emaxx4lisp10primitives8dispatch12misc_ke
 cleanup = Cleanup("*_RNvNtNtNtCsa7TutTRCzEQ_5emaxx4lisp5alloc7vectors14cleanup_vector", internal=True)
 capture = Capture("*_RNvMsd_NtNtNtCsa7TutTRCzEQ_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top", internal=True)
 report = Report("*_RNvNtNtNtNtCsa7TutTRCzEQ_5emaxx4lisp10primitives8dispatch12misc_keymaps22garbage_collect_report", internal=True)
-cleanup.enabled = capture.enabled = report.enabled = False
+host_stack = HostStack("*_RINvNtNtCsa7TutTRCzEQ_5emaxx4lisp5alloc10mark_stackQNCNvMsw_NtB4_4evalNtBW_11Interpreter22weak_hash_reachabilitys_0EB6_+0x8e", internal=True)
+cleanup.enabled = capture.enabled = report.enabled = host_stack.enabled = False
 gdb.execute("run")
 emit("inferior finished")

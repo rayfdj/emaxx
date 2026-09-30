@@ -7,6 +7,17 @@ only two tests in `src/lisp/native_comp/runtime/record_layout_tests.rs`, in
 `target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx`. Its runtime is
 identical to published source204 `d186d40b`. No associated process remains live.
 
+The current isolated checkout is **source206**, which retains those two tests
+and adds three permanent GNU differential controls with the unchanged ordinary
+programs and expected results below. Its
+[portable patch and audited gate](handover/2026-09-30-shared-reader-draft/source206-bytecode-negative-controls-manifest.json)
+replay all **416 inputs** from main `21d20f0e`, including file modes. The fresh
+gate build succeeds; **one control passes and four fail**. Both representation
+assertions and both mutation contracts fail. Constant sharing, cloning, GC and
+rejected closure `aset` pass. Runtime204 is unchanged; only tests and six fixture
+files differ. Supervisor **51384 has exited**. These are preserved failures,
+not expected-failure annotations or a repair.
+
 The [portable evidence](handover/2026-09-30-shared-reader-draft/source205-bytecode-negative-baseline-manifest.json)
 contains the complete patch from main `21d20f0e`, all 410 compiled/test input
 hashes, exact patch/mode replay, a fresh gate build and both raw failures.

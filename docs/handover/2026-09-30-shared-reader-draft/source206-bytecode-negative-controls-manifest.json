@@ -1,0 +1,125 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "verified negative baseline",
+    "inputs": 416,
+    "raw_passed": 1,
+    "raw_failed": 4,
+    "changed": [
+      "src/lisp/native_comp/runtime/record_layout_tests.rs",
+      "src/lisp/primitives/tests.rs"
+    ],
+    "added": [
+      "tests/fixtures/bytecode-closure-shared-constants.el",
+      "tests/fixtures/bytecode-closure-shared-constants.expected",
+      "tests/fixtures/bytecode-code-active-mutation-baseline.el",
+      "tests/fixtures/bytecode-code-active-mutation-baseline.expected",
+      "tests/fixtures/bytecode-code-mutation-baseline.el",
+      "tests/fixtures/bytecode-code-mutation-baseline.expected"
+    ],
+    "patch_replay_and_modes_verified": true,
+    "manifest_sha256": "1faa437b84e2773373cb8473b3e336060c67d80a4922d4c797c9f3900b49b975",
+    "patch_sha256": "220af59c95b2c03378cb699080c08f75b3102e9c0a93a0fc091d281b6c8d1552",
+    "binary_sha256": "6603acae4922a12f36db0a29293a8cc59f388498afb27325466ce2b708532ced",
+    "failed": [
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots",
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload",
+      "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu",
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu"
+    ],
+    "qualification": "Only tests/fixtures differ from runtime204. The constructor/constant/clone/GC/rejected-aset contract passes; both representation assertions and both code-string mutation controls fail. This adds permanent differential controls, not a runtime repair."
+  },
+  "archive": {
+    "path": "source206-bytecode-negative-controls.tar.gz",
+    "bytes": 154549,
+    "sha256": "84d9ad687107ba3397b582c6bba46cf7535c4f3c32c69ec6af5257c0a6008680"
+  },
+  "files": [
+    {
+      "path": "audit-source206-baseline.py",
+      "bytes": 4221,
+      "sha256": "51693599972f2ab1e19d47e2de02bab2db0f4d3ba971c805d3351e7009cd0221"
+    },
+    {
+      "path": "freeze-bytecode-candidate.py",
+      "bytes": 2069,
+      "sha256": "4f48745df77abdfa68d2e61109d6028505db4f4e0f09979e2121acb1b28a987d"
+    },
+    {
+      "path": "package-source206-and204-terminal.py",
+      "bytes": 2150,
+      "sha256": "73d84cfecfebea03ac96670c929b3d73688ae2af5cb7da778ce0c9c2936101df"
+    },
+    {
+      "path": "source206-base.json",
+      "bytes": 771,
+      "sha256": "0c332696896f4e1e0034aff27900a4ee98fd8d887dd7c7877c82c83c37813b0a"
+    },
+    {
+      "path": "source206-baseline-audit.json",
+      "bytes": 1600,
+      "sha256": "e8e9e7f3d8ea991b65ea08f3e82e13c0efb7d1f6dcb15b382070a7a499787125"
+    },
+    {
+      "path": "source206-baseline-launch.json",
+      "bytes": 399,
+      "sha256": "c5623f94644d202410fcc2a488a0eb6db753663b82d1d47be701ccf389fcb01f"
+    },
+    {
+      "path": "source206-baseline-supervisor.log",
+      "bytes": 2381,
+      "sha256": "f2d3b059252d7afd08a7ffd81831d4e8fbead86d13ad2f5005b2c4fe80d088c9"
+    },
+    {
+      "path": "source206-complete.patch",
+      "bytes": 265490,
+      "sha256": "220af59c95b2c03378cb699080c08f75b3102e9c0a93a0fc091d281b6c8d1552"
+    },
+    {
+      "path": "source206-gate-baseline-command.json",
+      "bytes": 2192,
+      "sha256": "b6786da078fabfa7a07b89423aad17eafa2f2f416b9e5d333776afdfb990d847"
+    },
+    {
+      "path": "source206-gate-baseline-result.json",
+      "bytes": 91,
+      "sha256": "0599f77df7a0c0f2eb14c22c615b49223f449eb256622cbf4057c62642b5a7fe"
+    },
+    {
+      "path": "source206-gate-baseline.log",
+      "bytes": 2195,
+      "sha256": "bee094dc8842169dd201da8261d0d8c1622890fd281cb92d9b8ea1cad32da8c2"
+    },
+    {
+      "path": "source206-gate-build-command.json",
+      "bytes": 1124,
+      "sha256": "b6994d5d8fe20dcf89f87666e0e89e0551b46b82a119c50ae319b6795c41f91f"
+    },
+    {
+      "path": "source206-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "9609d7861253065aa1cea9d5ec7f2a8cadf3c0863ca50403145e69bf6defb879"
+    },
+    {
+      "path": "source206-gate-build.log",
+      "bytes": 216115,
+      "sha256": "755150644e333dc216de83871618eec7d810382568fb89200dd86be1a7fa6614"
+    },
+    {
+      "path": "source206-gate-inventory.txt",
+      "bytes": 261637,
+      "sha256": "5898fb09e39f3152362f4ccf651a88d4943faf7706fee22c4a278e7e111f156d"
+    },
+    {
+      "path": "source206-manifest.json",
+      "bytes": 47251,
+      "sha256": "1faa437b84e2773373cb8473b3e336060c67d80a4922d4c797c9f3900b49b975"
+    },
+    {
+      "path": "test-bytecode-controls206.py",
+      "bytes": 3487,
+      "sha256": "be52127518ca8aecea4b0850827e4ba99a8968373f9eff476a4015332fa5fbfc"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

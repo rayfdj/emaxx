@@ -72,6 +72,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--artifact-run", default="36764911748")
+    parser.add_argument("--replay-group", action="store_true",
+                        help="also repeat the already reproduced complete primitives group")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
@@ -143,7 +145,10 @@ def main():
 
         selected = run("selected", [str(binary), FILTER, "--test-threads", "1"], TESTS)
         group_names = [name for name in inventory if name.startswith("lisp::primitives::tests::")]
-        run("original-group", [str(binary), "lisp::primitives::tests::", "--test-threads", "1"], group_names)
+        if args.replay_group or not selected["exit_code"]:
+            run("original-group", [str(binary), "lisp::primitives::tests::", "--test-threads", "1"], group_names)
+        else:
+            record["original_group_not_rerun"] = "The first retained-artifact diagnosis reproduced this whole group; selected controls reproduce again, so this observer follow-up needs no repeated unrelated tests."
         # If the isolated controls reproduce, avoid unrelated debugger work.
         # Otherwise retain the entire original group and its preceding state.
         selector, names = (FILTER, TESTS) if selected["exit_code"] else ("lisp::primitives::tests::", group_names)
@@ -159,13 +164,14 @@ def main():
         (output / "trace-events.json").write_text(json.dumps(events, indent=2) + "\n")
         for name in TESTS:
             short = name.rsplit("::", 1)[1]
-            for event in ["explicit collection", "roots", "swept vectors"]:
+            for event in ["explicit collection", "roots", "host stack", "swept vectors"]:
                 observed = {item["collection"] for item in events if item["test"] == short and item["event"] == event}
                 if not {1, 2, 3, 4} <= observed:
                     raise ValueError("observer did not cover the first four collections: " + short + "/" + event)
         record["trace_events"] = len(events)
         record["status"] = "diagnosis recorded; original failures remain failures"
-        return next((record[name]["exit_code"] for name in ["selected", "original-group", "debugger"] if record[name]["exit_code"]), 0)
+        return next((record[name]["exit_code"] for name in ["selected", "original-group", "debugger"]
+                     if name in record and record[name]["exit_code"]), 0)
     except BaseException as error:
         record.update(status="diagnostic error", error=repr(error))
         raise

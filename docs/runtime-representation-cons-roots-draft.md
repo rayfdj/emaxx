@@ -96,7 +96,12 @@ verify `d186d40bf014ca53d0a2652b4e2f2d921c5cb009` and draft PR #79.
 now passes 2,960 library, 60 binary and 39 integration tests: **3,059 passes**, two
 existing ignores and native artifact identity. All 2,962 library names/verdicts,
 410 source hashes and four retained executable/image files are audited.
-Supervisor 43352 has exited; terminal supervisor 43354 remains live.
+Supervisor 43352 has exited. The
+[complete terminal audit](handover/2026-09-30-shared-reader-draft/source204-complete-terminal-manifest.json)
+also passes all 226 scenarios / 686 comparisons (658 screen, 28 filesystem),
+with unchanged inventories, all 410 source hashes and eight execution inputs
+verified. Supervisor 43354 has exited. GNU matches source/native ABI but remains
+different from the frozen Darwin executable.
 
 [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) has finished
 with **2,232 passes / two failures**. Its
@@ -112,15 +117,38 @@ failed result stays failed.
 
 `tools/diagnose_exact_census.py` uses the existing Linux workflow's
 `rust-exact-census` mode to restore these artifacts and their source paths. It
-replays both selected controls and the original primitives group, then observes
-the first four explicit collections using the inspected executable's ABI.
+replays both selected controls and, in the first diagnosis, the original
+primitives group, then observes collections using the inspected executable's ABI.
 No assertion or heap value is changed. Six corrupt retained-input cases are
-rejected locally; debugger execution remains required. A retained-image replay
+rejected locally. The [published diagnostic launch](handover/2026-09-30-shared-reader-draft/source204-census-diagnosis-start-manifest.json)
+records [run 36770142335](https://github.com/rayfdj/emaxx/actions/runs/36770142335)
+on tooling/evidence commit `dca0453e`, with all runtime inputs still source204.
+That job has finished. Its [audited evidence](handover/2026-09-30-shared-reader-draft/source204-exact-census-incomplete-manifest.json)
+reproduces both failures in the selected pair and the full 626-test primitives
+group (624 passes / two failures), with 403 compiled inputs and the exact
+executable/image verified unchanged. The debugger's first control reaches four
+collections. Its second sweep reclaims a 41-element vector and a host record
+with four detached fields; its third and fourth reclaim no counted vectors.
+The second control's initial sweep exceeds the observer's 4,096-object bound,
+ending the debugger without a complete test result. This failure and all raw
+data remain preserved. The retaining root is still unknown.
+
+The revised observer retains first-collection roots but observes cleanup only
+in collections 2..4, where the census difference occurs. It also records the
+independent host conservative stack at the exact inspected `mark_stack` scan
+boundary. The first version captured only native-heap roots. The new driver
+requires both controls' first four host-stack/collection reports and rejects
+missing traces. The already reproduced full group need not be rerun when the
+same selected controls reproduce; `--replay-group` retains that option.
+A retained-image replay
 cannot reconstruct unrecorded inherited CI environment exactly, and a debugger
 pass would not clear the original failure. The 47-slot cause is still unknown.
 
-[Linux frozen compatibility](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
-remains running. Receipts and reproduction helpers are in
+[Complete Linux frozen compatibility](handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json)
+now passes all 519 files / 7,928 matching outcomes / 1,038 successful processes
+on source204. Raw inventories, result names, process exits and pinned GNU
+identity are audited. Each editor reports 7,670 passes, 47 expected failures
+and 211 skips; these categories remain separate. Receipts and reproduction helpers are in
 `target/runtime-goal/resume-2026-09-28`. Complete candidate validation remains
 required before promotion.
 
