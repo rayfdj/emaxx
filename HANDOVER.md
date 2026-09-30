@@ -22,6 +22,20 @@ reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
 **Current task-branch continuation:** read the
+[combined call-metadata checkpoint](docs/runtime-representation-call-metadata-checkpoint.md).
+Source174 combines source172's independent mutable TLS reports and source173's
+direct subr classification/descriptor reads. All 345 compiled/test inputs match
+the isolated checkout. Strict checks, **395 gate and 395 release controls**,
+and **12 ordinary exact GNU comparisons** pass. Complete macOS Rust and terminal
+runs have started; complete Linux Rust and frozen compatibility remain required.
+The [portable receipts](docs/handover/2026-09-30-combined-call-repair/manifest.json)
+also verify the source170 Eglot replay's 52 matching outcomes and source172's
+two TLS Rust passes plus 27 matching network-stream outcomes. The original
+full frozen GNU Eglot timeout remains a failed run. This candidate is not yet
+ready for main. Input decoding is a separate unfinished draft; all goal-wide
+requirements below remain open.
+
+**Previous task-branch continuation:** read the
 [independent TLS report checkpoint](docs/runtime-representation-tls-report-checkpoint.md).
 Source172 removes the process-owned report cache and returns fresh mutable
 Lisp strings from the live TLS session. Strict checks, **414 debug and 414

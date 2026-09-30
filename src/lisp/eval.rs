@@ -1807,8 +1807,8 @@ enum SavedRestrictionBounds {
 /// How a symbol callee resolved: eval_sub's reading of the function cell.
 #[derive(Clone)]
 pub(crate) enum FunctionResolution {
-    /// The function cell holds an ordinary subr. Carry its object directly
-    /// rather than resolving its name again at dispatch.
+    /// A classified subr carried directly to dispatch. The call evaluator
+    /// also normalizes UNEVALLED subrs to this representation.
     DirectBuiltin(crate::lisp::types::BuiltinRef),
     /// The name resolved to this exact function value.
     Resolved(Value),
