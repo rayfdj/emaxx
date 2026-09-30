@@ -1094,7 +1094,7 @@ pub(crate) fn completing_read(
         return call_function_value(interp, &function, args, env);
     }
 
-    if !interp.kbd_macro_executions.is_empty() {
+    if executing_kbd_macro_p(interp, env) {
         crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
     }
     let minibuffer = activate_completing_read_minibuffer(interp, args, env)?;
@@ -1474,7 +1474,7 @@ fn completing_read_contents(
     }
 
     let initial_input = completing_read_initial_input(args);
-    if !interp.kbd_macro_executions.is_empty()
+    if executing_kbd_macro_p(interp, env)
         && let Some(contents) =
             crate::lisp::primitives::dispatch::read_minibuffer_text_from_kbd_macro_inner(
                 interp,
@@ -2033,7 +2033,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
     // `exit-minibuffer' arrive here instead of signaling `no-catch'.
     interp.push_active_catch_tag(Value::Symbol("exit".into()));
     let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
-        let mut pending: Vec<Value> = Vec::new();
+        let mut reader: Option<super::KeySequenceReader> = None;
         // A command error or an undefined key echoes its message until
         // the next keystroke, GNU's transient echo.
         let mut hold_echo = false;
@@ -2050,7 +2050,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
         )
         .unwrap_or(());
         loop {
-            if pending.is_empty() {
+            if reader.is_none() {
                 if !hold_echo {
                     let minibuffer_text = interp
                         .active_minibuffer_buffer_id()
@@ -2074,11 +2074,19 @@ pub(crate) fn interactive_minibuffer_command_loop(
             // C-g propagates as GNU's quit out of the recursive edit.
             let event = crate::lisp::primitives::pop_unread_command_event_value(interp, env)?;
             hold_echo = false;
-            pending.push(event);
-            match crate::lisp::primitives::resolve_decoded_key_sequence(interp, env, &mut pending)?
+            if reader.is_none() {
+                reader = Some(super::KeySequenceReader::new(interp, Value::Nil, env)?);
+            }
+            match reader
+                .as_mut()
+                .expect("active key reader")
+                .read_event(interp, event, env)?
             {
                 crate::lisp::primitives::KeyResolution::Command(binding) => {
-                    let keys = std::mem::take(&mut pending);
+                    let keys = reader
+                        .take()
+                        .expect("completed key reader")
+                        .finish(interp, false, env);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                     match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, binding, &keys, last_event,
@@ -2114,7 +2122,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 }
                 crate::lisp::primitives::KeyResolution::Prefix => {}
                 crate::lisp::primitives::KeyResolution::Undefined => {
-                    pending.clear();
+                    reader = None;
                 }
             }
         }

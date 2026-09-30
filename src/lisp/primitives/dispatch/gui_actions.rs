@@ -169,8 +169,13 @@ fn tty_popup_menu(
     let restore =
         interp.bind_special_dynamic("overriding-terminal-local-map", navigation, &mut env)?;
     let outcome = crate::lisp::primitives::run_tty_menu_executor(interp, &mut env, &pane, x0, y0);
-    interp.restore_special_dynamic(restore, &mut env)?;
-    match outcome {
+    match &outcome {
+        Err(error) => interp.with_lisp_stack_roots(error, |interp| {
+            interp.restore_special_dynamic(restore, &mut env)
+        }),
+        Ok(_) => interp.restore_special_dynamic(restore, &mut env),
+    }?;
+    match outcome? {
         Some(crate::lisp::primitives::TtyMenuOutcome::Selected(index)) => Ok(Value::list([pane
             .items
             .get(index)

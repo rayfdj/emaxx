@@ -1,0 +1,68 @@
+{
+  "status": "Separate source197 saved-state candidate applied only to isolated macro-saved-state/emaxx. Compilation/validation is running or queued under supervisor 10334. Not applied to the task branch.",
+  "changes": "GNU two-cons saved state and existing scoped stack roots remove the per-call five-value host vector and global root-registry mutex operations. Adds same-input normal/error GC survival and reclamation test, verified on GNU and retained source195.",
+  "qualification": "Exact patch replay proves all 403 source/test/build input hashes and modes. No compiler or runtime pass claimed in this bundle; running logs excluded. Whole-runtime physical allocation accounting, additional root costs and measured performance remain open.",
+  "captured_unix": 1790783671.710943,
+  "archive": {
+    "path": "source197-saved-state-draft.tar.gz",
+    "bytes": 72948,
+    "sha256": "825ef5b977d424e53a936d6fdf150800b63af7c04e30ad09b9e806677ac4d488"
+  },
+  "files": [
+    {
+      "path": "source197-complete.patch",
+      "bytes": 223482,
+      "sha256": "0ab986eb213cb58d458ecdf83cf1504fbd57f871597f1b6b98879eaeb1fcd8a8"
+    },
+    {
+      "path": "source197-manifest.json",
+      "bytes": 45620,
+      "sha256": "af369b48f150151f94bcbd28b2f2bedc51268fe39e75996286f8383b7fe33afb"
+    },
+    {
+      "path": "source197-base.json",
+      "bytes": 864,
+      "sha256": "33dd45951df0aac4de9f09b904bbab14e53fb7c4b61d0e6e3ab07a15791f1d71"
+    },
+    {
+      "path": "audit-source197-patch.py",
+      "bytes": 2787,
+      "sha256": "4b728344f6843f7085cf66cdf2df682416338ed6e075e9f101a02bb57158f020"
+    },
+    {
+      "path": "source197-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "008cd8ba28eecef13a8b249623a9e24950a89b2b3c1289c8488a1ed45304189c"
+    },
+    {
+      "path": "check-reader197.py",
+      "bytes": 2034,
+      "sha256": "84e49cbe5959e4495fb5e96a32da36ef47a81e56cacb0424b8c242512f975c9a"
+    },
+    {
+      "path": "static-reader197.py",
+      "bytes": 1559,
+      "sha256": "1a9be797a3eab82206713a4f60e7dea63f6d32171b6cb85717e0e98d4c96f962"
+    },
+    {
+      "path": "test-reader197.py",
+      "bytes": 4540,
+      "sha256": "c3060add034ae0bb1c2ac15db08fc7cf9122fe3089058c9f35defc6c9382bced"
+    },
+    {
+      "path": "build-reader197.py",
+      "bytes": 2428,
+      "sha256": "cc8dece2ff5302de4599b598dc538940c683a8e364f6cda51a9b279abf1651fb"
+    },
+    {
+      "path": "queue-source197-validation.py",
+      "bytes": 2837,
+      "sha256": "303bd6956853032ee871a7d2ab9fceff879c7f1b65e3fe1681f45e2a55398e3a"
+    },
+    {
+      "path": "source197-selected-supervisor.json",
+      "bytes": 326,
+      "sha256": "3c59c37e6e1892fea07b99d2329c167e233251143a33fe2aed44303b8b1619f5"
+    }
+  ]
+}

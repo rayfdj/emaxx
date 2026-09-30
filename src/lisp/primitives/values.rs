@@ -2876,23 +2876,6 @@ fn key_parts_identity(parts: &[Value]) -> Vec<usize> {
     parts.iter().map(|event| event.word()).collect()
 }
 
-pub(crate) fn keymap_lookup_binding_exact_parts(
-    interp: &Interpreter,
-    keymap: &Value,
-    key_parts: &[Value],
-) -> Result<Value, LispError> {
-    keymap_lookup_binding_exact_parts_with_default(interp, keymap, key_parts, false)
-}
-
-pub(crate) fn keymap_lookup_binding_exact_parts_with_default(
-    interp: &Interpreter,
-    keymap: &Value,
-    key_parts: &[Value],
-    accept_default: bool,
-) -> Result<Value, LispError> {
-    keymap_lookup_binding_exact_parts_bounded(interp, keymap, key_parts, accept_default, 32)
-}
-
 fn keymap_lookup_direct_binding_exact_parts(
     interp: &Interpreter,
     keymap: &Value,
@@ -2960,111 +2943,6 @@ fn keymap_own_sparse_binding(
         tail = cell.cdr.get();
     }
     Ok(None)
-}
-
-fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
-    if is_keymap_value(interp, binding) {
-        return Some(*binding);
-    }
-    let Kind::Symbol(name) = binding.kind() else {
-        return None;
-    };
-    interp
-        .lookup_function(&name, &crate::lisp::types::Env::new())
-        .ok()
-        .filter(|function| is_keymap_value(interp, function))
-}
-
-fn keymap_lookup_binding_exact_parts_bounded(
-    interp: &Interpreter,
-    keymap: &Value,
-    key_parts: &[Value],
-    accept_default: bool,
-    depth: usize,
-) -> Result<Value, LispError> {
-    let Some(depth) = depth.checked_sub(1) else {
-        return Ok(Value::Nil);
-    };
-    if let [part] = key_parts
-        && let Some(Kind::CharTable(table_id)) =
-            keymap_char_table_value(interp, keymap).map(|v| v.kind())
-    {
-        let event = *part;
-        if let Kind::Integer(code) = event.kind()
-            && let Ok(code) = u32::try_from(code)
-            && code <= 0x3f_ffff
-            && let Some(value) = interp.char_table_get(table_id, code)
-            && !value.is_nil()
-        {
-            return Ok(if value == Value::T { Value::Nil } else { value });
-        }
-    }
-    if let Some(value) = keymap_own_sparse_binding(interp, keymap, key_parts)? {
-        return Ok(value);
-    }
-    // Prefix lookup must read the same table slot as ordinary character
-    // lookup. A sparse navigation index would miss raw stores and inherit
-    // the wrong binding once a local prefix is emptied.
-    if key_parts.len() > 1 {
-        let head = keymap_lookup_direct_binding_exact_parts(interp, keymap, &key_parts[..1])?;
-        if let Some(prefix_map) = keymap_binding_map(interp, &head) {
-            let nested = keymap_lookup_binding_exact_parts_bounded(
-                interp,
-                &prefix_map,
-                &key_parts[1..],
-                accept_default,
-                depth,
-            )?;
-            if !nested.is_nil() {
-                return Ok(nested);
-            }
-        }
-    }
-    if accept_default
-        && key_parts.len() == 1
-        && key_parts != [Value::T]
-        && let Some(value) = keymap_own_sparse_binding(interp, keymap, &[Value::T])?
-    {
-        return Ok(value);
-    }
-    // Included maps occur in their own spine order, followed by the parent
-    // tail. Traverse those cells directly instead of allocating a parent list.
-    let keymap_tag = Value::symbol("keymap");
-    let mut tail = keymap.cdr().unwrap_or(Value::Nil);
-    let mut cycle = crate::lisp::types::CycleGuard::new();
-    while let Kind::Cons(cell) = tail.kind() {
-        if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
-            break;
-        }
-        let entry = cell.car.get();
-        let inherited_tail = entry.eq_value(keymap_tag);
-        let parent = if inherited_tail { tail } else { entry };
-        if parent
-            .cons_values()
-            .is_some_and(|(head, _)| head.eq_value(keymap_tag))
-        {
-            let value = keymap_lookup_binding_exact_parts_bounded(
-                interp,
-                &parent,
-                key_parts,
-                accept_default,
-                depth,
-            )?;
-            if !value.is_nil() || inherited_tail {
-                return Ok(value);
-            }
-        }
-        tail = cell.cdr.get();
-    }
-    Ok(Value::Nil)
-}
-
-pub(crate) fn keymap_lookup_binding(
-    interp: &Interpreter,
-    keymap: &Value,
-    key: &str,
-) -> Result<Value, LispError> {
-    keymap_lookup_binding_exact_parts(interp, keymap, &approximate_key_parts(key))
 }
 
 // keymap.c:access_keymap_1 reads one event from the actual Lisp map. Prefix
@@ -3382,6 +3260,28 @@ pub(crate) fn keymap_get_keyelt(
 
         return Ok(current);
     }
+}
+
+// keyboard.c follow_key resolves autoloaded keymap symbols before deciding
+// whether another event is required. Loading may collect or signal.
+pub(crate) fn load_autoloaded_prefix_map(
+    interp: &mut Interpreter,
+    binding: &Value,
+    env: &Env,
+) -> Result<(), LispError> {
+    let Kind::Symbol(name) = binding.kind() else {
+        return Ok(());
+    };
+    let Ok(function) = interp.lookup_function(&name, env) else {
+        return Ok(());
+    };
+    if let Some((file, _, Kind::Symbol(kind))) =
+        autoload_parts(&function).map(|(a0, a1, a2)| (a0, a1, a2.kind()))
+        && kind == "keymap"
+    {
+        interp.load_autoload_target(&file, env)?;
+    }
+    Ok(())
 }
 
 /// Resolve the indirection used by prefix commands.  GNU keymaps may bind an
@@ -4542,73 +4442,6 @@ pub(crate) fn command_remapping(
         &[*command, Value::Nil, keymaps.copied().unwrap_or(Value::Nil)],
         env,
     )
-}
-
-// The keymaps consulted for command dispatch: keymap.c's
-// current_active_maps with OLP in force, minus the trailing global map
-// (dispatch callers consult the global map through their own fallback).
-// This is the same construction `key-binding' and read_key_sequence share
-// in GNU (keymap.c:1840, keyboard.c:10200).
-pub(crate) fn active_command_keymaps(
-    interp: &Interpreter,
-    env: &Env,
-) -> Result<Vec<Value>, LispError> {
-    active_command_keymaps_for(interp, env, true, None)
-}
-
-pub(crate) fn key_binding(
-    interp: &mut Interpreter,
-    key: &str,
-    accept_default: bool,
-    no_remap: bool,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    key_binding_with_parts(
-        interp,
-        &approximate_key_parts(key),
-        accept_default,
-        no_remap,
-        env,
-    )
-}
-
-/// Internal input readers already hold event words. Feed their vector to
-/// the same primitive as Lisp callers, preserving prefix filters and remaps.
-pub(crate) fn key_binding_with_parts(
-    interp: &mut Interpreter,
-    key_parts: &[Value],
-    accept_default: bool,
-    no_remap: bool,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    super::call(
-        interp,
-        "key-binding",
-        &[
-            Value::vector(key_parts.iter().copied()),
-            if accept_default { Value::T } else { Value::Nil },
-            if no_remap { Value::T } else { Value::Nil },
-        ],
-        env,
-    )
-}
-
-/// keyboard.c:read_key_sequence continues only when the resolved binding
-/// is a keymap (possibly an autoloaded prefix command). Reuse the binding
-/// already read by the command loop; another lookup would repeat filters.
-pub(crate) fn key_binding_is_prefix(interp: &Interpreter, binding: &Value, env: &Env) -> bool {
-    if is_keymap_value(interp, binding) {
-        return true;
-    }
-    if let Kind::Symbol(name) = binding.kind()
-        && let Ok(function) = interp.lookup_function(&name, env)
-    {
-        return is_keymap_value(interp, &function)
-            || autoload_parts(&function).is_some_and(
-                |(_, _, kind)| matches!(kind.kind(), Kind::Symbol(kind) if kind == "keymap"),
-            );
-    }
-    false
 }
 
 pub(crate) fn locale_uses_utf8() -> bool {

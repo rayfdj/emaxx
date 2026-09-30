@@ -1,0 +1,17 @@
+(let ((local local-function-key-map)
+      (functions function-key-map)
+      (saved (lookup-key function-key-map [runtime-reader-inherited])))
+  (unwind-protect
+      (progn
+        (define-key function-key-map [runtime-reader-inherited] [runtime-reader-result])
+        (garbage-collect)
+        (list (eq local local-function-key-map)
+              (eq (keymap-parent local-function-key-map) functions)
+              (lookup-key local-function-key-map [runtime-reader-inherited])
+              (keymap-prompt input-decode-map)
+              (keymap-prompt local-function-key-map)
+              (keymap-prompt function-key-map)
+              (keymap-prompt key-translation-map)
+              (let ((function-key-map (make-sparse-keymap)))
+                (eq (keymap-parent local-function-key-map) functions))))
+    (define-key functions [runtime-reader-inherited] saved)))

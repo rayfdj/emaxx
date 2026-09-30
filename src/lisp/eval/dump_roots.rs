@@ -70,10 +70,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "a KVAR of the kboard, which is not in the image: keyboard.c:syms_of_keyboard_for_pdumper allocates initial_kboard anew",
     ),
     (
-        "kbd_macro_executions",
-        "kboard state, as kbd_macro_definition",
-    ),
-    (
         "process_states",
         "process.c:init_process_emacs sets Vprocess_alist to nil after a load; process pseudovectors are nilled",
     ),

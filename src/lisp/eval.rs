@@ -1112,14 +1112,6 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
         .collect()
 }
 
-// One live keyboard-macro execution: recursive edits started while the macro
-// runs continue consuming events from the same shared cursor.
-#[derive(Clone, Debug)]
-pub(crate) struct KbdMacroExecutionState {
-    pub(crate) events: Vec<Value>,
-    pub(crate) index: usize,
-}
-
 // keyboard.c keeps these as one kboard-owned input state.  Keeping the same
 // ownership boundary here prevents command-key, raw-key, lossage, focus, and
 // dribble primitives from drifting into unrelated Lisp-variable shims.
@@ -4132,11 +4124,6 @@ impl Interpreter {
         for (_, value) in self.ccl_programs.iter().flatten() {
             mark(value);
         }
-        for execution in &self.kbd_macro_executions {
-            for event in &execution.events {
-                mark(event);
-            }
-        }
         for event in self
             .keyboard_input
             .command_keys
@@ -4572,11 +4559,6 @@ impl Interpreter {
                     *slot = Some(copied);
                 }
             }
-            for execution in &mut clone.kbd_macro_executions {
-                for event in &mut execution.events {
-                    *event = c.copy(event);
-                }
-            }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
             }
@@ -4932,7 +4914,6 @@ pub struct InterpreterState {
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
     garbage_collection_inhibited: usize,
-    pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) kbd_macro_definition: Vec<Value>,
     pub(crate) kbd_macro_committed_len: usize,
     pub(crate) keyboard_input: KeyboardInputState,
@@ -5636,7 +5617,6 @@ impl Interpreter {
             variable_aliases: Vec::new(),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
-            kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
             kbd_macro_committed_len: 0,
             keyboard_input: KeyboardInputState::default(),
@@ -6481,11 +6461,9 @@ impl Interpreter {
         // native objects, silently dropping dumped bindings like
         // `C-x b' -> `switch-to-buffer' from the reconstructed image.
         // keymap.c's own DEFVAR_LISP map is the one exception.
-        let minibuffer_local_map =
-            primitives::make_runtime_keymap(&mut interp, Value::string("minibuffer-local-map"));
+        let minibuffer_local_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
-        let input_decode_map =
-            primitives::make_runtime_keymap(&mut interp, Value::string("input-decode-map"));
+        let input_decode_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.set_global_binding("input-decode-map", input_decode_map);
         // keyboard.c creates these identity-bearing translation/event maps
         // before bindings.el is dumped.  Keep the native map family together
@@ -6496,9 +6474,25 @@ impl Interpreter {
             "function-key-map",
             "key-translation-map",
         ] {
-            let keymap = primitives::make_runtime_keymap(&mut interp, Value::string(name));
+            let keymap = primitives::make_runtime_keymap(&mut interp, Value::Nil);
             interp.define_special_variable(name, keymap);
         }
+        // keyboard.c:init_kboard also initializes the first keyboard,
+        // before bindings.el populates its shared function-key-map parent.
+        // A fresh fallback map on each lookup loses identity and inheritance.
+        let local_function_key_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
+        let empty_env = crate::lisp::types::Env::new();
+        let function_key_map = interp
+            .lookup_var("function-key-map", &empty_env)
+            .expect("initial function-key-map");
+        primitives::set_keymap_parent_value(
+            &interp,
+            local_function_key_map,
+            function_key_map,
+            &empty_env,
+        )
+        .expect("fresh local-function-key-map parent");
+        interp.define_special_variable("local-function-key-map", local_function_key_map);
         // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
         // the events the input reader executes itself (the oracle has no
         // D-Bus or NS, so their keys are absent there too).

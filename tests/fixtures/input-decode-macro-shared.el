@@ -1,0 +1,15 @@
+(let ((input-decode-map (make-sparse-keymap))
+      (local-function-key-map (make-sparse-keymap))
+      (key-translation-map (make-sparse-keymap))
+      (overriding-terminal-local-map (make-sparse-keymap))
+      (trace nil))
+  (fset 'runtime-reader-macro-target
+        (lambda () (interactive) (push (this-command-keys-vector) trace)))
+  (define-key input-decode-map [f32 f33] [f34])
+  (define-key local-function-key-map [f34] [f35])
+  (define-key key-translation-map [f35] [f36])
+  (define-key overriding-terminal-local-map [f36] 'runtime-reader-macro-target)
+  (let ((answer (condition-case error
+                    (progn (execute-kbd-macro [f32 f33]) 'completed)
+                  (error error))))
+    (list answer (nreverse trace))))

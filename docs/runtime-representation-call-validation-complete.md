@@ -2,6 +2,8 @@
 
 Source174, published at `178fdf37d529a55e0fa1cf748faf668612a1d454`, now passes
 the complete checkpoint validation. [PR #78](https://github.com/rayfdj/emaxx/pull/78)
+is merged at `21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199`; its tree was verified
+identical to validated documentation checkpoint `2a156a5d`. It
 replaces private keymap records, snapshots, binding caches and permanent roots
 with actual Lisp cons/char-table storage. It retains queued event callbacks
 across collection, builds independent mutable TLS reports from live sessions,
@@ -54,8 +56,10 @@ registry while retaining its behavioral coverage and adding collection.
 Darwin's GNU executable matches source/native ABI but differs from its frozen
 executable pin; complete final-source pinned Darwin validation remains required.
 
-The [source178 input decoder](runtime-representation-input-decoder-draft.md) is
-separately packaged continuation material. It passes 308 gate and 308 release
+The [current shared-reader draft](runtime-representation-shared-reader-draft.md)
+continues the [source178 input decoder](runtime-representation-input-decoder-draft.md).
+Both are separately packaged continuation material, not production changes.
+The historical source178 decoder passes 308 gate and 308 release
 controls and seven exact ordinary comparisons, but its frontend integration and
 broader reader contracts are unfinished and it is not applied to production.
 Negative production input probes and the draft's earlier failures remain in

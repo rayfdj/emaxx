@@ -1,0 +1,382 @@
+{
+  "status": "Source196 package-clean retry started. Fresh check, fmt, clippy -D warnings and diff pass. Gate compilation is running; no fresh runtime, ordinary, terminal or full result is claimed.",
+  "qualification": "Original stale run and both helper preparation/launch failures remain preserved. This archive excludes every running log. Source196-fresh has exactly the same 401 source/test inputs and complete patch as source196. Supervisors 8612/8613/8614 own the frozen macro-reader checkout.",
+  "captured_unix": 1790783038.5547378,
+  "archive": {
+    "path": "source196-clean-rebuild-start.tar.gz",
+    "bytes": 104634,
+    "sha256": "1c2f94e975d887c502943a2878b167a9560a927a258531a22b56555280a7c20e"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "audit-shared-reader196-rebuilt-selected.py",
+      "bytes": 4833,
+      "sha256": "3c56714a30be1fb1839b2f2d0e7983cb0d940874339102943a17047383a51c95"
+    },
+    {
+      "path": "audit-source196-fresh-macos-names.py",
+      "bytes": 1691,
+      "sha256": "92db7917996c643a86eabe9360e5e5e474b95c59517ca6a2a73ab0d7fc5dbad2"
+    },
+    {
+      "path": "audit-source196-fresh-selected-tty.py",
+      "bytes": 1935,
+      "sha256": "fd28e174d1bad20e5af801c37e458432fa9e5c13bf3451d2529cba08cdfabd5d"
+    },
+    {
+      "path": "audit-source196-rebuilt-macos-names.py",
+      "bytes": 1695,
+      "sha256": "a960b799d3f8b75c76492f0693c9971947dc06617b866ead059509473550dc7f"
+    },
+    {
+      "path": "audit-source196-rebuilt-selected-tty.py",
+      "bytes": 1937,
+      "sha256": "5dd6147bfaf969194c41a3d4b185287de80d10d40b6a3ffb298794e2d9b1acbf"
+    },
+    {
+      "path": "build-reader196-fresh.py",
+      "bytes": 2418,
+      "sha256": "a09201614bf2ab8feddf52ddec1805b72b57702ecf6c4c1a7ddf0001da05bfe2"
+    },
+    {
+      "path": "build-reader196-rebuilt.py",
+      "bytes": 2418,
+      "sha256": "a09201614bf2ab8feddf52ddec1805b72b57702ecf6c4c1a7ddf0001da05bfe2"
+    },
+    {
+      "path": "check-reader196-fresh.py",
+      "bytes": 2024,
+      "sha256": "21156bbfa87996a436afbee7866bcee7a2f4a56d3c81398239b3dbc463472bf1"
+    },
+    {
+      "path": "check-reader196-rebuilt.py",
+      "bytes": 2038,
+      "sha256": "ce0681888517e4b0c84c31601b23263f978d49d4447b8907f2aea6d5e423501e"
+    },
+    {
+      "path": "queue-source196-fresh-full-validation.py",
+      "bytes": 2679,
+      "sha256": "589fde672e9f4f57e5c9c30193b842b5a320846298c1866d8db374f02d050e36"
+    },
+    {
+      "path": "queue-source196-fresh-validation.py",
+      "bytes": 3329,
+      "sha256": "e6899df26ad4e2daa34c2e5312a507e988e0df07d01216afb41b9d03b0611e69"
+    },
+    {
+      "path": "queue-source196-rebuilt-full-validation.py",
+      "bytes": 2681,
+      "sha256": "813a23a6387678f58e62920e2606e653d179047947feab667cbd1acfa9364d3d"
+    },
+    {
+      "path": "queue-source196-rebuilt-validation.py",
+      "bytes": 3361,
+      "sha256": "c8771b42f1edfd33cf8f49d48238ca396849bf88995830946e6bc53a2565c25e"
+    },
+    {
+      "path": "run-source196-fresh-full-gate.py",
+      "bytes": 3221,
+      "sha256": "38db300a6f74aee880bb2570e7636046e1402fa205a6c489ba0e6f9a7fb8492c"
+    },
+    {
+      "path": "run-source196-fresh-full-tty.py",
+      "bytes": 3351,
+      "sha256": "8e730779a1c83c1140911a97f9abede06443355911dc1df4786d236560a4914d"
+    },
+    {
+      "path": "run-source196-fresh-selected-tty.py",
+      "bytes": 3205,
+      "sha256": "364b4b7613cc9c1411c0cdb6b59a6f5a1c210a787c9dd636498866fa2f64acf7"
+    },
+    {
+      "path": "run-source196-rebuilt-full-gate.py",
+      "bytes": 3239,
+      "sha256": "c90e283285d451898c847fb34aa01d7be71fff9b8ece4d900a991aa765ba7237"
+    },
+    {
+      "path": "run-source196-rebuilt-full-tty.py",
+      "bytes": 3367,
+      "sha256": "b57b17135648d24c8f6482d26b6aad354dd4aaff2b5fdd6df3548bbfe26b024c"
+    },
+    {
+      "path": "run-source196-rebuilt-selected-tty.py",
+      "bytes": 3207,
+      "sha256": "f67ca82d7bed4f8da91c15fa8dd0031cbc4a40d97df1c810254a517800eb1f7f"
+    },
+    {
+      "path": "snapshot-reader-candidate.py",
+      "bytes": 5180,
+      "sha256": "7d8dd46d7e97dfc970ecf15995050b66e267c0026cd628123e6e52a64bbec9df"
+    },
+    {
+      "path": "source196-fresh-base.json",
+      "bytes": 3563,
+      "sha256": "a9709f3bbe1246effc9d44cff79770bcd763f60cab45ee6a71aaab774eac6714"
+    },
+    {
+      "path": "source196-fresh-check-command.json",
+      "bytes": 483,
+      "sha256": "bd04dac695378504b3efedc787f7a0a55f13d3961d5499316a8ea192c9eb609f"
+    },
+    {
+      "path": "source196-fresh-check-result.json",
+      "bytes": 84,
+      "sha256": "fec3f82499b80e49bc920d422988e1dd08b6c6e1b7baf64603b3ae8f537dd577"
+    },
+    {
+      "path": "source196-fresh-check.log",
+      "bytes": 194,
+      "sha256": "11800e9e0cc43074b344f469534567fc9ffea0fa537052a8deee9dbe46c03f45"
+    },
+    {
+      "path": "source196-fresh-clean-dev-command.json",
+      "bytes": 398,
+      "sha256": "05ef0a6608b7aa5fff3a2a524088c1879b5dd16c30d7b571e13d0a65974353f8"
+    },
+    {
+      "path": "source196-fresh-clean-dev-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-fresh-clean-dev.log",
+      "bytes": 21,
+      "sha256": "0bdaeb2aa6a92a0fdfec2d2cc4d0ab71946de5d0654e08c526e4629130ae0f28"
+    },
+    {
+      "path": "source196-fresh-clean-gate-command.json",
+      "bytes": 399,
+      "sha256": "9f803bba3681e1fb75b4bc56ff458fd32135a0e45867c0a9c56688da78e0870c"
+    },
+    {
+      "path": "source196-fresh-clean-gate-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-fresh-clean-gate.log",
+      "bytes": 21,
+      "sha256": "0bdaeb2aa6a92a0fdfec2d2cc4d0ab71946de5d0654e08c526e4629130ae0f28"
+    },
+    {
+      "path": "source196-fresh-clean-release-command.json",
+      "bytes": 402,
+      "sha256": "787cfbac34f29e414476fd3c8bd007463cdde1e31607b5edc16bbc22923f990e"
+    },
+    {
+      "path": "source196-fresh-clean-release-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-fresh-clean-release.log",
+      "bytes": 21,
+      "sha256": "0bdaeb2aa6a92a0fdfec2d2cc4d0ab71946de5d0654e08c526e4629130ae0f28"
+    },
+    {
+      "path": "source196-fresh-clippy-command.json",
+      "bytes": 465,
+      "sha256": "739078da8f82d6ff3bf674ad9fa85415191ff07be623bda3c56dfb91959d3ef3"
+    },
+    {
+      "path": "source196-fresh-clippy-result.json",
+      "bytes": 89,
+      "sha256": "f7cfcdec0c3fb11b4cafe2e842e0ce5c21654fdfba1a12721d31db720706bfb0"
+    },
+    {
+      "path": "source196-fresh-clippy.log",
+      "bytes": 194,
+      "sha256": "2a88841c87fc7ceee8b3539fa4e4286285abfc628d083d9eb4e6170fac9df0a0"
+    },
+    {
+      "path": "source196-fresh-complete.patch",
+      "bytes": 217384,
+      "sha256": "efb539be2717cc66f5511724cf10bf01f3b07efe03a4692e19442be0cd7c95b8"
+    },
+    {
+      "path": "source196-fresh-diff-command.json",
+      "bytes": 381,
+      "sha256": "f015f67b6af694a987058a023ea8ed0417a2fd2878797b3f142c9c3937d219e4"
+    },
+    {
+      "path": "source196-fresh-diff-result.json",
+      "bytes": 90,
+      "sha256": "3bfa8d3617e3fd8e07cf8cad534d5cfca388eb656e2dcae8f4dc5f10f7836539"
+    },
+    {
+      "path": "source196-fresh-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-fresh-fmt-command.json",
+      "bytes": 405,
+      "sha256": "62c1015512f58610d21d6af67a52e632750f2742d2b3f4cfe08b199eaa435644"
+    },
+    {
+      "path": "source196-fresh-fmt-result.json",
+      "bytes": 82,
+      "sha256": "0c9b7209fefc70c96694af21a8221c1d504eb49e02e6ec6ac845a10d224ea2b8"
+    },
+    {
+      "path": "source196-fresh-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-fresh-full-local-supervisor.json",
+      "bytes": 337,
+      "sha256": "3064d36eb3daf7d71649300967c629cae12a5ccd24171aef89288182069780f7"
+    },
+    {
+      "path": "source196-fresh-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    },
+    {
+      "path": "source196-fresh-selected-supervisor.json",
+      "bytes": 332,
+      "sha256": "8ed98d0afa3c9413f4b6d87cdab20f62b72cd1d6ed92c2ac1b5983694c4b9be5"
+    },
+    {
+      "path": "source196-fresh-selected-tty-supervisor.json",
+      "bytes": 333,
+      "sha256": "8c986be1bf252a0edb9b5604423d4fb592ac0eab21cb4537f811751c3989ab1d"
+    },
+    {
+      "path": "source196-rebuild-helper-initial-failure.json",
+      "bytes": 357,
+      "sha256": "99b5a3c9d71eb1bfb2859aca337d18f853b3ea2874b41ffea3ed8a7a537bcad7"
+    },
+    {
+      "path": "source196-rebuilt-base.json",
+      "bytes": 3563,
+      "sha256": "a9709f3bbe1246effc9d44cff79770bcd763f60cab45ee6a71aaab774eac6714"
+    },
+    {
+      "path": "source196-rebuilt-clean-dev-command.json",
+      "bytes": 398,
+      "sha256": "05ef0a6608b7aa5fff3a2a524088c1879b5dd16c30d7b571e13d0a65974353f8"
+    },
+    {
+      "path": "source196-rebuilt-clean-dev-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-rebuilt-clean-dev.log",
+      "bytes": 38,
+      "sha256": "4060a0de2335721831bc0614b5dca339b4cb51ebce7c7af915685b244303d5f1"
+    },
+    {
+      "path": "source196-rebuilt-clean-gate-command.json",
+      "bytes": 399,
+      "sha256": "9f803bba3681e1fb75b4bc56ff458fd32135a0e45867c0a9c56688da78e0870c"
+    },
+    {
+      "path": "source196-rebuilt-clean-gate-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-rebuilt-clean-gate.log",
+      "bytes": 37,
+      "sha256": "591aeddc7d7bc5aee8e3130d214bef83c6f6cf6930ff9822822cfab2d38fa8bb"
+    },
+    {
+      "path": "source196-rebuilt-clean-release-command.json",
+      "bytes": 402,
+      "sha256": "787cfbac34f29e414476fd3c8bd007463cdde1e31607b5edc16bbc22923f990e"
+    },
+    {
+      "path": "source196-rebuilt-clean-release-result.json",
+      "bytes": 48,
+      "sha256": "382f6bb9a1f9d331cec4a15316d022c97b2c1b4e577e65916acf8cdded076cc6"
+    },
+    {
+      "path": "source196-rebuilt-clean-release.log",
+      "bytes": 38,
+      "sha256": "067de76acdd115c89a9fe4e00fbab089fc599af1548f6c34527ff007df6f162a"
+    },
+    {
+      "path": "source196-rebuilt-full-local-supervisor-result.json",
+      "bytes": 813,
+      "sha256": "692e8bed01ed56dc1761d106eb29ef2c2b310ce08774e199f28c2da1417a58ef"
+    },
+    {
+      "path": "source196-rebuilt-full-local-supervisor.json",
+      "bytes": 339,
+      "sha256": "d49448d5d97261c0702e81d45af1874ca81c980fc68c725d20d5c17e23af4741"
+    },
+    {
+      "path": "source196-rebuilt-full-local-supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-rebuilt-helper-failure.json",
+      "bytes": 402,
+      "sha256": "1d349a5a8298e1e647c86493a70a313f015ebfbe8850a0470620bb1e1bd9ece4"
+    },
+    {
+      "path": "source196-rebuilt-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    },
+    {
+      "path": "source196-rebuilt-selected-supervisor.json",
+      "bytes": 334,
+      "sha256": "a7bd68d373d7020f7cdeddb5a650e28c3aacf20a0f3950b165a10492969331fe"
+    },
+    {
+      "path": "source196-rebuilt-selected-supervisor.log",
+      "bytes": 274,
+      "sha256": "f0629402ec93ff293c48ecd9134960877334ad346610709b9ae5da3b3d6fd768"
+    },
+    {
+      "path": "source196-rebuilt-selected-tty-not-run.json",
+      "bytes": 221,
+      "sha256": "defdc41c1ebc8466617a0246ee8a2fc31220296f71b6ab41e421a49b7d90ea55"
+    },
+    {
+      "path": "source196-rebuilt-selected-tty-supervisor.json",
+      "bytes": 334,
+      "sha256": "93db12dffa1c8cf74eeea793dc102f70679c250dee8180b89334f2af2bf296d0"
+    },
+    {
+      "path": "source196-rebuilt-selected-tty-supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-rebuilt-selected-validation-result.json",
+      "bytes": 424,
+      "sha256": "f7d68d7426fa557bec5a34b74f260b777d6af108910114e4613a86a8c1ea7c89"
+    },
+    {
+      "path": "static-reader196-fresh.py",
+      "bytes": 1549,
+      "sha256": "cf301afbc0e05439d17f4c9494ee760e31b1363def837526fe9578e6a4762102"
+    },
+    {
+      "path": "static-reader196-rebuilt.py",
+      "bytes": 1549,
+      "sha256": "cf301afbc0e05439d17f4c9494ee760e31b1363def837526fe9578e6a4762102"
+    },
+    {
+      "path": "test-reader196-fresh.py",
+      "bytes": 5264,
+      "sha256": "35a7b708259dc157cf1ab6f5d0287a2f38f6557f1d1cd7d25e859f4a5d4aa85c"
+    },
+    {
+      "path": "test-reader196-rebuilt.py",
+      "bytes": 5264,
+      "sha256": "35a7b708259dc157cf1ab6f5d0287a2f38f6557f1d1cd7d25e859f4a5d4aa85c"
+    }
+  ]
+}

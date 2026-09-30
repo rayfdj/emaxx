@@ -444,12 +444,6 @@ impl Interpreter {
             // --no-x-resources when it processes the actual command line.
             "inhibit-x-resources" => Some(Value::Nil),
 
-            // GNU keyboard.c keymaps; simple.el define-keys them at load
-            // time (event-apply-*-modifier bindings).
-            "function-key-map"
-            | "key-translation-map"
-            | "input-decode-map"
-            | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "values" => Some(Value::Nil),
             // xdisp.c:syms_of_xdisp initializes the C callback slot to nil;
             // unchanged minibuffer.el installs its Lisp function later.

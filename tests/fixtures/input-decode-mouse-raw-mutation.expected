@@ -1,0 +1,1 @@
+(([mode-line (reader-translated-click (nil mode-line (7 . 2) 0))] [(mouse-1 (nil mode-line (7 . 2) 0))] t nil t ((t [(reader-translated-click (nil mode-line (7 . 2) 0))]))) ([mode-line (reader-translated-click (nil mode-line (7 . 2) 0))] [(reader-original-click (nil mode-line (7 . 2) 0))] t nil t ((t [(reader-translated-click (nil mode-line (7 . 2) 0))]))))

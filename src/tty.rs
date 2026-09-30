@@ -213,7 +213,6 @@ struct TtyState {
     /// argument instead of dispatching (GNU's universal-argument--mode).
     prefix_active: bool,
     /// Events of the in-progress (multi-key) sequence.
-    pending: Vec<Value>,
     /// Frontend-owned echo text (key-sequence progress, command errors);
     /// when empty, the session's `message' echo line shows instead.
     echo: String,
@@ -280,7 +279,6 @@ impl TtyState {
             other_terminals: Default::default(),
             views: std::collections::HashMap::new(),
             prefix_active: false,
-            pending: Vec::new(),
             echo: String::new(),
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
@@ -869,6 +867,7 @@ fn command_loop(
     queue: &SharedEventQueue,
     shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> Result<i32, String> {
+    let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
     loop {
         // keyboard.c's command_loop_1 reselects the selected window's
         // buffer at the top of every command cycle.  A display action can
@@ -981,86 +980,80 @@ fn command_loop(
         // resolution itself can run the whole dropdown executor (a
         // keymap-bound mouse click pops it), both of which borrow the
         // same cell.
-        let mut pending_snapshot = {
+        if reader.is_none() {
             let state = &mut *shared_state.borrow_mut();
-
-            // A fresh key erases a previous command's echo, but not the
-            // accumulating `C-u' chain's own display (GNU's prefix echo
-            // survives until a non-prefix command consumes it).
-            if state.pending.is_empty() && !state.prefix_active {
+            if !state.prefix_active {
                 state.echo.clear();
             }
-            state.pending.push(event);
-            state.pending.clone()
-        };
-        let resolution = match crate::lisp::primitives::resolve_decoded_key_sequence(
-            interpreter,
-            env,
-            &mut pending_snapshot,
-        )
-        .map_err(LispError::into_kind)
-        {
+        }
+        let resolution = (|| {
+            if reader.is_none() {
+                reader = Some(crate::lisp::primitives::KeySequenceReader::new(
+                    interpreter,
+                    Value::Nil,
+                    env,
+                )?);
+            }
+            reader
+                .as_mut()
+                .expect("active key reader")
+                .read_event(interpreter, event, env)
+        })();
+        let resolution = match resolution.map_err(LispError::into_kind) {
             Ok(resolution) => resolution,
             Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
             Err(error) => {
                 let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
                 crate::lisp::primitives::set_echo_area_message(Some(text));
-                shared_state.borrow_mut().pending.clear();
+                reader = None;
                 continue;
             }
         };
-        let dispatch = {
-            let state = &mut *shared_state.borrow_mut();
-            state.pending = pending_snapshot;
-            debug_log(&format!(
-                "keys {:?} -> {}",
-                describe_keys(&state.pending),
-                match &resolution {
-                    Resolution::Command(binding) => format!("command {binding}"),
-                    Resolution::Prefix => "prefix".to_string(),
-                    Resolution::Undefined => "undefined".to_string(),
+        let active = reader.as_ref().expect("active key reader");
+        debug_log(&format!(
+            "keys {:?} -> {}",
+            describe_keys(active.keys()),
+            match &resolution {
+                Resolution::Command(binding) => format!("command {binding}"),
+                Resolution::Prefix => "prefix".to_string(),
+                Resolution::Undefined => "undefined".to_string(),
+            }
+        ));
+        let binding = match resolution {
+            Resolution::Command(binding) => binding,
+            Resolution::Prefix => {
+                let mut state = shared_state.borrow_mut();
+                if active.keys().is_empty() {
+                    state.echo.clear();
+                } else {
+                    state.echo = format!("{}-", describe_keys(active.keys()));
                 }
-            ));
-            match resolution {
-                Resolution::Command(binding) => {
-                    // GNU erases the key echo when dispatch begins — a
-                    // command that blocks (a minibuffer read) must not
-                    // leave its own key sequence on the glass.  An
-                    // accumulating C-u chain keeps its echo: the digits
-                    // extend it after the prefix command runs.
-                    if !state.prefix_active {
-                        state.echo.clear();
-                    }
-                    let keys = std::mem::take(&mut state.pending);
-                    Some((binding, keys))
-                }
-                Resolution::Prefix => {
-                    state.echo = format!("{}-", describe_keys(&state.pending));
-                    None
-                }
-                Resolution::Undefined => {
-                    // keyboard.c discards unbound button-down events
-                    // silently; unbound clicks echo like any key.
-                    let silent = state.pending.len() == 1
-                        && matches!(
-                            state.pending[0].car().map(|v| v.kind()),
-                            Ok(Kind::Symbol(head)) if head.contains("down-mouse-")
-                        );
-                    if !silent {
-                        state.echo = format!("{} is undefined", describe_keys(&state.pending));
-                    }
-                    state.pending.clear();
-                    state.prefix_active = false;
-                    None
-                }
+                continue;
+            }
+            Resolution::Undefined => {
+                let mut state = shared_state.borrow_mut();
+                state.echo = format!("{} is undefined", describe_keys(active.keys()));
+                state.prefix_active = false;
+                reader = None;
+                continue;
             }
         };
-        let Some((binding, keys)) = dispatch else {
-            continue;
-        };
+        if !shared_state.borrow().prefix_active {
+            shared_state.borrow_mut().echo.clear();
+        }
+        let keys = reader
+            .take()
+            .expect("completed key reader")
+            .finish(interpreter, false, env);
         let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-        let command_error = match execute_binding(interpreter, env, binding, &keys, last_event)
-            .map_err(LispError::into_kind)
+        let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
+            interpreter,
+            env,
+            binding,
+            &keys,
+            last_event,
+        )
+        .map_err(LispError::into_kind)
         {
             Ok(()) => None,
             Err(LispErrorKind::Terminate(termination)) => {
@@ -1123,10 +1116,20 @@ fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispE
 
 use crate::lisp::primitives::KeyResolution as Resolution;
 
+#[cfg(test)]
 fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Value]) -> Resolution {
-    crate::lisp::primitives::resolve_key_sequence(interpreter, env, pending)
+    let mut reader = crate::lisp::primitives::KeySequenceReader::new(interpreter, Value::Nil, env)
+        .expect("key reader");
+    let mut resolution = Resolution::Prefix;
+    for event in pending {
+        resolution = reader
+            .read_event(interpreter, *event, env)
+            .expect("key resolution");
+    }
+    resolution
 }
 
+#[cfg(test)]
 fn execute_binding(
     interpreter: &mut Interpreter,
     env: &mut Env,
@@ -1246,6 +1249,9 @@ fn synthesize_mouse_event(interpreter: &mut Interpreter, raw: RawMouseInput) -> 
         name.push_str("down-");
     }
     name.push_str(&format!("mouse-{button}"));
+    // xt-mouse.el and keyboard.c:make_lispy_event publish this on the
+    // actual event symbol; readers consult it even after Lisp renaming.
+    interpreter.put_symbol_property(&name, "event-kind", Value::symbol("mouse-click"));
 
     // Classify the click against the frame geometry used by its window
     // tree, including while a Lisp reader owns the terminal input loop.
@@ -6625,6 +6631,68 @@ gamma word three
     }
 
     #[test]
+    fn command_reader_retains_prefix_across_events_and_collecting_filters() {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter = crate::batch::initialize_batch_interpreter(&options)
+            .expect("GNU Lisp runtime for the differential fixture");
+        let mut env = Env::new();
+        let form = crate::lisp::reader::Reader::new(include_str!(
+            "../tests/fixtures/input-decode-command-reader.el"
+        ))
+        .read()
+        .expect("fixture parses")
+        .expect("fixture expression");
+        let result = interpreter.eval(&form, &mut env).expect("same GNU fixture");
+        assert_eq!(
+            format!("{result}"),
+            include_str!("../tests/fixtures/input-decode-command-reader.expected").trim()
+        );
+        interpreter
+            .call_function_value(
+                Value::symbol("runtime-reader-command-setup"),
+                None,
+                &[],
+                &mut env,
+            )
+            .expect("reset maps");
+        let mut reader =
+            crate::lisp::primitives::KeySequenceReader::new(&mut interpreter, Value::Nil, &mut env)
+                .expect("reader");
+        assert!(matches!(
+            reader.read_event(&mut interpreter, Value::symbol("a"), &mut env),
+            Ok(Resolution::Prefix)
+        ));
+        crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut env)
+            .expect("collect between external events");
+        let Resolution::Command(binding) = reader
+            .read_event(&mut interpreter, Value::symbol("b"), &mut env)
+            .expect("second event")
+        else {
+            panic!("completed command must resolve");
+        };
+        assert_eq!(binding, Value::symbol("forward-char"));
+        assert_eq!(
+            reader.finish(&mut interpreter, false, &mut env),
+            vec![Value::symbol("a"), Value::symbol("b")]
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                interpreter
+                    .lookup_var("runtime-reader-calls", &env)
+                    .expect("callback trace")
+            ),
+            "(leaf prefix)"
+        );
+    }
+
+    #[test]
     fn key_resolution_distinguishes_prefixes_commands_and_undefined() {
         // GNU builds the global map entirely in preloaded Lisp; the bare
         // host starts with no global bindings.  Exercise the resolution
@@ -6747,7 +6815,7 @@ fn make_menu_executor(
               x0: usize,
               y0: usize| {
             let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
-                return TtyMenuOutcome::Quit;
+                return Ok(TtyMenuOutcome::Quit);
             };
             let (cols, rows) = (cols.max(10) as usize, rows.max(4) as usize);
             let mut resolve_face = |name: &str| {
@@ -6799,7 +6867,7 @@ fn make_menu_executor(
                 .len()
                 .min(rows.saturating_sub(1) - y0.min(rows - 2));
             if max_items == 0 {
-                return TtyMenuOutcome::Quit;
+                return Ok(TtyMenuOutcome::Quit);
             }
 
             // The screen behind the menu, restored on the way out
@@ -6895,131 +6963,136 @@ fn make_menu_executor(
             // (tty_menu_activate's y and first_item).
             let mut selected_row = 0usize;
             let mut first_item = 0usize;
-            let outcome = loop {
-                {
-                    let mut state = state.borrow_mut();
-                    draw(&mut state, selected_row, first_item);
-                }
-                // One key sequence under the navigation map; prefixes keep
-                // reading, everything else maps per read_menu_input.
-                let mut pending: Vec<Value> = Vec::new();
-                let command = loop {
-                    // Live echo under the menu, but only for messages
-                    // emitted since the glass was last painted: GNU's
-                    // message3 repaints through a frozen redisplay (the
-                    // `(message "")' between cycled menus), while
-                    // read_char's input-arrival wipe leaves the old
-                    // pixels alone until the next full redisplay.
-                    let emitted = crate::lisp::primitives::echo_area_message_tick();
-                    if state
-                        .try_borrow()
-                        .is_ok_and(|state| state.painted_message_tick != emitted)
+            let outcome = (|| -> Result<TtyMenuOutcome, LispError> {
+                Ok(loop {
                     {
-                        draw_echo_row_composed(interpreter, env, &state);
-                        place_cursor(selected_row);
+                        let mut state = state.borrow_mut();
+                        draw(&mut state, selected_row, first_item);
                     }
-                    // A sequence still pending while this menu blocks
-                    // echoes after the shared idle window expires
-                    // (echo_now through the frozen redisplay); the read
-                    // then blocks normally.
-                    let event = match (&pending_keystroke_echo, pending_echo_deadline) {
-                        (Some(_), Some(deadline)) => {
-                            let timed = 'timed: loop {
-                                match queue.try_next_event() {
-                                    Err(()) => break 'timed Err(()),
-                                    Ok(Some(event)) => break 'timed Ok(event),
-                                    Ok(None) => {}
-                                }
-                                let now = std::time::Instant::now();
-                                if now >= deadline {
-                                    let (text, spans) = pending_keystroke_echo
-                                        .take()
-                                        .expect("pending echo present in this arm");
-                                    crate::lisp::primitives::set_echo_area_message_with_spans(
-                                        text, spans,
+                    // One key sequence under the navigation map; prefixes keep
+                    // reading, everything else maps per read_menu_input.
+                    let mut reader = crate::lisp::primitives::KeySequenceReader::new(
+                        interpreter,
+                        Value::Nil,
+                        env,
+                    )?;
+                    let command = loop {
+                        // Live echo under the menu, but only for messages
+                        // emitted since the glass was last painted: GNU's
+                        // message3 repaints through a frozen redisplay (the
+                        // `(message "")' between cycled menus), while
+                        // read_char's input-arrival wipe leaves the old
+                        // pixels alone until the next full redisplay.
+                        let emitted = crate::lisp::primitives::echo_area_message_tick();
+                        if state
+                            .try_borrow()
+                            .is_ok_and(|state| state.painted_message_tick != emitted)
+                        {
+                            draw_echo_row_composed(interpreter, env, &state);
+                            place_cursor(selected_row);
+                        }
+                        // A sequence still pending while this menu blocks
+                        // echoes after the shared idle window expires
+                        // (echo_now through the frozen redisplay); the read
+                        // then blocks normally.
+                        let event = match (&pending_keystroke_echo, pending_echo_deadline) {
+                            (Some(_), Some(deadline)) => {
+                                let timed = 'timed: loop {
+                                    match queue.try_next_event() {
+                                        Err(()) => break 'timed Err(()),
+                                        Ok(Some(event)) => break 'timed Ok(event),
+                                        Ok(None) => {}
+                                    }
+                                    let now = std::time::Instant::now();
+                                    if now >= deadline {
+                                        let (text, spans) = pending_keystroke_echo
+                                            .take()
+                                            .expect("pending echo present in this arm");
+                                        crate::lisp::primitives::set_echo_area_message_with_spans(
+                                            text, spans,
+                                        );
+                                        draw_echo_row_composed(interpreter, env, &state);
+                                        place_cursor(selected_row);
+                                        break 'timed Err(());
+                                    }
+                                    let _ = event::poll(
+                                        (deadline - now).min(std::time::Duration::from_millis(50)),
                                     );
-                                    draw_echo_row_composed(interpreter, env, &state);
-                                    place_cursor(selected_row);
-                                    break 'timed Err(());
+                                };
+                                match timed {
+                                    Ok(event) => Some(event),
+                                    // Echo shown (or terminal gone): a plain
+                                    // blocking read takes over either way.
+                                    Err(()) => queue.next_event(),
                                 }
-                                let _ = event::poll(
-                                    (deadline - now).min(std::time::Duration::from_millis(50)),
-                                );
-                            };
-                            match timed {
-                                Ok(event) => Some(event),
-                                // Echo shown (or terminal gone): a plain
-                                // blocking read takes over either way.
-                                Err(()) => queue.next_event(),
+                            }
+                            _ => queue.next_event(),
+                        };
+                        let Some(event) = event else {
+                            break Value::T;
+                        };
+                        let QueuedInput::Lisp(event) = event else {
+                            continue;
+                        };
+                        if event == Value::Integer(7) {
+                            break Value::T;
+                        }
+                        match reader.read_event(interpreter, event, env)? {
+                            Resolution::Command(binding) => break binding,
+                            Resolution::Prefix => {}
+                            Resolution::Undefined => break Value::Nil,
+                        }
+                    };
+                    let name = match command.kind() {
+                        Kind::Symbol(name) => name.as_str(),
+                        Kind::T => "tty-menu-exit",
+                        _ => "",
+                    };
+                    match name {
+                        "tty-menu-exit" => break TtyMenuOutcome::Quit,
+                        "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
+                        "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
+                        "tty-menu-next-item" => {
+                            // Below the last visible row GNU scrolls forward
+                            // (MI_SCROLL_FORWARD): the window advances until
+                            // the selection sits on the final item, and one
+                            // more step wraps to the top of the whole menu.
+                            if selected_row + 1 < max_items {
+                                selected_row += 1;
+                            } else if selected_row + first_item + 1 == pane.items.len() {
+                                selected_row = 0;
+                                first_item = 0;
+                            } else {
+                                first_item += 1;
                             }
                         }
-                        _ => queue.next_event(),
-                    };
-                    let Some(event) = event else {
-                        break Value::T;
-                    };
-                    let QueuedInput::Lisp(event) = event else {
-                        continue;
-                    };
-                    if event == Value::Integer(7) {
-                        break Value::T;
-                    }
-                    pending.push(event);
-                    match resolve_pending(interpreter, env, &pending) {
-                        Resolution::Command(binding) => break binding,
-                        Resolution::Prefix => {}
-                        Resolution::Undefined => break Value::Nil,
-                    }
-                };
-                let name = match command.kind() {
-                    Kind::Symbol(name) => name.as_str(),
-                    Kind::T => "tty-menu-exit",
-                    _ => "",
-                };
-                match name {
-                    "tty-menu-exit" => break TtyMenuOutcome::Quit,
-                    "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
-                    "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
-                    "tty-menu-next-item" => {
-                        // Below the last visible row GNU scrolls forward
-                        // (MI_SCROLL_FORWARD): the window advances until
-                        // the selection sits on the final item, and one
-                        // more step wraps to the top of the whole menu.
-                        if selected_row + 1 < max_items {
-                            selected_row += 1;
-                        } else if selected_row + first_item + 1 == pane.items.len() {
-                            selected_row = 0;
-                            first_item = 0;
-                        } else {
-                            first_item += 1;
+                        "tty-menu-prev-item" => {
+                            // MI_SCROLL_BACK: above the first visible row the
+                            // window retreats; at the very top it wraps to
+                            // the menu's last window with the final item
+                            // selected.
+                            if selected_row > 0 {
+                                selected_row -= 1;
+                            } else if first_item == 0 {
+                                selected_row = max_items - 1;
+                                first_item = pane.items.len() - max_items;
+                            } else {
+                                first_item -= 1;
+                            }
                         }
-                    }
-                    "tty-menu-prev-item" => {
-                        // MI_SCROLL_BACK: above the first visible row the
-                        // window retreats; at the very top it wraps to
-                        // the menu's last window with the final item
-                        // selected.
-                        if selected_row > 0 {
-                            selected_row -= 1;
-                        } else if first_item == 0 {
-                            selected_row = max_items - 1;
-                            first_item = pane.items.len() - max_items;
-                        } else {
-                            first_item -= 1;
+                        "tty-menu-select" => {
+                            // A separator or disabled item answers no selection
+                            // (TTYM_IA_SELECT), like GNU.
+                            let selection = selected_row + first_item;
+                            if pane.items[selection].enabled {
+                                break TtyMenuOutcome::Selected(selection);
+                            }
+                            break TtyMenuOutcome::NoSelect;
                         }
+                        _ => {}
                     }
-                    "tty-menu-select" => {
-                        // A separator or disabled item answers no selection
-                        // (TTYM_IA_SELECT), like GNU.
-                        let selection = selected_row + first_item;
-                        if pane.items[selection].enabled {
-                            break TtyMenuOutcome::Selected(selection);
-                        }
-                        break TtyMenuOutcome::NoSelect;
-                    }
-                    _ => {}
-                }
-            };
+                })
+            })();
 
             // screen_update: put back what the menu covered.
             {

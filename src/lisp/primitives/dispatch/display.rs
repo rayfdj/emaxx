@@ -893,6 +893,142 @@ fn window_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64)
     )
 }
 
+fn window_at_frame_coordinates(
+    interp: &Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    x: i64,
+    y: i64,
+) -> Option<u64> {
+    frame_window_tree_leaf_ids(interp, frame)
+        .into_iter()
+        .chain(std::iter::once(frame.borrow().minibuffer_window_id()))
+        .find(|id| {
+            let (width, height, left, top) = window_geometry(interp, *id);
+            x >= left && x < left + width && y >= top && y < top + height
+        })
+}
+
+fn position_at_coordinates(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut x = super::collections::fixnum_index_arg(&args[0])?;
+    let mut y = super::collections::fixnum_index_arg(&args[1])?;
+    if x < -1 {
+        return Err(wrong_type_argument("natnump", args[0]));
+    }
+    if y < 0 {
+        return Err(wrong_type_argument("natnump", args[1]));
+    }
+    let requested = args.get(2).copied().unwrap_or(Value::Nil);
+    let frame = if requested.is_nil() || is_window_value(interp, &requested) {
+        let window = live_window_id_or_selected(interp, Some(&requested))?;
+        let (_, _, left, top) = window_geometry(interp, window);
+        x += left;
+        y += top;
+        if args.get(3).is_none_or(|value| value.is_nil()) {
+            x += interp.window_margins(window).0.unwrap_or(0);
+        }
+        interp.window_frame_id(window).expect("live window frame")
+    } else {
+        super::frames::decode_live_frame(interp, Some(&requested), false)?
+    };
+    let Some(window_id) = window_at_frame_coordinates(interp, frame, x, y) else {
+        return Ok(Value::list([
+            Value::Frame(frame),
+            Value::Nil,
+            Value::cons(Value::Integer(x), Value::Integer(y)),
+            Value::Integer(0),
+        ]));
+    };
+    let window = interp.record_value(window_id);
+    let (_, _, left, top) = window_geometry(interp, window_id);
+    let buffer = window_buffer_id(interp, &window)
+        .ok_or_else(|| wrong_type_argument("window-live-p", window))?;
+    let area = super::call(
+        interp,
+        "coordinates-in-window-p",
+        &[Value::cons(Value::Integer(x), Value::Integer(y)), window],
+        env,
+    )?;
+    let local_x = x - left;
+    let local_y = y - top;
+    if area.is_symbol() {
+        return Ok(Value::list([
+            window,
+            area,
+            Value::cons(Value::Integer(local_x), Value::Integer(local_y)),
+            Value::Integer(0),
+            Value::Nil,
+            Value::Nil,
+            Value::cons(Value::Integer(local_x), Value::Integer(local_y)),
+            Value::Nil,
+            Value::cons(Value::Integer(-1), Value::Integer(-1)),
+            Value::cons(Value::Integer(-1), Value::Integer(-1)),
+        ]));
+    }
+    let text_x = area.car()?.as_integer()?;
+    let text_y = local_y
+        - window_line_height(interp, buffer, "tab-line-format", env)
+        - window_line_height(interp, buffer, "header-line-format", env);
+    let old_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(buffer)?;
+    let result = (|| {
+        let start = window_start(interp, Some(&window))?;
+        let end = interp.buffer.borrow().point_max();
+        let hscroll = window_hscroll_state(interp, window_id).hscroll.max(0);
+        let motion_args = crate::lisp::alloc::RootedVec::from_vec(vec![
+            Value::Integer(start as i64),
+            Value::cons(Value::Integer(-hscroll), Value::Integer(0)),
+            Value::Integer(end as i64),
+            Value::cons(Value::Integer(text_x), Value::Integer(text_y)),
+            Value::Nil,
+            Value::cons(Value::Integer(hscroll), Value::Integer(0)),
+            window,
+        ]);
+        let motion = super::buffer_edit::display_motion(interp, env, &motion_args, true)?;
+        let dx = text_x - motion.hpos;
+        let dy = text_y - motion.vpos;
+        // dispnew.c obtains dimensions from a realized glyph matrix.
+        // Batch has no such matrix, even though position traversal works.
+        let realized = interactive_window_metrics().is_some();
+        let width = if realized {
+            interp
+                .buffer
+                .borrow()
+                .char_at(motion.position)
+                .map_or(0, |character| {
+                    if character == '\t' || character == '\n' {
+                        1
+                    } else {
+                        unicode_width::UnicodeWidthChar::width(character).unwrap_or(0) as i64
+                    }
+                })
+        } else {
+            0
+        };
+        let position = Value::Integer(motion.position as i64);
+        Ok(Value::list([
+            window,
+            position,
+            Value::cons(Value::Integer(text_x), Value::Integer(text_y)),
+            Value::Integer(0),
+            Value::Nil,
+            position,
+            Value::cons(
+                Value::Integer(text_x.max(motion.hpos)),
+                Value::Integer(motion.vpos),
+            ),
+            Value::Nil,
+            Value::cons(Value::Integer(dx), Value::Integer(dy)),
+            Value::cons(Value::Integer(width), Value::Integer(i64::from(realized))),
+        ]))
+    })();
+    interp.with_lisp_stack_roots(&result, |interp| interp.set_current_buffer_id(old_buffer))?;
+    result
+}
+
 /// window.c's window_resize_apply: place WINDOW at (X, Y) and commit the
 /// size staged in its new-pixel slot for the resized dimension (the
 /// other dimension keeps its current size), then lay the children back
@@ -5021,7 +5157,11 @@ define_dispatch!(
             }
             "window-at" => {
                 need_arg_range(name, args, 2, 3)?;
-                Ok(interp.selected_window_value())
+                let x = args[0].as_float()?.floor() as i64;
+                let y = args[1].as_float()?.floor() as i64;
+                let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
+                Ok(window_at_frame_coordinates(interp, frame, x, y)
+                    .map_or(Value::Nil, |id| interp.record_value(id)))
             }
             "split-window-internal" => {
                 need_args(name, args, 4)?;
@@ -5076,19 +5216,7 @@ define_dispatch!(
             }
             "posn-at-x-y" => {
                 need_arg_range(name, args, 2, 4)?;
-                let x = args[0].as_integer()?;
-                let y = args[1].as_integer()?;
-                let window = args
-                    .get(2)
-                    .filter(|value| is_window_value(interp, value))
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                Ok(Value::list([
-                    window,
-                    Value::Nil,
-                    Value::cons(Value::Integer(x), Value::Integer(y)),
-                    Value::Integer(0),
-                ]))
+                position_at_coordinates(interp, args, env)
             }
             "posn-at-point" => {
                 need_arg_range(name, args, 0, 2)?;

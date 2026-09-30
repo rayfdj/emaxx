@@ -547,9 +547,27 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
         let mut interpreter = Interpreter::new();
         let record = super::load_pdump_at_startup(&mut interpreter, None)
             .expect("the copied executable discovers its actual sibling image");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro")
+                .expect("saved macro array"),
+            Value::string("saved macro")
+        );
         interpreter
             .init_after_pdump_load()
             .expect("initialize loaded process");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro")
+                .expect("new process macro state"),
+            Value::Nil
+        );
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro-index")
+                .expect("saved macro index"),
+            Value::Integer(3)
+        );
         assert_eq!(
             interpreter
                 .symbol_value_cell("zz-builder-pid")
@@ -604,6 +622,8 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
         "zz-builder-pid",
         Value::Integer(i64::from(std::process::id())),
     );
+    interpreter.set_global_binding("executing-kbd-macro", Value::string("saved macro"));
+    interpreter.set_global_binding("executing-kbd-macro-index", Value::Integer(3));
     interpreter.set_buffer_local_value(
         interpreter.current_buffer_id(),
         "default-directory",

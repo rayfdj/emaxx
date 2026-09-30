@@ -1,0 +1,113 @@
+{
+  "source": "source192",
+  "source_manifest": "source192-manifest.json in receipts.tar.gz",
+  "checks": "check/fmt/clippy/diff pass",
+  "focused_gate": [
+    "batch::tests::xt_mouse_read_key_discards_the_unbound_down_event",
+    "lisp::primitives::tests::input_decode_positions_follow_display_motion_without_moving_point"
+  ],
+  "binary_sha256": "3fc9f7d0e9be40ad2b7342f79c5d86827df66edd055f229e1bb87e5033b196e0",
+  "archive": {
+    "path": "source192-focused.tar.gz",
+    "bytes": 71585,
+    "sha256": "5094ab49c183c20c165c709b1091de463cff24c5beeb30cbcf8b65cfa70d4732"
+  },
+  "files": [
+    {
+      "path": "source192-check-command.json",
+      "bytes": 477,
+      "sha256": "5131f9ba5e08b38d17d50648d6f3169b13dcd3871f317e524b15690c080f2d32"
+    },
+    {
+      "path": "source192-check-result.json",
+      "bytes": 83,
+      "sha256": "39e5a3d5ed81a3ddabaab04fbfabab370bcc8abb8c4f9ae6214e79085ac7efd5"
+    },
+    {
+      "path": "source192-check.log",
+      "bytes": 193,
+      "sha256": "fe8e40f39dcfa5594e1ff42fc6e432933e4e15445901a72c2a54a1c96c65e7f6"
+    },
+    {
+      "path": "source192-fmt-command.json",
+      "bytes": 405,
+      "sha256": "62c1015512f58610d21d6af67a52e632750f2742d2b3f4cfe08b199eaa435644"
+    },
+    {
+      "path": "source192-fmt-result.json",
+      "bytes": 82,
+      "sha256": "7b7143ee2a6548f99da9a0545a91a3d866b6ea8fee9affcc02d05f56b513a4a0"
+    },
+    {
+      "path": "source192-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source192-clippy-command.json",
+      "bytes": 465,
+      "sha256": "739078da8f82d6ff3bf674ad9fa85415191ff07be623bda3c56dfb91959d3ef3"
+    },
+    {
+      "path": "source192-clippy-result.json",
+      "bytes": 83,
+      "sha256": "4157f5e4895cbb9e3f7fc9854e9d48da95a10fa07ca3db18ae387bc5f882518d"
+    },
+    {
+      "path": "source192-clippy.log",
+      "bytes": 194,
+      "sha256": "f7746e00edeeb04db54e233e75c650d41f69f1057a540341caae0eac6c632eee"
+    },
+    {
+      "path": "source192-diff-command.json",
+      "bytes": 381,
+      "sha256": "f015f67b6af694a987058a023ea8ed0417a2fd2878797b3f142c9c3937d219e4"
+    },
+    {
+      "path": "source192-diff-result.json",
+      "bytes": 90,
+      "sha256": "eb9d6cdb139f79ce6b4babb78db3b2d067bc9b9d98916efee1a17ef6e7b78c5b"
+    },
+    {
+      "path": "source192-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source192-gate-build-command.json",
+      "bytes": 1116,
+      "sha256": "972149c1c02a073d9598693e8371dd06a9eb57c982509faba65fca5557a21624"
+    },
+    {
+      "path": "source192-gate-build-result.json",
+      "bytes": 84,
+      "sha256": "801a1fcc46d81c3f6f59291a773010f7addaab94cf7b1eb91e8926c9b89ff58c"
+    },
+    {
+      "path": "source192-gate-build.log",
+      "bytes": 214391,
+      "sha256": "4a33401a6a6b809a66d0ff318f9eded52cb8e495318afe091e51e1d61bc4e155"
+    },
+    {
+      "path": "source192-gate-focused-command.json",
+      "bytes": 1560,
+      "sha256": "04065804e274c03a22641a5ccd1e27f0ec7368ffb6074f69d1b3537c5011463a"
+    },
+    {
+      "path": "source192-gate-focused-result.json",
+      "bytes": 89,
+      "sha256": "0e4c62c1d1b90bf32d60b16778d1e61a68ffdb532fd42598f0d111fe8f209eff"
+    },
+    {
+      "path": "source192-gate-focused.log",
+      "bytes": 296,
+      "sha256": "0e73427db360d167b3a008b7e7870b7ea987b7f6db66fb627bcae84b87bed64b"
+    },
+    {
+      "path": "source192-gate-inventory.txt",
+      "bytes": 259744,
+      "sha256": "f5ac6ebf52303634c3714d3871ee7705f2bbcee50ae46e72907585ef55dc078e"
+    }
+  ],
+  "qualification": "Only closed strict checks, build and two focused tests are included. Broader gate, release, ordinary and TTY validation are running or queued. Not complete-source validation or performance evidence."
+}

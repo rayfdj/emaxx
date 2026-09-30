@@ -2571,6 +2571,37 @@ fn compute_motion_value(
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
+    let motion = display_motion(interp, env, args, false)?;
+    Ok(Value::list([
+        Value::Integer(motion.position as i64),
+        Value::Integer(motion.hpos),
+        Value::Integer(motion.vpos),
+        Value::Integer(motion.previous_hpos),
+        if motion.continued {
+            Value::T
+        } else {
+            Value::Nil
+        },
+    ]))
+}
+
+pub(super) struct DisplayMotion {
+    pub(super) position: usize,
+    pub(super) hpos: i64,
+    pub(super) vpos: i64,
+    previous_hpos: i64,
+    continued: bool,
+}
+
+// dispnew.c:buffer_posn_from_coords stops on the glyph containing the
+// requested coordinate. Share the ordinary display-motion traversal,
+// rather than fabricating a nil buffer position for every coordinate.
+pub(super) fn display_motion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+    stop_on_glyph: bool,
+) -> Result<DisplayMotion, LispError> {
     let from = checked_motion_position(interp, &args[0])?;
     let (mut hpos, mut vpos) = motion_pair(&args[1])?;
     let to = checked_motion_position(interp, &args[2])?;
@@ -2681,6 +2712,9 @@ fn compute_motion_value(
         };
         previous_hpos = hpos;
         if character == '\n' {
+            if stop_on_glyph && vpos == target_vpos {
+                break;
+            }
             position += 1;
             vpos += 1;
             hpos = left_margin;
@@ -2692,6 +2726,13 @@ fn compute_motion_value(
 
         let character_width =
             display_motion_width(interp, env, position, character, hpos, hscroll, tab_offset);
+        if stop_on_glyph && vpos == target_vpos && hpos + character_width > target_hpos {
+            // Each expanded TAB cell has the tab's buffer position.
+            if character == '\t' {
+                hpos = target_hpos;
+            }
+            break;
+        }
         if !truncates
             && character != '\t'
             && character_width > 1
@@ -2744,13 +2785,13 @@ fn compute_motion_value(
     } else {
         previous_hpos
     };
-    Ok(Value::list([
-        Value::Integer(position as i64),
-        Value::Integer(hpos),
-        Value::Integer(vpos),
-        Value::Integer(previous_hpos),
-        if continued { Value::T } else { Value::Nil },
-    ]))
+    Ok(DisplayMotion {
+        position,
+        hpos,
+        vpos,
+        previous_hpos,
+        continued,
+    })
 }
 
 fn line_number_display_width_value(

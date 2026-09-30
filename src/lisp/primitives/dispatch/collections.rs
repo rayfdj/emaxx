@@ -2,7 +2,7 @@ use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
-fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
+pub(super) fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(index) => Ok(index),
         other => Err(wrong_type_argument("fixnump", other.value())),

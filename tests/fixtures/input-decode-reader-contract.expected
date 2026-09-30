@@ -1,0 +1,1 @@
+(([first second third] (122) [first second third] 1) (([97] (122)) ([65] (122))) (([97 98] (122)) ([97 66] (122))) ((wrong-type-argument stringp 42) (97 122)) (finished outer ("Prompt: " [97]) (122)) ([beta] (122)))

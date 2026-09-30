@@ -1917,11 +1917,29 @@ fn read_key_decodes_xt_mouse_translators() {
                 (progn
                   (setq xterm-mouse-mode t)
                   (defalias 'xterm-mouse-translate (lambda (_event) [decoded]))
-                  (let ((unread-command-events '(27 91 77 116 97 105 108)))
+                  (let ((input-decode-map (make-sparse-keymap))
+                        (unread-command-events '(27 91 77 116 97 105 108)))
+                    (define-key input-decode-map "\e[M" 'xterm-mouse-translate)
                     (list (read-key) (length unread-command-events))))
                 "#,
         ),
         Value::list([Value::Symbol("decoded".into()), Value::Integer(4)])
+    );
+}
+
+#[test]
+fn read_key_does_not_invoke_unconfigured_mouse_translators() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "keymap",
+            r#"
+                (let ((input-decode-map (make-sparse-keymap))
+                      (unread-command-events '(27 91 77 116 97 105 108)))
+                  (defalias 'xterm-mouse-translate (lambda (_event) [decoded]))
+                  (list (read-key) (length unread-command-events)))
+                "#,
+        ),
+        Value::list([Value::Integer(27), Value::Integer(6)])
     );
 }
 
@@ -1963,7 +1981,7 @@ fn read_key_discards_only_unbound_mouse_down_events() {
                       (unread-command-events '((down-mouse-1 nil 1))))
                   (define-key map [down-mouse-1] 'ignore)
                   (let ((overriding-local-map map))
-                    (car (read-key))))
+                    (car (aref (read-key-sequence-vector nil) 0))))
                 "#,
         ),
         Value::Symbol("down-mouse-1".into())
@@ -6205,7 +6223,7 @@ fn keyboard_macro_normalizes_shift_tab_and_selected_window_context() {
                       (interactive)
                       (setq shifted-tab-ran t)))
                   (use-local-map map)
-                  (execute-kbd-macro (kbd "S-TAB"))
+                  (execute-kbd-macro (kbd "S-<tab>"))
                   (define-key map "x"
                     (lambda ()
                       (interactive)

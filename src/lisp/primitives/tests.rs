@@ -13850,6 +13850,51 @@ fn timers_run_inside_a_child_threads_sleep_with_its_bindings() {
     );
 }
 
+#[test]
+fn input_decode_general_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-general.el"),
+        include_str!("../../../tests/fixtures/input-decode-general.expected").trim(),
+        "live input decoding, long and symbolic sequences, callbacks and invalid returns",
+    );
+}
+
+#[test]
+fn input_decode_extra_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-extra.el"),
+        include_str!("../../../tests/fixtures/input-decode-extra.expected").trim(),
+        "nil and multi-event translations, idle fallback, defaults and collecting prefix mutation",
+    );
+}
+
+#[test]
+fn input_decode_pipeline_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-pipeline.el"),
+        include_str!("../../../tests/fixtures/input-decode-pipeline.expected").trim(),
+        "translation ordering, multi-event results, live command prefixes and length limits",
+    );
+}
+
+#[test]
+fn input_decode_reader_contract_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-reader-contract.el"),
+        include_str!("../../../tests/fixtures/input-decode-reader-contract.expected").trim(),
+        "generated suffixes, case fallback, prompt errors and nonlocal translator exits",
+    );
+}
+
+#[test]
+fn input_decode_case_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-case-state.el"),
+        include_str!("../../../tests/fixtures/input-decode-case-state.expected").trim(),
+        "returned event case, recorded command keys and shift translation state",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn special_event_maps_use_live_lookup_through_collecting_filters() {
@@ -26646,5 +26691,184 @@ fn regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc(
         include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.el"),
         include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.expected"),
         "regexp table snapshots across shared leaves, replaced edges and collection",
+    );
+}
+
+#[test]
+fn input_decode_command_reader_preserves_reached_prefix_and_live_remapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-command-reader.el"),
+        include_str!("../../../tests/fixtures/input-decode-command-reader.expected").trim(),
+        "collecting prefix/leaf filters run once while the active map is replaced",
+    );
+}
+
+#[test]
+fn input_decode_keyboard_macro_uses_the_same_live_translation_pipeline() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-shared.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-shared.expected").trim(),
+        "ordinary execute-kbd-macro input passes through all three live translation maps",
+    );
+}
+
+#[test]
+fn input_decode_autoloaded_prefix_collects_before_the_next_input_event() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-autoload-prefix.el"),
+        include_str!("../../../tests/fixtures/input-decode-autoload-prefix.expected").trim(),
+        "ordinary and macro readers follow an autoloaded prefix map across collection",
+    );
+}
+
+#[test]
+fn input_decode_restarts_after_an_unbound_prefix_loses_all_translations() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-first-unbound.el"),
+        include_str!("../../../tests/fixtures/input-decode-first-unbound.expected").trim(),
+        "all three translation stages restart at the remaining suffix, with ordinary keys as controls",
+    );
+}
+
+#[test]
+fn input_decode_shifted_tab_character_and_function_key_follow_distinct_maps() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-shift-tab-variants.el"),
+        include_str!("../../../tests/fixtures/input-decode-shift-tab-variants.expected").trim(),
+        "S-TAB uses character case fallback; S-<tab> follows the live function-key-map",
+    );
+}
+
+#[test]
+fn input_decode_function_keys_consult_live_undefined_command_remapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-remapped-undefined.el"),
+        include_str!("../../../tests/fixtures/input-decode-remapped-undefined.expected").trim(),
+        "remap filters run at GNU's two decision points and may change between calls",
+    );
+}
+
+#[test]
+fn input_decode_initial_maps_keep_identity_and_the_shared_function_parent() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-map-authority.el"),
+        include_str!("../../../tests/fixtures/input-decode-map-authority.expected").trim(),
+        "initial keyboard maps survive collection and inherit the original live parent without synthetic prompts",
+    );
+}
+
+#[test]
+fn input_decode_default_function_map_supplies_shifted_tab_translation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-tab-map-installation.el"),
+        include_str!("../../../tests/fixtures/input-decode-tab-map-installation.expected").trim(),
+        "ordinary kbd/read-kbd-macro events and initial local-function-key-map inheritance",
+    );
+}
+
+#[test]
+fn input_decode_minibuffer_shares_macro_and_unread_translation_state() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-shared.el"),
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-shared.expected").trim(),
+        "recursive minibuffer reads preserve prefixes across unread and macro input with live collecting translators",
+    );
+}
+
+#[test]
+fn input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-queue.el"),
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-queue.expected").trim(),
+        "a translator mutates the actual unread spine and RET runs the minibuffer's own command",
+    );
+}
+
+#[test]
+fn input_decode_mouse_menu_uses_unchanged_lisp_translation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-mouse-menu-cases.el"),
+        include_str!("../../../tests/fixtures/input-decode-mouse-menu-cases.expected").trim(),
+        "menu clicks with actual event-kind and shared or distinct positions use mouse.el",
+    );
+}
+
+#[test]
+fn input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-mouse-raw-mutation.el"),
+        include_str!("../../../tests/fixtures/input-decode-mouse-raw-mutation.expected").trim(),
+        "collecting translators mutate the actual event while raw keys keep its original head",
+    );
+}
+
+#[test]
+fn input_decode_non_mouse_menu_events_mark_the_shared_position() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-menu-bar.el"),
+        include_str!("../../../tests/fixtures/input-decode-menu-bar.expected").trim(),
+        "parameterized events without mouse-click metadata expand external menu input once",
+    );
+}
+
+#[test]
+fn input_decode_positions_follow_display_motion_without_moving_point() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-position-lookup.el"),
+        include_str!("../../../tests/fixtures/input-decode-position-lookup.expected").trim(),
+        "coordinate lookup returns live buffer positions across tabs, lines and end of buffer",
+    );
+}
+
+#[test]
+fn input_decode_macro_reads_the_live_array_and_stops_on_t() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-live-array.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-live-array.expected").trim(),
+        "macro mutation, replacement and immediate termination use the public array and index",
+    );
+}
+
+#[test]
+fn input_decode_macro_raw_readers_observe_directly_bound_arrays() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-raw-array.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-raw-array.expected").trim(),
+        "timed raw input reads real macro arrays, preserves meta bits and sets the macro event frame",
+    );
+}
+
+#[test]
+fn input_decode_macro_nested_state_survives_collecting_commands_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-nested-roots.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-nested-roots.expected").trim(),
+        "nested execution restores the actual outer array and index across collecting termination hooks",
+    );
+}
+
+#[test]
+fn input_decode_macro_timed_reads_preserve_queue_order_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-read-order.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-read-order.expected").trim(),
+        "unread input precedes live macro input and timed readers preserve inhibition and bounds errors",
+    );
+}
+
+#[test]
+fn input_decode_raw_reads_unwrap_pending_events_before_terminal_polling() {
+    struct ClearPoller;
+    impl Drop for ClearPoller {
+        fn drop(&mut self) {
+            set_tty_event_poller(None);
+        }
+    }
+    let _poller = ClearPoller;
+    set_tty_event_poller(Some(Box::new(|_| Some(None))));
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-unread-wrapper.el"),
+        include_str!("../../../tests/fixtures/input-decode-unread-wrapper.expected").trim(),
+        "pending character and function-key wrappers are consumed before a live timed wait without losing modifiers",
     );
 }

@@ -1,7 +1,8 @@
 # Resume the compact runtime goal here
 
-**Latest validated checkpoint: source174**, published at `178fdf37` in
-[PR #78](https://github.com/rayfdj/emaxx/pull/78). Read the
+**Latest validated checkpoint: source174**, merged into main at `21d20f0e` in
+[PR #78](https://github.com/rayfdj/emaxx/pull/78), with the validated tree verified
+unchanged from `2a156a5d` (runtime source `178fdf37`). Read the
 [complete validation checkpoint](docs/runtime-representation-call-validation-complete.md)
 after the complete goal: **3,023 macOS / 3,035 Linux Rust passes**, native
 artifact identity on both platforms, **519 Linux frozen files / 7,928 matching
@@ -10,14 +11,57 @@ screen and filesystem comparisons**. The original full-run reclamation
 assertion passes on both platforms. All prior failures and evidence limits
 remain preserved in the [portable receipts](docs/handover/2026-09-30-call-validation-complete/manifest.json).
 
-**Current unfinished work: source178's input decoder**, separately packaged in
-the [current draft handover](docs/runtime-representation-input-decoder-draft.md).
-Strict checks, **308 gate / 308 release controls** and **seven ordinary exact
-GNU comparisons** pass. Its complete patch replays all 360 recorded inputs,
-including the four embedded files omitted from older manifests. The draft is
-not applied to production. Terminal/minibuffer integration and broader reader
-contracts remain open, along with symbol authority, allocation accounting,
-final audit, complete final-source validation and locked performance parity.
+**Current unfinished work: source196's shared command reader and macro state**, described in
+the [current draft handover](docs/runtime-representation-shared-reader-draft.md).
+It extends the [source178 decoder](docs/runtime-representation-input-decoder-draft.md)
+to frame, menu, macro and both live/simulated minibuffer loops. Source185 passes
+**424 gate / 424 release controls** and **15 ordinary exact GNU comparisons**.
+Source188 removes the remaining simulated reader adapters and passes strict
+checks, **426 gate / 426 release controls** and **17 ordinary GNU comparisons**.
+Its selected terminal run fails the real menu-bar click scenario and an invalid
+new prompt presence assertion; fifteen other scenarios match. Source189 fixes
+only that assertion. Source190 removes the duplicate Rust mouse-link translator,
+preserves raw event heads and reads live event-kind properties. Its strict
+checks pass, but its gate fails: **428 pass / 1 unchanged XTerm failure**.
+That failure exposes the nil `posn-at-x-y` stub. Source192 replaces it with
+shared display-motion traversal and real window-coordinate lookup, following
+source191's preserved compiler failure. Source192 passes strict checks,
+**506 gate / 506 release controls**, **21 ordinary GNU comparisons** and
+**17 terminal scenarios / 34 screen comparisons**, including the previously
+failing menu click. The [closed source192 receipts](docs/handover/2026-09-30-shared-reader-draft/source192-validation-manifest.json)
+verify the raw inventories and unchanged inputs.
+Source195 removes the copied macro event queue and reads the actual Lisp array
+and index, preserves nested state across collection, and clears active macro
+execution when an image starts in a new process. Source193 and source194's
+compiler failures are preserved. Source195 passes strict checks, **535 gate /
+535 release controls**, **25 selected ordinary GNU comparisons** and **17
+terminal scenarios / 34 screen comparisons**. An additional unread-wrapper
+comparison fails on both source185 and source195; the
+[closed source195 receipts](docs/handover/2026-09-30-shared-reader-draft/source195-validation-manifest.json)
+preserve that failure alongside the passes.
+Source196 reuses `(t . EVENT)` unwrapping in the common pending reader before
+a terminal wait. It adds the ordinary GNU fixture and a Rust control with a
+terminal poller installed. Strict checks and **536 gate / 536 release controls**
+pass, but its ordinary build reused the exact source195 executable and failed
+the wrapper comparison. The [stale-build receipts](docs/handover/2026-09-30-shared-reader-draft/source196-stale-validation-manifest.json)
+preserve all 26 comparisons, the failed result and the timestamp diagnosis.
+The snapshot copier now refreshes changed-file timestamps. A separately named
+`source196-fresh` run cleans the Emaxx package and repeats validation on the
+identical 401 inputs. Its [audited selected results](docs/handover/2026-09-30-shared-reader-draft/source196-fresh-selected-manifest.json)
+pass all strict checks, **536 gate / 536 release controls** and **26 ordinary
+GNU comparisons**, including the wrapper fixture. Selected terminal validation
+is running; complete macOS runs follow it, and Linux validation remains required.
+Complete source195 runs were deferred before launch to use this candidate.
+Its complete patch replays all 401 recorded inputs. The candidate is applied in the local
+task worktree and is being published on `runtime-char-tables` for complete
+validation. Main remains source174.
+A separately packaged source197 draft removes the macro saved-state host
+vector and global root registration using GNU's two-cons state and existing
+scoped roots. It is applied only in the `macro-saved-state/emaxx` checkout;
+strict checks pass, runtime validation is queued, and its normal/error
+reclamation fixture has positive ordinary GNU/source195 baseline evidence.
+Broader reader contracts, symbol authority, allocation accounting, final audit,
+complete final-source validation and locked performance parity remain open.
 **The full goal remains active; this checkpoint is not completion.**
 
 **Previous main checkpoint, source161:** [PR #77](https://github.com/rayfdj/emaxx/pull/77)
@@ -263,6 +307,7 @@ The goal is **not complete**.
 Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
+   Then read the [current shared-reader draft](docs/runtime-representation-shared-reader-draft.md).
    Then read the [shared hash-table allocation checkpoint](docs/runtime-representation-hash-allocation-checkpoint.md).
    Then read the [current task-branch follow-up](docs/runtime-representation-call-window-checkpoint.md).
    Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).

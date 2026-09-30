@@ -1,0 +1,201 @@
+{
+  "status": "Unfinished source196: strict checks and eight focused gate tests pass. Broader Rust, ordinary GNU and terminal checks remain running or queued; their live logs are excluded. Complete runs are gated on those selected prerequisites.",
+  "base_commit": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+  "complete_patch": "source196-complete.patch",
+  "source_manifest": "source196-manifest.json",
+  "source_inputs": 401,
+  "captured_unix": 1790781901.3269498,
+  "qualification": "Includes the new pending-event wrapper control with a terminal poller installed, original XTerm control and actual fresh-process image test. Does not clear the previously failed source195 ordinary wrapper run. No complete new-source correctness, GNU performance parity or full-goal completion is established.",
+  "archive": {
+    "path": "source196-focused.tar.gz",
+    "bytes": 96545,
+    "sha256": "9e48ebad764034e98696b9775c11eab35854c21ffc421aa74eacd5195fe7450f"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-selected.py",
+      "bytes": 4777,
+      "sha256": "3909da3ec63519f30ea7b64809070cd214bff3c6e81af27fa8d773ca2760515f"
+    },
+    {
+      "path": "audit-source196-macos-names.py",
+      "bytes": 1679,
+      "sha256": "e37678ddb7afedc9ae020a8c0cab7fd718109938ffb97af6b5fa9a56e2b83d3d"
+    },
+    {
+      "path": "audit-source196-patch.py",
+      "bytes": 2787,
+      "sha256": "0d1405adbed429ab14bdc340b900ba1d4f0e0f7aad186538406a1faff3ad542b"
+    },
+    {
+      "path": "audit-source196-selected-tty.py",
+      "bytes": 1929,
+      "sha256": "6419b52a468e7576af74ea820edcb5d82053a12c7980e7e9ac542bacd86cef43"
+    },
+    {
+      "path": "build-reader196.py",
+      "bytes": 2418,
+      "sha256": "a09201614bf2ab8feddf52ddec1805b72b57702ecf6c4c1a7ddf0001da05bfe2"
+    },
+    {
+      "path": "check-reader196.py",
+      "bytes": 2038,
+      "sha256": "ce0681888517e4b0c84c31601b23263f978d49d4447b8907f2aea6d5e423501e"
+    },
+    {
+      "path": "queue-source196-full-validation.py",
+      "bytes": 2673,
+      "sha256": "080c9eb1a76ab85fe615198dbf08114cbc6f7bc6e605994623162a281dcd05b5"
+    },
+    {
+      "path": "queue-source196-validation.py",
+      "bytes": 2372,
+      "sha256": "1f03f9458011c995c0a8bafc8bcf632c97796ef1360bade7d63d15ae05051ed4"
+    },
+    {
+      "path": "run-source196-full-gate.py",
+      "bytes": 3167,
+      "sha256": "6c22ae7142b59dc32aea4889a3dddf7a19139ae918c13e40ee7f440f932d698d"
+    },
+    {
+      "path": "run-source196-full-tty.py",
+      "bytes": 3303,
+      "sha256": "2e93023876a5cbb4aa514f99cfbfeded1ec3d92f141253557e1eb8e4d61185cd"
+    },
+    {
+      "path": "run-source196-selected-tty.py",
+      "bytes": 3199,
+      "sha256": "9ec39a3892456b72a972ba3fe7afcc1de1e431784436a8703e082282a12734ad"
+    },
+    {
+      "path": "snapshot-reader-candidate.py",
+      "bytes": 5181,
+      "sha256": "b261f4ead9d842772baca12a5d775972c2a1d70cf029f444a91e4552837af305"
+    },
+    {
+      "path": "source196-base.json",
+      "bytes": 3563,
+      "sha256": "a9709f3bbe1246effc9d44cff79770bcd763f60cab45ee6a71aaab774eac6714"
+    },
+    {
+      "path": "source196-check-command.json",
+      "bytes": 477,
+      "sha256": "339c17695343d7583d9cebdf2be3fa8dda9f866baef32317e64a3017224dbb29"
+    },
+    {
+      "path": "source196-check-result.json",
+      "bytes": 83,
+      "sha256": "0fe30ee3d1cc881d609b0b6aeae7a82c3e5d4d6e03714116a175046939cd9818"
+    },
+    {
+      "path": "source196-check.log",
+      "bytes": 193,
+      "sha256": "fb3a89ddcbaa8cae3251f976f5bc57ee67c06e1c8200400e031a19ebc30f5e4f"
+    },
+    {
+      "path": "source196-clippy-command.json",
+      "bytes": 465,
+      "sha256": "739078da8f82d6ff3bf674ad9fa85415191ff07be623bda3c56dfb91959d3ef3"
+    },
+    {
+      "path": "source196-clippy-result.json",
+      "bytes": 81,
+      "sha256": "9f1e77c698cbb1b3b41ac21ae420a3692685ea2488c1c854283bbf51863621f4"
+    },
+    {
+      "path": "source196-clippy.log",
+      "bytes": 194,
+      "sha256": "eae81887a64afefae1a32d2245a69883c7481d64309311b8263ae4efef18ba83"
+    },
+    {
+      "path": "source196-complete.patch",
+      "bytes": 217384,
+      "sha256": "efb539be2717cc66f5511724cf10bf01f3b07efe03a4692e19442be0cd7c95b8"
+    },
+    {
+      "path": "source196-diff-command.json",
+      "bytes": 381,
+      "sha256": "f015f67b6af694a987058a023ea8ed0417a2fd2878797b3f142c9c3937d219e4"
+    },
+    {
+      "path": "source196-diff-result.json",
+      "bytes": 89,
+      "sha256": "1a0cc1f850b659a35e170347a093b29b9d45354ef2222e243a18cf57ec6393cf"
+    },
+    {
+      "path": "source196-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-fmt-command.json",
+      "bytes": 405,
+      "sha256": "62c1015512f58610d21d6af67a52e632750f2742d2b3f4cfe08b199eaa435644"
+    },
+    {
+      "path": "source196-fmt-result.json",
+      "bytes": 81,
+      "sha256": "e6e32ca5cde7bcbdf46d426246ffdee516266118f724b60643eda130c1960e90"
+    },
+    {
+      "path": "source196-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-focused-evidence-audit.json",
+      "bytes": 893,
+      "sha256": "e7567c4f09c87e8123dc2f02a8cee6a0d4ab3813c81adf4db0df65c088683a40"
+    },
+    {
+      "path": "source196-gate-build-command.json",
+      "bytes": 1116,
+      "sha256": "0ddb1a5127d7a04207a11782b95a067ad297f1f13a8405e2457a2669c98bf450"
+    },
+    {
+      "path": "source196-gate-build-result.json",
+      "bytes": 82,
+      "sha256": "2ebfedd45a353af0304802e3d18d54971c2d2d2baa631224d72e005599385e7b"
+    },
+    {
+      "path": "source196-gate-build.log",
+      "bytes": 214391,
+      "sha256": "4eab66c46248190ffef446f49465236575c39fdfffa39df72b094a8e6e23cf63"
+    },
+    {
+      "path": "source196-gate-focused-command.json",
+      "bytes": 2734,
+      "sha256": "6e40acb678780bc754d6b469cdb5d5ecc3210b89be1cbc6522cc85207f849ecc"
+    },
+    {
+      "path": "source196-gate-focused-result.json",
+      "bytes": 90,
+      "sha256": "4c74a43147a5aeecf12a5d6bb99df08627b76fec9bf6164df33a07c8c31725c1"
+    },
+    {
+      "path": "source196-gate-focused.log",
+      "bytes": 1000,
+      "sha256": "34973df0e51aebed85c28af7bb55e6570371beb5ca952e909b7986c093af072d"
+    },
+    {
+      "path": "source196-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    },
+    {
+      "path": "source196-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "9df5141327cbf9636d6d045a23afbff80afe5b1b483904e5f38c53e60a4ef46c"
+    },
+    {
+      "path": "static-reader196.py",
+      "bytes": 1549,
+      "sha256": "cf301afbc0e05439d17f4c9494ee760e31b1363def837526fe9578e6a4762102"
+    },
+    {
+      "path": "test-reader196.py",
+      "bytes": 5264,
+      "sha256": "35a7b708259dc157cf1ab6f5d0287a2f38f6557f1d1cd7d25e859f4a5d4aa85c"
+    }
+  ]
+}
