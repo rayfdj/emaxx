@@ -20,6 +20,7 @@ def emit(record):
 
 watched_keys = []
 collection_sources = []
+collection_frames = []
 native_values = (0, 0)
 
 
@@ -38,7 +39,7 @@ class CollectionEntry(gdb.Breakpoint):
     def stop(self):
         if not watched_keys:
             return False
-        global collection_sources
+        global collection_sources, collection_frames
         registers = {name: int(gdb.parse_and_eval('$' + name))
                      for name in ['rdi', 'rsi', 'rdx', 'rcx']}
         # Inspected function entry: heap, stack top, runtime roots, length.
@@ -49,8 +50,15 @@ class CollectionEntry(gdb.Breakpoint):
             low = (min(bottom, registers['rsi']) + 7) & ~7
             high = max(bottom, registers['rsi'])
             collection_sources.append(('native stack', low, read_words(low, (high - low) // 8)))
+        collection_frames = []
+        frame = gdb.newest_frame()
+        while frame is not None:
+            collection_frames.append({'function': frame.name(), 'pc': hex(frame.pc()),
+                                      'sp': int(frame.read_register('rsp'))})
+            frame = frame.older()
         emit({'event': 'collection sources', 'stack_top': hex(registers['rsi']),
               'native_stack_bottom': hex(bottom),
+              'frames': collection_frames,
               'ranges': [{'kind': kind, 'start': hex(start), 'words': len(values)}
                          for kind, start, values in collection_sources]})
         return False
@@ -86,6 +94,14 @@ def retaining_native_root():
     sources = [{'kind': kind, 'address': hex(base + index * 8), 'raw': hex(raw)}
                for kind, base, values in collection_sources
                for index, raw in enumerate(values) if raw & mask == root & mask]
+    for source in sources:
+        if source['kind'] != 'native stack':
+            continue
+        location = int(source['address'], 16)
+        source['frames'] = [dict(frame, offset=location - frame['sp'])
+                            for frame, caller in zip(collection_frames, collection_frames[1:])
+                            if frame['sp'] <= location < caller['sp']]
+        source['surrounding_words'] = [hex(value) for value in read_words(location - 64, 17)]
     record = {'root': hex(root), 'root_index': (address - start) // 8,
               'source_matches': sources}
     if root & 7 in [3, 5]:
