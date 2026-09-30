@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--filter", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--oracle-source", type=Path)
+    parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     if not args.filter.strip():
@@ -45,7 +46,10 @@ def main():
     if not (oracle / "src/emacs").is_file():
         parser.error("--oracle-source must contain the built GNU control")
     patch = root / "tools/diagnostics/weak-root-trace.patch"
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    head = subprocess.check_output(
+        ["git", "rev-parse", "--verify", f"{args.revision or 'HEAD'}^{{commit}}"],
+        cwd=root, text=True,
+    ).strip()
     record = {
         "status": "preparing", "base_commit": head, "checkout": str(checkout),
         "oracle_source": str(oracle), "filter": args.filter,
@@ -85,9 +89,17 @@ def main():
             return 0
         command = [sys.executable, "tools/diagnose_rust_gate.py", "--filter", args.filter,
                    "--plain", "--output", str(output / "replay")]
-        environment = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+        trace_directory = output / "roots"
+        trace_directory.mkdir()
+        overrides = {
+            "CARGO_TARGET_DIR": str(root / "target"),
+            # The original reclamation control captures its child's output.
+            # Per-process files retain the trace even when that child passes.
+            "EMAXX_GC_ROOT_TRACE_DIRECTORY": str(trace_directory),
+        }
+        environment = {**os.environ, **overrides}
         record.update(status="running diagnostic", command=command,
-                      environment_override={"CARGO_TARGET_DIR": str(root / "target")})
+                      environment_override=overrides)
         save()
         with (output / "driver.log").open("xb") as log:
             result = subprocess.run(command, cwd=checkout, env=environment,

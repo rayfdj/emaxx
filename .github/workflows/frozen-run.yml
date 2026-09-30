@@ -19,6 +19,10 @@ on:
         description: Optional original Rust selector to run first for a shared-image replay diagnosis
         type: string
         default: ''
+      trace_revision:
+        description: Optional exact source commit for isolated weak-root diagnosis; empty uses this branch head
+        type: string
+        default: ''
       baseline_revision:
         description: Full commit ID for the before binary in allocator diagnostics
         type: string
@@ -131,6 +135,7 @@ jobs:
           VALIDATION_FILE: ${{ inputs.file }}
           VALIDATION_RUST_FILTER: ${{ inputs.rust_filter }}
           VALIDATION_RUST_PRELUDE: ${{ inputs.rust_prelude }}
+          VALIDATION_TRACE_REVISION: ${{ inputs.trace_revision }}
           BASELINE_REVISION: ${{ inputs.baseline_revision || 'fb45ffdf253d23d4442cf87c56ae4d4291b86562' }}
           STARTUP_SYSCALL: ${{ inputs.startup_syscall || 'sysinfo' }}
         run: |
@@ -381,6 +386,7 @@ jobs:
               # failure remains failed even if instrumentation changes it.
               LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
                 python3 tools/diagnose_weak_roots.py --filter "$VALIDATION_RUST_FILTER" \
+                  --revision "$VALIDATION_TRACE_REVISION" \
                   --output target/frozen-ci/rust-root-trace
               ;;
             rust-tail)
