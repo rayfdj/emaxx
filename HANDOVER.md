@@ -1,6 +1,26 @@
 # Resume the compact runtime goal here
 
-**Main now contains source161:** [PR #77](https://github.com/rayfdj/emaxx/pull/77)
+**Latest validated checkpoint: source174**, published at `178fdf37` in
+[PR #78](https://github.com/rayfdj/emaxx/pull/78). Read the
+[complete validation checkpoint](docs/runtime-representation-call-validation-complete.md)
+after the complete goal: **3,023 macOS / 3,035 Linux Rust passes**, native
+artifact identity on both platforms, **519 Linux frozen files / 7,928 matching
+outcomes / 1,038 successful processes**, and all **223 terminal scenarios / 679
+screen and filesystem comparisons**. The original full-run reclamation
+assertion passes on both platforms. All prior failures and evidence limits
+remain preserved in the [portable receipts](docs/handover/2026-09-30-call-validation-complete/manifest.json).
+
+**Current unfinished work: source178's input decoder**, separately packaged in
+the [current draft handover](docs/runtime-representation-input-decoder-draft.md).
+Strict checks, **308 gate / 308 release controls** and **seven ordinary exact
+GNU comparisons** pass. Its complete patch replays all 360 recorded inputs,
+including the four embedded files omitted from older manifests. The draft is
+not applied to production. Terminal/minibuffer integration and broader reader
+contracts remain open, along with symbol authority, allocation accounting,
+final audit, complete final-source validation and locked performance parity.
+**The full goal remains active; this checkpoint is not completion.**
+
+**Previous main checkpoint, source161:** [PR #77](https://github.com/rayfdj/emaxx/pull/77)
 merged at `e9bbd598e14003d82ff23be4abcf05b0489164ca`. It passes complete Rust gates:
 **3,013 macOS / 3,025 Linux**, with two existing terminal ignores each and native
 artifact identity passing. Its [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
@@ -21,7 +41,7 @@ That failure, source155's 17 terminal divergences and source153's native
 reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
-**Current task-branch continuation:** read the
+**Previous selected continuation:** read the
 [combined call-metadata checkpoint](docs/runtime-representation-call-metadata-checkpoint.md).
 Then read the [live input-decoder draft](docs/runtime-representation-input-decoder-draft.md)
 for the exact unfinished patch, preserved failures, current validation handles

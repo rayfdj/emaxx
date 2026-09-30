@@ -1,83 +1,74 @@
 # Live input decoding draft — 30 September 2026
 
-Production remains source174 at `178fdf37`. Its complete macOS Rust and terminal
-runs and both Linux runs are still active. The Linux handles are
-[Rust 36680285969](https://github.com/rayfdj/emaxx/actions/runs/36680285969) and
-[frozen comparison 36680294974](https://github.com/rayfdj/emaxx/actions/runs/36680294974).
-Keep following these runs; do not launch replacements just because a chat ends.
-The macOS full gate has passed its original suspended-bytecode reclamation
-assertion and all library groups, but its Cargo stages have not finished.
-These partial results do not certify the complete candidate or clear earlier
-failed runs.
+**Source178 is the current isolated draft. It is not applied to production.**
+The [portable bundle](handover/2026-09-30-reader-contract-draft/manifest.json)
+contains its complete patch, all 360 pre-run input hashes, exact patch-replay
+audit and closed validation receipts. Its checkout is
+`target/runtime-goal/recovered-2026-09-30/reader-contract/emaxx`.
+Production remains source174; see its
+[complete validation checkpoint](runtime-representation-call-validation-complete.md).
 
-The separately saved **source177 input-decoder draft is not applied to
-production**. Its [portable bundle](handover/2026-09-30-input-decoder-draft/manifest.json)
-contains complete patches for sources175–177, including their new files,
-source hashes, closed validation receipts, GNU comparisons and reproduction
-scripts. Each patch replays its recorded inventory from `ebfdbf95`; the newest
-has 352 recorded Rust/test/build inputs. The live isolated checkout is
-`target/runtime-goal/recovered-2026-09-30/decoder/emaxx`.
+The draft replaces special XTerm dispatch and eight-character snapshots with
+incremental traversal of actual `input-decode-map`, `local-function-key-map`
+and `key-translation-map` objects. It follows `keyboard.c:keyremap_step` and
+`read_key_sequence`: reached prefixes survive between reads, live filters run
+once per event, and translators receive the prompt and dynamically bound
+`current-key-remap-sequence`. Rooted buffers retain maps, events and callbacks
+across collection. Unchanged GNU `read-key` owns its idle-timer fallback.
+Queue consumption advances the actual unread list spine.
 
-The draft replaces the special XTerm dispatch and eight-character snapshot
-reader with incremental traversal of actual `input-decode-map`,
-`local-function-key-map` and `key-translation-map` objects. It follows
-`keyboard.c:keyremap_step` and `read_key_sequence`: reached prefixes survive
-between reads, filters run through live keymap access, translators receive
-the prompt and dynamically bound `current-key-remap-sequence`, and translation
-results obey GNU's length and type checks. Rooted buffers retain maps, events
-and callbacks across collection. Unchanged GNU `read-key` continues to own its
-idle-timer fallback. Queue consumption advances the real unread list spine.
+Source177 adds GNU's cursor rewind after discarding an unbound translated
+mouse-down. Source178 also returns every generated event, validates the prompt
+before consuming input, and implements case fallback through the current case
+table and event modifiers. It preserves GNU's distinction between a returned
+uppercase event and the lowercase event recorded in `this-command-keys`.
 
-Source175's compiler completed with six dead-code warnings, which failed the
-zero-warning requirement. Source176 removes the unused legacy traversal
-helpers and passes all strict checks. Its selected gate **fails: 304 passes,
-one failure, no ignores**. The existing XTerm test receives raw ESC after
-discarding a translated mouse-down. Its ordinary executable repeats that
-failure. Source177 follows GNU's cursor rewind when discarding that event;
-the unchanged assertion now passes within its complete selected gate run.
-Compiler, formatting, Clippy with warnings denied and diff checks pass.
-All **306 selected gate controls** pass. Release and ordinary validation were
-still running when this bundle was captured; consult the manifest's closed
-stages and live receipts.
+All strict checks pass. **308 gate and 308 release controls** pass with complete
+selected inventories and no ignores. **Seven ordinary exact GNU comparisons**
+pass: general decoding, callback/default cases, the three-stage translation
+pipeline, reader contracts, command-key case state, XTerm map installation and
+case variants. These cover long/symbolic sequences, collecting filters, shared
+queue mutation, invalid returns, nonlocal exits, generated suffixes, length
+limits, Unicode/custom case tables and shifted function keys. Executable/image
+hashes and raw outputs are retained. These are selected checks, not complete
+new-source compatibility or performance certification.
 
-Source176's three ordinary input contracts match GNU exactly: general decoding,
-extra callback/default cases, and the complete three-stage translation pipeline.
-The same contracts fail on the source174 ordinary executable. Two invalid
-local test premises were corrected using separate GNU evidence: an unconfigured
-XTerm translator is not called, and `read-key` temporarily replaces the supplied
-overriding map. Coverage now checks an explicitly configured translator,
-unconfigured behavior and the actual bound-map `read-key-sequence-vector` path.
-The valid failing XTerm batch assertion was not changed.
+The [earlier bundle](handover/2026-09-30-input-decoder-draft/manifest.json)
+preserves source175's six compiler warnings and source176's **304 passes / one
+failure** in the unchanged XTerm assertion. The ordinary source176 executable
+repeats that raw-ESC failure. Source177 passes 306 gate and 306 release controls
+plus four ordinary contracts, but its additional reader and case-state probes
+still differ from GNU. Source178 repairs those two comparisons. The source177
+XTerm event value is correct while its raw batch output lacks GNU's terminal
+control bytes; that whole-output comparison remains failed. No output was
+normalized to make it pass.
 
-Further ordinary source176 comparisons identify open reader failures: it
-returns only the first generated event when that event is command-bound,
-omits case fallback, and accepts a non-string prompt. The unchanged GNU result
-and differing Emaxx result are both in the bundle; successful process exits
-do not count these comparisons as passes. These paths remain unchanged in
-source177. Its terminal and minibuffer command loops still use the older
-decoder and must share the new incremental mechanism. Mouse prefixes, fallback
-and reader arguments also require continued GNU-based review.
+Two invalid local test premises were corrected against separate GNU evidence:
+an unconfigured XTerm translator is not invoked, and `read-key` replaces the
+supplied overriding map. Equivalent coverage now tests explicit configuration,
+unconfigured behavior and the bound-map `read-key-sequence-vector` path. The
+valid failing XTerm batch assertion was not changed.
 
-The replay audit found a provenance limitation: earlier manifests covered Rust
-files, tests and build settings but omitted three embedded bytecode fixtures
-and `compat/emacs_compat_runner.el`. Supplemental compiler-dependency receipts
-now verify those four files against the recorded base and current root. They
-were checked after the original manifests; no old receipt was rewritten.
-The two unsuccessful archive-audit helper invocations are preserved too.
+The original source manifests omitted three embedded bytecode fixtures and
+`compat/emacs_compat_runner.el`. Their later supplemental audit matches the
+recorded base and current root without rewriting old receipts. Source178
+includes all four in its pre-run manifest. Both unsuccessful archive-audit
+helper invocations remain in the earlier bundle.
 
-To reconstruct the draft, extract the bundle, create an isolated checkout at
-`ebfdbf9547b76e23013f8ce70f417aed02a744c2`, and apply
-`source177-complete.patch`. Verify `source177-manifest.json` plus
-`source177-supplemental-inputs.json` before building. The scripts record the
-local checkout, target and GNU paths; relocate these explicitly when using a
-different host. Preserve the frozen checkout while its supervisor
-`queue-source177-validation.py` runs. Live receipts and process handles are
-under `target/runtime-goal/resume-2026-09-28`; the decoder supervisor is PID
-85019. Its original timeout and test inventories remain intact.
+To reconstruct the current draft, extract the new bundle, create an isolated
+checkout at `ebfdbf9547b76e23013f8ce70f417aed02a744c2`, and apply
+`source178-complete.patch`. Verify every entry in `source178-manifest.json`
+before building. The scripts record local checkout, target and GNU paths;
+relocate those explicitly on another host. Live receipts are under
+`target/runtime-goal/resume-2026-09-28`. Both source177 and source178 selected
+validation supervisors have completed; their checkouts and artifacts remain
+frozen for subsequent comparisons.
 
+The terminal and minibuffer command loops still use the older decoder and must
+share the incremental mechanism. Mouse prefixes/fallbacks, remaining reader
+arguments, raw-event bookkeeping and buffer/terminal switches need further GNU
+review. Complete validation on the eventual integrated source remains required.
 GNU matches source and native ABI but is not the frozen Darwin executable.
-No pin, expected outcome, selector or comparison strictness changed. Input
-integration, post-deinit TLS behavior, symbol/object authority, physical
-allocation accounting, complete final-source validation, the final adversarial
-audit and locked performance parity remain open. This draft is continuation
-material, not a completed checkpoint or a speedup claim.
+Post-deinit TLS behavior, symbol/object authority, physical allocation
+accounting, the final adversarial audit and locked performance parity remain
+open. This draft does not complete the full goal.
