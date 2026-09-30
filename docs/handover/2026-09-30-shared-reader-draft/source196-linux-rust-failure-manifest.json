@@ -1,0 +1,187 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed",
+    "head": "ece02f9522d4e0d6d7a6a0cf6648dd109885780b",
+    "groups": [
+      {
+        "group": "eval_01",
+        "passed": 386,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_02",
+        "passed": 295,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_03",
+        "passed": 321,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_04",
+        "passed": 254,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_05",
+        "passed": 352,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "primitives",
+        "passed": 621,
+        "failed": 1,
+        "failures": [
+          "lisp::primitives::tests::native_keyboard_input_family_matches_gnu_kboard_contracts"
+        ]
+      }
+    ],
+    "raw_passed": 2229,
+    "raw_failed": 1,
+    "retained_artifact_hashes_verified": true,
+    "unexecuted": [
+      "compat_runtime",
+      "tty",
+      "batch",
+      "lightweight",
+      "binary Cargo stage",
+      "integration Cargo stage"
+    ],
+    "qualification": "Same unchanged keyboard-input fixture failure as macOS. No full-source pass. Linux frozen comparison is a separate still-running run."
+  },
+  "archive": {
+    "path": "source196-linux-rust-failure.tar.gz",
+    "bytes": 156543,
+    "sha256": "e0fea0be5498575d748b41c660505acb9ba8ea2734fe77500a98c0895166c43a"
+  },
+  "files": [
+    {
+      "path": "linux-source196-rust-artifacts/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/build.log",
+      "bytes": 174752,
+      "sha256": "8ad30fbeaf34a7ed4567088f2b723550ab9aa712c837e5df40c1167ae3219949"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/inventory.txt",
+      "bytes": 260908,
+      "sha256": "e1b966963915c421f44728aab73e8f7dcdafae3ff64cd39c92d7fc4170101b25"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_01.json",
+      "bytes": 453,
+      "sha256": "eafebfb449aa815b9c0d91d5cf6863bc8b863f5216b892f5e982a2bbf7921c49"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "b4b6832764a10f51a88e5ae4b9d8e821e7c187ac1a28153c55c9696a297ee163"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_02.json",
+      "bytes": 458,
+      "sha256": "061b7c252bb0892945b2ea2c4cffe1e8e58671a7d00644f44e62c2d8fc24009f"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_02.log",
+      "bytes": 66512,
+      "sha256": "0394d48f748ca19d1eac10bbe875a339ba5985a5a6e73f097c7a6788210caa05"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_03.json",
+      "bytes": 457,
+      "sha256": "40fb74b0318901e35dee7ea31ad3d9fb66bef2cbd23147c2107c24a51141b528"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "2c1f4217a4ae6d07f3e0351f97b94dd595b47f75463b280b5146287c7a641afc"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "12a69d4f70bac7a7573881452487f149dc7ee1b5129fa3acb90e674d126d4195"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "46a474bf8980a3bfed99ef683f0f5938464d02a7fee0e78503dec718271cad1a"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_05.json",
+      "bytes": 458,
+      "sha256": "40da992678a754993154183eb42c55c76ac4769ac6ba2f83d2ad1834aa965f55"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "ae712758314f99ab8472f1226035910060326ecd1f7e24eb346c2d98edf26068"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-primitives.json",
+      "bytes": 463,
+      "sha256": "a3a0357971a999e1fe84e1f151e350389ffd37dc209a1a623dd991e6f060d872"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/repeat-01-primitives.log",
+      "bytes": 61316,
+      "sha256": "ba25a2c0167765fcf20902f52a9c2fd7bb5f41a7701f051079b8241e57e4bf39"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/retained-inputs/manifest.json",
+      "bytes": 769,
+      "sha256": "cffde8cee6a061bde96714548bf4be666e289f7ab0ebb10feb57cc3d01cbf4b8"
+    },
+    {
+      "path": "linux-source196-rust-artifacts/rust/summary.json",
+      "bytes": 1952,
+      "sha256": "0804a384a8df331363cb18526b0665dcc8bc6007fba354dbd67ae94738c02693"
+    },
+    {
+      "path": "package-source196-linux-failure-and198-focused.py",
+      "bytes": 4891,
+      "sha256": "c124dafba74826ac8043a079d688932bd83677256d95c4158e58c7c7b9a91fa7"
+    },
+    {
+      "path": "source196-linux-rust-download.json",
+      "bytes": 394,
+      "sha256": "8776634ebb70e5d0ddee92af83eb2f1e5ad5b4a45ceed64e7cda6ddc786650ca"
+    },
+    {
+      "path": "source196-linux-rust-failure-audit.json",
+      "bytes": 1185,
+      "sha256": "b1285cfdf66d7c36ded5ef7911b235aee85c219c3de7c8eca08d533cd47765f8"
+    },
+    {
+      "path": "source196-linux-rust-final-state.json",
+      "bytes": 4075,
+      "sha256": "e6472a8fef6669f2933dc205d15c323419a4ed1f56b17dad6ca229ae884919b2"
+    },
+    {
+      "path": "source196-linux-rust.log",
+      "bytes": 232169,
+      "sha256": "8ceea4f9405a042dbfbd0cd90bf5046127a7acd328ebb70e4e4c0bd4cb30c0e2"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

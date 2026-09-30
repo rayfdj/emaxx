@@ -62,87 +62,93 @@ fn execute_kbd_macro(
     let previous_real_this_command = interp
         .lookup_var("real-this-command", env)
         .unwrap_or(Value::Nil);
-    // macros.c:pop_kbd_macro roots the saved public state across nested
-    // execution and nonlocal exits. The original array also stays live
-    // when a command replaces executing-kbd-macro before the next repeat.
-    let roots = crate::lisp::alloc::RootedVec::from_vec(vec![
+    // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
+    // conses. Use the same allocations, including their normal GC charge,
+    // while a borrowed stack root keeps the final array and loop function
+    // alive across replacement, nested commands and collecting callbacks.
+    let roots = [
         final_macro,
         loop_function,
-        previous_macro,
-        previous_index,
-        previous_real_this_command,
-    ]);
+        Value::cons(
+            previous_macro,
+            Value::cons(previous_index, previous_real_this_command),
+        ),
+    ];
+    interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
+        // Fexecute_kbd_macro starts each iteration in the selected window's
+        // buffer.  This is observable when Lisp deliberately makes another
+        // buffer current without changing the selected window.
+        interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
 
-    // Fexecute_kbd_macro starts each iteration in the selected window's
-    // buffer.  This is observable when Lisp deliberately makes another
-    // buffer current without changing the selected window.
-    interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
+        let mut result = Ok(());
+        loop {
+            interp.set_variable("executing-kbd-macro", roots[0], env);
+            interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
+            interp.set_variable("prefix-arg", Value::Nil, env);
+            interp.set_variable("last-prefix-arg", Value::Nil, env);
 
-    let mut result = Ok(());
-    loop {
-        interp.set_variable("executing-kbd-macro", roots[0], env);
-        interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
-        interp.set_variable("prefix-arg", Value::Nil, env);
-        interp.set_variable("last-prefix-arg", Value::Nil, env);
+            if !roots[1].is_nil() {
+                match call_function_value(interp, &roots[1], &[], env) {
+                    Ok(value) if value.is_nil() => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            }
 
-        if !roots[1].is_nil() {
-            match call_function_value(interp, &roots[1], &[], env) {
-                Ok(value) if value.is_nil() => break,
-                Ok(_) => {}
-                Err(error) => {
-                    result = Err(error);
+            // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
+            // (see execute_kbd_macro_resolved_command); register that frame so outer
+            // handler-binds see the same handler landscape GNU's
+            // signal_or_quit does.
+            let handler_start =
+                interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
+            let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
+                // GNU's outermost command loop catches `top-level`, terminating
+                // the keyboard macro without propagating an error.
+                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
+                    Ok(())
+                }
+                other => other,
+            };
+            interp.pop_handler_bindings(handler_start);
+            if let Err(error) = iteration {
+                result = Err(LispError::from(error));
+                break;
+            }
+
+            if repeat != 0 {
+                repeat = repeat.saturating_sub(1);
+                if repeat == 0 {
                     break;
                 }
             }
-        }
-
-        // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
-        // (see execute_kbd_macro_resolved_command); register that frame so outer
-        // handler-binds see the same handler landscape GNU's
-        // signal_or_quit does.
-        let handler_start =
-            interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
-        let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
-            // GNU's outermost command loop catches `top-level`, terminating
-            // the keyboard macro without propagating an error.
-            Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
-                Ok(())
-            }
-            other => other,
-        };
-        interp.pop_handler_bindings(handler_start);
-        if let Err(error) = iteration {
-            result = Err(LispError::from(error));
-            break;
-        }
-
-        if repeat != 0 {
-            repeat = repeat.saturating_sub(1);
-            if repeat == 0 {
+            let still_executing = interp
+                .lookup_var("executing-kbd-macro", env)
+                .is_some_and(|value| value.is_string() || is_vector_value(&value));
+            if !still_executing {
                 break;
             }
         }
-        let still_executing = interp
-            .lookup_var("executing-kbd-macro", env)
-            .is_some_and(|value| value.is_string() || is_vector_value(&value));
-        if !still_executing {
-            break;
-        }
-    }
 
-    interp.set_variable("executing-kbd-macro", roots[2], env);
-    interp.set_variable("executing-kbd-macro-index", roots[3], env);
-    interp.set_variable("real-this-command", roots[4], env);
-    interp.set_variable("this-command", Value::Nil, env);
-    // This is an unwind cleanup in GNU: it runs once for normal completion,
-    // loop-function termination, and command errors.
-    let mut result = result.map(|()| Value::Nil);
-    if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
-        run_named_hooks(interp, "kbd-macro-termination-hook", env, None)
-    }) {
-        result = Err(hook_error);
-    }
-    result
+        let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
+        let (previous_index, previous_real_this_command) =
+            tail.cons_values().expect("saved macro index and command");
+        interp.set_variable("executing-kbd-macro", previous_macro, env);
+        interp.set_variable("executing-kbd-macro-index", previous_index, env);
+        interp.set_variable("real-this-command", previous_real_this_command, env);
+        interp.set_variable("this-command", Value::Nil, env);
+        // This is an unwind cleanup in GNU: it runs once for normal completion,
+        // loop-function termination, and command errors.
+        let mut result = result.map(|()| Value::Nil);
+        if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
+            run_named_hooks(interp, "kbd-macro-termination-hook", env, None)
+        }) {
+            result = Err(hook_error);
+        }
+        result
+    })
 }
 
 fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {

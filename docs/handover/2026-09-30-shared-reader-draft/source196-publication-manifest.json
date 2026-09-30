@@ -1,0 +1,97 @@
+{
+  "status": "Source196 published at ece02f9522d4e0d6d7a6a0cf6648dd109885780b on runtime-char-tables, draft PR #79. All selected validation passes, including 17 terminal scenarios / 34 exact screen comparisons.",
+  "qualification": "Linux Rust run 36741202335 and frozen run 36741207263 are verified in progress on this exact head. Full macOS Rust supervisor 12611 and terminal supervisor 12612 are live under queue 8614. Their complete results are pending, not passes. No running log is archived. Main remains source174, and all full-goal architecture, accounting, audit and performance requirements remain open.",
+  "captured_unix": 1790784366.095865,
+  "archive": {
+    "path": "source196-publication.tar.gz",
+    "bytes": 9149,
+    "sha256": "57dc0bd3f057599761e2bf7f051ff7e178c4bb7897584d7c36ac39f634243881"
+  },
+  "files": [
+    {
+      "path": "source196-fresh-selected-tty-command.json",
+      "bytes": 3396,
+      "sha256": "e659d874f8dfd27db1816415fa2f5b872a1dbb152d1f902f43ced58d1c9caf0f"
+    },
+    {
+      "path": "source196-fresh-selected-tty-result.json",
+      "bytes": 117,
+      "sha256": "7b20f676a8d1b17e65b7625b46f8dd824c71ca0ba5768cae815c9da61ece9b52"
+    },
+    {
+      "path": "source196-fresh-selected-tty.log",
+      "bytes": 3152,
+      "sha256": "1324f9c0344f3e0188a9f01f3613ca36f683db257d0df1f67cc7901ee06b1fe5"
+    },
+    {
+      "path": "source196-fresh-selected-tty-evidence-audit.json",
+      "bytes": 2281,
+      "sha256": "873c3e695d78c406083cb20b26e48e430946ddb5c64146b5839e34ba4d7f245f"
+    },
+    {
+      "path": "audit-source196-fresh-selected-tty.py",
+      "bytes": 1935,
+      "sha256": "fd28e174d1bad20e5af801c37e458432fa9e5c13bf3451d2529cba08cdfabd5d"
+    },
+    {
+      "path": "source196-push-result.json",
+      "bytes": 326,
+      "sha256": "40b9f4d380437a3350b6dc9c40137ff443f6e79574f049d22135e3cbe1acca3e"
+    },
+    {
+      "path": "source196-published-head.json",
+      "bytes": 270,
+      "sha256": "55dea97c4ebdfee30bf357370ba7822ebbc79419840476ab4fd9f7fbe2739b89"
+    },
+    {
+      "path": "source196-linux-rust-dispatch.json",
+      "bytes": 429,
+      "sha256": "5e4ab184d612e0abf6de170ef6729490fa0b996d138f24118fc17010f0979c85"
+    },
+    {
+      "path": "source196-linux-frozen-dispatch.json",
+      "bytes": 431,
+      "sha256": "e9a6d021f92f70a729fe4f302ca9a6ce178a371163a6607f1ca02dbe4c627d08"
+    },
+    {
+      "path": "source196-linux-rust-initial-state.json",
+      "bytes": 6293,
+      "sha256": "215dd54f29169aad6aabb3dac91b35979643640599e6501e2979ed3c6d35e8b8"
+    },
+    {
+      "path": "source196-linux-frozen-initial-state.json",
+      "bytes": 6293,
+      "sha256": "6d933cd6031f7c866a5c58aac63bd1b725e21928a047dbea171d1ecf3cacff95"
+    },
+    {
+      "path": "source196-pr-body.md",
+      "bytes": 1944,
+      "sha256": "792f13cb8145ead129fee7dae0568a6cbf590062ebd7aaee7a899b371994dcee"
+    },
+    {
+      "path": "source196-pr-create.json",
+      "bytes": 636,
+      "sha256": "f9a8ea11a18bdfb9c16678bf7e246aba19b8e6facf25e4789ff5aeab1b47923d"
+    },
+    {
+      "path": "source196-fresh-full-gate-launch.json",
+      "bytes": 329,
+      "sha256": "2c12ab98d67f5ee5ef839efb1bf604234423080dcf2cfa91c974cbf0aa9ca562"
+    },
+    {
+      "path": "source196-fresh-full-tty-launch.json",
+      "bytes": 330,
+      "sha256": "fe07dbb403d74c0f239a3a2cc08527e6a1031a70bbfbf1d9526cd60603e7a6cc"
+    },
+    {
+      "path": "source196-fresh-full-gate-command.json",
+      "bytes": 1397,
+      "sha256": "c5a92590f52b4c6a8b10855e8e1a53d3c587e8c2e4b038a06736fee8f0d278db"
+    },
+    {
+      "path": "source196-fresh-full-ttydiff-command.json",
+      "bytes": 8848,
+      "sha256": "47bb2199329301db932cd4f1f679a4750800e24b09b35ff74df4730404488ceb"
+    }
+  ]
+}

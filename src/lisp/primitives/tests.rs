@@ -20004,7 +20004,10 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
     for (program, expected) in contracts {
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        // The oracle uses its dumped batch runtime, including mouse.el's
+        // global bindings. Early Lisp alone leaves down-mouse-1 unbound;
+        // the reader must not invent that binding to satisfy this fixture.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = crate::lisp::types::Env::new();
         let form = Reader::new(program)
             .read()
@@ -26785,6 +26788,15 @@ fn input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding() {
 }
 
 #[test]
+fn input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-down-event-binding.el"),
+        include_str!("../../../tests/fixtures/input-decode-down-event-binding.expected").trim(),
+        "unbound down events are discarded and live binding changes take effect",
+    );
+}
+
+#[test]
 fn input_decode_mouse_menu_uses_unchanged_lisp_translation() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/input-decode-mouse-menu-cases.el"),
@@ -26870,5 +26882,14 @@ fn input_decode_raw_reads_unwrap_pending_events_before_terminal_polling() {
         include_str!("../../../tests/fixtures/input-decode-unread-wrapper.el"),
         include_str!("../../../tests/fixtures/input-decode-unread-wrapper.expected").trim(),
         "pending character and function-key wrappers are consumed before a live timed wait without losing modifiers",
+    );
+}
+
+#[test]
+fn input_decode_macro_roots_survive_callbacks_then_release_completed_arrays() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-reclamation.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-reclamation.expected").trim(),
+        "the original macro survives replacement and collecting callbacks, then is reclaimed after completion and errors",
     );
 }

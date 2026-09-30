@@ -11,7 +11,7 @@ screen and filesystem comparisons**. The original full-run reclamation
 assertion passes on both platforms. All prior failures and evidence limits
 remain preserved in the [portable receipts](docs/handover/2026-09-30-call-validation-complete/manifest.json).
 
-**Current unfinished work: source196's shared command reader and macro state**, described in
+**Current unfinished work: source198's shared command reader and macro state**, described in
 the [current draft handover](docs/runtime-representation-shared-reader-draft.md).
 It extends the [source178 decoder](docs/runtime-representation-input-decoder-draft.md)
 to frame, menu, macro and both live/simulated minibuffer loops. Source185 passes
@@ -49,17 +49,52 @@ The snapshot copier now refreshes changed-file timestamps. A separately named
 `source196-fresh` run cleans the Emaxx package and repeats validation on the
 identical 401 inputs. Its [audited selected results](docs/handover/2026-09-30-shared-reader-draft/source196-fresh-selected-manifest.json)
 pass all strict checks, **536 gate / 536 release controls** and **26 ordinary
-GNU comparisons**, including the wrapper fixture. Selected terminal validation
-is running; complete macOS runs follow it, and Linux validation remains required.
+GNU comparisons**, including the wrapper fixture. All **17 selected terminal
+scenarios / 34 screen comparisons** pass with raw inventories and input hashes
+audited. The [publication receipts](docs/handover/2026-09-30-shared-reader-draft/source196-publication-manifest.json)
+record published `ece02f95` and [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
+Complete macOS Rust now fails: **2,221 passes / one keyboard-input failure**;
+four later groups and both Cargo stages do not run. The
+[closed failure and diagnosis](docs/handover/2026-09-30-shared-reader-draft/source196-macos-gate-failure-manifest.json)
+retain the exact-binary failure replay and ten matching ordinary GNU/Emaxx
+contracts. The failing Rust fixture loads only early Lisp, omitting mouse.el's
+global binding; the previous reader concealed that omission with a hardcoded
+fallback. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36741202335)
+also fails that same fixture: **2,229 passes / one failure**, with the same
+remaining stages unexecuted. Its [audited raw receipts](docs/handover/2026-09-30-shared-reader-draft/source196-linux-rust-failure-manifest.json)
+verify the clean published head and retained binary/image identities.
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36741207263) now
+matches **519 files / 7,928 outcomes**, with all **1,038 processes successful**.
+The [audited frozen receipts](docs/handover/2026-09-30-shared-reader-draft/source196-linux-frozen-manifest.json)
+retain the 47 expected failures and 211 skips separately from 7,670 passes.
+Source196's complete 226-scenario terminal run is still running.
 Complete source195 runs were deferred before launch to use this candidate.
 Its complete patch replays all 401 recorded inputs. The candidate is applied in the local
-task worktree and is being published on `runtime-char-tables` for complete
-validation. Main remains source174.
+task worktree and is published on `runtime-char-tables` for complete validation.
+Main remains source174. Keep the PR in draft until complete results are audited.
 A separately packaged source197 draft removes the macro saved-state host
 vector and global root registration using GNU's two-cons state and existing
-scoped roots. It is applied only in the `macro-saved-state/emaxx` checkout;
-strict checks pass, runtime validation is queued, and its normal/error
-reclamation fixture has positive ordinary GNU/source195 baseline evidence.
+scoped roots. Its [selected runtime results](docs/handover/2026-09-30-shared-reader-draft/source197-selected-validation-manifest.json)
+pass **32 gate / 32 release controls and eight ordinary GNU comparisons**,
+including normal/error reclamation. The original gate's two failures from a
+missing sibling GNU fixture path remain preserved; restoring that path makes
+the identical binary and inventory pass. Source198 retains source197's runtime
+and is frozen in `macro-saved-state/emaxx`. Its
+[separate draft](docs/handover/2026-09-30-shared-reader-draft/source198-startup-fixture-draft-manifest.json)
+uses actual batch startup for all ten unchanged keyboard-input assertions and
+adds a GNU-verified live bound/unbound mouse-down control. Its 405-input patch
+replays exactly. Its [strict checks and three focused gate controls](docs/handover/2026-09-30-shared-reader-draft/source198-focused-manifest.json)
+pass, including all ten unchanged keyboard-input assertions, live binding
+mutation and macro reclamation. All **542 gate / 542 release controls and 28
+ordinary GNU comparisons** now pass, with [raw inventories and artifact identities audited](docs/handover/2026-09-30-shared-reader-draft/source198-selected-validation-manifest.json).
+Supervisor 20015 has exited. The exact 405 inputs are now applied to the task
+worktree for publication on `runtime-char-tables`. Its
+[complete validation launch](docs/handover/2026-09-30-shared-reader-draft/source198-complete-validation-start-manifest.json)
+records queue 22463 and full Rust supervisor 22464. The queue starts selected
+terminal validation after source196's existing terminal process exits, audits
+that result, then starts all 226 scenarios for source198. Keep both isolated
+checkouts and their artifacts frozen while their processes are active.
+Complete Linux validation of the newer published candidate remains required.
 Broader reader contracts, symbol authority, allocation accounting, final audit,
 complete final-source validation and locked performance parity remain open.
 **The full goal remains active; this checkpoint is not completion.**
