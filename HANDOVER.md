@@ -23,6 +23,10 @@ establish the causes of those older source153 failures.
 
 **Current task-branch continuation:** read the
 [combined call-metadata checkpoint](docs/runtime-representation-call-metadata-checkpoint.md).
+Then read the [live input-decoder draft](docs/runtime-representation-input-decoder-draft.md)
+for the exact unfinished patch, preserved failures, current validation handles
+and additional compiler-dependency provenance. This draft is packaged separately
+and is not applied to production.
 Source174 combines source172's independent mutable TLS reports and source173's
 direct subr classification/descriptor reads. All 345 compiled/test inputs match
 the isolated checkout. Strict checks, **395 gate and 395 release controls**,
