@@ -1,0 +1,76 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "published_commit": "320d0a2e379540db60201c0a486f37d11f77b8a1",
+    "inputs": 410,
+    "pr": 79,
+    "draft": true,
+    "linux_rust": 36756877353,
+    "linux_frozen": 36756885097,
+    "retained_source198_diagnosis": 36756891923,
+    "qualification": "Published selected-validated allocator candidate. Exact workflow heads and draft PR body verified. Complete candidate validation, original Linux failure diagnosis, architecture and performance goal remain open."
+  },
+  "archive": {
+    "path": "source201-publication.tar.gz",
+    "bytes": 2742,
+    "sha256": "28f5a9c1cf46cde1982fd35913299166043ea9483bee1379d40cb153baf44b0f"
+  },
+  "files": [
+    {
+      "path": "source198-linux-exact-repeat-dispatch.json",
+      "bytes": 587,
+      "sha256": "07f4a6ee2ae9315f9a177a7b76d2a41441d5b428829207a39e684418229522ae"
+    },
+    {
+      "path": "source198-linux-exact-repeat-initial-state.json",
+      "bytes": 213,
+      "sha256": "4ff554654fd9777980aa3354d92cf363b4e3407cd1b0f6fdf4e06d17ff7052df"
+    },
+    {
+      "path": "source201-linux-frozen-dispatch.json",
+      "bytes": 388,
+      "sha256": "9910f2930a311330039b675498f49ff437dc5aa7311280501d8fec13e2bf258d"
+    },
+    {
+      "path": "source201-linux-frozen-initial-state.json",
+      "bytes": 213,
+      "sha256": "beb6b89b565335ef8f81ce095c912854cff10b7458a4fcd729609bc485dde8a1"
+    },
+    {
+      "path": "source201-linux-rust-dispatch.json",
+      "bytes": 386,
+      "sha256": "b8d04209a08dfbd26e5d95d3dbd88389704945638d51a2de50eaa5e275d88bda"
+    },
+    {
+      "path": "source201-linux-rust-initial-state.json",
+      "bytes": 213,
+      "sha256": "852e8ba4e8538c5e0ce5ac888d7ff0d6e419ff5774902d005e275ee2da966487"
+    },
+    {
+      "path": "source201-pr-body.md",
+      "bytes": 2096,
+      "sha256": "37118ac288eccab8a1dd3c6b02213ecca52e70f882663c1bf49f1c44f4c34d2d"
+    },
+    {
+      "path": "source201-pr-published-state.json",
+      "bytes": 2415,
+      "sha256": "17566dcf53fbf568df2b78cfea67154b4fe845aa06f89ff0781c81603fe7fd19"
+    },
+    {
+      "path": "source201-publication-inputs-audit.json",
+      "bytes": 1414,
+      "sha256": "8a74fabdd9fc383caabd6d7745ad67c4d4e507391c7e20d1bb9b2b41121341ec"
+    },
+    {
+      "path": "source201-published-head.json",
+      "bytes": 164,
+      "sha256": "a7576189f69d8392b6026c3a743dfe008dc4c88afbee36f9c3af8d0b72945eb8"
+    },
+    {
+      "path": "source201-push.json",
+      "bytes": 373,
+      "sha256": "9ca5453c69610cbf1f8ccff110112e93df0a8aa45ac6ac0faa843cf5555050f4"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

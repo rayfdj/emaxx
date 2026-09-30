@@ -7,7 +7,11 @@ after the complete goal and shared-reader handover. Its
 pass all strict checks, **454 gate / 454 release controls and 36 ordinary exact
 GNU comparisons**. All 410 inputs match the task worktree. Complete macOS Rust
 and terminal supervisors **33431 / 33432** are running in the frozen
-`macro-reader/emaxx` checkout. Main remains source174; PR #79 remains draft.
+`macro-reader/emaxx` checkout. Runtime source201 is
+[published as **`320d0a2e`**](docs/handover/2026-09-30-shared-reader-draft/source201-publication-manifest.json).
+Its [complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36756877353)
+and [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36756885097)
+are dispatched against that exact head. Main remains source174; PR #79 remains draft.
 
 Source198's [complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source198-complete-terminal-manifest.json)
 now passes **226 scenarios / 686 comparisons**, and its
@@ -18,6 +22,10 @@ reproduces that failure with the original executable and startup image. The
 separate debugger process passes with 498 address-read overflow errors, so the
 cause remains unestablished. The [instrumented trace](docs/handover/2026-09-30-shared-reader-draft/source198-instrumented-root-trace-manifest.json)
 also passes with different artifacts and cannot clear the failure.
+The [new retained-artifact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36756891923)
+uses source201's diagnostic tools with source198's original executable/image.
+It records rejected name reads, preserves five separate debugger outcomes and
+checks restored image hashes after each process. Its CI result remains pending.
 
 Source200's [453-pass / one-failure gate](docs/handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved. Source201 keeps its runtime and corrects the old record word-count

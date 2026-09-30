@@ -15,7 +15,8 @@ all 410 build/test input hashes, exact patch/mode replay, strict checks,
 Eight focused controls pass in both profiles. Raw names, verdicts, process
 results, source inputs and executable/image hashes are audited. Five corrupt-log
 controls are rejected. Selected supervisor 31780 has exited; all 410 inputs are
-now applied to the task worktree.
+now applied to the task worktree and
+[published as **`320d0a2e379540db60201c0a486f37d11f77b8a1`**](handover/2026-09-30-shared-reader-draft/source201-publication-manifest.json).
 
 The frozen validation checkout is
 `target/runtime-goal/recovered-2026-09-30/macro-reader/emaxx`. Complete macOS Rust
@@ -24,7 +25,9 @@ after those selected passes. Their [portable launch receipts and diagnostic cont
 retain exact helper hashes and the applied-source audit. The prior source198
 terminal supervisor has exited.
 Keep the checkout, helpers and artifacts frozen while these processes or their
-children run. Complete Linux validation of this candidate remains required.
+children run. [Complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36756877353)
+and [complete Linux frozen compatibility](https://github.com/rayfdj/emaxx/actions/runs/36756885097)
+are dispatched on that exact published head. All complete results remain pending.
 
 The [source200 broad failure](handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved: **453 gate passes / one old record-footprint expectation failure**;
@@ -87,8 +90,10 @@ and retained startup image. A separate debugger process passes but reports 498
 address-read overflow errors; it does not establish the retaining root. The
 diagnostic helper now records rejected name reads and preserves up to five
 separate debugger processes, their outcomes, traces and image hashes. Its local
-callback and malformed-artifact controls pass; actual Linux diagnosis remains
-required. Source201's macOS selected passes do not clear that original failure.
+callback and malformed-artifact controls pass. The
+[five-process Linux diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36756891923)
+is dispatched using source198's original retained artifacts. Its result remains
+pending. Source201's macOS selected passes do not clear that original failure.
 
 Complete source201 validation, the Linux reclamation diagnosis, broader object
 authority and allocation accounting, final adversarial audit and the locked
