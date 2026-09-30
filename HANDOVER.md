@@ -9,6 +9,7 @@ Read the [current cons continuation](docs/runtime-representation-cons-roots-draf
 [allocator continuation](docs/runtime-representation-vector-allocation-draft.md),
 [shared-reader handover](docs/runtime-representation-shared-reader-draft.md),
 [bytecode draft](docs/runtime-representation-bytecode-draft.md) and
+[string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
 [accounting continuation](docs/runtime-representation-accounting-draft.md).
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
@@ -19,7 +20,8 @@ The latest validated main checkpoint is **source174**, merge `21d20f0e` in
 [complete validation record](docs/runtime-representation-call-validation-complete.md)
 remains separate from the unfinished task branch.
 
-The task branch is **runtime-char-tables**, [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
+The task branch is **runtime-char-tables**, [PR #79](https://github.com/rayfdj/emaxx/pull/79),
+now **ready for review** after the complete source207 checkpoint audits.
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
 The current **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
 adds direct evaluator words and a separate cold error
@@ -145,12 +147,25 @@ expectation. Active-call code mutation is still a runtime defect.
 [Source216's portable draft](docs/handover/2026-09-30-shared-reader-draft/source216-bytecode-fixture-repair-draft-manifest.json)
 changes only those three unit fixtures from source215, preserving every original
 behavior assertion, and restores the helper locale. All 418 inputs and file modes
-replay exactly; strict checks pass with zero warnings. Supervisor **64424** runs
-ten focused controls and the unchanged 848-test broader inventory. Keep its
-checkout and helpers frozen while it or its children run. No complete source216
-validation is claimed. Earlier compiler/lint failures and every intermediate
-patch remain preserved.
+replay exactly; strict checks pass with zero warnings. Supervisor **64424 has
+exited**. Its [audited results](docs/handover/2026-09-30-shared-reader-draft/source216-bytecode-results-manifest.json)
+verify **nine passes / one failure** in the ten focused controls and **847 passes /
+one failure** in the unchanged 848-test broader inventory, with zero ignores.
+Only active-call code mutation fails. The executable and post-run image are
+retained. These are gate-profile results, not complete or release validation.
+Earlier failures and every intermediate patch remain preserved.
 No bytecode repair is applied to the task branch.
+
+The [current source220 string-byte draft](docs/runtime-representation-string-bytes-draft.md)
+continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`.
+It replaces stored Rust text/extended-character payloads with actual GNU-encoded
+bytes, updates direct string stores/conversion and image bytes, and adds ordinary
+GNU/physical-payload controls. All 421 inputs and file modes replay exactly;
+strict checks pass with zero warnings. Supervisor **67724** runs a fresh gate
+build, twelve focused controls and the broader affected modules. Preserve that
+checkout and its helpers. The [portable draft](docs/handover/2026-09-30-shared-reader-draft/source220-canonical-string-byte-draft-manifest.json)
+contains no runtime verdict. Direct VM execution, plain-string migration, compact
+string headers, physical accounting and final correctness/performance remain open.
 
 The preserved **source208** carries evaluator207
 and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)

@@ -3,6 +3,8 @@
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
 This is a separate unfinished draft, **not an applied task-branch repair**.
+The next [canonical string-byte draft](runtime-representation-string-bytes-draft.md)
+continues from source216 in a separate checkout.
 
 ## Current source216
 
@@ -63,10 +65,14 @@ constructor validation is relaxed. Active-call mutation remains a real failure.
 changes only those three unit-test constructors from source215, preserving every
 original behavior assertion, and restores the established gate locale in its
 helpers. Its 418-input patch and file modes replay exactly, and strict checks
-pass with zero warnings. Supervisor **64424** runs ten focused controls and the
-unchanged 848-test broader inventory, including active-call mutation. This draft
-archive assigns no runtime verdict. Preserve its checkout and helpers while the
-supervisor or its children run.
+pass with zero warnings. Supervisor **64424 has exited**. Its
+[closed audit](handover/2026-09-30-shared-reader-draft/source216-bytecode-results-manifest.json)
+verifies **nine passes / one failure** across all ten focused controls, and
+**847 passes / one failure** across the unchanged 848-test broader inventory,
+with zero ignores. Active-call mutation is the sole failure in both groups.
+The exact executable and post-run image are retained. These gate-profile
+results do not certify release paths or complete correctness. Source220 now
+develops the required canonical string storage separately; source216 stays intact.
 
 All **418 inputs** of sources209–215 replay exactly from main `21d20f0e`, including
 executable modes. The source214 archive preserves source209's three compiler

@@ -6,7 +6,8 @@ Read the [complete goal](runtime-representation-goal.md), the
 **Source207 is the current task-branch candidate. Its complete macOS and Linux Rust gates pass, including source204's two failed census assertions.**
 Source204's 410 inputs remain in the frozen `cons-roots/emaxx` checkout; source207
 changes only the evaluator as documented below. Main remains
-source174 and PR #79 remains draft. The preceding source201 passes complete macOS
+source174 and PR #79 is ready for review after source207's complete checkpoint
+validation. The preceding source201 passes complete macOS
 and Linux Rust gates (3,056 / 3,068 tests, two existing ignores each), all 226
 terminal scenarios / 686 comparisons, and the
 [complete Linux frozen comparison](handover/2026-09-30-shared-reader-draft/source201-linux-frozen-manifest.json)

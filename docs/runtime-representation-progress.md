@@ -6,7 +6,8 @@ and the [allocation accounting review](runtime-representation-accounting-draft.m
 The older 27 September record below is historical; its then-current sizes and
 failures are not statements about today's source.
 
-Current runtime source207 builds on source204 `d186d40b` in draft PR #79. Source204's strict
+Current runtime source207 builds on source204 `d186d40b` in PR #79, now ready for
+review after complete checkpoint validation. Source204's strict
 checks, 596 gate / 596 release tests, 39 ordinary batch comparisons and one
 ordinary terminal fixture pass. Complete macOS Rust passes 3,059 tests. Linux
 Rust fails two census assertions after 2,232 passes; their exact retained-artifact
@@ -34,8 +35,13 @@ of seven controls pass. Its broader run finishes with 839 passes / nine failures
 Five GNU-output checks pass unchanged after restoring the standard gate locale;
 GNU rejects three old unit-fixture constructors. Source216 preserves its runtime
 and all original assertions while fixing those fixture inputs and the helper
-locale. Strict checks pass; ten focused controls and all 848 broader tests are
-running. Active-call mutation remains failed. No draft runtime is
+locale. Strict checks pass, all ten focused controls yield nine passes/one
+failure, and all 848 broader tests yield 847 passes/one failure, with zero ignores.
+Active-call mutation remains failed. The [source220 string-byte draft](runtime-representation-string-bytes-draft.md)
+now stores actual GNU-encoded shared-string bytes and adds differential and
+physical-payload controls. Its 421-input patch replays exactly and strict checks
+pass; runtime tests are running in its separate checkout. Direct VM execution,
+plain-string migration and compact headers remain required. No draft runtime is
 applied to the task branch.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.

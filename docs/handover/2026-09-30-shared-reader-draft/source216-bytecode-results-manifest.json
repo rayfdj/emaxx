@@ -1,0 +1,220 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "partial architecture draft; active-call mutation remains failed",
+    "inputs_verified": 418,
+    "strict_checks": "passed with zero warnings",
+    "groups": [
+      {
+        "stage": "controls",
+        "passed": 9,
+        "failed": 1,
+        "ignored": 0,
+        "inventory_verified": 10
+      },
+      {
+        "stage": "broad",
+        "passed": 847,
+        "failed": 1,
+        "ignored": 0,
+        "inventory_verified": 848
+      }
+    ],
+    "failing_names": [
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu"
+    ],
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source216-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source216-retained-inputs/source216-gate-libtest",
+        "sha256": "4573d65e97efab99a500a6c0e0477cd8408087be15a4aef4036d3ae5b7787137",
+        "bytes": 29299584
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source216/loadup-4573d65e-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source216-retained-inputs/loadup-4573d65e-44409a21.pdmp",
+        "sha256": "6071c03c5406c0d76f42a47004c0c83dc63847f5afea6421c3b58dfa370bf264",
+        "bytes": 22343688
+      }
+    ],
+    "qualification": "All original broader names execute unchanged. Source216 differs from source215 only in three GNU-invalid constructor fixtures inside vm.rs tests; every behavior assertion remains. Both profiles here are gate only, not release or complete validation. Original source215 failures and helper diagnostic failure remain preserved. No runtime bytecode change is applied to the task branch; direct byte cursor, string/symbol authority, final checks and performance remain open."
+  },
+  "archive": {
+    "path": "source216-bytecode-results.tar.gz",
+    "bytes": 208589,
+    "sha256": "64ba18a2ee63f4519811049027cafdd68b508770ed04ea371bb8163b1d969033"
+  },
+  "files": [
+    {
+      "path": "audit-source216-results.py",
+      "bytes": 3789,
+      "sha256": "2419f9513c4f909f224d8ed9c9bf33cb1edbbbe749c8c9bbfd45453a95b98d1c"
+    },
+    {
+      "path": "package-source216-results.py",
+      "bytes": 1209,
+      "sha256": "b5631589bf6ed7fc1e247f4d6fa943bb11abd18c3d67d4f82104783eb92c4fe6"
+    },
+    {
+      "path": "run-source216-validation.py",
+      "bytes": 1174,
+      "sha256": "00712191c7fe61d5fc2ccb4b07f05263b8588d06d60acaf7a890b255e2b2f0ca"
+    },
+    {
+      "path": "source215-gate-broad-command.json",
+      "bytes": 157299,
+      "sha256": "b7bfc72e9f9e4d1fdfbaaa22adac9501ba48e54286da78d0beff72431354f8ce"
+    },
+    {
+      "path": "source215-gate-controls-command.json",
+      "bytes": 2602,
+      "sha256": "ace2617ae8dfe209df3d3b35421f7aafafcd2f0b389c6572f1b64be376cc7eca"
+    },
+    {
+      "path": "source215-manifest.json",
+      "bytes": 47503,
+      "sha256": "25c2a87de5d00ef60769ce767209638da05b8f349f2353eb9a1255ec215bf784"
+    },
+    {
+      "path": "source216-check-command.json",
+      "bytes": 485,
+      "sha256": "aa25cbb2af0b5210cdb2bd19283bba91dd71ce8cda832e182e10f7d7e569b39e"
+    },
+    {
+      "path": "source216-check-result.json",
+      "bytes": 83,
+      "sha256": "9a0318ac2b8b94ef7cfdf9c1794fc023dcd2e050698aef557f4bd8aa045fc7ba"
+    },
+    {
+      "path": "source216-check.log",
+      "bytes": 197,
+      "sha256": "15c0e9eacfb395d92204e0475b8b24b8c255bf664d9891b5ad9a9d52135b2198"
+    },
+    {
+      "path": "source216-clippy-command.json",
+      "bytes": 473,
+      "sha256": "fd1254f0df216029401661d7511e604446940b8c66f61f884e4380608ce50ae9"
+    },
+    {
+      "path": "source216-clippy-result.json",
+      "bytes": 83,
+      "sha256": "e6d464fa4549dfd5cf2329ba4d77751f17b1823c65d158ad4de85db99f4cf557"
+    },
+    {
+      "path": "source216-clippy.log",
+      "bytes": 198,
+      "sha256": "b641b89a85721fc13aadf300af1906892966a5bba97e80539c363dbb2a9e1840"
+    },
+    {
+      "path": "source216-diff-command.json",
+      "bytes": 389,
+      "sha256": "8e12ba95de9237b67a0360121a78d50eaab8439188cf4d7ae6c08a9dd95d8c14"
+    },
+    {
+      "path": "source216-diff-result.json",
+      "bytes": 90,
+      "sha256": "3db482a0792f88401d06fca30381b297979872c58ee123709c8320c8d78477aa"
+    },
+    {
+      "path": "source216-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source216-fmt-command.json",
+      "bytes": 413,
+      "sha256": "3be74bb423b96bf9306218701e12aae1716b358f6cea724e045b77dc2e7b3178"
+    },
+    {
+      "path": "source216-fmt-result.json",
+      "bytes": 82,
+      "sha256": "73ded93d2deb145299c64d04777cb4d6cb387bc6d5b24f6cec3a53b97edd3074"
+    },
+    {
+      "path": "source216-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source216-gate-broad-command.json",
+      "bytes": 157335,
+      "sha256": "d95340808df984eb3ee7342ba356f9db324b5626affb8c09c9dea5ccc6d15297"
+    },
+    {
+      "path": "source216-gate-broad-result.json",
+      "bytes": 92,
+      "sha256": "846071c7a3976c78dbf59ffc5aa7f6d09b4ad67567fc6482332d4789d36879a5"
+    },
+    {
+      "path": "source216-gate-broad.log",
+      "bytes": 87214,
+      "sha256": "3368587d4f5abe302310ad1432496bdaf97cb8c738d4ff786b3f148af8fa4ee0"
+    },
+    {
+      "path": "source216-gate-build-command.json",
+      "bytes": 1160,
+      "sha256": "931a35bca6029859c25d7fcdbed4c184718bc4f191101520ac015c1291cb8546"
+    },
+    {
+      "path": "source216-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "e9e3d422dd2c711e9a08dbe44afce913c943a2e877521385024c84ff04b92189"
+    },
+    {
+      "path": "source216-gate-build.log",
+      "bytes": 216115,
+      "sha256": "1b936766063bbf5e487cc93c6c42d6b2d45b481acfe44f68da0f8b22c69f76af"
+    },
+    {
+      "path": "source216-gate-controls-command.json",
+      "bytes": 3226,
+      "sha256": "f86c5c1281c31b3f4de79fc3d1b94f91c5d75026fdeb77e25aa2b9f93e712222"
+    },
+    {
+      "path": "source216-gate-controls-result.json",
+      "bytes": 91,
+      "sha256": "d928f266601caaba52577ce5f6506e480e135629669fe78332e6dd1b34aaa46d"
+    },
+    {
+      "path": "source216-gate-controls.log",
+      "bytes": 1558,
+      "sha256": "46174f9b17f0f75a2f934e3781a29d173e1e4dff007c567ba8e74a419db2b6c8"
+    },
+    {
+      "path": "source216-gate-inventory.txt",
+      "bytes": 261840,
+      "sha256": "e93074ac14510a10231ac1fbbf9d42eea2a41effc35c5b27e16047b0d52e4301"
+    },
+    {
+      "path": "source216-manifest.json",
+      "bytes": 47503,
+      "sha256": "b52bb29e9b9c1ca83e6e25ac8c99d4a7f87f019d9fc902d18b31511f9a1db936"
+    },
+    {
+      "path": "source216-results-audit.json",
+      "bytes": 1851,
+      "sha256": "ebf79a548e86c6b1b78ca0f0bea95ab5ace01be3746d626c280f0b97720b96dd"
+    },
+    {
+      "path": "source216-validation-driver.log",
+      "bytes": 19169,
+      "sha256": "6d1962f79a727428753c5d8d1021869d9b0e70979546ddafc412cf0ac91c2079"
+    },
+    {
+      "path": "source216-validation-result.json",
+      "bytes": 1039,
+      "sha256": "7c4855545ceb6ad547ac8fdd96e11550d17b1d74809dbf9ab59384a0179ad255"
+    },
+    {
+      "path": "test-bytecode-broad216.py",
+      "bytes": 3019,
+      "sha256": "677c3d152d5aa62e481e9902de70172d7819a3fcfcdee8b5287c0d5ff2da55de"
+    },
+    {
+      "path": "test-bytecode-controls216.py",
+      "bytes": 3796,
+      "sha256": "23b708ec81c8181dcd40039069b1a85dcd117801f5d55ec3305a75295f418fde"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
