@@ -35,8 +35,11 @@ is earlier-source evidence: Linux Rust and terminal comparisons pass, macOS
 Rust fails reclamation, and Linux frozen differs on one unexpected GNU Eglot
 timeout. Its original failure is not cleared by these selected passes.
 Source173 separately removes copied optional call metadata and repeated
-function decoding after exact-binary stack diagnosis; it is still isolated
-under validation. The ordinary input-decoding and post-deinit TLS differences
+function decoding after exact-binary stack diagnosis. Its **226 gate and 226
+release controls** and strict checks pass, but it remains isolated and
+unfinished. The [portable draft](handover/2026-09-30-call-metadata-draft/manifest.json)
+preserves its exact patch and closed receipts; ordinary and combined-source
+complete validation remain required. The ordinary input-decoding and post-deinit TLS differences
 remain unresolved.
 
 Darwin GNU matches the required source and native ABI but differs from the

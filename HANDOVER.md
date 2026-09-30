@@ -30,7 +30,10 @@ compiled/test inputs match the isolated checkout. Its
 [portable receipts](docs/handover/2026-09-30-tls-peer-reports/manifest.json)
 preserve source171's failed string-mutation probe and both helper invocation
 failures. Complete source172 validation remains required. Source173's
-call-metadata repair is still isolated under validation; input decoding,
+call-metadata repair is still isolated: **226 gate and 226 release controls**
+and all strict checks pass. Its [portable unfinished draft](docs/handover/2026-09-30-call-metadata-draft/manifest.json)
+contains the exact patch, source hashes and closed receipts; ordinary and
+combined-source complete validation remain required. Input decoding,
 post-deinit TLS behavior and the full goal remain unfinished.
 
 **Previous task-branch candidate:** read the
