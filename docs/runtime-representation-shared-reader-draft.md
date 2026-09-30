@@ -3,7 +3,9 @@
 The [source204 cons repair](runtime-representation-cons-roots-draft.md) now occupies
 the task branch on top of the reader/macro and source201 allocator changes.
 Its strict checks, 596 gate / 596 release controls, 39 ordinary batch comparisons
-and one ordinary terminal fixture pass; complete validation is running.
+and one ordinary terminal fixture pass. Complete macOS Rust now passes 3,059
+tests; Linux Rust fails two census assertions after 2,232 passes. Their raw
+evidence and exact-artifact diagnostic are linked from the cons continuation.
 The [source201 allocator continuation](runtime-representation-vector-allocation-draft.md)
 records complete audits of 3,056 macOS / 3,068 Linux Rust passes, 226 terminal
 scenarios / 686 comparisons, and 519 Linux frozen files / 7,928 matching outcomes.

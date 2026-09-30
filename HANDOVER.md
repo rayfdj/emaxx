@@ -12,12 +12,26 @@ both editors produced identical results but no interactive callbacks. The same
 fixture and original expectations pass with collecting callbacks in both editors'
 real terminal sessions. Two incomplete auditor invocations are also preserved.
 
-[Complete macOS validation has started](docs/handover/2026-09-30-shared-reader-draft/source204-complete-validation-start-manifest.json):
-Rust supervisor **43352** and terminal supervisor **43354**. Keep the candidate
-checkout, helpers and artifacts frozen while their children run. Source204 is [published as `d186d40b`](docs/handover/2026-09-30-shared-reader-draft/source204-publication-manifest.json).
-[Complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) and
-[Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
-are running on that exact head. Main remains source174; PR #79 remains draft.
+[Complete macOS Rust now passes](docs/handover/2026-09-30-shared-reader-draft/source204-macos-complete-rust-manifest.json):
+**3,059 passes**, two existing ignores, native artifact identity and all 410 input
+hashes verified. Rust supervisor **43352** has exited. Terminal supervisor
+**43354** remains live; keep its checkout, helpers and artifacts frozen.
+Source204 is [published as `d186d40b`](docs/handover/2026-09-30-shared-reader-draft/source204-publication-manifest.json).
+[Complete Linux Rust fails](docs/handover/2026-09-30-shared-reader-draft/source204-linux-rust-failure-manifest.json):
+**2,232 passes / two census failures**. Each first delta is 47 vector slots below
+expected; all subsequent deltas match. Both original reclamation assertions
+pass, but four later groups and both Cargo stages did not execute. The original
+executable and startup image are retained. `tools/diagnose_exact_census.py`
+prepares their replay and a read-only debugger trace; no cause or repair is yet
+established. [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
+remains running. Main remains source174; PR #79 remains draft.
+
+The separate [bytecode continuation](docs/runtime-representation-bytecode-draft.md)
+preserves source205's two failing representation controls and a real mutation
+bug: changing the byte-code string is visible through Lisp but execution keeps
+stale decoded instructions, including during an active call. Its full patch and
+ordinary negative baselines are packaged separately; no bytecode repair is
+applied to the task branch.
 The [accounting continuation](docs/runtime-representation-accounting-draft.md)
 records a new same-input negative baseline: all seven allocation counters remain
 unimplemented, and `memory-use-counts` errors. It explains the symbol, string and

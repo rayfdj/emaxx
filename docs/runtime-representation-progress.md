@@ -8,20 +8,24 @@ failures are not statements about today's source.
 
 Current runtime source204 is published at `d186d40b` in draft PR #79. Its strict
 checks, 596 gate / 596 release tests, 39 ordinary batch comparisons and one
-ordinary terminal fixture pass. Complete macOS Rust/terminal and exact-head
-Linux Rust/frozen validation are running. Main remains the fully validated
+ordinary terminal fixture pass. Complete macOS Rust passes 3,059 tests. Linux
+Rust fails two census assertions after 2,232 passes; their exact retained-artifact
+diagnosis is prepared. Terminal and Linux frozen validation remain running.
+The separate [bytecode baseline](runtime-representation-bytecode-draft.md) also
+exposes detached closure storage and stale execution after code-string mutation.
+Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately; final measurement provenance remains required. |
 | 2. GNU architectural reference | Current cons and vector changes trace to GNU's allocation, field access and conservative-root rules. Per-change handovers preserve other references and deviations; final complete-path review remains open. |
-| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. Source204 removes padded field handles. Allocated symbol value/function/plist authority, remaining adapters and their removal remain open. |
+| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. Source204 removes padded field handles. Source205's isolated negative controls expose bytecode's 88-byte record/slot storage versus GNU's 40 bytes. Allocated symbol authority, bytecode migration and adapter removal remain open. |
 | 4. Allocation, GC and ownership | Reachability/reclamation controls are preserved. The exact old Linux failure now has a traced cause and source204 repair under full validation. Real category counters, physical byte accounting, remaining retention/ownership review and collection-cost explanations remain open. |
-| 5. VM/function-call work | Earlier call/reader changes and profiles remain recorded. Static field-load and footprint reductions are verified, but final dynamic instruction/allocation profiles and equivalent-work timing are still required. |
+| 5. VM/function-call work | Ordinary probes expose stale decoded bytecode after code-string mutation, including during an active call. Representation/VM repair and final dynamic instruction/allocation profiles and equivalent-work timing remain required. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source201's full Rust, terminal and Linux frozen gates pass. Source204's full runs are separate and pending. Final-source Linux/macOS, pinned compatibility, release and zero-warning requirements remain open. |
+| 8. Complete validation | Source201's full Rust, terminal and Linux frozen gates pass. Source204 macOS Rust passes; Linux Rust fails two census controls. Terminal/frozen runs are still live. Final-source Linux/macOS, pinned compatibility, release and zero-warning requirements remain open. |
 | 9. Independently checkable delivery | Portable patches, source hashes, commands and raw evidence are committed. Checkpoint validation does not establish final architectural completion, final audit or performance acceptance. |
 
 # Historical record — 27 September 2026

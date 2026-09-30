@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
         description: Upstream file/range, or retained artifact run ID for rust-exact-roots
@@ -400,6 +400,12 @@ jobs:
                   --key-head runtime-key --debugger-runs 5 \
                   --output target/frozen-ci/rust-exact-roots
               ;;
+            rust-exact-census)
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/diagnose_exact_census.py \
+                  --artifact-run "${VALIDATION_FILE:-36764911748}" \
+                  --output target/frozen-ci/rust-exact-census
+              ;;
             rust-tail)
               # Explicit continuation after the documentation-only failure in
               # the 37197db library gate. Its original results remain failed;
@@ -446,7 +452,7 @@ jobs:
               ;;
           esac
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        if: always() && inputs.validation != 'rust-exact-roots'
+        if: always() && inputs.validation != 'rust-exact-roots' && inputs.validation != 'rust-exact-census'
         with:
           path: |
             ~/.cargo/registry

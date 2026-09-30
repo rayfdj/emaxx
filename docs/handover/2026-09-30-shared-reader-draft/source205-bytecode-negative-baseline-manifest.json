@@ -1,0 +1,384 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "confirmed negative architectural and mutation baselines",
+    "source_manifest_sha256": "f393ffd854130ca257398bfccb87d991ea720a96b50d7ebcc3c3dccb7e222cf3",
+    "complete_patch_sha256": "1fa15142c341371bd6941eb690afe6e66a29141d1b971ea5fac0ae173c8c391d",
+    "input_count": 410,
+    "changed_from_published_runtime": [
+      "src/lisp/native_comp/runtime/record_layout_tests.rs"
+    ],
+    "patch_replay_and_modes_verified": true,
+    "raw_passed": 0,
+    "raw_failed": 2,
+    "binary_sha256": "45fa728df61d50b3634ad475675ac42a2d62c016d435e050bd2c24ddcf13ecd0",
+    "first_allocation_bytes": 88,
+    "gnu_header_and_slots_bytes": 40,
+    "header_tags": {
+      "current": 34,
+      "gnu_closure": 31
+    },
+    "ordinary": [
+      {
+        "fixture": "closure-representation-transitions",
+        "matched": false,
+        "exit_code_per_editor": 255,
+        "outputs": {
+          "gnu": "\nError: wrong-type-argument (arrayp #[0 \"\ufffd\ufffd\ufffd\ufffd\" [41] 1])\n  aset(#f(compiled-function () #<bytecode 0x18c000af2b75>) 0 nil)\n  (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results))\n  (prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results)))\n  eval((prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results))) t)\n  command-line-1((\"--eval\" \"(prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1))\\n      (interpreted (make-interpreted-closure nil '((quote 47)) nil nil))\\n      results)\\n  (push (list 'before\\n              (byte-code-function-p byte) (interpreted-function-p byte)\\n              (byte-code-function-p interpreted) (interpreted-function-p interpreted)\\n              (funcall byte) (funcall interpreted)) results)\\n  (aset byte 0 nil)\\n  (aset byte 1 '((quote 53)))\\n  (aset byte 2 nil)\\n  (aset byte 3 nil)\\n  (garbage-collect)\\n  (push (list 'byte-to-interpreted\\n              (byte-code-function-p byte) (interpreted-function-p byte)\\n              (condition-case err (funcall byte) (error err))) results)\\n  (aset interpreted 0 0)\\n  (aset interpreted 1 (unibyte-string 192 135))\\n  (aset interpreted 2 [59])\\n  (garbage-collect)\\n  (push (list 'interpreted-to-byte\\n              (byte-code-function-p interpreted) (interpreted-function-p interpreted)\\n              (condition-case err (funcall interpreted) (error err))) results)\\n  (nreverse results))\\n)\"))\n  command-line()\n  normal-top-level()\n",
+          "emaxx": "\nError: wrong-type-argument (arrayp #[0 \"\ufffd\ufffd\ufffd\ufffd\" [41] 1])\n  aset(#f(compiled-function () #<bytecode 0x2d8917827b98b9f3>) 0 nil)\n  (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results))\n  (prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results)))\n  eval((prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1)) (interpreted (make-interpreted-closure nil '('47) nil nil)) results) (push (list 'before (byte-code-function-p byte) (interpreted-function-p byte) (byte-code-function-p interpreted) (interpreted-function-p interpreted) (funcall byte) (funcall interpreted)) results) (aset byte 0 nil) (aset byte 1 '('53)) (aset byte 2 nil) (aset byte 3 nil) (garbage-collect) (push (list 'byte-to-interpreted (byte-code-function-p byte) (interpreted-function-p byte) (condition-case err (funcall byte) (error err))) results) (aset interpreted 0 0) (aset interpreted 1 (unibyte-string 192 135)) (aset interpreted 2 [59]) (garbage-collect) (push (list 'interpreted-to-byte (byte-code-function-p interpreted) (interpreted-function-p interpreted) (condition-case err (funcall interpreted) (error err))) results) (nreverse results))) t)\n  command-line-1((\"--eval\" \"(prin1 (let ((byte (make-byte-code 0 (unibyte-string 192 135) [41] 1))\\n      (interpreted (make-interpreted-closure nil '((quote 47)) nil nil))\\n      results)\\n  (push (list 'before\\n              (byte-code-function-p byte) (interpreted-function-p byte)\\n              (byte-code-function-p interpreted) (interpreted-function-p interpreted)\\n              (funcall byte) (funcall interpreted)) results)\\n  (aset byte 0 nil)\\n  (aset byte 1 '((quote 53)))\\n  (aset byte 2 nil)\\n  (aset byte 3 nil)\\n  (garbage-collect)\\n  (push (list 'byte-to-interpreted\\n              (byte-code-function-p byte) (interpreted-function-p byte)\\n              (condition-case err (funcall byte) (error err))) results)\\n  (aset interpreted 0 0)\\n  (aset interpreted 1 (unibyte-string 192 135))\\n  (aset interpreted 2 [59])\\n  (garbage-collect)\\n  (push (list 'interpreted-to-byte\\n              (byte-code-function-p interpreted) (interpreted-function-p interpreted)\\n              (condition-case err (funcall interpreted) (error err))) results)\\n  (nreverse results))\\n)\"))\n  command-line()\n  normal-top-level()\n"
+        }
+      },
+      {
+        "fixture": "bytecode-closure-shared-constants",
+        "matched": true,
+        "exit_code_per_editor": 0,
+        "outputs": {
+          "gnu": "((4 4 t nil 41 63 87 t t (wrong-type-argument arrayp t)) (5 5 t nil 42 64 88 t t (wrong-type-argument arrayp t)) (6 6 t nil 43 65 89 t t (wrong-type-argument arrayp t)))",
+          "emaxx": "((4 4 t nil 41 63 87 t t (wrong-type-argument arrayp t)) (5 5 t nil 42 64 88 t t (wrong-type-argument arrayp t)) (6 6 t nil 43 65 89 t t (wrong-type-argument arrayp t)))"
+        }
+      },
+      {
+        "fixture": "bytecode-code-mutation-baseline",
+        "matched": false,
+        "exit_code_per_editor": 0,
+        "outputs": {
+          "gnu": "((before 41 t) (after 193 67))",
+          "emaxx": "((before 41 t) (after 193 41))"
+        }
+      },
+      {
+        "fixture": "bytecode-code-active-mutation-baseline",
+        "matched": false,
+        "exit_code_per_editor": 0,
+        "outputs": {
+          "gnu": "(67 194)",
+          "emaxx": "(41 194)"
+        }
+      }
+    ],
+    "qualification": "Runtime source204 is unchanged. Only two tests were added in the isolated baseline. The invalid closure-aset probe stays failed; the valid constants/clone/GC/rejected-aset comparison passes. Code-string mutation differs both between calls and inside an active call. An entry-only cache refresh would not repair the latter. No layout or VM repair implemented."
+  },
+  "archive": {
+    "path": "source205-bytecode-negative-baseline.tar.gz",
+    "bytes": 243329,
+    "sha256": "a0f2cd65afc3f73405911af87a01bad1da1cce90a4e6ba7dbde99398c84a1e3d"
+  },
+  "files": [
+    {
+      "path": "audit-source205-baseline.py",
+      "bytes": 5230,
+      "sha256": "3ee46b4ce922211a3c4dfcbb7c418aa201a86b68943e21397c1bfe7a0708a567"
+    },
+    {
+      "path": "bytecode-closure-shared-constants.el",
+      "bytes": 1030,
+      "sha256": "41cdcc2c4b9df6a6df8bbbc2edd0701d797f89947a2a33228a402acdc17df874"
+    },
+    {
+      "path": "bytecode-code-active-mutation-baseline.el",
+      "bytes": 237,
+      "sha256": "6692adf3ed42a1153c9fb75edd64d9787758c7082668072d2648eabfc5bb8c18"
+    },
+    {
+      "path": "bytecode-code-mutation-baseline.el",
+      "bytes": 497,
+      "sha256": "d5fa9dbbbe5827b1b19aefd743e86b7b3a4e46bad25354c3460753261ce26231"
+    },
+    {
+      "path": "closure-representation-transitions.el",
+      "bytes": 1025,
+      "sha256": "9b6462b2265f72149a50544132ef624c3237d393b025ba6b26a13c7a10c0035d"
+    },
+    {
+      "path": "compare-recovered-continuation-fixtures.py",
+      "bytes": 3442,
+      "sha256": "dfd6176b76d11a16bde82e3877ede4c424f537098954c49bf11727df3c95de91"
+    },
+    {
+      "path": "freeze-bytecode-candidate.py",
+      "bytes": 2069,
+      "sha256": "4f48745df77abdfa68d2e61109d6028505db4f4e0f09979e2121acb1b28a987d"
+    },
+    {
+      "path": "package-source204-results-and205-baseline.py",
+      "bytes": 3013,
+      "sha256": "b778f84daf0d241f4b7ee45d1c461073df4fd2c592204828cf62a25ebcba9b76"
+    },
+    {
+      "path": "source204-active-code-mutation-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-comparison.json",
+      "bytes": 705,
+      "sha256": "1eb638e7de00a1de9b2cd0c51c2ed80cd98cb2bc995504dabeedadeae157e994"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-emaxx.command.json",
+      "bytes": 1430,
+      "sha256": "52db85a09a64791ae9d056d52fda5a0eff1f3207c5cb94fc681e91f805669507"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "c06862d325a1ad15edac7761cd0cfc0f5e0107b39310fedbb506e723efe2d8cf"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-emaxx.stdout",
+      "bytes": 8,
+      "sha256": "0db531749e7c0fa69613551d7c9718f2d5fa07282b3dd1b163336149172f7407"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-gnu.command.json",
+      "bytes": 1313,
+      "sha256": "b7c330efe1ad998299fea8dd752cb7b45ada8f1060a06eff3119ef1684f6f334"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-gnu.result.json",
+      "bytes": 266,
+      "sha256": "8b3eb76c9d2039eba20b3c932c7673a21816e317fb2a099fb271b4b139355a5a"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-active-code-mutation-ordinary-bytecode-code-active-mutation-baseline-gnu.stdout",
+      "bytes": 8,
+      "sha256": "b915ca091f62f78e9f451afdabd976a4bad0182893dd09c63dbc130749c6dcf2"
+    },
+    {
+      "path": "source204-closure-baseline-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-comparison.json",
+      "bytes": 897,
+      "sha256": "fb83f85943260acfd904f4920dc0f2be2b4ccc569efa40c0a88010ac2942df71"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-emaxx.command.json",
+      "bytes": 2232,
+      "sha256": "ffb1e39ccad42499efd1078150985aaa3fb90cb9e6599b6c1adc68174f16baaf"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-emaxx.result.json",
+      "bytes": 372,
+      "sha256": "6198aa956ab8c9057f67a31a68d26c6f4f4dcfec72341b0fb0d400c1ac7d9796"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-emaxx.stderr",
+      "bytes": 52,
+      "sha256": "6904e8121f85359c0bb142e78fce8612bc4e62d8f68281776bb7df0c88489838"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-emaxx.stdout",
+      "bytes": 3907,
+      "sha256": "4ed261dc92f6dba17e56bb2df0301e3331a11eaf8e84e8654b886d3fd407c5c7"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-gnu.command.json",
+      "bytes": 2115,
+      "sha256": "6959914a869225950b6de7f2e869bd509d7baf2d3e51b0e91051f29f226c6901"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-gnu.result.json",
+      "bytes": 360,
+      "sha256": "a17b5e1f94a4d662dac1ecbd7947817b27da80013aa722bd533cf397cce61b2e"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-gnu.stderr",
+      "bytes": 46,
+      "sha256": "1ad0f1109f6db74b8f3359bb31fac679e800f848f8b225d453ea88569457653c"
+    },
+    {
+      "path": "source204-closure-baseline-ordinary-closure-representation-transitions-gnu.stdout",
+      "bytes": 3903,
+      "sha256": "5df99c9b2377d385f68b28aa4fbcff1f0329d3b93e3a632b3c3f6a119f69b96e"
+    },
+    {
+      "path": "source204-closure-controls-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-comparison.json",
+      "bytes": 703,
+      "sha256": "9003dc835e7a086310a50c129ee2af8bbc8c4efb6c0862c7aad484260bd94ccb"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-emaxx.command.json",
+      "bytes": 2240,
+      "sha256": "a5d7ac55939027776cba6cb0e38545e8d4f77d82a0ebb34b4984c455496a0545"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "be794630cf1a03648d43aa872a35dc38535bdcce6610206c94394d535dd9cbc0"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-emaxx.stdout",
+      "bytes": 169,
+      "sha256": "ffbfc1061e3dcda303cda08d3a6b7435b95a9fd90dc779de02481e1b32175e4e"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-gnu.command.json",
+      "bytes": 2123,
+      "sha256": "e696dc7a3c60769ddab7933633daba37afabd554533e4830331c58998ee68f66"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-gnu.result.json",
+      "bytes": 274,
+      "sha256": "e526ce21b2efa9a87ed6a131dee689f5d8b14ea072e6525cb44195699b5b3e5e"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-closure-controls-ordinary-bytecode-closure-shared-constants-gnu.stdout",
+      "bytes": 169,
+      "sha256": "ffbfc1061e3dcda303cda08d3a6b7435b95a9fd90dc779de02481e1b32175e4e"
+    },
+    {
+      "path": "source204-code-mutation-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-comparison.json",
+      "bytes": 713,
+      "sha256": "2e1f85de4ca2aed4f046c11f230e67135f2629b8b33f71964f01bee509325f90"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-emaxx.command.json",
+      "bytes": 1690,
+      "sha256": "46b8c94902cc4e163a1ae98e7d1cf434a3d7e0734897a7db8e37e8f5cd5c1f49"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "82d68bae3b6a62f9c28fd35f5521c799284d51906042e694d2f52dffcc0bfc56"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-emaxx.stdout",
+      "bytes": 30,
+      "sha256": "ae7ec81a4f2a5964f6f39c936529018a4f20e26acd75bb061965d6995453857f"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-gnu.command.json",
+      "bytes": 1573,
+      "sha256": "bdd3180efdf75df0b8ead327edaad41110c1f8dc06d4cf1c39d22fcf1372226b"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-gnu.result.json",
+      "bytes": 274,
+      "sha256": "dc67028e3ac923d86c1b12849a2a410d5cf62cfe81e7eb6f5562d9bcb6074630"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-code-mutation-ordinary-bytecode-code-mutation-baseline-gnu.stdout",
+      "bytes": 30,
+      "sha256": "e05bf1816a76375d1d4b7e38382ce6c14ed8b7bc2ba9defa9527761eafb52438"
+    },
+    {
+      "path": "source205-base.json",
+      "bytes": 430,
+      "sha256": "8d410fea12dbc5780d2ad9d49fee6387b0f3f0ee0951ccef21218d5acb7cc135"
+    },
+    {
+      "path": "source205-baseline-audit.json",
+      "bytes": 10194,
+      "sha256": "d66586d387c7afdb850a9fced97850a5cb53bc009c91cd362504c1328927611a"
+    },
+    {
+      "path": "source205-baseline-driver.log",
+      "bytes": 1468,
+      "sha256": "522bcd49cd062b9c176d0a629edf71191f3171065b4ce0e86856a71e5d54ccb4"
+    },
+    {
+      "path": "source205-baseline-launch.json",
+      "bytes": 532,
+      "sha256": "ec508ee9285fcfaaa3f3834fcc2bb103c61d7fc72f754d8eed353b8f508bc774"
+    },
+    {
+      "path": "source205-complete.patch",
+      "bytes": 260691,
+      "sha256": "1fa15142c341371bd6941eb690afe6e66a29141d1b971ea5fac0ae173c8c391d"
+    },
+    {
+      "path": "source205-gate-baseline-command.json",
+      "bytes": 1688,
+      "sha256": "0f8512d657736bda7f75af2aefb437c55a46fa2a71505ea07e3d2c6b88d06961"
+    },
+    {
+      "path": "source205-gate-baseline-result.json",
+      "bytes": 93,
+      "sha256": "6d320f764548dcc6d4202e821e9e4f1df311938d6e430c37a6e7dd6bf6b29100"
+    },
+    {
+      "path": "source205-gate-baseline.log",
+      "bytes": 1280,
+      "sha256": "a0207391256e6fd3d9070d37d38c808f231312f2a1c6bc0a66923b349c18c906"
+    },
+    {
+      "path": "source205-gate-build-command.json",
+      "bytes": 1124,
+      "sha256": "43271107827549f99c56c722f7a65c4d4926f65796d6c64ba06997023ddca25c"
+    },
+    {
+      "path": "source205-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "365244c855bf40b5f983cb3628b931240ab97d64f419d950c33226d5cf4e9527"
+    },
+    {
+      "path": "source205-gate-build.log",
+      "bytes": 216116,
+      "sha256": "b4c5fd3d245419e3f5049176049aa74dec908e3d3fef8a0917fa9ba688abc81e"
+    },
+    {
+      "path": "source205-gate-inventory.txt",
+      "bytes": 261388,
+      "sha256": "c260d95f62f528c1ff164ea5fc83b20a48fd325c5c46809a8db5ec023c58b2ca"
+    },
+    {
+      "path": "source205-isolated-checkout.json",
+      "bytes": 770,
+      "sha256": "26b832be888739994def8a18ac9120077ee6d805d9ac7e81b0e2792e675c4775"
+    },
+    {
+      "path": "source205-manifest.json",
+      "bytes": 46477,
+      "sha256": "f393ffd854130ca257398bfccb87d991ea720a96b50d7ebcc3c3dccb7e222cf3"
+    },
+    {
+      "path": "test-bytecode-baseline205.py",
+      "bytes": 3319,
+      "sha256": "2426e2f638798910cbe8e7834ef1b15b57706b71c5cc24586db1b6ad33c33a58"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

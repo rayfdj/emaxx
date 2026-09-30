@@ -3,7 +3,7 @@
 Read the [complete goal](runtime-representation-goal.md), the
 [reader handover](runtime-representation-shared-reader-draft.md) and the
 [allocator continuation](runtime-representation-vector-allocation-draft.md).
-**Source204 is the current task-branch candidate, with complete validation running.**
+**Source204 is the current task-branch candidate; complete Linux Rust fails two census assertions.**
 All 410 inputs match the separately frozen `cons-roots/emaxx` checkout. Main remains
 source174 and PR #79 remains draft. The preceding source201 passes complete macOS
 and Linux Rust gates (3,056 / 3,068 tests, two existing ignores each), all 226
@@ -92,11 +92,37 @@ records macOS Rust supervisor **43352** and terminal supervisor **43354** in
 supervisor **41205** has exited. Preserve the frozen checkout, helpers and
 artifacts while any associated child remains live. The [publication receipts](handover/2026-09-30-shared-reader-draft/source204-publication-manifest.json)
 verify `d186d40bf014ca53d0a2652b4e2f2d921c5cb009` and draft PR #79.
-[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) and
+[Complete macOS Rust](handover/2026-09-30-shared-reader-draft/source204-macos-complete-rust-manifest.json)
+now passes 2,960 library, 60 binary and 39 integration tests: **3,059 passes**, two
+existing ignores and native artifact identity. All 2,962 library names/verdicts,
+410 source hashes and four retained executable/image files are audited.
+Supervisor 43352 has exited; terminal supervisor 43354 remains live.
+
+[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) has finished
+with **2,232 passes / two failures**. Its
+[raw audit](handover/2026-09-30-shared-reader-draft/source204-linux-rust-failure-manifest.json)
+preserves both vector/closure and pseudovector census failures. The first vector
+delta is -47 instead of 0; the first record delta is -45 instead of 2. Every
+later size/count matches. Both original reclamation assertions pass. Four later
+groups (736 scheduled tests, including two existing ignores) and both Cargo
+stages did not run; the new cons controls are in that unexecuted lightweight
+group. The failed executable is `6ea03c1a…`, its retained image `85ebb975…`.
+Their exact identities, inventory and raw verdicts are verified. The original
+failed result stays failed.
+
+`tools/diagnose_exact_census.py` uses the existing Linux workflow's
+`rust-exact-census` mode to restore these artifacts and their source paths. It
+replays both selected controls and the original primitives group, then observes
+the first four explicit collections using the inspected executable's ABI.
+No assertion or heap value is changed. Six corrupt retained-input cases are
+rejected locally; debugger execution remains required. A retained-image replay
+cannot reconstruct unrecorded inherited CI environment exactly, and a debugger
+pass would not clear the original failure. The 47-slot cause is still unknown.
+
 [Linux frozen compatibility](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
-are running on that exact head. Receipts and reproduction helpers
-are in `target/runtime-goal/resume-2026-09-28`. These selected passes do not replace
-complete candidate validation or Linux confirmation of the repair.
+remains running. Receipts and reproduction helpers are in
+`target/runtime-goal/resume-2026-09-28`. Complete candidate validation remains
+required before promotion.
 
 No timing, RSS or GNU performance-parity claim follows from the smaller field
 handle. Full candidate validation, Linux confirmation of the repair, remaining
