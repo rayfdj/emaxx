@@ -9,6 +9,15 @@ fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
     matches!(record.slots.get(2).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "dynamic-binding")
 }
 
+// eval_sub's CHECK_LIST signals through a separate error path. Keep the
+// owned predicate string and boxed error payload out of ordinary eval's
+// frame: inactive slots there otherwise become conservative GC roots.
+#[cold]
+#[inline(never)]
+fn eval_list_type_error(value: Value) -> LispError {
+    LispError::WrongTypeArgument("listp".into(), value)
+}
+
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
 // Per-name call counts, cumulative and self wall time; the report file is
 // rewritten every few thousand calls.  Zero cost unless the variable is
@@ -445,16 +454,16 @@ impl Interpreter {
                 // eval_sub: XCAR (form) read for its symbol (copied only
                 // when it is something else), XCDR (form) held by its
                 // cell, CHECK_LIST (original_args).
-                let (head_symbol, head_value) = match cell.car.get().kind() {
+                let head = cell.car.get();
+                let (head_symbol, head_value) = match head.kind() {
                     Kind::Symbol(name) => (Some(name), None),
-                    other => (None, Some(other.value())),
+                    _ => (None, Some(head)),
                 };
-                let args_cell: Option<SharedCons> = match cell.cdr.get().kind() {
+                let tail = cell.cdr.get();
+                let args_cell: Option<SharedCons> = match tail.kind() {
                     Kind::Cons(args) => Some(args),
                     Kind::Nil => None,
-                    other => {
-                        return Err(LispError::WrongTypeArgument("listp".into(), other.value()));
-                    }
+                    _ => return Err(eval_list_type_error(tail)),
                 };
                 let callable_name = match head_value.as_ref() {
                     None => head_symbol,

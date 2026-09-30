@@ -1,0 +1,82 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated unvalidated runtime draft",
+    "inputs": 410,
+    "supervisor": 52334,
+    "qualification": "Exact complete source patch and executable-mode replay verified. No runtime result is included in this launch archive. The published task branch remains source204; source206 bytecode negative baseline stays separate. All original failed assertions and expected values are unchanged."
+  },
+  "archive": {
+    "path": "source207-eval-frame-draft.tar.gz",
+    "bytes": 83035,
+    "sha256": "79abb3c7f7ed77579b090e2f7e0575249a69a143f58198d15f33c7fad8f64e1c"
+  },
+  "files": [
+    {
+      "path": "audit-source207-patch.py",
+      "bytes": 2787,
+      "sha256": "a2814a2144169aa62b282f136bba18826843df0bf1eb7275ef8517768c7e29b4"
+    },
+    {
+      "path": "build-eval207.py",
+      "bytes": 2416,
+      "sha256": "15f276ee9072942d472ee4c3353e004d3a8b70c4208418c1be30a8a42100bfe3"
+    },
+    {
+      "path": "check-eval207.py",
+      "bytes": 2022,
+      "sha256": "21f7778d29e0fe84f569616ed2eb37a0ad3b127e8012e6ecb3264aa156777650"
+    },
+    {
+      "path": "freeze-eval-candidate.py",
+      "bytes": 2064,
+      "sha256": "3b1910412b3fda8fbc2f61afef9681c264646952b787acf45c590ed866466935"
+    },
+    {
+      "path": "package-source204-census-v2-and207-draft.py",
+      "bytes": 2414,
+      "sha256": "66431efc66f5e7aca59129fa1bcf509498bd8c2397bee9d5ce17e7aaa2aac553"
+    },
+    {
+      "path": "queue-eval207-validation.py",
+      "bytes": 1630,
+      "sha256": "4bbe9e3ccc195b8e7270ba78feba9f89fed351fb00b52029d0352255461353b1"
+    },
+    {
+      "path": "source207-base.json",
+      "bytes": 390,
+      "sha256": "6aba527499ff8a637c4934d62a14f00cdaf3a7c408d38ee4bf71ab17decb08ad"
+    },
+    {
+      "path": "source207-complete.patch",
+      "bytes": 258475,
+      "sha256": "04ccf6c3ba2119b1b4a503e34bd339a5ea55da2352648b1570bebb8127549daa"
+    },
+    {
+      "path": "source207-manifest.json",
+      "bytes": 46477,
+      "sha256": "f00e33bb215b8812e39a1772a140106649eeffdc94200f57cec4b69e21a1f7a0"
+    },
+    {
+      "path": "source207-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "79ddb2afac1131bd7dd814a82d80b7ec3750b93fb2e1d86103e2e15a48821c43"
+    },
+    {
+      "path": "source207-selected-validation-launch.json",
+      "bytes": 722,
+      "sha256": "f763a61970d033d77145b90c6993326b494f723a2e9daa30387f7903136271ba"
+    },
+    {
+      "path": "static-eval207.py",
+      "bytes": 1547,
+      "sha256": "d1b33a7675a67803bcf7e1059615bbf546f3926270486327dd347c81aeacbc48"
+    },
+    {
+      "path": "test-eval207.py",
+      "bytes": 5432,
+      "sha256": "cf7da8dba466a036e479070a250c163adcefeddf164de2915f29fd28bfa3a92d"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

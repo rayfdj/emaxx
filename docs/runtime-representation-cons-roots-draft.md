@@ -3,8 +3,9 @@
 Read the [complete goal](runtime-representation-goal.md), the
 [reader handover](runtime-representation-shared-reader-draft.md) and the
 [allocator continuation](runtime-representation-vector-allocation-draft.md).
-**Source204 is the current task-branch candidate; complete Linux Rust fails two census assertions.**
-All 410 inputs match the separately frozen `cons-roots/emaxx` checkout. Main remains
+**Source207 is the current task-branch candidate; source204's complete Linux Rust fails two census assertions.**
+Source204's 410 inputs remain in the frozen `cons-roots/emaxx` checkout; source207
+changes only the evaluator as documented below. Main remains
 source174 and PR #79 remains draft. The preceding source201 passes complete macOS
 and Linux Rust gates (3,056 / 3,068 tests, two existing ignores each), all 226
 terminal scenarios / 686 comparisons, and the
@@ -142,7 +143,43 @@ missing traces. The already reproduced full group need not be rerun when the
 same selected controls reproduce; `--replay-group` retains that option.
 A retained-image replay
 cannot reconstruct unrecorded inherited CI environment exactly, and a debugger
-pass would not clear the original failure. The 47-slot cause is still unknown.
+pass would not clear the original failure.
+
+The [revised diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36772475709)
+has completed. Its [audited traces and retained disassembly](handover/2026-09-30-shared-reader-draft/source204-exact-census-root-manifest.json)
+verify unchanged executable/image and 403 compiled inputs. The ordinary and
+debugger processes each finish with the same two failures; no observer callback
+fails. All first four collection/root/host-stack/sweep reports exist for both
+controls. Their first collections each contain exactly one direct captured
+reference to the later-reclaimed closure: its correctly tagged pointer at
+offset 8 in `Interpreter::eval`'s stack frame. Its four actual slots contain the
+argument descriptor, code string, constants vector and stack depth. The constants
+slot points to the 41-element vector, so the pair accounts for 5 + 42 reported
+vector words. Neither second collection contains that captured root. The pair
+is swept then; collections three and four sweep no counted vectors.
+
+The original ELF disassembly reserves 136 local bytes in `eval`. The slot at
+offset 8 belongs to predicate-string/error construction on branches absent from
+the ordinary call path; the call at `0x96cbc4` enters `eval_call` with that space
+inactive. GNU `alloc.c:live_vector_pointer` accepts the tagged closure pointer
+as well. Rejecting this valid conservative root would weaken survival. The
+candidate instead removes unnecessary reconstruction of `Kind` into Lisp words
+and outlines CHECK_LIST's owned predicate/error construction, following GNU
+`eval.c:eval_sub`'s direct original car/cdr words and separate error path.
+
+The [source207 isolated draft](handover/2026-09-30-shared-reader-draft/source207-eval-frame-draft-manifest.json)
+is in `target/runtime-goal/recovered-2026-09-30/eval-frames/emaxx`; its 410-input
+patch and executable modes replay exactly from main `21d20f0e`. Supervisor
+52334 runs both profiles' selected controls and a fresh ordinary build. Its
+[closed focused evidence](handover/2026-09-30-shared-reader-draft/source207-eval-focused-manifest.json)
+passes formatting, compiler checks, strict Clippy, diff checks and all nine gate
+controls, including both original reclamation tests and both census assertions.
+The ARM64 gate evaluator's frame shrinks from 208 to 176 bytes and its code span
+from 4,176 to 3,280 bytes. This static result is not elapsed timing or measured
+instructions per operation. Source204 also passed the local census controls;
+the new local passes do not establish Linux repair. All 410 candidate hashes
+now match the task branch. No test, expected result, collector rule or image
+input changes. Broader validation and Linux confirmation remain required.
 
 [Complete Linux frozen compatibility](handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json)
 now passes all 519 files / 7,928 matching outcomes / 1,038 successful processes

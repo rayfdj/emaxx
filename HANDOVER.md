@@ -21,10 +21,12 @@ remains separate from the unfinished task branch.
 
 The task branch is **runtime-char-tables**, [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
-The subsequent task updates add diagnostic tooling and evidence; all **410 runtime
-and test inputs** remain source204. The candidate combines the shared command
-reader, authoritative keyboard-macro array/state, word-aligned vector allocation
-and direct cons fields with GNU-compatible conservative cons-root validation.
+The current **source207** adds direct evaluator words and a separate cold error
+constructor after the exact Linux diagnosis below. Its **410 runtime and test
+inputs** match the isolated candidate; only `src/lisp/eval/core.rs` changes from
+runtime204. The candidate also includes the shared command reader, authoritative
+keyboard-macro array/state, word-aligned vector allocation and direct cons fields
+with GNU-compatible conservative cons-root validation.
 
 ## Source204 evidence and live work
 
@@ -45,16 +47,21 @@ and direct cons fields with GNU-compatible conservative cons-root validation.
   run **36764911748**: **2,232 passes / two census failures**. Both original
   reclamation assertions pass. Each first census delta is 47 slots below expected;
   later deltas match. Four later groups and both Cargo stages did not run. The
-  exact executable `6ea03c1a…` and image `85ebb975…` are retained. Cause and repair
-  remain unestablished.
+  exact executable `6ea03c1a…` and image `85ebb975…` are retained. The retaining
+  stack word is now traced below; repair remains unverified.
 - [Exact-artifact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36770142335)
   completed: the selected pair and original 626-test primitives group reproduce
   both failures. Its [audited incomplete trace](docs/handover/2026-09-30-shared-reader-draft/source204-exact-census-incomplete-manifest.json)
   shows a 41-element vector and four-field host record reclaimed on the second
   collection. The debugger then hits its startup-cleanup inventory limit, with no
-  complete test verdict. The retaining root is not established. A revised observer
-  captures the independent host conservative stack and limits cleanup tracing to
-  collections 2..4. Its next Linux run still uses the same retained artifacts.
+  complete test verdict. That incomplete attempt remains preserved.
+- [Revised exact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36772475709)
+  reproduces both failures, ordinarily and under the debugger, with complete
+  traces and unchanged artifacts. Its [audited retaining root](docs/handover/2026-09-30-shared-reader-draft/source204-exact-census-root-manifest.json)
+  is the closure's tagged pointer in unused evaluator stack space at offset 8.
+  The closure's actual constants slot names the 41-element vector. Both are
+  reclaimed on collection two, explaining the 47-slot drop. Disassembly assigns
+  that inactive stack space to error construction; no collection rule changes.
 - [Complete Linux frozen comparison](docs/handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json),
   run **36764918696**, passes **519 files / 7,928 matching outcomes / 1,038
   successful processes** on exact runtime `d186d40b`. Per editor: 7,670 passes,
@@ -64,6 +71,22 @@ Do not promote PR #79 while the census failures or complete candidate validation
 remain unresolved. The preceding source201 passed full Rust, terminal and Linux
 frozen gates; those results do not certify source204. Preserve all failed results,
 unexecuted stages, expected failures, skips, and artifact/environment limits.
+
+## Current evaluator candidate
+
+**Source207** in `target/runtime-goal/recovered-2026-09-30/eval-frames/emaxx`
+uses actual car/cdr words during dispatch and puts CHECK_LIST error construction
+in a separate cold function. The [portable draft and launch](docs/handover/2026-09-30-shared-reader-draft/source207-eval-frame-draft-manifest.json)
+replay all 410 inputs from main, including file modes. Its
+[audited focused validation](docs/handover/2026-09-30-shared-reader-draft/source207-eval-focused-manifest.json)
+passes strict checks with zero warnings and all nine focused gate controls.
+The ARM64 gate evaluator uses 176 rather than 208 stack bytes; this is static
+evidence, not a timing or Linux repair result. Supervisor **52334** continues
+broader gate/release controls and a fresh ordinary build. Preserve this
+checkout and its helpers while that process or its children remain live.
+The original census assertions and expectations are unchanged. This isolated
+candidate now occupies the task branch. Linux confirmation and full candidate
+validation remain required; source204's full passes do not certify source207.
 
 ## Separate unfinished bytecode draft
 
