@@ -7,7 +7,32 @@ warnings-denied Clippy and diff checks pass, along with **482 debug and 482
 release controls** and **27 exact ordinary GNU comparisons**. The
 [portable receipts](handover/2026-09-30-event-roots/manifest.json) cross-check
 raw test inventories, verdicts, process exits and artifact hashes.
-Complete validation of this source is pending; the goal remains open.
+The complete macOS Rust gate now fails; full Linux and terminal validation are
+pending. The goal remains open.
+
+The full macOS gate passes 2,195 tests and fails the unchanged
+`suspended_bytecode_retains_operand_and_unwind_roots` assertion: the first key
+remains present after thread completion (`((1 t 1) (1 t 0))` instead of
+`((1 t 0) (1 t 0))`). Four later library groups and both Cargo stages do not run.
+The [failure archive](handover/2026-09-30-gc-retention-diagnosis/manifest.json)
+checks the raw group results, unchanged source and retained executable/image
+hashes. Selected debug/release passes did not predict this gate-profile result.
+
+The [exact original Linux executable](https://github.com/rayfdj/emaxx/actions/runs/36666863766)
+also reproduces its source166 failure under GDB hardware watchpoints. The first
+key is marked from `weak_hash_reachability`'s native-root array at epochs 2–5.
+That array combines relocation/handler/parked roots and a native stack scan;
+the retaining input is not yet identified. Neither the debugger nor the
+instrumented trace3 pass clears the ordinary failure. The archive preserves
+both traces and the inspected assembly. A follow-up diagnosis records each
+root's original range without recompiling the failing executable.
+
+Two fresh source170 input-decoding probes fail against source/ABI-matched GNU
+on menu-filter lookup. Another ordinary probe demonstrates that TLS peer-report
+queries share a mutable cached result where GNU returns independent reports.
+These negative comparisons are preserved in the same archive. A separate
+source171 checkout removes that cache; its validation is still in progress
+and it has not been applied to this production candidate.
 
 Queued file notifications now trace raw events, descriptors and callbacks.
 A dispatch batch remains rooted after leaving the interpreter's queue, so

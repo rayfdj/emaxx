@@ -25,8 +25,15 @@ establish the causes of those older source153 failures.
 [event and TLS root checkpoint](docs/runtime-representation-event-roots-checkpoint.md).
 Source170 extends source166 with rooted notification batches, traced/cloned
 TLS Lisp state and live special-event lookup. All strict checks, **482 debug
-and 482 release controls**, and **27 ordinary GNU comparisons** pass; complete
-validation is pending. Its [portable evidence](docs/handover/2026-09-30-event-roots/manifest.json)
+and 482 release controls**, and **27 ordinary GNU comparisons** pass. The full
+macOS Rust gate now **fails**: 2,195 tests pass, then the unchanged suspended
+bytecode reclamation assertion fails; four later groups and both Cargo stages
+do not execute. Full Linux and terminal validation are still pending. The
+[new failure and debugger evidence](docs/handover/2026-09-30-gc-retention-diagnosis/manifest.json)
+reproduces the original source166 Linux failure using its exact executable.
+The first weak key is retained from the native-root array; its owning input
+still needs diagnosis. This is a lead, not a repair. The earlier
+[portable evidence](docs/handover/2026-09-30-event-roots/manifest.json)
 preserves source168's compiler and source169's new-test failures, negative
 source166 comparisons and an unresolved post-deinit TLS difference. This does
 not yet clear the original Linux failures and is not ready for main.
