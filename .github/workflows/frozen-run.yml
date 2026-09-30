@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
         description: Upstream file for affected/ordinary-samples mode, or inclusive start for remaining mode
@@ -375,6 +375,13 @@ jobs:
               LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
                 python3 tools/diagnose_rust_gate.py --filter "$VALIDATION_RUST_FILTER" \
                   "${prelude[@]}" --plain --output target/frozen-ci/rust-replay
+              ;;
+            rust-root-trace)
+              # A separately recorded dirty checkout only. The ordinary
+              # failure remains failed even if instrumentation changes it.
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/diagnose_weak_roots.py --filter "$VALIDATION_RUST_FILTER" \
+                  --output target/frozen-ci/rust-root-trace
               ;;
             rust-tail)
               # Explicit continuation after the documentation-only failure in

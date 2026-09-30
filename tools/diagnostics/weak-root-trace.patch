@@ -1,0 +1,218 @@
+diff --git a/src/lisp/alloc.rs b/src/lisp/alloc.rs
+index 5143e545..a1489083 100644
+--- a/src/lisp/alloc.rs
++++ b/src/lisp/alloc.rs
+@@ -716,6 +716,13 @@ thread_local! {
+     /// another region of live words): stack pointer at the resume and the
+     /// base of that stack.
+     static DRIVER_REGIONS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
++    static DIAGNOSTIC_SCAN_KIND: Cell<&'static str> = const { Cell::new("no scan") };
++    static DIAGNOSTIC_SCAN_WORD: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
++}
++
++pub(crate) fn diagnostic_scan_origin() -> (&'static str, usize, usize) {
++    let (slot, word) = DIAGNOSTIC_SCAN_WORD.with(Cell::get);
++    (DIAGNOSTIC_SCAN_KIND.with(Cell::get), slot, word)
+ }
+
+ /// Heap buffers of Lisp values that a Rust frame holds across a call
+@@ -1250,10 +1257,12 @@ pub(crate) fn os_stack_base() -> Option<usize> {
+ #[inline(never)]
+ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(Value)) {
+     let base = current_base.or_else(os_stack_base);
++    DIAGNOSTIC_SCAN_KIND.with(|kind| kind.set("running stack"));
+     mark_stack(base, &mut mark);
+     let parked = PARKED_STACKS.with_borrow(Clone::clone);
+     for (base, sp) in parked {
+         if base > sp {
++            DIAGNOSTIC_SCAN_KIND.with(|kind| kind.set("parked coroutine stack"));
+             // SAFETY: a parked coroutine's stack stays mapped and unchanged
+             // until it resumes, which cannot happen during a collection.
+             unsafe { scan_words(sp, base, &mut mark) };
+@@ -1262,6 +1271,7 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
+     let drivers = DRIVER_REGIONS.with_borrow(Clone::clone);
+     for (sp, base) in drivers {
+         if base > sp {
++            DIAGNOSTIC_SCAN_KIND.with(|kind| kind.set("driving stack"));
+             // SAFETY: the driving stack's frames wait below the resume
+             // call for the whole life of the coroutine's run.
+             unsafe { scan_words(sp, base, &mut mark) };
+@@ -1276,6 +1286,7 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
+         .collect::<Vec<_>>();
+     for (address, bytes) in heap {
+         if bytes != 0 {
++            DIAGNOSTIC_SCAN_KIND.with(|kind| kind.set("RootedVec buffer"));
+             // SAFETY: a registered buffer is a live allocation of that size
+             // (its owner refreshes the entry when the buffer moves).
+             unsafe { scan_words(address, address + bytes, &mut mark) };
+@@ -2106,7 +2117,10 @@ pub(crate) unsafe fn scan_words(low: usize, high: usize, mark: &mut impl FnMut(V
+         let word = unsafe { std::ptr::read_volatile(address as *const usize) };
+         address += std::mem::size_of::<usize>();
+         if let Some(value) = conservative_value(word) {
++            DIAGNOSTIC_SCAN_WORD
++                .with(|origin| origin.set((address - std::mem::size_of::<usize>(), word)));
+             mark(value);
++            DIAGNOSTIC_SCAN_WORD.with(|origin| origin.set((0, 0)));
+         }
+     }
+ }
+diff --git a/src/lisp/eval.rs b/src/lisp/eval.rs
+index a33c8a6e..fae93507 100644
+--- a/src/lisp/eval.rs
++++ b/src/lisp/eval.rs
+@@ -3172,6 +3172,10 @@ pub(crate) const GNU_BUFFER_SIZE: usize = 992;
+ pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
+
+ pub(crate) struct LispReachability {
++    // Diagnostic checkout only: these raw words are not Lisp roots.
++    diagnostic_phase: &'static str,
++    diagnostic_parent: usize,
++    diagnostic_edges: HashMap<usize, (usize, &'static str, usize, usize)>,
+     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
+     /// graph before the weak-table fixed point or either heap can be swept.
+     /// alloc.c's `mark_stk': the objects reached and not yet traced,
+@@ -3212,6 +3216,9 @@ impl Default for LispReachability {
+ impl LispReachability {
+     fn default_without_epoch() -> Self {
+         Self {
++            diagnostic_phase: "unclassified",
++            diagnostic_parent: 0,
++            diagnostic_edges: HashMap::new(),
+             pending: Vec::new(),
+             weak_tables: Vec::new(),
+             retaining: false,
+@@ -3300,7 +3307,10 @@ impl LispReachability {
+         while let Some(value) = self.pending.pop() {
+             if self.mark_object(&value) {
+                 changed = true;
++                let previous = self.diagnostic_parent;
++                self.diagnostic_parent = value.word();
+                 self.trace_fields(interp, &value);
++                self.diagnostic_parent = previous;
+             }
+         }
+         changed
+@@ -3314,6 +3324,18 @@ impl LispReachability {
+         ) {
+             return;
+         }
++        let (scan, slot, raw) = crate::lisp::alloc::diagnostic_scan_origin();
++        let phase = if self.diagnostic_parent == 0 && slot != 0 {
++            scan
++        } else {
++            self.diagnostic_phase
++        };
++        self.diagnostic_edges.entry(value.word()).or_insert((
++            self.diagnostic_parent,
++            phase,
++            if self.diagnostic_parent == 0 { slot } else { 0 },
++            if self.diagnostic_parent == 0 { raw } else { 0 },
++        ));
+         self.pending.push(*value);
+     }
+
+@@ -3880,15 +3902,21 @@ impl Interpreter {
+         env: &Env,
+         native_roots: &[Value],
+     ) -> WeakHashReachability {
+-        let mut marked = LispReachability::default();
++        let mut marked = LispReachability {
++            diagnostic_phase: "active environment",
++            ..LispReachability::default()
++        };
+         marked.mark_env(self, env);
++        marked.diagnostic_phase = "native roots";
+         for value in native_roots {
+             marked.mark(self, value);
+         }
++        marked.diagnostic_phase = "registered execution roots";
+         self.stack_roots.mark(self, &mut marked);
+         // alloc.c:mark_stack: every word of the running stack (and the
+         // registers) that names a cons cell marks it; the parked threads'
+         // stacks with it.
++        marked.diagnostic_phase = "conservative roots";
+         crate::lisp::alloc::mark_all_stacks(
+             continuations::current_stack_base().map(|base| base as usize),
+             |value| {
+@@ -3914,34 +3942,43 @@ impl Interpreter {
+             // so their entries are held as strongly as the rest: retaining
+             // from the first root.
+             let mut other_marked = LispReachability::with_epoch(marked.epoch);
++            other_marked.diagnostic_phase = "another interpreter state";
+             // These roots share the allocator and this collection's epoch.
+             other_marked.retaining = true;
+             other.mark_static_roots_into(&mut other_marked);
+         }
+         // The thread's bytecode stack and its activations' specpdl entries
+         // (alloc.c marks them with the thread).
++        marked.diagnostic_phase = "active bytecode operands";
+         for value in self.bc_stack.values() {
+             marked.mark(self, value);
+         }
++        marked.diagnostic_phase = "active bytecode unwinds";
+         for entry in &self.bc_unwinds {
+             roots::mark_source(self, &mut marked, entry);
+         }
++        marked.diagnostic_phase = "active bytecode programs";
+         for constants in &self.bc_live_programs {
+             marked.mark(self, &Value::Vector(*constants));
+         }
++        marked.diagnostic_phase = "parked thread context";
+         for thread in &self.thread_states {
+             if let Some(context) = &thread.context {
+                 roots::mark_source(self, &mut marked, &**context);
+             }
+         }
+
++        marked.diagnostic_phase = "static interpreter roots";
+         self.mark_static_roots_into(&mut marked);
+         // alloc.c marks doomed functions before its weak-table fixed point.
++        marked.diagnostic_phase = "finalizers";
+         prepare_finalizers_in_live_states(self, &mut marked);
+
++        marked.diagnostic_phase = "hash test descriptors";
+         crate::lisp::alloc::vectors::hash_tables::visit_descriptor_roots(|value| {
+             marked.mark(self, value);
+         });
++        marked.diagnostic_phase = "weak fixed point";
+         loop {
+             let mut changed = false;
+             let mut index = 0;
+@@ -3970,6 +4007,37 @@ impl Interpreter {
+                 break;
+             }
+         }
++        for table in &marked.weak_tables {
++            for (_, key, _) in table.entries() {
++                let head = match key.kind() {
++                    Kind::Cons(cell) => match cell.car.get().kind() {
++                        Kind::Symbol(symbol) => Some(symbol.as_str().to_owned()),
++                        _ => None,
++                    },
++                    _ => None,
++                };
++                eprintln!(
++                    "GC_WEAK epoch={} table={:x} key={:x} live={} head={head:?}",
++                    marked.epoch,
++                    Value::HashTable(*table).word(),
++                    key.word(),
++                    marked.contains(&key)
++                );
++                let mut word = key.word();
++                let mut visited = std::collections::HashSet::new();
++                while word != 0 && visited.insert(word) {
++                    let Some(&(parent, phase, slot, raw)) = marked.diagnostic_edges.get(&word)
++                    else {
++                        eprintln!("GC_EDGE value={word:x} no recorded owner");
++                        break;
++                    };
++                    eprintln!(
++                        "GC_EDGE value={word:x} parent={parent:x} phase={phase:?} slot={slot:x} raw={raw:x}"
++                    );
++                    word = parent;
++                }
++            }
++        }
+         let tables = marked
+             .weak_tables
+             .iter()
