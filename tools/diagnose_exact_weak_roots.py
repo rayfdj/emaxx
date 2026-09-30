@@ -28,6 +28,25 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def debugger_command(root, binary, test_name, original_environment):
+    # The observer's selector belongs to GDB's Python process. Exposing it
+    # through Lisp process-environment changes startup allocation before the
+    # reclamation control. GNU GDB's Environment/Starting documentation permits
+    # a separate inferior environment and direct startup without an extra shell.
+    command = ['gdb', '--batch', '--return-child-result',
+               '-ex', 'set startup-with-shell off',
+               '-ex', 'unset environment EMAXX_WATCH_KEY_HEAD']
+    # GDB may supply display dimensions. Preserve values that were actually
+    # inherited by the plain process; remove only newly introduced variables.
+    for name in ['LINES', 'COLUMNS']:
+        if name not in original_environment:
+            command += ['-ex', f'unset environment {name}']
+    return command + [
+        '-x', str(root / 'tools/diagnostics/exact-weak-root-watch.py'),
+        '--args', str(binary), '--exact', test_name, '--test-threads=1', '--nocapture',
+    ]
+
+
 def retained_full_gate(directory, revision, selector):
     """Read a completed full gate without losing its original artifact identity."""
     original = json.loads((directory / 'summary.json').read_text())
@@ -180,15 +199,32 @@ def main():
         names = original['expected_tests']
         if len(names) != 1:
             raise RuntimeError('this hardware diagnosis requires exactly one test')
-        # Execute the same fresh child that the original wrapper launches.
-        # This lets GDB watch Emaxx while its independent GNU child runs normally.
+        # Compare the wrapper's exact child invocation before changing its
+        # environment for the observer. Every process retains the assertions.
+        child_command = [str(binary), '--exact', names[0], '--test-threads=1', '--nocapture']
+        child_environment = {**environment, 'EMAXX_RECLAMATION_CONTRACT_CHILD': names[0]}
+        record['plain_child'] = execute(child_command, child_environment, output / 'plain-child.log')
+        record['plain_child_with_observer_environment'] = execute(
+            child_command, {**child_environment, 'EMAXX_WATCH_KEY_HEAD': args.key_head},
+            output / 'plain-child-with-observer.log',
+        )
+        record['images_unchanged_after_child_controls'] = all(
+            sha(Path(name)) == digest for name, digest in restored_images.items()
+        )
+        if not record['images_unchanged_after_child_controls']:
+            raise RuntimeError('retained fixture image changed during a direct-child control')
+        save()
+        # GDB sees the observer selector, but its inferior inherits the plain
+        # child's environment. The independent GNU subprocess runs normally.
         overrides = {'EMAXX_RECLAMATION_CONTRACT_CHILD': names[0],
                      'EMAXX_WATCH_KEY_HEAD': args.key_head}
         environment.update(overrides)
-        command = ['gdb', '--batch', '--return-child-result',
-                   '-x', str(root / 'tools/diagnostics/exact-weak-root-watch.py'),
-                   '--args', str(binary), '--exact', names[0], '--test-threads=1', '--nocapture']
+        command = debugger_command(root, binary, names[0], child_environment)
         record['debugger_environment_override'] = overrides
+        record['inferior_environment_policy'] = (
+            'Original child environment; debugger-only EMAXX_WATCH_KEY_HEAD removed, '
+            'original LINES/COLUMNS preserved if present, no startup shell.'
+        )
         record['debugger_runs'] = []
         for index in range(args.debugger_runs):
             label = 'debugger' if index == 0 else f'debugger-{index + 1:02d}'
@@ -223,7 +259,8 @@ def main():
         if not record['source_unchanged'] or not record['binary_unchanged']:
             raise RuntimeError('diagnostic inputs changed during execution')
         # Preserve the original failure as this diagnosis job's result.
-        return record['plain']['exit_code'] or next(
+        return (record['plain']['exit_code'] or record['plain_child']['exit_code']
+                or record['plain_child_with_observer_environment']['exit_code']) or next(
             (result['exit_code'] or 2 for result in record['debugger_runs']
              if result['exit_code'] or result['timed_out'] or result['callback_errors']
              or len(result['watched_keys']) != 2), 0,

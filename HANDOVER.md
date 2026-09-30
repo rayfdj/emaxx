@@ -25,7 +25,14 @@ also passes with different artifacts and cannot clear the failure.
 The [new retained-artifact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36756891923)
 uses source201's diagnostic tools with source198's original executable/image.
 It records rejected name reads, preserves five separate debugger outcomes and
-checks restored image hashes after each process. Its CI result remains pending.
+checks restored image hashes after each process. Its
+[audited result](docs/handover/2026-09-30-shared-reader-draft/source198-five-process-exact-diagnosis-manifest.json)
+reproduces the ordinary failure; all five debugger children pass without callback
+exceptions. No retaining root is established. The next diagnostic compares the
+unchanged direct child with and without the observer environment variable, then
+removes that variable and newly introduced display dimensions from the inferior
+and disables GDB's startup shell. This is a controlled diagnostic change, not a
+runtime repair; preserve all original failures and passing debugger outcomes.
 
 Source200's [453-pass / one-failure gate](docs/handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved. Source201 keeps its runtime and corrects the old record word-count

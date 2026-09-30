@@ -92,8 +92,18 @@ diagnostic helper now records rejected name reads and preserves up to five
 separate debugger processes, their outcomes, traces and image hashes. Its local
 callback and malformed-artifact controls pass. The
 [five-process Linux diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36756891923)
-is dispatched using source198's original retained artifacts. Its result remains
-pending. Source201's macOS selected passes do not clear that original failure.
+uses source198's original retained artifacts. Its
+[audited raw result](handover/2026-09-30-shared-reader-draft/source198-five-process-exact-diagnosis-manifest.json)
+reproduces the ordinary failure, while all five debugger processes pass with
+two watched keys and four collection-source snapshots, without callback
+exceptions. No retaining root is established. The next diagnostic compares
+the exact direct child with and without the observer's environment variable.
+It then keeps that variable out of the inferior, preserves inherited display
+dimensions and disables GDB's extra startup shell, using GDB's documented
+[environment controls](https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Environment.html)
+and [startup option](https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Starting.html).
+This tests the environment hypothesis; it does not establish it. Source201's
+macOS selected passes do not clear the original failure.
 
 Complete source201 validation, the Linux reclamation diagnosis, broader object
 authority and allocation accounting, final adversarial audit and the locked
