@@ -90,8 +90,11 @@ The [complete validation launch](handover/2026-09-30-shared-reader-draft/source2
 records macOS Rust supervisor **43352** and terminal supervisor **43354** in
 `target/runtime-goal/recovered-2026-09-30/cons-roots/emaxx`. The earlier selected
 supervisor **41205** has exited. Preserve the frozen checkout, helpers and
-artifacts while any associated child remains live. Exact published-head Linux
-Rust and frozen comparisons are required next. Receipts and reproduction helpers
+artifacts while any associated child remains live. The [publication receipts](handover/2026-09-30-shared-reader-draft/source204-publication-manifest.json)
+verify `d186d40bf014ca53d0a2652b4e2f2d921c5cb009` and draft PR #79.
+[Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) and
+[Linux frozen compatibility](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
+are running on that exact head. Receipts and reproduction helpers
 are in `target/runtime-goal/resume-2026-09-28`. These selected passes do not replace
 complete candidate validation or Linux confirmation of the repair.
 
@@ -99,3 +102,7 @@ No timing, RSS or GNU performance-parity claim follows from the smaller field
 handle. Full candidate validation, Linux confirmation of the repair, remaining
 symbol/object authority, honest physical allocation and GC accounting, final
 adversarial review and the locked performance criteria remain open.
+
+The [accounting continuation](runtime-representation-accounting-draft.md) records
+the subsequent same-input counter failure and the remaining representation costs.
+No counter repair is included in this checkpoint.

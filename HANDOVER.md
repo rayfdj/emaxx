@@ -14,8 +14,14 @@ real terminal sessions. Two incomplete auditor invocations are also preserved.
 
 [Complete macOS validation has started](docs/handover/2026-09-30-shared-reader-draft/source204-complete-validation-start-manifest.json):
 Rust supervisor **43352** and terminal supervisor **43354**. Keep the candidate
-checkout, helpers and artifacts frozen while their children run. Exact-head Linux
-validation is required after publication. Main remains source174; PR #79 remains draft.
+checkout, helpers and artifacts frozen while their children run. Source204 is [published as `d186d40b`](docs/handover/2026-09-30-shared-reader-draft/source204-publication-manifest.json).
+[Complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36764911748) and
+[Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36764918696)
+are running on that exact head. Main remains source174; PR #79 remains draft.
+The [accounting continuation](docs/runtime-representation-accounting-draft.md)
+records a new same-input negative baseline: all seven allocation counters remain
+unimplemented, and `memory-use-counts` errors. It explains the symbol, string and
+property-storage work that must precede an honest final accounting result.
 
 The preceding source201 allocator now has complete audited results:
 **3,056 macOS / 3,068 Linux Rust passes** (two existing ignores each),
