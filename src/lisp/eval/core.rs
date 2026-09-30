@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::native_comp::abi::NativeMaxArgs;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SharedCons;
@@ -557,7 +558,8 @@ impl Interpreter {
             // or any argument evaluation.  Invalid function cells report
             // the original callee, not the object found in that cell.
             match function.kind() {
-                Kind::BuiltinFunc(_) | Kind::Lambda(_) => break resolution,
+                Kind::BuiltinFunc(subr) => break FunctionResolution::DirectBuiltin(subr),
+                Kind::Lambda(_) => break resolution,
                 Kind::Record(id)
                     if self.find_record(id).is_some_and(|record| {
                         matches!(
@@ -636,40 +638,43 @@ impl Interpreter {
                 return self.eval_call_argument_error(depth, unevald_frame, error, env);
             }
         };
+        // eval_sub reads arity from the actual subr object. The resolution
+        // loop has classified it already, including UNEVALLED subrs. Keep
+        // that single pointer instead of reconstructing an optional copy of
+        // NameFacts and decoding the same function value a second time.
+        // Besides extra work, the copied optional metadata left a one-byte
+        // spill beside stale pointer bytes across collecting special forms.
         let subr = match &prepared {
-            FunctionResolution::DirectBuiltin(subr) => Some(subr.facts()),
-            FunctionResolution::Resolved(func) => match func.kind() {
-                Kind::BuiltinFunc(subr) => Some(subr.facts()),
-                _ => None,
-            },
+            FunctionResolution::DirectBuiltin(subr) => Some(*subr),
+            FunctionResolution::Resolved(_) => None,
         };
         // eval_sub checks both bounds before evaluating a subr's arguments.
-        if let Some(facts) = subr
-            && (nargs < usize::from(facts.min_args)
-                || facts
-                    .max_args
-                    .is_some_and(|maximum| usize::from(maximum) < nargs))
-        {
-            let error = LispError::SignalValue(Value::list([
-                Value::symbol("wrong-number-of-arguments"),
-                original_function,
-                Value::Integer(nargs as i64),
-            ]));
-            return self.eval_call_argument_error(depth, unevald_frame, error, env);
+        if let Some(subr) = subr {
+            let descriptor = subr.descriptor();
+            if nargs < usize::from(descriptor.min_args)
+                || matches!(descriptor.max_args(), NativeMaxArgs::Fixed(maximum)
+                    if usize::from(maximum) < nargs)
+            {
+                let error = LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    original_function,
+                    Value::Integer(nargs as i64),
+                ]));
+                return self.eval_call_argument_error(depth, unevald_frame, error, env);
+            }
+            if descriptor.max_args() == NativeMaxArgs::Unevalled
+                && let Some(native_form) = NativeForm::for_name(subr.as_str())
+            {
+                let result = self.eval_native_form(native_form, &original_args, env);
+                let result = self.settle_frame_result(result, env);
+                self.truncate_backtrace_frames(depth);
+                return result;
+            }
         }
-        if let FunctionResolution::Resolved(function) = &prepared
-            && let Kind::BuiltinFunc(subr) = function.kind()
-            && subr.facts().special_form
-            && let Some(native_form) = NativeForm::for_name(subr.as_str())
-        {
-            let result = self.eval_native_form(native_form, &original_args, env);
-            let result = self.settle_frame_result(result, env);
-            self.truncate_backtrace_frames(depth);
-            return result;
-        }
-        let fixed_max = subr
-            .and_then(|facts| facts.max_args)
-            .filter(|maximum| *maximum <= 8);
+        let fixed_max = subr.and_then(|subr| match subr.descriptor().max_args() {
+            NativeMaxArgs::Fixed(maximum) if maximum <= 8 => Some(maximum),
+            _ => None,
+        });
         if nargs > 8 {
             return self.eval_call_rooted(depth, callable_name, prepared, args_list, nargs, env);
         }

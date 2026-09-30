@@ -1506,13 +1506,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let n = n as usize;
-                // GNU keymaps are ordinary cons lists.  Emaxx keeps an
-                // identity-bearing record behind that public surface, so
-                // list primitives must operate on the live view rather than
-                // leaking the record to source owners such as subr.el's
-                // `butlast' (which delegates to `take').
-                let keymap_id = keymap_record_id(interp, &args[1]);
-                let list = runtime_keymap_public_view(interp, &args[1]).unwrap_or_else(|| args[1]);
+                let list = args[1];
                 if name == "take" {
                     let mut current = list;
                     let mut items = Vec::new();
@@ -1575,9 +1569,6 @@ define_dispatch!(
                             let _ = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             cdr.set(Value::Nil);
-                            if let Some(keymap_id) = keymap_id {
-                                sync_runtime_keymap_from_public_view(interp, keymap_id)?;
-                            }
                             Ok(head)
                         }
                         value => Err(LispError::WrongTypeArgument("listp".into(), value.value())),

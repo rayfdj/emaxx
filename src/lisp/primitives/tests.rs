@@ -10584,6 +10584,15 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
 }
 
 #[test]
+fn anonymous_keymaps_survive_while_reachable_and_are_reclaimed_after_return() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-anonymous-reclamation.el"),
+        "0",
+        "anonymous sparse and full keymap survival and eventual reclamation",
+    );
+}
+
+#[test]
 fn keymap_lookup_runs_each_prefix_filter_once_before_advancing() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/keymap-prefix-filter-count.el"),
@@ -10607,6 +10616,51 @@ fn keymap_lookup_composes_prefixes_with_gnu_precedence_and_nil_shadowing() {
         include_str!("../../../tests/fixtures/keymap-prefix-precedence.el"),
         include_str!("../../../tests/fixtures/keymap-prefix-precedence.expected").trim(),
         "composed and inherited prefixes, defaults and explicit nil bindings",
+    );
+}
+
+#[test]
+fn key_binding_macro_dispatch_uses_actual_bindings_once() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-dispatch-live-bindings.el"),
+        include_str!("../../../tests/fixtures/keymap-dispatch-live-bindings.expected").trim(),
+        "macro dispatch observes a rebound standard prefix and calls a collecting leaf filter once",
+    );
+}
+
+#[test]
+fn key_binding_and_remapping_preserve_live_filters_and_nonlocal_exits() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/key-binding-filter-semantics.el"),
+        include_str!("../../../tests/fixtures/key-binding-filter-semantics.expected").trim(),
+        "key-binding prefix filters, live input, remap map replacement, errors, quit and throw",
+    );
+}
+
+#[test]
+fn keymap_lookup_reads_live_vectors_strings_and_translated_sequences() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-live-sequence.el"),
+        include_str!("../../../tests/fixtures/keymap-live-sequence.expected").trim(),
+        "collecting prefix filters mutate later vector, string, Lucid and translated events",
+    );
+}
+
+#[test]
+fn keymap_symbol_stores_follow_alias_redefinition_ranges_and_autoload() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-symbol-stores.el"),
+        include_str!("../../../tests/fixtures/keymap-symbol-stores.expected").trim(),
+        "define-key symbol resolution, actual map stores, validation and collecting autoload",
+    );
+}
+
+#[test]
+fn keymap_lookup_requires_a_string_or_vector_before_checking_length() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-sequence-types.el"),
+        include_str!("../../../tests/fixtures/keymap-sequence-types.expected").trim(),
+        "original key sequence types and empty string/vector map identity",
     );
 }
 
@@ -12371,6 +12425,60 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     );
 }
 
+#[cfg(unix)]
+fn assert_local_tls_fixture(fixture: &str, expected: &str, label: &str) {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve local TLS collection control port");
+    let port = reservation.local_addr().expect("reserved address").port();
+    drop(reservation);
+    let mut server = Server(
+        std::process::Command::new("gnutls-serv")
+            .args([
+                "--quiet",
+                "--echo",
+                "--priority",
+                "NORMAL:+ANON-ECDH",
+                "--port",
+                &port.to_string(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start the same local GnuTLS server for both interpreters"),
+    );
+    wait_for_local_test_server(&mut server.0, port, "TLS collection control");
+    let program = fixture.replace("@PORT@", &port.to_string());
+    assert_oracle_contract_matches_interpreter(&program, expected.trim(), label);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_tls_state_survives_collection_before_and_after_async_handshake() {
+    assert_local_tls_fixture(
+        include_str!("../../../tests/fixtures/process-tls-gc.el"),
+        include_str!("../../../tests/fixtures/process-tls-gc.expected"),
+        "process-owned TLS state across collection",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_tls_peer_reports_are_independent_values_from_the_live_session() {
+    assert_local_tls_fixture(
+        include_str!("../../../tests/fixtures/process-tls-report.el"),
+        include_str!("../../../tests/fixtures/process-tls-report.expected"),
+        "independent TLS reports across caller mutation and collection",
+    );
+}
+
 #[test]
 fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     struct Server(std::process::Child);
@@ -13739,6 +13847,16 @@ fn timers_run_inside_a_child_threads_sleep_with_its_bindings() {
         program,
         "(global (timer global) (timer global) (timer global) (timer kid) (nil t))",
         "timers in threads",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn special_event_maps_use_live_lookup_through_collecting_filters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-special-events.el"),
+        include_str!("../../../tests/fixtures/keymap-special-events.expected").trim(),
+        "special-event keymaps with collecting filters and deep inheritance",
     );
 }
 
@@ -17358,7 +17476,7 @@ fn define_key_creates_a_specific_prefix_over_a_default_binding() {
 fn keymap_set_where_is_internal_preserves_control_prefixes() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
     let mut env = crate::lisp::types::Env::new();
-    let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
+    let keymap = make_runtime_keymap(&mut interp, Value::string("test-map"));
     call_via_lisp(
         &mut interp,
         "keymap-set",
@@ -17422,7 +17540,7 @@ fn keymap_character_contracts_share_gnu_control_and_full_map_storage() {
 fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["keymap"]);
     let mut env = crate::lisp::types::Env::new();
-    let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
+    let keymap = make_runtime_keymap(&mut interp, Value::string("test-map"));
     call_via_lisp(
         &mut interp,
         "keymap-set",

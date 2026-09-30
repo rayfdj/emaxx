@@ -5,6 +5,86 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    let callback = interp
+        .eval(
+            &Reader::new(
+                "(lambda (event) (garbage-collect)
+                   (if (eq (car event) 'fail) (error \"notification control\")
+                     (setq notification-control-result (length (cadr event)))))",
+            )
+            .read()
+            .expect("read collecting callback")
+            .expect("callback form"),
+            &mut env,
+        )
+        .expect("create collecting callback");
+    let descriptor = Value::cons(Value::Integer(37), Value::Integer(4));
+    let events = [
+        Value::list([Value::symbol("fail")]),
+        Value::list([Value::symbol("second"), Value::string(&"x".repeat(257))]),
+        Value::list([Value::symbol("third"), Value::string(&"y".repeat(113))]),
+    ];
+    for event in events {
+        interp
+            .pending_file_notifications
+            .push(PendingFileNotification {
+                path: String::new(),
+                secondary_path: None,
+                action: String::new(),
+                callbacks: vec![(descriptor, callback)],
+                raw_event: Some(event),
+            });
+    }
+    // A graph census excludes conservative Rust locals, so a test-owned
+    // reference cannot conceal an omitted edge in the queue's root set.
+    let mut queued = LispReachability::default();
+    interp.mark_static_roots_into(&mut queued);
+    for value in events.into_iter().chain([descriptor, callback]) {
+        assert!(queued.contains(&value), "queued input lost a Lisp edge");
+    }
+    let error = interp
+        .run_pending_file_notifications(&mut env)
+        .expect_err("the collecting first callback must propagate its error");
+    assert!(error.to_string().contains("notification control"));
+    assert_eq!(interp.pending_file_notifications.len(), 2);
+    // This Rust caller caught the error outside Lisp's condition handlers.
+    // The batch reporter still owns its arguments until it consumes the
+    // captured backtrace; the queue must not invalidate that live report.
+    let mut reporting = LispReachability::default();
+    interp.mark_static_roots_into(&mut reporting);
+    assert!(reporting.contains(&events[0]));
+    assert!(interp.take_batch_error_backtrace().is_some());
+    let mut requeued = LispReachability::default();
+    interp.mark_static_roots_into(&mut requeued);
+    assert!(
+        !requeued.contains(&events[0]),
+        "consumed event is no longer a queue root"
+    );
+    assert!(requeued.contains(&events[1]) && requeued.contains(&events[2]));
+    assert!(
+        interp
+            .run_pending_file_notifications(&mut env)
+            .expect("deliver the surviving tail")
+    );
+    assert_eq!(
+        interp.lookup_var("notification-control-result", &env),
+        Some(Value::Integer(113))
+    );
+    assert!(interp.pending_file_notifications.is_empty());
+    let mut finished = LispReachability::default();
+    interp.mark_static_roots_into(&mut finished);
+    for value in events.into_iter().chain([descriptor, callback]) {
+        assert!(
+            !finished.contains(&value),
+            "finished batch retained its Lisp input"
+        );
+    }
+}
+
+#[test]
 fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth() {
     thread::Builder::new()
         .stack_size(2 * 1024 * 1024)

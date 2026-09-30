@@ -257,7 +257,6 @@ impl Interpreter {
             let was_active = process.gnutls.active;
             if was_active {
                 process.gnutls.session = None;
-                process.gnutls.peer_status = Value::Nil;
                 process.gnutls.active = false;
                 if process.gnutls.initstage >= GNUTLS_STAGE_INIT {
                     process.gnutls.initstage = GNUTLS_STAGE_INIT - 1;
@@ -272,7 +271,8 @@ impl Interpreter {
         record_id: u64,
         session: ProcessGnuTlsSession,
         initstage: i64,
-        peer_status: Value,
+        peer_verification: u32,
+        peer_is_x509: bool,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
@@ -281,7 +281,8 @@ impl Interpreter {
         process.gnutls.session = Some(session);
         process.gnutls.initstage = initstage;
         process.gnutls.active = true;
-        process.gnutls.peer_status = peer_status;
+        process.gnutls.peer_verification = peer_verification;
+        process.gnutls.peer_is_x509 = peer_is_x509;
         Ok(())
     }
 
@@ -305,21 +306,33 @@ impl Interpreter {
     pub(crate) fn finish_process_gnutls_handshake(
         &mut self,
         record_id: u64,
-        peer_status: Value,
+        peer_verification: u32,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.initstage = 9;
-        process.gnutls.peer_status = Self::stored_value(peer_status);
+        process.gnutls.peer_verification = peer_verification;
         process.gnutls.boot_parameters = Value::Nil;
         Ok(())
     }
 
-    pub(crate) fn process_gnutls_peer_status(&self, record_id: u64) -> Option<Value> {
-        self.find_process_state(record_id)
-            .map(|process| process.gnutls.peer_status)
+    /// The caller may query the session without invoking Lisp or yielding.
+    /// It remains owned by this process throughout that synchronous query.
+    pub(crate) fn process_gnutls_peer_state(
+        &self,
+        record_id: u64,
+    ) -> Option<(*mut std::ffi::c_void, u32, bool)> {
+        let tls = &self.find_process_state(record_id)?.gnutls;
+        if tls.initstage != 9 {
+            return None;
+        }
+        Some((
+            tls.session.as_ref()?.raw_state(),
+            tls.peer_verification,
+            tls.peer_is_x509,
+        ))
     }
 
     pub(crate) fn process_gnutls_bye(
@@ -1163,7 +1176,6 @@ impl Interpreter {
         if closed {
             process.gnutls.session = None;
             process.gnutls.active = false;
-            process.gnutls.peer_status = Value::Nil;
             process.status = ProcessStatus::Closed;
             process.network = None;
             process.serial = None;
@@ -1673,7 +1685,6 @@ impl Interpreter {
         process.traffic_stopped = false;
         process.gnutls.session = None;
         process.gnutls.active = false;
-        process.gnutls.peer_status = Value::Nil;
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }
@@ -2978,7 +2989,7 @@ impl Interpreter {
         env: &mut Env,
         include_kernel_events: bool,
     ) -> Result<bool, LispError> {
-        let (pending, retained): (Vec<_>, Vec<_>) =
+        let (mut pending, retained): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.pending_file_notifications)
                 .into_iter()
                 .partition(|notification| {
@@ -2986,39 +2997,48 @@ impl Interpreter {
                 });
         self.pending_file_notifications = retained;
         let ran = !pending.is_empty();
-        let mut pending = pending.into_iter();
-        while let Some(mut notification) = pending.next() {
-            let mut callbacks = std::mem::take(&mut notification.callbacks).into_iter();
-            while let Some(callback) = callbacks.next() {
-                let outcome = if let Some(event) = &notification.raw_event {
-                    primitives::deliver_raw_file_notification(self, env, *event, vec![callback])
-                } else {
-                    primitives::deliver_file_notification(
-                        self,
-                        env,
-                        &notification.path,
-                        &notification.action,
-                        notification.secondary_path.as_deref(),
-                        vec![callback],
-                    )
-                };
-                let Err(error) = outcome else {
-                    continue;
-                };
-                // This input event was consumed, but later recipients and
-                // later kernel events remain queued.  Dropping the tail here
-                // made one failing callback erase unrelated watches.
-                let remaining_callbacks = callbacks.collect::<Vec<_>>();
-                let mut remaining = Vec::new();
-                if !remaining_callbacks.is_empty() {
-                    notification.callbacks = remaining_callbacks;
-                    remaining.push(notification);
+        // GNU's keyboard event queue keeps the complete event and callback
+        // reachable until dispatch. Taking this batch out of the interpreter
+        // must not hide later events from a collection in an earlier callback.
+        let outcome = self.with_lisp_stack_roots(&pending, |interpreter| {
+            for (event_index, notification) in pending.iter().enumerate() {
+                for (callback_index, callback) in notification.callbacks.iter().copied().enumerate()
+                {
+                    let outcome = if let Some(event) = &notification.raw_event {
+                        primitives::deliver_raw_file_notification(
+                            interpreter,
+                            env,
+                            *event,
+                            callback.1,
+                        )
+                    } else {
+                        primitives::deliver_file_notification(
+                            interpreter,
+                            env,
+                            &notification.path,
+                            &notification.action,
+                            notification.secondary_path.as_deref(),
+                            callback,
+                        )
+                    };
+                    if let Err(error) = outcome {
+                        return Err((event_index, callback_index, error));
+                    }
                 }
-                remaining.extend(pending);
-                remaining.append(&mut self.pending_file_notifications);
-                self.pending_file_notifications = remaining;
-                return Err(error);
             }
+            Ok(())
+        });
+        if let Err((event_index, callback_index, error)) = outcome {
+            // The current recipient consumed its event. Preserve the rest,
+            // including events newly queued by the failing callback.
+            pending.drain(..event_index);
+            pending[0].callbacks.drain(..=callback_index);
+            if pending[0].callbacks.is_empty() {
+                pending.remove(0);
+            }
+            pending.append(&mut self.pending_file_notifications);
+            self.pending_file_notifications = pending;
+            return Err(error);
         }
         Ok(ran)
     }

@@ -223,18 +223,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("interned_symbol_names", "the set over interned_symbols"),
     (
-        "keymap_public_cons_owners",
-        "the view-to-record index of the keymap records, rebuilt by the loader from their public views",
-    ),
-    (
-        "keymap_public_cons_ids",
-        "the record-to-view half of that index, rebuilt with it",
-    ),
-    (
-        "keymap_public_view_watch",
-        "a cache: the mutation snapshots of the public views, taken again on first use",
-    ),
-    (
         "minibuffer_selected_window_id",
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),
@@ -757,22 +745,6 @@ impl Interpreter {
         // them in the subr objects), lossage_size, the face change
         // counter and the finalizer count.  Everything else the
         // interpreter holds is in `FIELDS_NOT_CARRIED' with its reason.
-        // Not GNU: a keymap is a list in GNU; Emaxx keeps an identity-bearing
-        // facade record behind each list it made (parent, bindings,
-        // char-table, the public view), reachable only through the
-        // view-to-record index, so the records are a root group of their
-        // own and the loader rebuilds the index from their views.
-        groups.push((
-            RootSlot::KeymapRecords,
-            Value::list(
-                self.records
-                    .iter()
-                    .flatten()
-                    .filter(|record| record.kind == RecordKind::Keymap)
-                    .map(|record| Value::Record(*record))
-                    .collect::<Vec<_>>(),
-            ),
-        ));
         let mut doc_offsets = self.builtin_doc_offsets.iter().collect::<Vec<_>>();
         doc_offsets.sort_by(|a, b| a.0.cmp(b.0));
         groups.push((
@@ -1337,12 +1309,6 @@ mod install {
                             }
                         }
                     }
-                }
-                // The keymap records were installed by the loader as it
-                // read them, and the view-to-record index was rebuilt from
-                // them at the end of the load.
-                RootSlot::KeymapRecords => {
-                    expect_list(value, "keymap records")?;
                 }
                 _ => {}
             }

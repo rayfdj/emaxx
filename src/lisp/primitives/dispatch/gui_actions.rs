@@ -141,9 +141,8 @@ fn tty_popup_menu(
     }
     // The pane title is the menu keymap's prompt string ("File").
     let title = {
-        let projected = crate::lisp::primitives::public_keymap_value(interp, menu);
         let mut title = String::new();
-        let mut tail = projected.cdr().unwrap_or(Value::Nil);
+        let mut tail = menu.cdr().unwrap_or(Value::Nil);
         while let Kind::Cons(_) = tail.kind() {
             if let Ok(car) = tail.car()
                 && let Ok(text) = string_text(&car)

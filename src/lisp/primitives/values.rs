@@ -133,46 +133,6 @@ fn values_equal_signaling_depth(
     ))
 }
 
-pub(crate) fn keymap_records_equal(
-    interp: &Interpreter,
-    left_id: u64,
-    right_id: u64,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    let pair = (left_id as usize, right_id as usize);
-    if !seen.insert(pair) {
-        return true;
-    }
-
-    let left_value = interp.record_value(left_id);
-    let right_value = interp.record_value(right_id);
-    let Ok(Some(left_items)) = keymap_list_items(interp, &left_value) else {
-        return false;
-    };
-    let Ok(Some(right_items)) = keymap_list_items(interp, &right_value) else {
-        return false;
-    };
-    if left_items.len() != right_items.len()
-        || !left_items
-            .iter()
-            .zip(right_items.iter())
-            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
-    {
-        return false;
-    }
-
-    let left_parent = interp
-        .find_record(left_id)
-        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
-        .unwrap_or(Value::Nil);
-    let right_parent = interp
-        .find_record(right_id)
-        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
-        .unwrap_or(Value::Nil);
-    values_equal_recursive_with_env(interp, &left_parent, &right_parent, seen, env)
-}
-
 fn char_tables_equal(
     interp: &Interpreter,
     left: crate::lisp::types::CharTableRef,
@@ -188,27 +148,6 @@ fn char_tables_equal(
             .slots()
             .zip(right.slots())
             .all(|(a, b)| values_equal_recursive_with_env(interp, &a, &b, seen, env))
-}
-
-pub(crate) fn keymap_record_equals_list(
-    interp: &Interpreter,
-    keymap_id: u64,
-    list: &Value,
-    seen: &mut HashSet<(usize, usize)>,
-    env: Option<&Env>,
-) -> bool {
-    let keymap_value = interp.record_value(keymap_id);
-    let Ok(Some(items)) = keymap_list_items(interp, &keymap_value) else {
-        return false;
-    };
-    let Ok(list_items) = list.to_vec() else {
-        return false;
-    };
-    items.len() == list_items.len()
-        && items
-            .iter()
-            .zip(list_items.iter())
-            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
 }
 
 pub(crate) fn record_equals_record_literal_form(
@@ -332,30 +271,6 @@ fn values_equal_recursive_with_env(
         (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
         (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => {
             left.symbol().eq_value(right.symbol()) && left.position() == right.position()
-        }
-        (Kind::Record(left_id), Kind::Record(right_id))
-            if interp
-                .find_record(left_id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
-                && interp
-                    .find_record(right_id)
-                    .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
-        {
-            keymap_records_equal(interp, left_id.id, right_id.id, seen, env)
-        }
-        (Kind::Record(left_id), Kind::Cons(_))
-            if interp
-                .find_record(left_id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
-        {
-            keymap_record_equals_list(interp, left_id.id, right, seen, env)
-        }
-        (Kind::Cons(_), Kind::Record(right_id))
-            if interp
-                .find_record(right_id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
-        {
-            keymap_record_equals_list(interp, right_id.id, left, seen, env)
         }
         (Kind::Record(left_id), Kind::Record(right_id)) => {
             if left_id.ptr_eq(&right_id) {
@@ -665,9 +580,6 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
 }
 
 pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
-    if let Some(items) = keymap_record_list_items(interp, value)? {
-        return Ok(items.len() as i64);
-    }
     if let Some(items) = record_literal_items(value) {
         return Ok(items.len().saturating_sub(1) as i64);
     }
@@ -1152,26 +1064,6 @@ pub(crate) fn compare_record_values(
                 _ => ValueOrder::Unordered,
             },
         )),
-        crate::lisp::eval::RecordKind::Keymap => {
-            match value_ordering(
-                interp,
-                &left_record.type_tag,
-                &right_record.type_tag,
-                env,
-                seen_lists,
-            )? {
-                ValueOrder::Less => return Ok(Some(ValueOrder::Less)),
-                ValueOrder::Greater => return Ok(Some(ValueOrder::Greater)),
-                ValueOrder::Equal | ValueOrder::Unordered => {}
-            }
-            Ok(Some(compare_sequence_values(
-                interp,
-                &left_record.slots,
-                &right_record.slots,
-                env,
-                seen_lists,
-            )?))
-        }
         crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Obarray
@@ -2230,9 +2122,7 @@ pub(crate) fn hash_record_equal(
             );
             hash_mix(state, id);
         }
-        crate::lisp::eval::RecordKind::Closure
-        | crate::lisp::eval::RecordKind::Font
-        | crate::lisp::eval::RecordKind::Keymap => {
+        crate::lisp::eval::RecordKind::Closure | crate::lisp::eval::RecordKind::Font => {
             hash_value_equal_at(
                 interp,
                 state,
@@ -2279,7 +2169,7 @@ pub(crate) fn overlays_equal(
     // depth>10 eq hash table) and assumes equality on revisit, so cyclic
     // overlay graphs -- semantic's tag<->overlay plists are exactly that --
     // terminate instead of recursing forever.  The pair-set mirrors GNU's
-    // termination the same way keymap_records_equal already does; without
+    // termination across repeated object pairs; without
     // it this comparison overflowed an 8 GiB stack on
     // test/lisp/cedet/semantic-utest-ia.el.
     let pair = (left.identity(), right.identity());
@@ -2420,183 +2310,40 @@ pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String
     }
 }
 
-pub(crate) const KEYMAP_RECORD_TYPE: &str = "keymap";
-pub(crate) const KEYMAP_PARENT_SLOT: usize = 1;
-pub(crate) const KEYMAP_BINDINGS_SLOT: usize = 2;
-pub(crate) const KEYMAP_CHAR_TABLE_SLOT: usize = 3;
-pub(crate) const KEYMAP_PUBLIC_VIEW_SLOT: usize = 4;
-
-pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
-    let keymap = interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::Keymap,
-        KEYMAP_RECORD_TYPE,
-        vec![
-            name.map(Value::string).unwrap_or(Value::Nil),
-            Value::Nil,
-            Value::Nil,
-        ],
-    );
-    if let Kind::Record(id) = keymap.kind() {
-        refresh_runtime_keymap_public_view(interp, id.id)
-            .expect("new runtime keymap has a valid public view");
-        return interp
-            .find_record(id)
-            .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
-            .cloned()
-            .expect("new runtime keymap has a public cons root");
-    }
-    keymap
-}
-
-pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
-    let keymap = make_runtime_keymap(interp, name);
-    let Some(id) = keymap_record_id(interp, &keymap) else {
-        return keymap;
-    };
-    let char_table = interp.make_char_table(None, Value::Nil);
-    if let Some(record) = interp.find_record_mut(id) {
-        if record.slots.len() <= KEYMAP_CHAR_TABLE_SLOT {
-            record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
-        }
-        record.slots[KEYMAP_CHAR_TABLE_SLOT] = char_table;
-    }
-    refresh_runtime_keymap_public_view(interp, id)
-        .expect("new full keymap has a valid public view");
-    keymap
-}
-
-pub(crate) fn runtime_keymap_public_view(interp: &Interpreter, keymap: &Value) -> Option<Value> {
-    let id = keymap_record_id(interp, keymap)?;
-    interp
-        .find_record(id)
-        .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
-        .cloned()
-}
-
-pub(crate) fn public_keymap_value(interp: &Interpreter, value: &Value) -> Value {
-    runtime_keymap_public_view(interp, value).unwrap_or(*value)
-}
-
-pub(crate) fn refresh_runtime_keymap_public_view(
-    interp: &mut Interpreter,
-    keymap_id: u64,
-) -> Result<(), LispError> {
-    let (name, parent, char_table, bindings, existing) = {
-        let Some(record) = interp.find_record(keymap_id) else {
-            return Ok(());
-        };
-        (
-            record.slots.first().cloned().unwrap_or(Value::Nil),
-            record
-                .slots
-                .get(KEYMAP_PARENT_SLOT)
-                .cloned()
-                .unwrap_or(Value::Nil),
-            keymap_char_table(record),
-            keymap_bindings(record)?,
-            record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT).cloned(),
-        )
-    };
-
-    let mut items = Vec::new();
-    let has_char_table = char_table.is_some();
-    if let Some(char_table) = char_table {
-        items.push(char_table);
-    }
-    let has_name = !name.is_nil();
-    if has_name {
-        items.push(name);
-    }
-    let mut listed_pre_prompt = 0usize;
-    for binding in bindings.iter().filter(|binding| !binding.after_prompt) {
-        let entry_key = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
-        listed_pre_prompt += 1;
-        items.push(Value::cons(
-            entry_key,
-            public_keymap_value(interp, &binding.value),
-        ));
-    }
-    if has_name {
-        // Pre-prompt bindings precede the prompt in GNU's public list.
-        let prompt = items.remove(has_char_table as usize);
-        let index = has_char_table as usize + listed_pre_prompt;
-        items.insert(index, prompt);
-    }
-    for binding in bindings.iter().filter(|binding| binding.after_prompt) {
-        let entry_key = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
-        items.push(Value::cons(
-            entry_key,
-            public_keymap_value(interp, &binding.value),
-        ));
-    }
-    // keymap.c:Fset_keymap_parent splices the parent's own list in as the
-    // tail of the child's (`(keymap (a . b) keymap (c . d))'), so Lisp that
-    // walks the list -- `define-key-after' stops at a `keymap' symbol in
-    // the cdr, `keymap-parent' on a plain list reads it -- sees one list
-    // sharing the parent's cells.  An element that is itself a keymap is a
-    // different thing in GNU: an included keymap, searched by access_keymap.
-    let mut tail = if parent.is_nil() {
+// keymap.c:Fmake_sparse_keymap/Fmake_keymap: the Lisp list owns every
+// binding. There is no private record, reverse index or public projection.
+pub(crate) fn make_runtime_keymap(_interp: &mut Interpreter, prompt: Value) -> Value {
+    let tail = if prompt.is_nil() {
         Value::Nil
     } else {
-        public_keymap_value(interp, &parent)
+        Value::list([prompt])
     };
-    for item in items.into_iter().rev() {
-        tail = Value::cons(item, tail);
-    }
+    Value::cons(Value::symbol("keymap"), tail)
+}
 
-    let view = if let Some(existing @ Kind::Cons(_)) = existing.map(|v| v.kind()) {
-        existing.value().set_car(Value::Symbol("keymap".into()))?;
-        existing.value().set_cdr(tail)?;
-        existing.value()
+pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, prompt: Value) -> Value {
+    let table = interp.make_char_table(Some("keymap".into()), Value::Nil);
+    let tail = if prompt.is_nil() {
+        Value::Nil
     } else {
-        Value::cons(Value::Symbol("keymap".into()), tail)
+        Value::list([prompt])
     };
-    let Some(record) = interp.find_record_mut(keymap_id) else {
-        return Ok(());
-    };
-    record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
-    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view;
-    interp.register_keymap_public_cons_owners(keymap_id, &view);
-    Ok(())
+    Value::cons(Value::symbol("keymap"), Value::cons(table, tail))
 }
 
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(
-        |items| matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap"),
-    )
+    value
+        .cons_values()
+        .is_some_and(|(head, _)| head.eq_value(Value::symbol("keymap")))
 }
 
-pub(crate) fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match value.kind() {
-        Kind::Record(id) => interp
-            .find_record(id)
-            .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
-            .map(|_| id.id),
-        Kind::Cons(_) => interp.keymap_public_root_owner_id(value),
-        _ => None,
-    }
+pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
+    is_keymap_placeholder(value)
 }
 
-pub(crate) fn is_keymap_value(interp: &Interpreter, value: &Value) -> bool {
-    is_keymap_placeholder(value) || keymap_record_id(interp, value).is_some()
-}
-
-pub(crate) fn keymap_char_table(record: &crate::lisp::eval::RecordState) -> Option<Value> {
-    record
-        .slots
-        .get(KEYMAP_CHAR_TABLE_SLOT)
-        .cloned()
-        .filter(|value| !value.is_nil())
-}
-
-/// Return the character table carried by either Emaxx's identity-bearing
-/// keymap record or GNU's public `(keymap CHAR-TABLE ...)' list shape.
-///
-/// Keymap-producing Lisp commonly canonicalizes a runtime map before handing
-/// it to another walker.  Read-side operations must not lose the full-map
-/// portion merely because that boundary projected the record as a Lisp list.
-pub(crate) fn keymap_char_table_value(interp: &Interpreter, keymap: &Value) -> Option<Value> {
-    let view = runtime_keymap_public_view(interp, keymap).unwrap_or(*keymap);
+/// The first character table in this map's own list, before its parent.
+pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> Option<Value> {
+    let view = *keymap;
     if !matches!(view.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
         return None;
     }
@@ -2618,154 +2365,31 @@ pub(crate) fn keymap_char_table_value(interp: &Interpreter, keymap: &Value) -> O
     None
 }
 
-pub(crate) fn keymap_bindings(
-    record: &crate::lisp::eval::RecordState,
-) -> Result<Vec<RuntimeKeymapBinding>, LispError> {
-    let bindings = record
-        .slots
-        .get(KEYMAP_BINDINGS_SLOT)
-        .cloned()
-        .unwrap_or(Value::Nil);
-    let mut result = Vec::new();
-    for entry in bindings.to_vec()? {
-        if let Ok(items) = entry.to_vec()
-            && items.len() >= 2
-            && let Ok(key) = string_text(&items[0])
-        {
-            result.push(RuntimeKeymapBinding {
-                key,
-                parts: items.get(3).and_then(|parts| {
-                    if parts.is_nil() {
-                        return None;
-                    }
-                    parts
-                        .to_vec()
-                        .ok()
-                        .and_then(|items| (!items.is_empty()).then_some(items))
-                }),
-                value: items[1],
-                after_prompt: items.get(2).is_some_and(Value::is_truthy),
-            });
-            continue;
-        }
-
-        let key = string_text(&entry.car()?)?;
-        result.push(RuntimeKeymapBinding {
-            key,
-            parts: None,
-            value: entry.cdr()?,
-            after_prompt: false,
-        });
-    }
-    Ok(result)
-}
-
-/// Return the bindings directly stored in either Emaxx's identity-bearing
-/// runtime keymap or GNU's public Lisp `(keymap ...)' representation.  Lisp
-/// libraries are allowed to construct and pass the latter directly, so all
-/// One keymap record's materialized lookup state: the ordered binding
-/// projection every walker shares, plus a command-remapping index probed
-/// once per keystroke by `command-remapping'.  Cached per record and
-/// dropped by `find_record_mut' (see `keymap_bindings_cache').
-#[derive(Clone)]
-pub(crate) struct CachedKeymapIndex {
-    pub(crate) bindings: std::rc::Rc<Vec<RuntimeKeymapBinding>>,
-    /// The `<remap>' prefix keymap, when this map carries one.  Only the
-    /// LINK is cached here: the inner map is its own record with its own
-    /// independently invalidated binding cache, so later `define-key
-    /// [remap ...]' calls (which mutate the inner record, not this one)
-    /// stay visible.
-    pub(crate) remap_map: Option<Value>,
-}
-
-/// read-only keymap walkers must share this projection rather than silently
-/// treating non-record maps as empty.
+/// A temporary enumeration of this map's sparse bindings. Ordinary key
+/// lookup and mutation read the actual cells; this is not retained or cached.
+#[cfg(test)]
 pub(crate) fn keymap_direct_bindings(
     interp: &Interpreter,
     keymap: &Value,
-) -> Result<std::rc::Rc<Vec<RuntimeKeymapBinding>>, LispError> {
-    if let Some(id) = keymap_record_id(interp, keymap) {
-        // A reader without the interpreter in hand cannot rebuild a record
-        // its view has outrun (`ensure_runtime_keymap_current' does that
-        // ahead of the primitives); it reads the view itself instead.
-        if !interp.runtime_keymap_view_is_current(id)
-            && let Some(view) = runtime_keymap_public_view(interp, keymap)
-        {
-            return Ok(std::rc::Rc::new(
-                parse_runtime_keymap_public_view(interp, &view)?.bindings,
-            ));
-        }
-        // Key lookup walks every active map on every keystroke; the
-        // materialized, ordered projection is cached per record and dropped
-        // by `find_record_mut' whenever anything rewrites the record
-        // (`define-key' included), the byte-code program cache's contract.
-        let index = (id as usize).saturating_sub(1);
-        if let Some(Some(cached)) = interp.keymap_bindings_cache.borrow().get(index) {
-            return Ok(std::rc::Rc::clone(&cached.bindings));
-        }
-        let Some(record) = interp.find_record(id) else {
-            return Ok(std::rc::Rc::new(Vec::new()));
-        };
-        // Character bindings now live in the leading char-table (lookup
-        // consults it before this sparse projection), so no enumeration
-        // order fixup is needed here anymore.
-        let mut bindings = keymap_bindings(record)?;
-        // Materialize each entry's parsed key parts while building the
-        // cached projection: lookups compare parts on every scan, and
-        // re-deriving them per probe was a measurable slice of every
-        // keystroke's `key-binding'.
-        for binding in &mut bindings {
-            if binding.parts.is_none() {
-                binding.parts = Some(approximate_key_parts(&binding.key));
-            }
-        }
-        let bindings = std::rc::Rc::new(bindings);
-        // `[remap CMD]' bindings live behind a `<remap>' prefix map;
-        // capture the link so `command-remapping' probes the inner map
-        // directly instead of a string lookup per map per keystroke.
-        let remap_map = bindings
-            .iter()
-            .find(|binding| {
-                matches!(binding.parts.as_deref(),
-                    Some([part]) if canonical_key_part(part) == "remap")
-            })
-            .map(|binding| binding.value);
-        let entry = CachedKeymapIndex {
-            bindings: std::rc::Rc::clone(&bindings),
-            remap_map,
-        };
-        let mut cache = interp.keymap_bindings_cache.borrow_mut();
-        if cache.len() <= index {
-            cache.resize(index + 1, None);
-        }
-        cache[index] = Some(entry);
-        return Ok(bindings);
+) -> Result<Vec<RuntimeKeymapBinding>, LispError> {
+    if !is_keymap_value(interp, keymap) {
+        return Ok(Vec::new());
     }
-
-    let Ok(items) = keymap.to_vec() else {
-        return Ok(std::rc::Rc::new(Vec::new()));
-    };
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap")
-    {
-        return Ok(std::rc::Rc::new(Vec::new()));
-    }
-
+    let (items, _) = keymap_public_view_own_items(keymap)?;
     let mut bindings = Vec::new();
-    for entry in items.into_iter().skip(1) {
+    for entry in items {
         if is_keymap_value(interp, &entry) {
-            // A bare keymap element is an inherited parent, not a binding.
             continue;
         }
-        if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry, true)? {
+        if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry)? {
             bindings.push(binding);
         }
     }
-    Ok(std::rc::Rc::new(bindings))
+    Ok(bindings)
 }
 
 fn runtime_keymap_binding_from_public_entry(
     entry: &Value,
-    after_prompt: bool,
 ) -> Result<Option<RuntimeKeymapBinding>, LispError> {
     let Some((event, definition)) = entry.cons_values() else {
         return Ok(None);
@@ -2788,22 +2412,7 @@ fn runtime_keymap_binding_from_public_entry(
         key: key_sequence_binding_text(&sequence)?,
         parts: Some(parts),
         value: definition,
-        after_prompt,
     }))
-}
-
-/// Replace the public cdr of an identity-bearing runtime keymap.
-///
-/// GNU keymaps are cons lists, and dumped Lisp legitimately mutates a map's
-/// tail with `setcdr'.  Emaxx stores keymaps in records so their identity is
-/// stable across Rust-owned lookup tables; this is the single mutation door
-/// that translates the public `(keymap ...)' tail back into that record.
-/// What a public `(keymap ...)' view holds, read from the list itself.
-struct ParsedKeymapView {
-    name: Value,
-    parent: Value,
-    char_table: Value,
-    bindings: Vec<RuntimeKeymapBinding>,
 }
 
 /// The child's own cells of a public view (after the `keymap' head) and the
@@ -2833,120 +2442,53 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
     }
 }
 
-fn parse_runtime_keymap_public_view(
+/// keymap.c:keymap_parent follows the spine, not included submaps.
+pub(crate) fn keymap_parent_value(interp: &Interpreter, map: Value, env: &Env) -> Value {
+    let mut tail = map.cdr().unwrap_or(Value::Nil);
+    let mut cycle = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if is_keymap_placeholder(&tail) {
+            return tail;
+        }
+        if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return Value::Nil;
+        }
+        tail = cell.cdr.get();
+    }
+    keymap_reference_map(interp, &tail, env).unwrap_or(Value::Nil)
+}
+
+pub(crate) fn set_keymap_parent_value(
     interp: &Interpreter,
-    view: &Value,
-) -> Result<ParsedKeymapView, LispError> {
-    let (items, parent_tail) = keymap_public_view_own_items(view)?;
-
-    let mut parsed = ParsedKeymapView {
-        name: Value::Nil,
-        parent: parent_tail,
-        char_table: Value::Nil,
-        bindings: Vec::new(),
-    };
-    let mut after_prompt = Vec::new();
-    let mut saw_prompt = false;
-
-    for item in items {
-        if matches!(item.kind(), Kind::CharTable(_)) {
-            parsed.char_table = item;
-            continue;
+    map: Value,
+    parent: Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let mut ancestor = parent;
+    let mut parents = HashSet::new();
+    while !ancestor.is_nil() && parents.insert(ancestor.word()) {
+        if ancestor.eq_value(map) {
+            return Err(LispError::Signal("Cyclic keymap inheritance".into()));
         }
-        if is_keymap_value(interp, &item) {
-            parsed.parent = item;
-            continue;
-        }
-        if !saw_prompt && string_like(&item).is_some() {
-            parsed.name = item;
-            saw_prompt = true;
-            continue;
-        }
-        if let Some(binding) = runtime_keymap_binding_from_public_entry(&item, saw_prompt)? {
-            if saw_prompt {
-                after_prompt.push(binding);
-            } else {
-                parsed.bindings.push(binding);
-            }
-        }
+        ancestor = keymap_parent_value(interp, ancestor, env);
     }
-    parsed.bindings.extend(after_prompt);
-    // A full keymap's character bindings live in its char-table, and
-    // `define-key' keeps a sparse entry beside each one it stores there
-    // (the lookups' prefix walk and the enumerations read the sparse
-    // projection); a record rebuilt from its view carries the same
-    // entries, one per single-character effective range, ahead of the
-    // list's own (the char-table comes first in the view, and wins).
-    // Without them a store into the list dropped every character prefix
-    // from `key-binding' (C-x C-f, M-x) though `lookup-key' still found
-    // it through the table.
-    if let Kind::CharTable(table_id) = parsed.char_table.kind()
-        && let Some(ranges) = interp.char_table_effective_ranges(table_id)
-    {
-        let mut from_table = Vec::new();
-        for range in ranges {
-            if range.start != range.end || range.value.is_nil() || range.value == Value::T {
-                continue;
-            }
-            let entry = Value::cons(Value::Integer(i64::from(range.start)), range.value);
-            if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry, false)? {
-                from_table.push(binding);
-            }
+    let mut previous = map;
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(previous.word()) {
+            return Err(LispError::Signal("Cyclic keymap inheritance".into()));
         }
-        from_table.extend(std::mem::take(&mut parsed.bindings));
-        parsed.bindings = from_table;
+        let tail = previous.cdr()?;
+        if !tail.is_cons() || is_keymap_placeholder(&tail) {
+            previous.set_cdr(parent)?;
+            return Ok(parent);
+        }
+        previous = tail;
     }
-    Ok(parsed)
-}
-
-pub(crate) fn sync_runtime_keymap_from_public_view(
-    interp: &mut Interpreter,
-    keymap_id: u64,
-) -> Result<(), LispError> {
-    let Some(view) = interp
-        .find_record(keymap_id)
-        .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
-        .cloned()
-    else {
-        return Ok(());
-    };
-    let parsed = parse_runtime_keymap_public_view(interp, &view)?;
-
-    let Some(record) = interp.find_record_mut(keymap_id) else {
-        return Ok(());
-    };
-    record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
-    record.slots[0] = parsed.name;
-    record.slots[KEYMAP_PARENT_SLOT] = parsed.parent;
-    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(parsed.bindings);
-    record.slots[KEYMAP_CHAR_TABLE_SLOT] = parsed.char_table;
-    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view;
-    interp.register_keymap_public_cons_owners(keymap_id, &view);
-    Ok(())
-}
-
-/// Bring the record behind KEYMAP (a runtime keymap, by record or by its
-/// public view) up to its view when a store the record did not see has
-/// changed the view: keymap.c reads the list itself, and generated code
-/// stores into a list cell it reached through native pointers without
-/// crossing into Rust (subr.el's `define-key-after' compiled natively
-/// splices a pair with `setcdr'), so the view is the authority and the
-/// record a projection of it, checked before it is read or rewritten.
-pub(crate) fn ensure_runtime_keymap_current(
-    interp: &mut Interpreter,
-    keymap: &Value,
-) -> Result<(), LispError> {
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(());
-    };
-    if interp.runtime_keymap_view_is_current(id) {
-        return Ok(());
-    }
-    sync_runtime_keymap_from_public_view(interp, id)
 }
 
 pub(crate) fn keymap_parent_values(interp: &Interpreter, keymap: &Value) -> Vec<Value> {
-    let view = runtime_keymap_public_view(interp, keymap).unwrap_or(*keymap);
+    let view = *keymap;
     let Ok((items, parent)) = keymap_public_view_own_items(&view) else {
         return Vec::new();
     };
@@ -2957,31 +2499,8 @@ pub(crate) fn keymap_parent_values(interp: &Interpreter, keymap: &Value) -> Vec<
         .collect()
 }
 
-pub(crate) fn keymap_value_identity(interp: &Interpreter, keymap: &Value) -> Option<(bool, usize)> {
-    if let Some(id) = keymap_record_id(interp, keymap) {
-        return Some((true, id as usize));
-    }
-    match keymap.kind() {
-        Kind::Cons(cell) if is_keymap_placeholder(keymap) => {
-            Some((false, crate::lisp::types::ConsCell::identity(&cell)))
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Value {
-    Value::list(bindings.into_iter().map(|binding| {
-        Value::list([
-            Value::String(binding.key.into()),
-            binding.value,
-            if binding.after_prompt {
-                Value::T
-            } else {
-                Value::Nil
-            },
-            binding.parts.map(Value::list).unwrap_or(Value::Nil),
-        ])
-    }))
+pub(crate) fn keymap_value_identity(_interp: &Interpreter, keymap: &Value) -> Option<usize> {
+    is_keymap_placeholder(keymap).then_some(keymap.word())
 }
 
 type KeymapEntryCallback<'a> =
@@ -2996,8 +2515,7 @@ pub(crate) fn map_keymap_own_entries(
     function: &mut KeymapEntryCallback<'_>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    ensure_runtime_keymap_current(interp, &keymap)?;
-    let map = public_keymap_value(interp, &keymap);
+    let map = keymap;
     let mut tail = if map
         .car()
         .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
@@ -3085,6 +2603,138 @@ fn keymap_direct_entries(
     Ok(entries)
 }
 
+/// keymap.c:store_in_keymap mutates the actual alist, vector or character
+/// table in order and stops before the inherited tail. Included submaps are
+/// updated in place because lookup may return a temporary composed map.
+fn store_in_keymap(
+    interp: &mut Interpreter,
+    map: Value,
+    event: Value,
+    definition: Value,
+    remove: bool,
+    after_prompt: bool,
+) -> Result<(), LispError> {
+    if !is_keymap_placeholder(&map) {
+        return Err(LispError::Signal(
+            "attempt to define a key in a non-keymap".into(),
+        ));
+    }
+    let range = event
+        .cons_values()
+        .and_then(|(start, end)| match (start.kind(), end.kind()) {
+            (Kind::Integer(start), Kind::Integer(end)) => Some((start as u32, end as u32)),
+            _ => None,
+        });
+    let mut insertion = map;
+    let mut previous = map;
+    let mut tail = map.cdr()?;
+    let mut seen = HashSet::new();
+    while let Some((entry, rest)) = tail.cons_values() {
+        if !seen.insert(tail.word()) {
+            break;
+        }
+        if entry.eq_value(Value::symbol("keymap")) {
+            break;
+        }
+        match entry.kind() {
+            Kind::Vector(vector) => {
+                if let Kind::Integer(index) = event.kind()
+                    && let Ok(index) = usize::try_from(index)
+                    && index < vector.len()
+                {
+                    vector.set(index, definition);
+                    return Ok(());
+                }
+                if let Some((start, end)) = range {
+                    for index in
+                        (start as usize)..=(end as usize).min(vector.len().saturating_sub(1))
+                    {
+                        if index < vector.len() {
+                            vector.set(index, definition);
+                        }
+                    }
+                    if (end as usize) < vector.len() {
+                        return Ok(());
+                    }
+                }
+                insertion = tail;
+            }
+            Kind::CharTable(table) => {
+                let stored = if remove {
+                    Value::Nil
+                } else if definition.is_nil() {
+                    Value::T
+                } else {
+                    definition
+                };
+                if let Some((start, end)) = range {
+                    interp.char_table_set_range(table, start, end, stored)?;
+                    return Ok(());
+                }
+                if let Kind::Integer(code) = event.kind()
+                    && (0..=0x3f_ffff).contains(&code)
+                {
+                    interp.char_table_set(table, code as u32, stored)?;
+                    return Ok(());
+                }
+                insertion = tail;
+            }
+            Kind::Cons(_) => {
+                if is_keymap_placeholder(&entry) {
+                    insertion = entry;
+                    previous = entry;
+                    tail = entry.cdr()?;
+                    continue;
+                }
+                let key = entry.car()?;
+                let exact = key.eq_value(event);
+                let covered = range.is_some_and(|(start, end)| matches!(key.kind(), Kind::Integer(code) if (i64::from(start)..=i64::from(end)).contains(&code)));
+                if exact || covered {
+                    if remove {
+                        previous.set_cdr(rest)?;
+                    } else {
+                        entry.set_cdr(definition)?;
+                    }
+                    if exact || range.is_some_and(|(start, end)| start == end) {
+                        return Ok(());
+                    }
+                    if remove {
+                        tail = rest;
+                        continue;
+                    }
+                }
+            }
+            _ if after_prompt && string_like(&entry).is_some() => insertion = tail,
+            _ => {}
+        }
+        previous = tail;
+        tail = rest;
+    }
+    if !remove {
+        let entry = if let Some((start, end)) = range {
+            let table = interp.make_char_table(Some("keymap".into()), Value::Nil);
+            let Kind::CharTable(table_ref) = table.kind() else {
+                unreachable!()
+            };
+            interp.char_table_set_range(
+                table_ref,
+                start,
+                end,
+                if definition.is_nil() {
+                    Value::T
+                } else {
+                    definition
+                },
+            )?;
+            table
+        } else {
+            Value::cons(event, definition)
+        };
+        insertion.set_cdr(Value::cons(entry, insertion.cdr()?))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn keymap_define_character_range(
     interp: &mut Interpreter,
     keymap: &Value,
@@ -3093,72 +2743,17 @@ pub(crate) fn keymap_define_character_range(
     binding: Value,
     remove: bool,
 ) -> Result<(), LispError> {
-    ensure_runtime_keymap_current(interp, keymap)?;
-    let (start, end) = (
-        u32::try_from(start)
-            .map_err(|_| LispError::Signal("Invalid keymap character range".into()))?,
-        u32::try_from(end)
-            .map_err(|_| LispError::Signal("Invalid keymap character range".into()))?,
-    );
-    if let Some(Kind::CharTable(table_id)) =
-        keymap_char_table_value(interp, keymap).map(|v| v.kind())
-    {
-        // A nil binding in a full GNU keymap is represented by t inside the
-        // char-table so it remains explicitly unbound instead of falling
-        // through to another sparse element or parent.
-        let stored = if remove {
-            Value::Nil
-        } else if binding.is_nil() {
-            Value::T
-        } else {
-            binding
-        };
-        interp.char_table_set_range(table_id, start, end, stored)?;
-        return Ok(());
+    if !(0..=0x3f_ffff).contains(&start) || !(0..=0x3f_ffff).contains(&end) {
+        return Err(LispError::Signal("Invalid keymap character range".into()));
     }
-
-    // GNU inserts a keymap char-table when a character range is defined on a
-    // sparse map.  Keep the same public shape instead of failing locally.
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Err(LispError::Signal(
-            "attempt to define a key in a non-keymap".into(),
-        ));
-    };
-    let mut handled_single = false;
-    if let Some(record) = interp.find_record_mut(id) {
-        let mut bindings = keymap_bindings(record)?;
-        bindings.retain_mut(|entry| {
-            let key = keymap_entry_key_value(&binding_key_parts(entry), &entry.key);
-            let covered = matches!(key.kind(), Kind::Integer(code)
-                if (i64::from(start)..=i64::from(end)).contains(&code));
-            if covered {
-                handled_single |= start == end;
-                entry.value = binding;
-            }
-            !(remove && covered)
-        });
-        record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
-    }
-    if remove || handled_single {
-        return refresh_runtime_keymap_public_view(interp, id);
-    }
-    let table = interp.make_char_table(Some("keymap".into()), Value::Nil);
-    let Kind::CharTable(table_id) = table.kind() else {
-        unreachable!("make-char-table returns a character table")
-    };
-    let stored = if remove {
-        Value::Nil
-    } else if binding.is_nil() {
-        Value::T
-    } else {
-        binding
-    };
-    interp.char_table_set_range(table_id, start, end, stored)?;
-    if let Some(record) = interp.find_record_mut(id) {
-        record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
-        record.slots[KEYMAP_CHAR_TABLE_SLOT] = table;
-    }
-    refresh_runtime_keymap_public_view(interp, id)
+    store_in_keymap(
+        interp,
+        *keymap,
+        Value::cons(Value::Integer(start), Value::Integer(end)),
+        binding,
+        remove,
+        false,
+    )
 }
 
 pub(crate) fn keymap_define_binding_with_placement(
@@ -3169,8 +2764,9 @@ pub(crate) fn keymap_define_binding_with_placement(
     binding: Value,
     after_prompt: bool,
 ) -> Result<(), LispError> {
-    ensure_runtime_keymap_current(interp, keymap)?;
-    if let Some(parts) = key_parts.as_ref().filter(|parts| parts.len() > 1) {
+    let _roots = crate::lisp::alloc::RootedVec::from_vec(vec![*keymap, binding]);
+    let parts = key_parts.unwrap_or_else(|| approximate_key_parts(key));
+    if parts.len() > 1 {
         let head = &parts[..1];
         // GNU's define-key descends through the map being modified.  An
         // inherited command at HEAD is therefore shadowed by a new local
@@ -3183,7 +2779,7 @@ pub(crate) fn keymap_define_binding_with_placement(
             &mut crate::lisp::types::Env::new(),
         )?;
         let prefix = if existing.is_nil() {
-            let prefix = make_runtime_keymap(interp, None);
+            let prefix = make_runtime_keymap(interp, Value::Nil);
             keymap_define_binding_with_placement(
                 interp,
                 keymap,
@@ -3215,65 +2811,11 @@ pub(crate) fn keymap_define_binding_with_placement(
         );
     }
 
-    // store_in_keymap returns after a character-table store. The sparse
-    // tail contains only its own bindings, never an index of table slots.
-    if let Some(parts) = key_parts.as_ref()
-        && let [part] = parts.as_slice()
-        && let Some(Kind::CharTable(table_id)) =
-            keymap_char_table_value(interp, keymap).map(|v| v.kind())
-    {
-        let event = keymap_entry_key_value(std::slice::from_ref(part), key);
-        if let Kind::Integer(code) = event.kind()
-            && (0..=0x3f_ffff).contains(&code)
-        {
-            let stored = if binding.is_nil() { Value::T } else { binding };
-            interp.char_table_set(table_id, code as u32, stored)?;
-            return Ok(());
-        }
-    }
-
-    ensure_runtime_keymap_current(interp, keymap)?;
-    let Some(id) = keymap_record_id(interp, keymap) else {
+    if parts.is_empty() {
         return Ok(());
-    };
-    let Some(record) = interp.find_record_mut(id) else {
-        return Ok(());
-    };
-    let mut bindings = keymap_bindings(record)?;
-    let existing = bindings.iter().position(|existing| {
-        key_parts.as_ref().map_or_else(
-            || existing.key == key,
-            |parts| binding_matches_key_parts(existing, parts),
-        )
-    });
-    let (insert_at, after_prompt) = if let Some(index) = existing {
-        let placement = bindings[index].after_prompt;
-        bindings.remove(index);
-        (index.min(bindings.len()), placement)
-    } else if after_prompt {
-        (
-            bindings
-                .iter()
-                .position(|binding| binding.after_prompt)
-                .unwrap_or(bindings.len()),
-            true,
-        )
-    } else {
-        (0, false)
-    };
-    let binding = RuntimeKeymapBinding {
-        key: key.to_string(),
-        parts: key_parts,
-        value: binding,
-        after_prompt,
-    };
-    bindings.insert(insert_at, binding);
-    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
-        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
-    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
-    refresh_runtime_keymap_public_view(interp, id)?;
-    Ok(())
+    let event = keymap_entry_key_value(&parts, key);
+    store_in_keymap(interp, *keymap, event, binding, false, after_prompt)
 }
 
 pub(crate) fn keymap_remove_binding(
@@ -3281,76 +2823,23 @@ pub(crate) fn keymap_remove_binding(
     keymap: &Value,
     parts: &[Value],
 ) -> Result<(), LispError> {
-    ensure_runtime_keymap_current(interp, keymap)?;
-    let key = key_parts_description(parts)?;
-    if let [part] = parts
-        && let Some(Kind::CharTable(table_id)) =
-            keymap_char_table_value(interp, keymap).map(|v| v.kind())
-    {
-        let event = keymap_entry_key_value(std::slice::from_ref(part), &key);
-        if let Kind::Integer(code) = event.kind()
-            && let Ok(code) = u32::try_from(code)
-            && code <= 0x3f_ffff
-        {
-            interp.char_table_set(table_id, code, Value::Nil)?;
-            return Ok(());
-        }
-    }
-    // Match actual event words before descending into a prefix. Display
-    // spellings can name several distinct events and cannot identify a key.
-    ensure_runtime_keymap_current(interp, keymap)?;
-    if let Some(id) = keymap_record_id(interp, keymap)
-        && let Some(record) = interp.find_record_mut(id)
-    {
-        let mut bindings = keymap_bindings(record)?;
-        let original_len = bindings.len();
-        bindings.retain(|existing| !binding_matches_key_parts(existing, parts));
-        if bindings.len() != original_len {
-            if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
-                record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
-            }
-            record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
-            refresh_runtime_keymap_public_view(interp, id)?;
-            return Ok(());
-        }
-    }
-
     if parts.len() > 1 {
         let prefix = keymap_lookup_direct_binding_exact_parts(interp, keymap, &parts[..1])?;
-        let prefix =
-            keymap_get_keyelt(interp, &prefix, false, &mut crate::lisp::types::Env::new())?;
+        let prefix = keymap_get_keyelt(interp, &prefix, false, &mut Env::new())?;
         if is_keymap_value(interp, &prefix) {
             return keymap_remove_binding(interp, &prefix, &parts[1..]);
         }
         return Ok(());
     }
-    ensure_runtime_keymap_current(interp, keymap)?;
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(());
-    };
-    let Some(record) = interp.find_record_mut(id) else {
-        return Ok(());
-    };
-    let mut bindings = keymap_bindings(record)?;
-    bindings.retain(|existing| !key_parts_match(&binding_key_parts(existing), parts));
-    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
-        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
+    if let [event] = parts {
+        store_in_keymap(interp, *keymap, *event, Value::Nil, true, false)?;
     }
-    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
-    refresh_runtime_keymap_public_view(interp, id)?;
     Ok(())
 }
 
 pub(crate) fn approximate_key_parts(key: &str) -> Vec<Value> {
     textual_key_sequence_keymap_parts(&Value::String(key.to_string().into()))
         .unwrap_or_else(|_| key.split_whitespace().map(Value::symbol).collect())
-}
-
-pub(crate) fn binding_key_parts(binding: &RuntimeKeymapBinding) -> Vec<Value> {
-    binding
-        .parts
-        .clone()
-        .unwrap_or_else(|| approximate_key_parts(&binding.key))
 }
 
 /// `key_parts_match' against a binding without cloning its parts vector;
@@ -3425,13 +2914,52 @@ fn keymap_lookup_direct_binding_exact_parts(
             return Ok(if value == Value::T { Value::Nil } else { value });
         }
     }
-    let bindings = keymap_direct_bindings(interp, keymap)?;
-    for binding in bindings.iter() {
-        if binding_matches_key_parts(binding, key_parts) {
-            return Ok(binding.value);
-        }
+    Ok(keymap_own_sparse_binding(interp, keymap, key_parts)?.unwrap_or(Value::Nil))
+}
+
+/// Read the actual binding cells without building a vector of bindings or
+/// formatting every event. This path cannot call Lisp or collect. Keep the
+/// distinction between a missing entry and an explicit nil definition.
+fn keymap_own_sparse_binding(
+    interp: &Interpreter,
+    keymap: &Value,
+    key_parts: &[Value],
+) -> Result<Option<Value>, LispError> {
+    if !is_keymap_value(interp, keymap) {
+        return Ok(None);
     }
-    Ok(Value::Nil)
+    let keymap_tag = Value::symbol("keymap");
+    let mut tail = keymap.cdr()?;
+    let mut cycle = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        let entry = cell.car.get();
+        if entry.eq_value(keymap_tag) {
+            break;
+        }
+        if let Some((event, definition)) = entry.cons_values()
+            && !event.eq_value(keymap_tag)
+        {
+            if let [part] = key_parts
+                && !event.is_cons()
+                && event.eq_value(*part)
+            {
+                return Ok(Some(definition));
+            }
+            // Preserve the existing compatibility decoder for an explicit
+            // compound event. Ordinary integer/symbol keys need no adapter.
+            if event.is_cons()
+                && let Some(binding) = runtime_keymap_binding_from_public_entry(&entry)?
+                && binding_matches_key_parts(&binding, key_parts)
+            {
+                return Ok(Some(binding.value));
+            }
+        }
+        tail = cell.cdr.get();
+    }
+    Ok(None)
 }
 
 fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
@@ -3471,11 +2999,8 @@ fn keymap_lookup_binding_exact_parts_bounded(
             return Ok(if value == Value::T { Value::Nil } else { value });
         }
     }
-    let bindings = keymap_direct_bindings(interp, keymap)?;
-    for binding in bindings.iter() {
-        if binding_matches_key_parts(binding, key_parts) {
-            return Ok(binding.value);
-        }
+    if let Some(value) = keymap_own_sparse_binding(interp, keymap, key_parts)? {
+        return Ok(value);
     }
     // Prefix lookup must read the same table slot as ordinary character
     // lookup. A sparse navigation index would miss raw stores and inherit
@@ -3495,24 +3020,41 @@ fn keymap_lookup_binding_exact_parts_bounded(
             }
         }
     }
-    if accept_default && key_parts.len() == 1 && key_parts != [Value::T] {
-        for binding in bindings.iter() {
-            if binding_key_parts(binding) == [Value::T] {
-                return Ok(binding.value);
+    if accept_default
+        && key_parts.len() == 1
+        && key_parts != [Value::T]
+        && let Some(value) = keymap_own_sparse_binding(interp, keymap, &[Value::T])?
+    {
+        return Ok(value);
+    }
+    // Included maps occur in their own spine order, followed by the parent
+    // tail. Traverse those cells directly instead of allocating a parent list.
+    let keymap_tag = Value::symbol("keymap");
+    let mut tail = keymap.cdr().unwrap_or(Value::Nil);
+    let mut cycle = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        let entry = cell.car.get();
+        let inherited_tail = entry.eq_value(keymap_tag);
+        let parent = if inherited_tail { tail } else { entry };
+        if parent
+            .cons_values()
+            .is_some_and(|(head, _)| head.eq_value(keymap_tag))
+        {
+            let value = keymap_lookup_binding_exact_parts_bounded(
+                interp,
+                &parent,
+                key_parts,
+                accept_default,
+                depth,
+            )?;
+            if !value.is_nil() || inherited_tail {
+                return Ok(value);
             }
         }
-    }
-    for parent in keymap_parent_values(interp, keymap) {
-        let value = keymap_lookup_binding_exact_parts_bounded(
-            interp,
-            &parent,
-            key_parts,
-            accept_default,
-            depth,
-        )?;
-        if !value.is_nil() {
-            return Ok(value);
-        }
+        tail = cell.cdr.get();
     }
     Ok(Value::Nil)
 }
@@ -3529,15 +3071,14 @@ pub(crate) fn keymap_lookup_binding(
 // maps are composed before reading the next event, so menu filters run once
 // and inherited prefixes remain visible. Nil bindings stop parent lookup but
 // allow another map of lower precedence to contribute a binding.
-fn keymap_access_event(
+pub(crate) fn keymap_access_event(
     interp: &mut Interpreter,
     map: Value,
     event: Value,
     mut accept_default: bool,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let map = keymap_reference_map(interp, &map, env).unwrap_or(map);
-    let mut map = public_keymap_value(interp, &map);
+    let mut map = keymap_reference_map(interp, &map, env).unwrap_or(map);
     let event = event.cons_values().map_or(event, |(head, _)| head);
     let mut event = match event.kind() {
         Kind::Integer(code) => {
@@ -3600,7 +3141,7 @@ fn keymap_access_event(
             let Some(parent) = keymap_reference_map(interp, &roots[1], env) else {
                 break;
             };
-            roots[1] = public_keymap_value(interp, &parent);
+            roots[1] = parent;
         }
         let Some((binding, _)) = roots[1].cons_values() else {
             break;
@@ -3708,25 +3249,95 @@ pub(crate) fn keymap_lookup_sequence_value_with_default(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if key_parts.is_empty() {
-        return Ok(*keymap_or_maps);
-    }
     interp.with_lisp_stack_roots(&(keymap_or_maps, key_parts), |interp| {
-        let mut map = *keymap_or_maps;
-        for (index, event) in key_parts.iter().enumerate() {
-            let value = keymap_access_event(interp, map, *event, accept_default, env)?
-                .unwrap_or(Value::Nil);
-            if index + 1 == key_parts.len() {
-                return Ok(value);
-            }
-            let Some(prefix) = keymap_reference_map(interp, &value, env) else {
-                return Ok(Value::Integer((index + 1) as i64));
-            };
-            map = prefix;
-            interp.maybe_quit(env)?;
-        }
-        unreachable!("nonempty key sequence returns at its final event")
+        keymap_lookup_events(
+            interp,
+            *keymap_or_maps,
+            key_parts.len(),
+            accept_default,
+            |_, index, _| Ok(key_parts[index]),
+            env,
+        )
     })
+}
+
+/// keymap.c:lookup_key_1 calls Faref immediately before each access. A menu
+/// filter can mutate later events, so copying or normalizing the entire
+/// sequence before traversing it changes the meaning of ordinary lookup.
+pub(crate) fn keymap_lookup_live_sequence_value(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    sequence: Value,
+    accept_default: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let length = sequence_length_value(interp, &sequence)? as usize;
+    interp.with_lisp_stack_roots(&(keymap, sequence), |interp| {
+        keymap_lookup_events(
+            interp,
+            *keymap,
+            length,
+            accept_default,
+            |interp, index, env| {
+                let mut event = match sequence.kind() {
+                    Kind::Vector(vector) => vector.get(index),
+                    _ => string_char_code_at_in_place(&sequence, index).map(Value::Integer),
+                }
+                .ok_or_else(|| {
+                    LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        sequence,
+                        Value::Integer(index as i64),
+                    ]))
+                })?;
+                if lucid_event_type_list_p(&event) {
+                    event = event_convert_list_value(interp, &event)?;
+                }
+                if symbols_with_pos_enabled(interp, env)
+                    && let Some((symbol, _)) = symbol_with_pos_parts(interp, &event)
+                {
+                    event = symbol;
+                }
+                if sequence.is_string()
+                    && !string_argument_multibyte(&sequence)
+                    && let Kind::Integer(code) = event.kind()
+                    && code & 0x80 != 0
+                {
+                    event = Value::Integer((code | KEY_DESCRIPTION_META_BIT) & !0x80);
+                }
+                Ok(event)
+            },
+            env,
+        )
+    })
+}
+
+fn keymap_lookup_events(
+    interp: &mut Interpreter,
+    keymap: Value,
+    length: usize,
+    accept_default: bool,
+    mut read_event: impl FnMut(&mut Interpreter, usize, &mut Env) -> Result<Value, LispError>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    // A composed prefix can be freshly allocated and removed from its
+    // source map by a callback. Keep the current map and event reachable
+    // independently of the caller's original keymap and input sequence.
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![keymap, Value::Nil]);
+    for index in 0..length {
+        roots[1] = read_event(interp, index, env)?;
+        let value = keymap_access_event(interp, roots[0], roots[1], accept_default, env)?
+            .unwrap_or(Value::Nil);
+        if index + 1 == length {
+            return Ok(value);
+        }
+        let Some(prefix) = keymap_reference_map(interp, &value, env) else {
+            return Ok(Value::Integer((index + 1) as i64));
+        };
+        roots[0] = prefix;
+        interp.maybe_quit(env)?;
+    }
+    Ok(keymap)
 }
 
 pub(crate) fn keymap_get_keyelt(
@@ -4662,7 +4273,7 @@ pub(crate) fn where_is_internal(
     // anonymous lambda) have no name to search by and answer nil.
     let (command_owned, definition_keymap_id) = match definition.kind() {
         Kind::Symbol(name) => (name.to_string(), None),
-        other => match keymap_record_id(interp, &other.value()) {
+        other => match keymap_value_identity(interp, &other.value()) {
             Some(id) => (String::new(), Some(id)),
             None => return Ok(Vec::new()),
         },
@@ -4687,7 +4298,7 @@ pub(crate) fn where_is_internal(
         interp
             .lookup_function(target_command, env)
             .ok()
-            .and_then(|function| keymap_record_id(interp, &function))
+            .and_then(|function| keymap_value_identity(interp, &function))
     });
     let mut matches = Vec::<Vec<Value>>::new();
     let mut event_roots = crate::lisp::alloc::RootedVec::new();
@@ -4800,7 +4411,7 @@ fn where_is_sequence_runs_target(
     active_maps: &Value,
     parts: &[Value],
     target_command: &str,
-    target_keymap_id: Option<u64>,
+    target_keymap_id: Option<usize>,
     env: &mut Env,
 ) -> Result<bool, LispError> {
     // GNU verifies the constructed sequence through lookup-key. Physical
@@ -4813,7 +4424,8 @@ fn where_is_sequence_runs_target(
     };
     Ok(
         command_name_for_remapping(&value).as_deref() == Some(target_command)
-            || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id),
+            || (target_keymap_id.is_some()
+                && keymap_value_identity(interp, &value) == target_keymap_id),
     )
 }
 
@@ -4843,7 +4455,7 @@ fn preferred_modifier_name(interp: &Interpreter, env: &Env) -> Option<String> {
 
 pub(crate) struct WhereIsCollector<'a> {
     target_command: &'a str,
-    target_keymap_id: Option<u64>,
+    target_keymap_id: Option<usize>,
     env: &'a mut Env,
     seen: HashSet<Vec<usize>>,
     matches: &'a mut Vec<Vec<Value>>,
@@ -4870,7 +4482,7 @@ pub(crate) fn collect_where_is_matches(
             let matches_target = command_name_for_remapping(&resolved).as_deref()
                 == Some(collector.target_command)
                 || (collector.target_keymap_id.is_some()
-                    && keymap_record_id(interp, &resolved) == collector.target_keymap_id);
+                    && keymap_value_identity(interp, &resolved) == collector.target_keymap_id);
             if !matches_target {
                 continue;
             }
@@ -4896,10 +4508,6 @@ pub(crate) fn collect_where_is_matches(
     Ok(())
 }
 
-pub(crate) fn remap_key_binding_text(command: &str) -> String {
-    format!("<remap> <{command}>")
-}
-
 pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
     match value.kind() {
         Kind::Symbol(name) => Some(name.to_string()),
@@ -4923,106 +4531,17 @@ pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn command_remapping(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     command: &Value,
     keymaps: Option<&Value>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Some(command_name) = command_name_for_remapping(command) else {
-        return Ok(Value::Nil);
-    };
-    let maps = match keymaps {
-        Some(keymaps) => where_is_internal_maps(interp, Some(keymaps), env)?,
-        // Without KEYMAPS, GNU goes through `key-binding' on a [remap CMD]
-        // vector (keymap.c:1245), i.e. current_active_maps with OLP t.
-        None => current_active_maps(interp, env, true, None)?,
-    };
-    command_remapping_in_maps(interp, &command_name, &maps)
-}
-
-/// The remap probe against already-assembled maps: record-backed keymaps
-/// answer from their cached remap index, everything else takes the string
-/// lookup path.  `key-binding' calls this once per keystroke.
-pub(crate) fn command_remapping_in_maps(
-    interp: &Interpreter,
-    command_name: &str,
-    maps: &[Value],
-) -> Result<Value, LispError> {
-    let mut remap_key = None;
-    for map in maps {
-        match remap_probe(interp, map, command_name, 32)? {
-            RemapProbe::Found(binding) => return Ok(binding),
-            RemapProbe::Absent => continue,
-            RemapProbe::NeedsFullLookup => {
-                let remap_key = remap_key
-                    .get_or_insert_with(|| remap_key_binding_text(command_name))
-                    .as_str();
-                let binding = keymap_lookup_binding(interp, map, remap_key)?;
-                if !binding.is_nil() {
-                    return Ok(binding);
-                }
-            }
-        }
-    }
-    Ok(Value::Nil)
-}
-
-enum RemapProbe {
-    Found(Value),
-    /// The map and its whole parent chain were index-covered and hold no
-    /// remap entry — the common case for every self-inserting key.
-    Absent,
-    /// A non-record link in the chain: only the string lookup understands
-    /// list keymaps, so this map needs the slow path.
-    NeedsFullLookup,
-}
-
-/// Probe MAP's cached remap index, following record parents.  DEPTH bounds
-/// cyclic parent chains the way the bounded string lookup does.
-fn remap_probe(
-    interp: &Interpreter,
-    map: &Value,
-    command_name: &str,
-    depth: usize,
-) -> Result<RemapProbe, LispError> {
-    if depth == 0 {
-        return Ok(RemapProbe::Absent);
-    }
-    let Some(id) = keymap_record_id(interp, map) else {
-        return Ok(RemapProbe::NeedsFullLookup);
-    };
-    keymap_direct_bindings(interp, map)?;
-    let index = (id as usize).saturating_sub(1);
-    let cached = interp
-        .keymap_bindings_cache
-        .borrow()
-        .get(index)
-        .cloned()
-        .flatten();
-    let Some(cached) = cached else {
-        return Ok(RemapProbe::NeedsFullLookup);
-    };
-    if let Some(remap_map) = &cached.remap_map {
-        // The inner map's entries are one-part command names; it has few
-        // entries and its own cache slot, so a scan stays cheap and
-        // current.
-        for binding in keymap_direct_bindings(interp, remap_map)?.iter() {
-            let matches = match binding.parts.as_deref() {
-                Some([part]) => canonical_key_part(part) == command_name,
-                _ => false,
-            };
-            if matches && !binding.value.is_nil() {
-                return Ok(RemapProbe::Found(binding.value));
-            }
-        }
-    }
-    let parent = interp
-        .find_record(id)
-        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned());
-    match parent.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => Ok(RemapProbe::Absent),
-        Some(parent) => remap_probe(interp, &parent.value(), command_name, depth - 1),
-    }
+    super::call(
+        interp,
+        "command-remapping",
+        &[*command, Value::Nil, keymaps.copied().unwrap_or(Value::Nil)],
+        env,
+    )
 }
 
 // The keymaps consulted for command dispatch: keymap.c's
@@ -5053,9 +4572,8 @@ pub(crate) fn key_binding(
     )
 }
 
-/// keymap.c:Fkey_binding over an already-decoded event-part sequence; the
-/// value-aware decoding (`key_sequence_keymap_parts') preserves symbol
-/// events like `left' that a textual round-trip loses.
+/// Internal input readers already hold event words. Feed their vector to
+/// the same primitive as Lisp callers, preserving prefix filters and remaps.
 pub(crate) fn key_binding_with_parts(
     interp: &mut Interpreter,
     key_parts: &[Value],
@@ -5063,141 +4581,36 @@ pub(crate) fn key_binding_with_parts(
     no_remap: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let key_parts = key_parts.to_vec();
-    let maps = active_command_keymaps(interp, env)?;
-    let mut raw_binding = Value::Nil;
-    for map in &maps {
-        let binding = keymap_lookup_binding_exact_parts_with_default(
-            interp,
-            map,
-            &key_parts,
-            accept_default,
-        )?;
-        if !binding.is_nil() {
-            raw_binding = binding;
-            break;
-        }
-    }
-
-    let global_map = interp.current_global_map_value();
-    if raw_binding.is_nil() && is_keymap_value(interp, &global_map) {
-        let binding = keymap_lookup_binding_exact_parts_with_default(
-            interp,
-            &global_map,
-            &key_parts,
-            accept_default,
-        )?;
-        if !binding.is_nil() {
-            raw_binding = binding;
-        }
-    }
-
-    // Fkey_binding receives Flookup_key's value, which access_keymap has
-    // already passed through get_keyelt -- so a ("Demo" . KEYMAP) menu
-    // entry resolves to the keymap, and the remap test below sees the
-    // resolved command symbol, not its menu-item wrapper.  (Lifted from
-    // the tty branch's fix; probed: GNU (keymap keymap), Emaxx was
-    // ("Demo" keymap).)
-    let raw_binding = keymap_get_keyelt(interp, &raw_binding, true, env)?;
-
-    if no_remap || raw_binding.is_nil() {
-        return Ok(raw_binding);
-    }
-
-    let remapped = match command_name_for_remapping(&raw_binding) {
-        // Reuse the maps this lookup already assembled (plus the global
-        // map, which GNU's remap pass also consults).
-        Some(command_name) => {
-            let mut remap_maps = maps;
-            if is_keymap_value(interp, &global_map) {
-                remap_maps.push(global_map);
-            }
-            command_remapping_in_maps(interp, &command_name, &remap_maps)?
-        }
-        None => Value::Nil,
-    };
-    Ok(if remapped.is_nil() {
-        raw_binding
-    } else {
-        remapped
-    })
+    super::call(
+        interp,
+        "key-binding",
+        &[
+            Value::vector(key_parts.iter().copied()),
+            if accept_default { Value::T } else { Value::Nil },
+            if no_remap { Value::T } else { Value::Nil },
+        ],
+        env,
+    )
 }
 
-fn keymap_has_prefix(
-    interp: &Interpreter,
-    keymap: &Value,
-    requested_parts: &[Value],
-) -> Result<bool, LispError> {
-    let mut pending = vec![*keymap];
-    let mut seen = HashSet::new();
-    while let Some(map) = pending.pop() {
-        if !seen.insert(map.word()) {
-            continue;
-        }
-        for binding in keymap_direct_bindings(interp, &map)?.iter() {
-            let binding_parts = binding_key_parts(binding);
-            if binding_parts.len() > requested_parts.len()
-                && key_parts_match(&binding_parts[..requested_parts.len()], requested_parts)
-            {
-                return Ok(true);
-            }
-        }
-        pending.extend(keymap_parent_values(interp, &map));
+/// keyboard.c:read_key_sequence continues only when the resolved binding
+/// is a keymap (possibly an autoloaded prefix command). Reuse the binding
+/// already read by the command loop; another lookup would repeat filters.
+pub(crate) fn key_binding_is_prefix(interp: &Interpreter, binding: &Value, env: &Env) -> bool {
+    if is_keymap_value(interp, binding) {
+        return true;
     }
-    Ok(false)
-}
-
-// Whether KEY is a proper prefix of a longer binding in the active keymaps,
-// so the command loop should keep reading events instead of dispatching.
-pub(crate) fn key_sequence_is_prefix(
-    interp: &mut Interpreter,
-    key: &str,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    // These prefix maps are present in GNU's standard global map even when
-    // none of their descendants are represented in Emaxx's compact default
-    // binding table.  In particular, C-c remains a prefix after a mode
-    // removes its last C-c binding, so the command loop reports the complete
-    // unbound sequence rather than declaring C-c itself undefined.
-    if matches!(key, "C-c" | "C-x" | "C-x 4" | "C-x 5" | "ESC") {
-        return Ok(true);
-    }
-    // Autoloaded prefix commands have a non-nil binding whose function cell
-    // is `(autoload ... keymap)'.  GNU treats that as a keymap before loading
-    // the owner; once loaded, the same symbol resolves directly to the map.
-    let binding = key_binding(interp, key, false, true, env)?;
     if let Kind::Symbol(name) = binding.kind()
         && let Ok(function) = interp.lookup_function(&name, env)
-        && (is_keymap_value(interp, &function)
+    {
+        return is_keymap_value(interp, &function)
             || autoload_parts(&function).is_some_and(
                 |(_, _, kind)| matches!(kind.kind(), Kind::Symbol(kind) if kind == "keymap"),
-            ))
-    {
-        return Ok(true);
+            );
     }
-    let requested = approximate_key_parts(key);
-    if requested.is_empty() {
-        return Ok(false);
-    }
-    for map in active_command_keymaps(interp, env)? {
-        if keymap_has_prefix(interp, &map, &requested)? {
-            return Ok(true);
-        }
-    }
-    let global_map = interp.current_global_map_value();
-    if is_keymap_value(interp, &global_map) && keymap_has_prefix(interp, &global_map, &requested)? {
-        return Ok(true);
-    }
-    Ok(false)
+    false
 }
 
-/// Whether the current locale encodes UTF-8, by GNU's own test:
-/// emacs.c:415 `using_utf8' decodes the two bytes of U+0100 with `mbrtowc'
-/// and checks both the length and the resulting wide character.  The result
-/// becomes `internal--text-quoting-flag' (emacs.c:1665), which is what makes
-/// a nil `text-quoting-style' mean grave rather than curved quotes in a
-/// non-UTF-8 locale -- the compatibility harness runs its children under
-/// LANG=C, where GNU therefore quotes `like this'.
 pub(crate) fn locale_uses_utf8() -> bool {
     // GNU calls setlocale(LC_ALL, "") in main before testing (emacs.c:1657-
     // 1663) -- though it SKIPS that call when LC_ALL is exactly "C", leaving

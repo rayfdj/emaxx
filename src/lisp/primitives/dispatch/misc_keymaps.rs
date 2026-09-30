@@ -43,13 +43,18 @@ fn lookup_key_once(
         keymap_reference_map(interp, &keymap, env)
             .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), keymap))?
     };
+    // lookup_key_1 checks the original sequence after resolving the map,
+    // before translation or the empty-sequence shortcut.
+    if !is_vector_value(&key) && !key.is_string() {
+        return Err(LispError::WrongTypeArgument("arrayp".into(), key));
+    }
     interp.with_lisp_stack_roots(&(keymap, key), |interp| {
         // keymap.c:possibly_translate_key_sequence delegates the ["C-x"]
         // syntax to unchanged key-valid-p/key-parse, including redefinition
         // and invalid descriptions that must remain literal string events.
         let translated = if let Kind::Vector(vector) = key.kind()
             && vector.len() == 1
-            && let Some(description) = vector.get(0).filter(|value| string_like(value).is_some())
+            && let Some(description) = vector.get(0).filter(|value| value.is_string())
         {
             if interp.lookup_function("key-valid-p", env).is_err() {
                 return Err(LispError::SignalValue(Value::list([
@@ -73,10 +78,10 @@ fn lookup_key_once(
                     &[description],
                     env,
                 )?;
-                if !is_vector_value(&parsed) && string_like(&parsed).is_none() {
+                if !is_vector_value(&parsed) && !parsed.is_string() {
                     return Err(LispError::WrongTypeArgument("arrayp".into(), parsed));
                 }
-                if key_description_events(&parsed)?.is_empty() {
+                if sequence_length_value(interp, &parsed)? == 0 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("error"),
                         Value::string("Invalid `key-parse' syntax: %S"),
@@ -88,21 +93,7 @@ fn lookup_key_once(
         } else {
             key
         };
-        interp.with_lisp_stack_roots(&translated, |interp| {
-            let normalized = normalize_lucid_key_events(interp, &translated, env)?;
-            interp.with_lisp_stack_roots(&normalized, |interp| {
-                // lookup_key_1 advances once per original (or translated)
-                // event. Meta-to-ESC is part of access_keymap_1 itself.
-                let events = key_description_events(&normalized)?;
-                keymap_lookup_sequence_value_with_default(
-                    interp,
-                    &keymap,
-                    &events,
-                    accept_default,
-                    env,
-                )
-            })
-        })
+        keymap_lookup_live_sequence_value(interp, &keymap, translated, accept_default, env)
     })
 }
 
@@ -227,6 +218,83 @@ fn lookup_key_value(
     )
 }
 
+fn key_binding_value(
+    interp: &mut Interpreter,
+    key: Value,
+    accept_default: bool,
+    no_remap: bool,
+    mut position: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if position.is_nil()
+        && let Kind::Vector(vector) = key.kind()
+    {
+        let Some(first) = vector.get(0) else {
+            return Ok(Value::Nil);
+        };
+        let event = if first.is_symbol() && vector.len() > 1 {
+            vector.get(1).expect("vector has a second event")
+        } else {
+            first
+        };
+        if let Some((head, parameters)) = event.cons_values()
+            && let Some((start, _)) = parameters.cons_values()
+            && let Kind::Symbol(name) = head.kind()
+            && interp
+                .get_symbol_property(&name, "event-kind")
+                .is_some_and(|kind| kind.eq_value(Value::symbol("mouse-click")))
+        {
+            position = start;
+        }
+    }
+    interp.with_lisp_stack_roots(&(key, position), |interp| {
+        // keymap.c:Fkey_binding performs one Flookup_key on the active
+        // map list. Searching each map separately skips prefix filters
+        // and loses composition and mutation of the original sequence.
+        let maps = Value::list(current_active_maps(interp, env, true, Some(&position))?);
+        let binding = interp.with_lisp_stack_roots(&maps, |interp| {
+            lookup_key_value(interp, maps, key, accept_default, env)
+        })?;
+        if binding.is_nil() || matches!(binding.kind(), Kind::Integer(_)) {
+            return Ok(Value::Nil);
+        }
+        if no_remap || !binding.is_symbol() {
+            return Ok(binding);
+        }
+        interp.with_lisp_stack_roots(&binding, |interp| {
+            // A filter may have replaced an active map. GNU obtains the
+            // active maps again for Fcommand_remapping after lookup.
+            let remapped = command_remapping_value(interp, binding, position, Value::Nil, env)?;
+            Ok(if remapped.is_nil() { binding } else { remapped })
+        })
+    })
+}
+
+fn command_remapping_value(
+    interp: &mut Interpreter,
+    command: Value,
+    position: Value,
+    maps: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if !command.is_symbol() {
+        return Ok(Value::Nil);
+    }
+    let key = Value::vector([Value::symbol("remap"), command]);
+    interp.with_lisp_stack_roots(&(key, (maps, position)), |interp| {
+        let binding = if maps.is_nil() {
+            key_binding_value(interp, key, false, true, position, env)?
+        } else {
+            lookup_key_value(interp, maps, key, false, env)?
+        };
+        Ok(if matches!(binding.kind(), Kind::Integer(_)) {
+            Value::Nil
+        } else {
+            binding
+        })
+    })
+}
+
 fn map_keymap_direct_value(
     interp: &mut Interpreter,
     function: &Value,
@@ -251,7 +319,7 @@ fn map_keymap_value(
     function: &Value,
     keymap: &Value,
     env: &mut Env,
-    visited: &mut std::collections::HashSet<(bool, usize)>,
+    visited: &mut std::collections::HashSet<usize>,
 ) -> Result<(), LispError> {
     let Some(identity) = keymap_value_identity(interp, keymap) else {
         return Ok(());
@@ -261,7 +329,6 @@ fn map_keymap_value(
     }
 
     map_keymap_direct_value(interp, function, keymap, env)?;
-    ensure_runtime_keymap_current(interp, keymap)?;
     for parent in keymap_parent_values(interp, keymap) {
         map_keymap_value(interp, function, &parent, env, visited)?;
     }
@@ -381,8 +448,11 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "define-key" => {
-                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 3, 4)?;
+                let map = resolve_keymap_with_autoload(interp, &args[0], env)?;
+                if !is_vector_value(&args[1]) && !args[1].is_string() {
+                    return Err(LispError::WrongTypeArgument("arrayp".into(), args[1]));
+                }
                 if let Ok(events) = vector_items(&args[1])
                     && let [event] = events.as_slice()
                     && !lucid_event_type_list_p(event)
@@ -396,7 +466,7 @@ define_dispatch!(
                     };
                     keymap_define_character_range(
                         interp,
-                        &args[0],
+                        &map,
                         start,
                         end,
                         args[2],
@@ -431,13 +501,16 @@ define_dispatch!(
                     }
                 }
                 let key_parts = key_sequence_definition_parts(&normalized_key)?;
+                if key_parts.is_empty() {
+                    return Ok(Value::Nil);
+                }
                 let key = key_sequence_binding_text(&key_parts_to_sequence_value(&key_parts))?;
                 if args.get(3).is_some_and(Value::is_truthy) {
-                    keymap_remove_binding(interp, &args[0], &key_parts)?;
+                    keymap_remove_binding(interp, &map, &key_parts)?;
                 } else {
                     keymap_define_binding_with_placement(
                         interp,
-                        &args[0],
+                        &map,
                         &key,
                         Some(key_parts),
                         def,
@@ -447,7 +520,6 @@ define_dispatch!(
                 Ok(def)
             }
             "lookup-key" => {
-                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 2, 3)?;
                 lookup_key_value(
                     interp,
@@ -500,25 +572,17 @@ define_dispatch!(
             "help--describe-vector" => help_describe_vector(interp, args, env),
             "key-binding" => {
                 need_arg_range(name, args, 1, 4)?;
-                let normalized_key = normalize_lucid_key_events(interp, &args[0], env)?;
-                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
-                key_binding_with_parts(
+                key_binding_value(
                     interp,
-                    &key_parts,
+                    args[0],
                     args.get(1).is_some_and(Value::is_truthy),
                     args.get(2).is_some_and(Value::is_truthy),
+                    args.get(3).copied().unwrap_or(Value::Nil),
                     env,
                 )
             }
             "keymap-prompt" => {
-                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 1)?;
-                if let Some(id) = keymap_record_id(interp, &args[0]) {
-                    return Ok(interp
-                        .find_record(id)
-                        .and_then(|record| record.slots.first().cloned())
-                        .unwrap_or(Value::Nil));
-                }
                 if let Ok(items) = args[0].to_vec()
                     && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap")
                 {
@@ -533,45 +597,30 @@ define_dispatch!(
             }
             "command-remapping" => {
                 need_arg_range(name, args, 1, 3)?;
-                command_remapping(interp, &args[0], args.get(2), env)
+                command_remapping_value(
+                    interp,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    env,
+                )
             }
             "keymap-parent" => {
-                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 1)?;
-                // GNU's constructor returns the same Lisp keymap object
-                // accepted here. Resolve its public cons root to the existing
-                // owner; restricting this route to private records loses it.
-                Ok(keymap_record_id(interp, &args[0])
-                    .and_then(|id| interp.find_record(id))
-                    .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
-                    .unwrap_or(Value::Nil))
+                let map = resolve_keymap_without_autoload(interp, &args[0], env)?;
+                Ok(keymap_parent_value(interp, map, env))
             }
             "set-keymap-parent" => {
-                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
-                // Fset_keymap_parent resolves a symbolic parent without
-                // autoloading it, and installs and returns that actual map.
+                let map = resolve_keymap_without_autoload(interp, &args[0], env)?;
                 let parent = if args[1].is_nil() {
                     Value::Nil
                 } else {
                     resolve_keymap_without_autoload(interp, &args[1], env)?
                 };
-                ensure_runtime_keymap_current(interp, &parent)?;
-                if let Some(id) = keymap_record_id(interp, &args[0])
-                    && let Some(record) = interp.find_record_mut(id)
-                {
-                    if record.slots.len() <= KEYMAP_PARENT_SLOT {
-                        record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
-                    }
-                    record.slots[KEYMAP_PARENT_SLOT] = parent;
-                    refresh_runtime_keymap_public_view(interp, id)?;
-                    // keymap.c:Fset_keymap_parent returns the installed parent.
-                    return Ok(parent);
-                }
-                Ok(Value::Nil)
+                set_keymap_parent_value(interp, map, parent, env)
             }
             "map-keymap" => {
-                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 2, 3)?;
                 if args.get(2).is_some_and(Value::is_truthy) {
                     return interp.call_function_value(
@@ -588,7 +637,6 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "map-keymap-internal" => {
-                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
                 if !is_keymap_value(interp, &args[1]) {
                     return Err(LispError::WrongTypeArgument("keymapp".into(), args[1]));
@@ -1777,15 +1825,6 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
             _ => return Err(plist_type_error(&plist)),
         }
     }
-}
-
-/// A keymap argument's record follows its public view before a primitive
-/// reads or rewrites it (see `ensure_runtime_keymap_current').
-fn keymap_arguments_current(interp: &mut Interpreter, args: &[Value]) -> Result<(), LispError> {
-    for arg in args.iter().take(2) {
-        crate::lisp::primitives::values::ensure_runtime_keymap_current(interp, arg)?;
-    }
-    Ok(())
 }
 
 /// The `symbol-function' primitive, callable directly (a subr's function pointer).

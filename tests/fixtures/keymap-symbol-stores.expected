@@ -1,0 +1,1 @@
+(first-command first-command (range-command range-command range-command) (nil nil range-command) (first-command second-command) (nil nil) (wrong-type-argument arrayp nil) (wrong-type-argument arrayp 17) (wrong-type-argument arrayp unexpected) (wrong-type-argument arrayp (97)) (wrong-type-argument keymapp missing-keymap-store) loaded-command)

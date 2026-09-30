@@ -1423,12 +1423,19 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
           (let ((m (make-sparse-keymap)) (p (make-sparse-keymap)))
             (set-keymap-parent m p)
             (define-key p "\M-q" 'ignore)
-            (define-key m "\C-c" 'car))
+            (define-key m "\C-c" 'car)
+            (setq zz-image-child m zz-image-parent p))
           t)"#;
     let form = crate::lisp::reader::Reader::new(program)
         .read()
         .expect("setup parses")
         .expect("setup has a form");
+    // As in the ordinary reader, publish the names in the interpreter's
+    // obarray before evaluation. That real image root owns the symbols
+    // whose value cells hold the two maps.
+    let form = interp
+        .intern_read_symbols_in_value(form, &env)
+        .expect("setup names are interned in the image obarray");
     interp.eval(&form, &mut env).expect("setup evaluates");
     interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
     interp.keyboard_input.command_keys = vec![Value::Integer(97)];
@@ -1521,44 +1528,35 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             .collect::<Vec<_>>()
     );
     assert!(target.has_buffer("zz-second"));
-    // The keymap facade records came through as a group, and the loader
-    // rebuilt the view-to-record index: the child's list resolves to its
-    // record, whose parent answers a binding through the list.
-    let keymap_records = image
-        .roots
-        .iter()
-        .find(|(slot, _)| *slot == RootSlot::KeymapRecords)
-        .map(|(_, value)| value.to_vec().expect("a list"))
-        .expect("the keymap records group");
-    assert!(keymap_records.len() >= 2, "{keymap_records:?}");
-    let mut resolved = 0;
-    for record in &keymap_records {
-        let Kind::Record(id) = record.kind() else {
-            panic!("not a record: {record:?}")
-        };
-        let view = target
-            .find_record(id)
-            .expect("keymap record installed")
-            .slots
-            .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)
-            .cloned()
-            .expect("the public view");
-        target.set_global_binding("zz-loaded-keymap", view);
-        let form = crate::lisp::reader::Reader::new(
-            "(list (keymapp zz-loaded-keymap) (lookup-key zz-loaded-keymap \"\\C-c\") \
-                   (keymapp (keymap-parent zz-loaded-keymap)) (lookup-key zz-loaded-keymap \"\\M-q\"))",
+    // Ordinary startup installs the decoded symbol cells after loading
+    // the object graph. The Lisp probe needs the same second step.
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "root-groups.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
         )
-        .read()
-        .expect("probe parses")
-        .expect("a form");
-        let answer = target
-            .eval(&form, &mut crate::lisp::types::Env::new())
-            .expect("probe evaluates");
-        if printed(&mut target, &answer) == "(t car t ignore)" {
-            resolved += 1;
-        }
-    }
-    assert_eq!(resolved, 1, "the child keymap resolves through its record");
+        .expect("install the dumped symbol cells");
+    // Actual Lisp roots carry both maps; the restored child shares the
+    // parent's cons cells. Collection must preserve both while reachable.
+    let form = crate::lisp::reader::Reader::new(
+        r#"(progn (garbage-collect)
+           (list (keymapp zz-image-child) (lookup-key zz-image-child "\C-c")
+                 (keymapp (keymap-parent zz-image-child))
+                 (lookup-key zz-image-child "\M-q")
+                 (eq (keymap-parent zz-image-child) zz-image-parent)
+                 (eq (nthcdr 2 zz-image-child) zz-image-parent)))"#,
+    )
+    .read()
+    .expect("probe parses")
+    .expect("a form");
+    let answer = target
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .expect("restored maps remain live");
+    assert_eq!(printed(&mut target, &answer), "(t car t ignore t t)");
 }
 
 #[test]

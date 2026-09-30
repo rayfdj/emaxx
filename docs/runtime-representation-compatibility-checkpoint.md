@@ -34,7 +34,8 @@ host-permitted complete rerun passes on the identical source and test binary;
 the failed attempt stays preserved. Its initial retainer used the wrong fixture
 directory, so only binary retention is claimed for that failed attempt.
 
-PR #77 is ready for normal merge. Preexisting sequence-type, callback-mutation
+[PR #77](https://github.com/rayfdj/emaxx/pull/77) is merged at main
+`e9bbd598e14003d82ff23be4abcf05b0489164ca`. Preexisting sequence-type, callback-mutation
 and macro-prefix mismatches remain documented in ordinary negative probes;
 the separately packaged source166 draft repairs them with its own evidence.
 This checkpoint does not complete the architecture or performance goal.
@@ -94,8 +95,9 @@ supersedes the source162 entry point below and includes the source161 menu
 repair. All 339 compiled/test inputs replay from published `d9caac1e`.
 Strict checks, **393 selected plus 69 disjoint command-loop tests per mode**
 (462 debug and 462 release), and all **25 ordinary exact GNU comparisons** pass.
-Complete macOS Rust and terminal runs are active; complete Linux and frozen
-certification remain required.
+The first complete macOS attempts were subsequently interrupted; the
+[live checkpoint](runtime-representation-live-keymap-checkpoint.md) records their
+raw evidence and recovery. Complete Linux Rust and frozen runs are active.
 
 Lookup reads actual vector/string events when reached, including mutable
 unibyte Meta, Lucid and translated sequences. `key-binding` invokes actual
@@ -116,8 +118,10 @@ failures remain preserved, alongside successful negative replays on retained
 main. The initial retained-main replay's environment setup error is recorded
 separately from its corrected semantic negative results.
 
-This remains packaged continuation material, separate from PR #77 production
-code. Temporary compound-event/enumeration adapters and older bounded paths in
+This was packaged continuation material, separate from PR #77 production
+code. It is now applied as the next task-branch candidate; see the
+[live keymap checkpoint](runtime-representation-live-keymap-checkpoint.md).
+Temporary compound-event/enumeration adapters and older bounded paths in
 input decoding and signal handling still require removal or justification.
 The focused source166 review is not the final goal-wide adversarial audit.
 

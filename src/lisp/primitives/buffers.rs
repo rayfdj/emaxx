@@ -817,7 +817,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 crate::lisp::eval::RecordKind::TreeSitterNode => "treesit-node",
                 crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => "treesit-compiled-query",
                 crate::lisp::eval::RecordKind::Sqlite => "sqlite",
-                crate::lisp::eval::RecordKind::Keymap => "cons",
             };
             return Ok(Value::symbol(type_name));
         }

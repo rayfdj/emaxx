@@ -4,8 +4,8 @@
 //! evaluating environment. A pooled, inactive operand Vec is not a live stack.
 
 use super::{
-    Env, Interpreter, LabeledRestriction, LispError, LispReachability, SavedExcursion,
-    SavedRestriction, SavedRestrictionBounds, SpecialBindingRestore, Value,
+    Env, Interpreter, LabeledRestriction, LispError, LispReachability, PendingFileNotification,
+    SavedExcursion, SavedRestriction, SavedRestrictionBounds, SpecialBindingRestore, Value,
     WindowConfigurationSnapshot,
 };
 use crate::lisp::types::LispErrorKind;
@@ -69,6 +69,18 @@ impl<T: TraceLispRoots> TraceLispRoots for Vec<T> {
 impl TraceLispRoots for Env {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.environment(self);
+    }
+}
+
+impl TraceLispRoots for PendingFileNotification {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        if let Some(event) = &self.raw_event {
+            marker.value(event);
+        }
+        for (descriptor, callback) in &self.callbacks {
+            marker.value(descriptor);
+            marker.value(callback);
+        }
     }
 }
 

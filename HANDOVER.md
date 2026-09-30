@@ -1,6 +1,27 @@
 # Resume the compact runtime goal here
 
-**Validated merge candidate:** source161 passes complete Rust gates:
+**Latest validated checkpoint: source174**, published at `178fdf37` in
+[PR #78](https://github.com/rayfdj/emaxx/pull/78). Read the
+[complete validation checkpoint](docs/runtime-representation-call-validation-complete.md)
+after the complete goal: **3,023 macOS / 3,035 Linux Rust passes**, native
+artifact identity on both platforms, **519 Linux frozen files / 7,928 matching
+outcomes / 1,038 successful processes**, and all **223 terminal scenarios / 679
+screen and filesystem comparisons**. The original full-run reclamation
+assertion passes on both platforms. All prior failures and evidence limits
+remain preserved in the [portable receipts](docs/handover/2026-09-30-call-validation-complete/manifest.json).
+
+**Current unfinished work: source178's input decoder**, separately packaged in
+the [current draft handover](docs/runtime-representation-input-decoder-draft.md).
+Strict checks, **308 gate / 308 release controls** and **seven ordinary exact
+GNU comparisons** pass. Its complete patch replays all 360 recorded inputs,
+including the four embedded files omitted from older manifests. The draft is
+not applied to production. Terminal/minibuffer integration and broader reader
+contracts remain open, along with symbol authority, allocation accounting,
+final audit, complete final-source validation and locked performance parity.
+**The full goal remains active; this checkpoint is not completion.**
+
+**Previous main checkpoint, source161:** [PR #77](https://github.com/rayfdj/emaxx/pull/77)
+merged at `e9bbd598e14003d82ff23be4abcf05b0489164ca`. It passes complete Rust gates:
 **3,013 macOS / 3,025 Linux**, with two existing terminal ignores each and native
 artifact identity passing. Its [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36596290294)
 matches **519 files / 7,928 outcomes**, with all 1,038 processes successful.
@@ -8,8 +29,7 @@ All **223 terminal scenarios, 651 screen comparisons and 28 filesystem
 comparisons** match source/ABI-matched GNU. The [complete receipts](docs/handover/2026-09-30-compatibility-complete/manifest.json)
 verify raw inventories, outcomes and artifact hashes. All 328 compiled/test
 inputs match published `d9caac1e`, documentation checkpoint `72b487b1` and the
-macOS worktree. PR #77 is ready for normal merge; main is still `1d1e8cdc`
-at this evidence checkpoint. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
+macOS worktree. Read the [compatibility checkpoint](docs/runtime-representation-compatibility-checkpoint.md)
 after the complete goal.
 
 Source161 repairs Table/Org captions by calling unchanged GNU
@@ -21,7 +41,78 @@ That failure, source155's 17 terminal divergences and source153's native
 reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
-**Separate architecture work:** the [source166 portable keymap draft](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json)
+**Previous selected continuation:** read the
+[combined call-metadata checkpoint](docs/runtime-representation-call-metadata-checkpoint.md).
+Then read the [live input-decoder draft](docs/runtime-representation-input-decoder-draft.md)
+for the exact unfinished patch, preserved failures, current validation handles
+and additional compiler-dependency provenance. This draft is packaged separately
+and is not applied to production.
+Source174 combines source172's independent mutable TLS reports and source173's
+direct subr classification/descriptor reads. All 345 compiled/test inputs match
+the isolated checkout. Strict checks, **395 gate and 395 release controls**,
+and **12 ordinary exact GNU comparisons** pass. Complete macOS Rust and terminal
+runs have started; complete Linux Rust and frozen compatibility remain required.
+The [portable receipts](docs/handover/2026-09-30-combined-call-repair/manifest.json)
+also verify the source170 Eglot replay's 52 matching outcomes and source172's
+two TLS Rust passes plus 27 matching network-stream outcomes. The original
+full frozen GNU Eglot timeout remains a failed run. This candidate is not yet
+ready for main. Input decoding is a separate unfinished draft; all goal-wide
+requirements below remain open.
+
+**Previous task-branch continuation:** read the
+[independent TLS report checkpoint](docs/runtime-representation-tls-report-checkpoint.md).
+Source172 removes the process-owned report cache and returns fresh mutable
+Lisp strings from the live TLS session. Strict checks, **414 debug and 414
+release controls**, and two exact ordinary GNU comparisons pass. All 345
+compiled/test inputs match the isolated checkout. Its
+[portable receipts](docs/handover/2026-09-30-tls-peer-reports/manifest.json)
+preserve source171's failed string-mutation probe and both helper invocation
+failures. Complete source172 validation remains required. Source173's
+call-metadata repair is still isolated: **226 gate and 226 release controls**
+and all strict checks pass. Its [portable unfinished draft](docs/handover/2026-09-30-call-metadata-draft/manifest.json)
+contains the exact patch, source hashes and closed receipts; ordinary and
+combined-source complete validation remain required. Input decoding,
+post-deinit TLS behavior and the full goal remain unfinished.
+
+**Previous task-branch candidate:** read the
+[event and TLS root checkpoint](docs/runtime-representation-event-roots-checkpoint.md).
+Source170 extends source166 with rooted notification batches, traced/cloned
+TLS Lisp state and live special-event lookup. All strict checks, **482 debug
+and 482 release controls**, and **27 ordinary GNU comparisons** pass. The full
+macOS Rust gate now **fails**: 2,195 tests pass, then the unchanged suspended
+bytecode reclamation assertion fails; four later groups and both Cargo stages
+do not execute. Full Linux Rust passes **3,034 tests**, including native
+artifact identity; all **223 terminal scenarios / 679 checkpoints** match.
+The full Linux frozen comparison has **7,927/7,928 matching outcomes**:
+Emaxx has no unexpected outcomes, while GNU times out in one Eglot JSON-RPC
+test. The comparison remains failed. Both earlier autorevert and network-stream
+files now match. The [complete source170 receipts](docs/handover/2026-09-30-event-root-full-validation/manifest.json)
+retain all successes and failures. The
+[new failure and debugger evidence](docs/handover/2026-09-30-gc-retention-diagnosis/manifest.json)
+reproduces the original source166 Linux failure using its exact executable.
+Further exact-binary diagnosis locates the retaining word in `eval_call`:
+a one-byte flag store leaves stale upper pointer bytes at stack offset `0xa8`.
+Isolated source173 removes copied optional call metadata and repeated function
+decoding; its validation is pending. Source172 separately removes the cached
+TLS report and allocates mutable report strings; validation is also pending.
+An unchanged source170 macOS binary passes a standalone replay, which does not
+clear its full-gate failure or certify either repair. The earlier
+[portable evidence](docs/handover/2026-09-30-event-roots/manifest.json)
+preserves source168's compiler and source169's new-test failures, negative
+source166 comparisons and an unresolved post-deinit TLS difference. This does
+not clear the macOS reclamation failure and is not ready for main.
+
+The recovered source166 macOS gate passes **3,019 tests**, including native
+artifact identity, with two existing terminal ignores. Its second terminal
+run was interrupted during **112/223**, without a final result. The first
+instrumented Linux reclamation diagnosis passes with a different binary and
+loses its captured child trace; it cannot clear the ordinary failure.
+These receipts and limitations are retained in the event-root archive.
+
+**Previous task-branch candidate:** source166 is now applied on top of that main
+checkpoint. Read the [live keymap checkpoint](docs/runtime-representation-live-keymap-checkpoint.md)
+and its [portable draft evidence](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json).
+It
 replaces private record keymaps, reverse indexes, snapshots, binding caches and
 permanent roots with actual cons/char-table storage. It integrates source161's
 menu repair, reads live input events through collecting callbacks, shares the
@@ -30,8 +121,25 @@ decisions and duplicate filter calls. Strict checks, **462 debug and 462 release
 controls** and all **25 ordinary GNU comparisons** pass. Its portable patch
 replays all 339 inputs from published `d9caac1e`.
 
-Source166 remains separate from PR #77 production code. Its complete macOS Rust
-and terminal runs are active; Linux/frozen certification is not yet available.
+Source166 was separate continuation material in PR #77 and is now the next
+production candidate in [PR #78](https://github.com/rayfdj/emaxx/pull/78), published
+at `3bada057`. The first full macOS runs were interrupted: Rust received SIGTERM
+in primitives after five completed groups; the terminal log ends during scenario
+33/223. Their [raw evidence](docs/handover/2026-09-30-keymap-interrupted-runs/manifest.json)
+is preserved. Former temporary worktrees and GNU source are absent. Recovery uses
+persistent `target/runtime-goal/recovered-2026-09-30` checkouts and a fresh GNU
+candidate; the GNU rebuild and native ABI check now pass. The recovered macOS
+outcomes are recorded above. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
+**fails** the unchanged suspended-bytecode reclamation assertion: 2,201 tests
+pass, one fails, and four later groups plus both Cargo stages do not execute.
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) executes
+all 519 files / 7,928 outcomes, with **7,926 matching and two mismatches** in
+autorevert and network-stream. All 1,038 processes exit successfully, but two
+Emaxx outcomes are unexpected failures. The
+[complete failure receipts](docs/handover/2026-09-30-keymap-linux-failures/manifest.json)
+also retain three diagnostic replays: the same exact Rust binary repeats the
+reclamation failure; both ordinary files abort on a freed-cons assertion and
+produce no complete Emaxx outcomes. These failures remain unresolved.
 The source162/163/165 negative comparisons, source164 compiler failure and
 retained-main callback/dispatch failures remain in the linked draft history.
 Source166's selected passes do not substitute for complete validation.

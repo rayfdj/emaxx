@@ -279,28 +279,6 @@ pub(crate) fn sweep_weak_hash_tables(
     interp.modules.collect(&live);
 }
 
-pub(crate) fn keymap_list_items(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Option<Vec<Value>>, LispError> {
-    keymap_list_items_inner(interp, value, &mut HashSet::new(), &mut HashSet::new())
-}
-
-/// The projection for a keymap held as its record alone; a keymap held by
-/// its public view is the list GNU has, and the primitives that hand out
-/// its cells or count them (`nthcdr', `nth', `length', `safe-length')
-/// read that list itself, so `(setcdr (last map) parent)' reaches the
-/// map's own cell and `(eq (last map) (cdr map))' holds as in fns.c.
-pub(crate) fn keymap_record_list_items(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Option<Vec<Value>>, LispError> {
-    if matches!(value.kind(), Kind::Cons(_)) {
-        return Ok(None);
-    }
-    keymap_list_items(interp, value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,93 +391,11 @@ mod tests {
     }
 }
 
-fn keymap_list_items_inner(
-    interp: &Interpreter,
-    value: &Value,
-    seen_keymaps: &mut HashSet<u64>,
-    seen_cons: &mut HashSet<usize>,
-) -> Result<Option<Vec<Value>>, LispError> {
-    let Some(id) = keymap_record_id(interp, value) else {
-        return Ok(None);
-    };
-    if let Some(view) = runtime_keymap_public_view(interp, value) {
-        return view.to_vec().map(Some);
-    }
-    if !seen_keymaps.insert(id) {
-        // GNU keymaps are cons graphs and may contain recursive prefix
-        // bindings.  A repeated node is still recognizably a keymap, but
-        // must not recurse forever while projecting the list interface.
-        return Ok(Some(vec![Value::Symbol("keymap".into())]));
-    }
-    let Some(record) = interp.find_record(id) else {
-        return Ok(None);
-    };
-    let char_table = keymap_char_table(record);
-    let name = record.slots.first().cloned().filter(|name| !name.is_nil());
-    let bindings = keymap_bindings(record)?;
-    let mut items = vec![Value::Symbol("keymap".into())];
-    if let Some(char_table) = char_table {
-        items.push(char_table);
-    }
-    if let Some(name) = name {
-        items.push(name);
-    }
-    for binding in bindings
-        .iter()
-        .filter(|binding| !binding.after_prompt)
-        .chain(bindings.iter().filter(|binding| binding.after_prompt))
-    {
-        let value = project_embedded_keymaps(interp, &binding.value, seen_keymaps, seen_cons)?;
-        items.push(Value::cons(
-            keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
-            value,
-        ));
-    }
-    seen_keymaps.remove(&id);
-    Ok(Some(items))
-}
-
-fn project_embedded_keymaps(
-    interp: &Interpreter,
-    value: &Value,
-    seen_keymaps: &mut HashSet<u64>,
-    seen_cons: &mut HashSet<usize>,
-) -> Result<Value, LispError> {
-    if keymap_record_id(interp, value).is_some() {
-        return Ok(Value::list(
-            keymap_list_items_inner(interp, value, seen_keymaps, seen_cons)?
-                .expect("keymap identity was checked above"),
-        ));
-    }
-
-    let Some((car, cdr)) = (value).cons_cells() else {
-        return Ok(*value);
-    };
-    let identity = car.cell_id();
-    if !seen_cons.insert(identity) {
-        // Preserve a circular non-keymap cons graph.  The caller's list
-        // primitive remains responsible for reporting or traversing it.
-        return Ok(*value);
-    }
-    let original_car = car.get();
-    let original_cdr = cdr.get();
-    let projected_car = project_embedded_keymaps(interp, &original_car, seen_keymaps, seen_cons)?;
-    let projected_cdr = project_embedded_keymaps(interp, &original_cdr, seen_keymaps, seen_cons)?;
-    seen_cons.remove(&identity);
-
-    if values_eql(&projected_car, &original_car) && values_eql(&projected_cdr, &original_cdr) {
-        Ok(*value)
-    } else {
-        Ok(Value::cons(projected_car, projected_cdr))
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct RuntimeKeymapBinding {
     pub(crate) key: String,
     pub(crate) parts: Option<Vec<Value>>,
     pub(crate) value: Value,
-    pub(crate) after_prompt: bool,
 }
 
 pub(crate) fn keymap_entry_key_value(parts: &[Value], key: &str) -> Value {

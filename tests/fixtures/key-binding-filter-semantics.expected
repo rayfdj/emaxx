@@ -1,0 +1,1 @@
+((normal second-command second 1) (error nil second 1) (quit quit second 1) (throw thrown second 1) (remapped-command 1) (original-command 2) (remapped-command 2 nil nil))

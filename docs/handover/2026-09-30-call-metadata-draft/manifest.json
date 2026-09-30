@@ -1,0 +1,208 @@
+{
+  "status": "isolated unfinished source173 draft; 226 gate and 226 release controls plus strict checks pass",
+  "base_commit": "3d45f96ffba413e1bdf2e41e05d34716de2b726f",
+  "source_inputs": 343,
+  "qualification": "Not applied to the published source172 candidate. Ordinary image/comparison work and combined-source complete validation remain required. Original failure and stale-byte stack diagnosis are in ../2026-09-30-event-root-full-validation. The unchanged source170 macOS binary passes its standalone replay, so selected passes do not establish a final repair. No existing test or timeout changed. No performance or goal-completion claim.",
+  "archive": {
+    "path": "receipts.tar.gz",
+    "bytes": 180170,
+    "sha256": "ea636381953c427735746926abfd6720d7b42891c046dac5c77a85df1591171d"
+  },
+  "files": [
+    {
+      "path": "build-retention.py",
+      "bytes": 2412,
+      "sha256": "c96015a446df304bb176fef13028d749779037c0e94e3b908365c4654320a37a"
+    },
+    {
+      "path": "check-retention.py",
+      "bytes": 1750,
+      "sha256": "ffad46d0f38631aa376ac72b9ec0e10362cbb9576f14ec51fa3757ff4e258ff9"
+    },
+    {
+      "path": "queue-source173-checks.py",
+      "bytes": 711,
+      "sha256": "882dcad2ffbc36fae134ced5c969c6d0d5137c0569a7e7ab4e0a08055b932261"
+    },
+    {
+      "path": "source173-base.json",
+      "bytes": 598,
+      "sha256": "8728ba78ff63b2f59e0675f757042469e4b54a177e519cb90d01b9620c97f564"
+    },
+    {
+      "path": "source173-check-command.json",
+      "bytes": 471,
+      "sha256": "3427527e191da9e43592be26a8451e5e7e438ab9b231af129103ea484198ba04"
+    },
+    {
+      "path": "source173-check-driver.log",
+      "bytes": 76,
+      "sha256": "52985125b498099c6d66e393a85e1bfec74eb4b5a6954f0561514d38ee99c0b2"
+    },
+    {
+      "path": "source173-check-result.json",
+      "bytes": 84,
+      "sha256": "a7e6e4e9814991d2e5205061a4c76a4b3122b06719953bee0f02785c52321002"
+    },
+    {
+      "path": "source173-check.log",
+      "bytes": 191,
+      "sha256": "a600995567d13f3742d713ec7c302691af76010e844c41e1a59de90a289610d0"
+    },
+    {
+      "path": "source173-clippy-command.json",
+      "bytes": 459,
+      "sha256": "7fd64f16a4ba9572b6d45ccabd408cb0d7af82877d56b721e272575a99409e88"
+    },
+    {
+      "path": "source173-clippy-result.json",
+      "bytes": 83,
+      "sha256": "2fba148a8eb0b85de17da11254ab7f30c0a57e228ff423df3cfe2d4ad61f62f6"
+    },
+    {
+      "path": "source173-clippy.log",
+      "bytes": 245,
+      "sha256": "1d481a5ff6e7341a77aa26f3ceddf9b3cedf0cd5cbf3095c5230546b8ab20c4b"
+    },
+    {
+      "path": "source173-diff-command.json",
+      "bytes": 375,
+      "sha256": "e6e6fbc56788739326dcc3fd42d34afcaaa5505d3f89984da230234ac9a5111c"
+    },
+    {
+      "path": "source173-diff-result.json",
+      "bytes": 89,
+      "sha256": "6325d13dca485f495843d0b9e2d3d85da31ead7e4e4a00e206e012ad8fb45bea"
+    },
+    {
+      "path": "source173-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source173-fmt-command.json",
+      "bytes": 399,
+      "sha256": "5be660dcaf16a9e5a8821709d8e9c102cbf944f3d49eace5e419d7f56cb1e9a7"
+    },
+    {
+      "path": "source173-fmt-result.json",
+      "bytes": 89,
+      "sha256": "a38ab9f007dbbcf5363aab6bd301d7a493aaceef9817f2638ff04e0cc943a18e"
+    },
+    {
+      "path": "source173-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source173-gate-build-command.json",
+      "bytes": 1110,
+      "sha256": "02c2e5f516ba6ba1276edad32573ba087f5a994a1bfb1200081d28e754129824"
+    },
+    {
+      "path": "source173-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "899ec25e4a7c788b0d196857a3465685fd3c3c4ca0835ea8025dec508f254654"
+    },
+    {
+      "path": "source173-gate-build.log",
+      "bytes": 213099,
+      "sha256": "8a3d19aaa4ab83f1dd688607d31c2c9073536c8cc5ab850b91aaa60de260089e"
+    },
+    {
+      "path": "source173-gate-inventory.txt",
+      "bytes": 257756,
+      "sha256": "05ea7f5e2e0f236c63d30755a601a1731f9466bfd3168224fcd799a9262e05e3"
+    },
+    {
+      "path": "source173-gate-selected-command.json",
+      "bytes": 22201,
+      "sha256": "9deee01eb33bb18af9aba4f40f2677c254e84f88abbe3fa5d5bd8bb02c26d917"
+    },
+    {
+      "path": "source173-gate-selected-inventory-check.json",
+      "bytes": 204,
+      "sha256": "6622012949713cff22dba012dfe4c0435c86b0dc5cafff0870f4da95ce0340e7"
+    },
+    {
+      "path": "source173-gate-selected-result.json",
+      "bytes": 90,
+      "sha256": "71a2d366701f2894ae45477022c6d1f81ac01fb3b84d5c65e45ff0da790d3ff6"
+    },
+    {
+      "path": "source173-gate-selected.log",
+      "bytes": 39286,
+      "sha256": "fb46dbefa7718c542e87311922835f3cea9d0bd12b9c1ca9399a0116ddb0ca97"
+    },
+    {
+      "path": "source173-manifest.json",
+      "bytes": 38414,
+      "sha256": "7047a557f6059225f0537ff1abefd1c6d3571b1a2dcfd6b355abb3a9c244ae3d"
+    },
+    {
+      "path": "source173-release-build-command.json",
+      "bytes": 1113,
+      "sha256": "a245881dbc561045e6a96e8bbefbb8e93fc5d16706bdbedd6eb03fce4383e7ef"
+    },
+    {
+      "path": "source173-release-build-result.json",
+      "bytes": 85,
+      "sha256": "2e75fd245fa15d35b47fcaa493a5c3ec85276b562b7d596664340b49643635eb"
+    },
+    {
+      "path": "source173-release-build.log",
+      "bytes": 214788,
+      "sha256": "f8b10772b3857d6691658456c6eb0a128d6f4018761e1abb60128c2193d83067"
+    },
+    {
+      "path": "source173-release-inventory.txt",
+      "bytes": 257667,
+      "sha256": "8437cbdcbc3e89464e117405568c25f0096a6dea53ca08cc7c0545a7f9d8f4b9"
+    },
+    {
+      "path": "source173-release-selected-command.json",
+      "bytes": 22204,
+      "sha256": "51d13cf015872dba854bb6631305ae0ca7c750bc1ab67753d761b61524edce63"
+    },
+    {
+      "path": "source173-release-selected-inventory-check.json",
+      "bytes": 204,
+      "sha256": "9972925cf191ee8d6266b788422d11e7408a61d68d63194a91c7e191d91e657d"
+    },
+    {
+      "path": "source173-release-selected-result.json",
+      "bytes": 89,
+      "sha256": "99b220a2765d929339cfda4631e8953390d618060618bbc1ffaf9af3aea6d200"
+    },
+    {
+      "path": "source173-release-selected.log",
+      "bytes": 39285,
+      "sha256": "a58abf1aa26e70925462e5f1c7996e417849b9aeeb664af2229f9a7fc33361a5"
+    },
+    {
+      "path": "source173-static-launch.json",
+      "bytes": 490,
+      "sha256": "b5e33d55b2235a220981410593e93656d8124bf35753c283720e7b11b9ff5a62"
+    },
+    {
+      "path": "source173-validation-launch.json",
+      "bytes": 199,
+      "sha256": "738bc809b3ac01dbd233c1585286f44f8e5ff2e59408f6fbcc7e2f08393b66a9"
+    },
+    {
+      "path": "source173.patch",
+      "bytes": 4605,
+      "sha256": "5aac1297a624482d7ca19bb10f6871290f241d28883f9a575e641d8c7e02b827"
+    },
+    {
+      "path": "static-retention.py",
+      "bytes": 1543,
+      "sha256": "ab9d01137e1446c94840c0b0ed40917c2bc112858cd8d4196c545765eaa22fc6"
+    },
+    {
+      "path": "test-retention.py",
+      "bytes": 4094,
+      "sha256": "5271edf6b95f1dddb5be76e9e905d8cbd9ae6909aa59f3b1054428d0161c7081"
+    }
+  ]
+}

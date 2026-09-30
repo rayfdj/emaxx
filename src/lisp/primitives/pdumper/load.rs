@@ -888,10 +888,6 @@ impl Loader<'_> {
                 .map_err(|message| LoadError::Error(format!("{slot:?}: {message}")))?;
         }
 
-        // The keymap primitives find a keymap record through its public
-        // view's cons cells; that index is derived from the records.
-        self.interp.rebuild_keymap_public_views();
-
         Ok(LoadedImage {
             header,
             roots,
