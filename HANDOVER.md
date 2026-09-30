@@ -156,24 +156,32 @@ retained. These are gate-profile results, not complete or release validation.
 Earlier failures and every intermediate patch remain preserved.
 No bytecode repair is applied to the task branch.
 
-The [current source220 string-byte draft](docs/runtime-representation-string-bytes-draft.md)
+The [current source223 string-byte and direct-VM draft](docs/runtime-representation-string-bytes-draft.md)
 continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`.
-It replaces stored Rust text/extended-character payloads with actual GNU-encoded
-bytes, updates direct string stores/conversion and image bytes, and adds ordinary
-GNU/physical-payload controls. All 421 inputs and file modes replay exactly;
-strict checks and a fresh gate build pass with zero warnings. The
-[focused audit and broader launch](docs/handover/2026-09-30-shared-reader-draft/source220-string-controls-and-broad-launch-manifest.json)
-record **ten passes / two failures** across all twelve controls. Direct byte
-storage passes; active-call mutation still fails, and the new GNU differential
-hits the old string constructor's rejection of surrogate character 55296.
-Later expressions in that failed control are unverified. Supervisor **67724 has
-exited** after a stale receipt filename prevented its broader stage. The
-unexecuted **927-test** stage now runs once under supervisor **68772**, with
-unchanged source, helpers and expectations. Preserve that checkout and its
-helpers. The earlier [portable draft](docs/handover/2026-09-30-shared-reader-draft/source220-canonical-string-byte-draft-manifest.json)
-contains no runtime verdict; the focused archive does not assign the broader
-outcome. Direct VM execution, plain-string migration, compact
-string headers, physical accounting and final correctness/performance remain open.
+Shared strings hold actual GNU bytes. Source221 repairs full-range `string`,
+`make-string` and `char-to-string` construction without Rust-char conversion.
+Its [complete affected-module audit](docs/handover/2026-09-30-shared-reader-draft/source221-string-constructor-repair-manifest.json)
+verifies strict zero-warning checks, **14/15 focused passes** and **927/928 broader
+passes**, zero ignores; only active-call mutation fails. Supervisor **70849 has
+exited**. The preceding [source220 broader audit](docs/handover/2026-09-30-shared-reader-draft/source220-string-broad-results-manifest.json)
+retains **925/927 passes and two failures**; supervisor **68772 has exited**.
+
+The [source223 portable draft](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-draft-manifest.json)
+fetches the actual code bytes, uses byte offsets for branches and suspended
+frames, and removes decoded-code caches/tables, per-call `Rc` activation and
+obsolete string serial bookkeeping. All **425 inputs and modes** replay exactly;
+strict checks pass with zero warnings. The
+[focused audit](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-focused-manifest.json)
+verifies **17 gate passes**,
+including the original active-call mutation failure and new GNU-confirmed
+width/operand/branch/GC/suspended-caller cases. Supervisor **73057** is running
+all **930 affected-module tests**. Supervisor **73532** runs release controls
+and the same broader inventory. Preserve the checkout and helpers until both
+and their children exit. Audit each outcome; a launch is not a pass.
+Source222's strict obsolete-helper failure remains preserved, with no runtime
+tests. A temporary non-ASCII plain-string Rust API byte adapter remains.
+Plain-string migration, compact headers, physical accounting, complete validation
+and the full performance goal remain open. No draft runtime is applied to the branch.
 
 The preserved **source208** carries evaluator207
 and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)

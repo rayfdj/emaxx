@@ -6,6 +6,14 @@ This is a separate unfinished draft, **not an applied task-branch repair**.
 The next [canonical string-byte draft](runtime-representation-string-bytes-draft.md)
 continues from source216 in a separate checkout.
 
+That continuation is now **source223**: canonical byte storage and full-character
+constructors are implemented, and the VM fetches current bytes with byte-offset
+cursors rather than decoded-program caches. All seventeen focused gate controls
+pass, including the original active-call failure; broader gate and release
+validation are running. The linked string-byte handover is authoritative for
+those jobs and remaining plain-string/header/accounting limitations. The
+source216 results below remain a preserved closure-only baseline.
+
 ## Current source216
 
 The current checkout remains

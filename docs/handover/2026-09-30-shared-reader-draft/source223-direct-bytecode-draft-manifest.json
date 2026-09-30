@@ -1,0 +1,273 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated direct-bytecode draft; runtime outcomes separately recorded",
+    "source_inputs": 425,
+    "strict_checks": "passed with zero warnings",
+    "supervisor": 73057,
+    "qualification": "Canonical strings are fetched directly with byte-offset cursors. Removes decoded-code registry/offset tables/per-call Rc activation and obsolete string serial words/increments. Whole-program diagnostics retain their original test coverage. A non-ASCII immutable plain-string Rust API adapter remains and must be removed with that representation. This bundle assigns no runtime, release, full-validation or performance verdict. Source222 strict failure and all previous runtime failures remain preserved. No draft runtime is applied to the task branch."
+  },
+  "archive": {
+    "path": "source223-direct-bytecode-draft.tar.gz",
+    "bytes": 273460,
+    "sha256": "9ae9d265424618134219f03ce41bb4c1d8575f87162300e92d9966e7ed3c9a72"
+  },
+  "files": [
+    {
+      "path": "audit-source222-through223-patches.py",
+      "bytes": 2810,
+      "sha256": "b24df1e139f12bea25e539022b2fff2ca421a03c5ce8b103c47f9975cf2f0789"
+    },
+    {
+      "path": "bytecode-live-fetch-gnu-command.json",
+      "bytes": 2288,
+      "sha256": "1d71b79e2a222e7ccdc1125f34e29fd04919ae2e0365766af9862baf7142bf4e"
+    },
+    {
+      "path": "bytecode-live-fetch-gnu-result.json",
+      "bytes": 223,
+      "sha256": "98527e04982a07748cf9a7f64bdd409e26b8d060cb493478ee194a2e51e56d67"
+    },
+    {
+      "path": "bytecode-live-fetch-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "bytecode-live-fetch-gnu.stdout",
+      "bytes": 160,
+      "sha256": "aee2f8773046d40f5968fc2a74fb8f659078a859260f072b4c49ae59d89e2f33"
+    },
+    {
+      "path": "bytecode-live-fetch.el",
+      "bytes": 2229,
+      "sha256": "d6ff77de7d2279838dacc5eca0059c6029ed2b558f2a3637c8a9722d5e908b1b"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "complete-source222-proposal.py",
+      "bytes": 2468,
+      "sha256": "e6cc9764e40021757254cd0c75f6ed6e053507f6f83dcc40311952068a0689f6"
+    },
+    {
+      "path": "freeze-string-candidate.py",
+      "bytes": 2065,
+      "sha256": "b19f48ad33d0250c62a2e646815f0caedcb60fbd25a2e4839c91cca1572864e6"
+    },
+    {
+      "path": "package-source223-direct-vm-draft.py",
+      "bytes": 3260,
+      "sha256": "8cb38e1d063b4ef3cd85c01a125fe9981525af075ae3358198ae71cfc3417247"
+    },
+    {
+      "path": "prepare-source222-direct-vm.py",
+      "bytes": 13392,
+      "sha256": "ec1a0d1ea9f330ba0777c24100be7c0f2fbf9dbdfff3cded4c61cef02ae2fd84"
+    },
+    {
+      "path": "run-bytecode-live-fetch-reference.py",
+      "bytes": 1822,
+      "sha256": "6354b4fd8c45eb50d21656fdc84f98dc0693507af3f03a4b98355e6df46dbe92"
+    },
+    {
+      "path": "run-string-validation222.py",
+      "bytes": 1342,
+      "sha256": "416ed61740b0af28d8966c0d5413be95017760ec388c4459b3840ab2a974c019"
+    },
+    {
+      "path": "source222-base.json",
+      "bytes": 1333,
+      "sha256": "c2a048f01854f2073e0e99079d4dc0e88224dff5cb661789961e244e88aeb8a7"
+    },
+    {
+      "path": "source222-check-command.json",
+      "bytes": 477,
+      "sha256": "359cf7918a0016dbf7266fbe7f72fadae6f1225ea9d095b3590a99054cdbb49f"
+    },
+    {
+      "path": "source222-check-result.json",
+      "bytes": 84,
+      "sha256": "aaa8b3da81ad0ba3659a8edd4eead12cab63ba8777f66683b000387bc8781c0c"
+    },
+    {
+      "path": "source222-check.log",
+      "bytes": 1704,
+      "sha256": "81712ce828f491e962bdd2782c58db0eb9875fe84e4439484321866a307a2dbe"
+    },
+    {
+      "path": "source222-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source222-clippy-result.json",
+      "bytes": 83,
+      "sha256": "53700893de3c2555bd2f43c05d843d5a21bebfdb3ae5d53a522bd45f1cd8d5da"
+    },
+    {
+      "path": "source222-clippy.log",
+      "bytes": 1646,
+      "sha256": "b9324b980af73dfc443eefa33ba659a4bdca0527381b94c36225bf48ff916ede"
+    },
+    {
+      "path": "source222-complete.patch",
+      "bytes": 482685,
+      "sha256": "e20eaa148aa06ed4f09c783930ea607b2690730381e4e1c6a1badde78d60ab0a"
+    },
+    {
+      "path": "source222-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source222-diff-result.json",
+      "bytes": 89,
+      "sha256": "e9a745bd81aefff4c1c0bbf1d24beea4e25752f5352f32c8d78a658dcd011688"
+    },
+    {
+      "path": "source222-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source222-driver.log",
+      "bytes": 1286,
+      "sha256": "906f48dbf7fb85ff1b68eb7dd7ab11d1bc6bfd73bec93a3737ffb454f93751bf"
+    },
+    {
+      "path": "source222-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source222-fmt-result.json",
+      "bytes": 81,
+      "sha256": "0fb358b34f422d959156f40cdaa2ea2a84e7d74e2f84e7d3c6bfcbbf4a3da33a"
+    },
+    {
+      "path": "source222-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source222-launch.json",
+      "bytes": 397,
+      "sha256": "0d51cd7083cc338b8c06e9ce9adf34c4ee4a9ef98db0fc38678f16f4c147d975"
+    },
+    {
+      "path": "source222-manifest.json",
+      "bytes": 48316,
+      "sha256": "01841e468055d9b63f556875a5adc36b461332534d14d0b5788ba0e3ce291fd7"
+    },
+    {
+      "path": "source222-through223-patch-replay-and-modes-audit.json",
+      "bytes": 987,
+      "sha256": "8dfd12de41770ea7a79fc1fcac7506ba1e3985833cc0e1725a20d057d921df63"
+    },
+    {
+      "path": "source222-validation-result.json",
+      "bytes": 486,
+      "sha256": "536571af5546670355a52ae946a2c6d91ea8090b9b463aec99917d4ab93b1ff2"
+    },
+    {
+      "path": "source223-base.json",
+      "bytes": 1317,
+      "sha256": "ae97b02a351868732d871524cfec043d6be89318dd76b958565db9ce451ac8cc"
+    },
+    {
+      "path": "source223-check-command.json",
+      "bytes": 477,
+      "sha256": "5d5790dc76965bee47601cb7ac183cc575f24435ed8937e26417afc030489082"
+    },
+    {
+      "path": "source223-check-result.json",
+      "bytes": 90,
+      "sha256": "c9700afa239eab13355babda956dc158dd44ee012912229b0c999945fa8cbaa6"
+    },
+    {
+      "path": "source223-check.log",
+      "bytes": 193,
+      "sha256": "b56554979d43b6b378029a9628ccccfec935a0178b324302c48c7e02cb8e6014"
+    },
+    {
+      "path": "source223-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source223-clippy-result.json",
+      "bytes": 89,
+      "sha256": "d2a8cd4fefbc21a68a27e2ed3b16dcb4ed4ba3553d68d76316a17c7823a4416d"
+    },
+    {
+      "path": "source223-clippy.log",
+      "bytes": 194,
+      "sha256": "cad29445b271c7ed794b830725cd0421292333518cfaabce52af2063f1b1a0bb"
+    },
+    {
+      "path": "source223-complete.patch",
+      "bytes": 486150,
+      "sha256": "16fd215d1672b6a581dca9e077ba48be1c560b9591673569b00879fe2b5cc1eb"
+    },
+    {
+      "path": "source223-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source223-diff-result.json",
+      "bytes": 89,
+      "sha256": "e1e37a40dc556b31f0583af638d4443f6b8921b35e5a44d47e7f3c9dc4e73f91"
+    },
+    {
+      "path": "source223-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source223-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source223-fmt-result.json",
+      "bytes": 82,
+      "sha256": "a740c2da8beeb4df1f17ee9cb80e78f3496c01f2edbef0ef977c964358537ec6"
+    },
+    {
+      "path": "source223-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source223-launch.json",
+      "bytes": 271,
+      "sha256": "03d1e35f55ae69dcf48d579892aa7fb5032f9608fbb1def7da1350530305bffe"
+    },
+    {
+      "path": "source223-manifest.json",
+      "bytes": 48316,
+      "sha256": "33e17bcfde82cd00564edc6ad429a0c6a90a54027c004019d8f409bc80d5a602"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls222.py",
+      "bytes": 4261,
+      "sha256": "f2a4e001511a6a64362e89164ecba5e03d6e9ebe4ad935168bc5e5f3b38d715e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -42,10 +42,15 @@ now stores actual GNU-encoded shared-string bytes and adds differential and
 physical-payload controls. Its 421-input patch replays exactly and strict checks
 pass. Twelve controls yield ten passes/two failures: active-call mutation and
 the old string constructor's surrogate rejection. Its direct payload/store test
-passes. A wrapper's stale receipt path stopped the initial driver; the unexecuted
-927-test broader stage now runs separately, preserving all failures. Direct VM execution,
-plain-string migration and compact headers remain required. No draft runtime is
-applied to the task branch.
+passes. Its later broad audit verifies 925 passes/two failures across all 927
+tests. Source221 repairs constructors with direct full-range encoded bytes;
+all 928 affected tests yield 927 passes/one active-call failure. Source223 now
+uses a direct VM byte cursor, removing decoded caches and heap activations.
+Its strict checks pass with zero warnings, all 425 inputs/modes replay exactly,
+and all seventeen focused gate controls pass, including the two original
+failures. Its 930-test broader gate and release controls/inventory are running.
+Plain-string migration, compact headers, complete validation and measured
+performance remain required. No draft runtime is applied to the task branch.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
@@ -55,7 +60,7 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 | 2. GNU architectural reference | Current cons and vector changes trace to GNU's allocation, field access and conservative-root rules. Per-change handovers preserve other references and deviations; final complete-path review remains open. |
 | 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. The isolated bytecode draft reduces the four-field closure from 88 detached bytes to 40 inline bytes, with native writes and tracing verified. Broader closure validation, authoritative allocated symbols/strings and remaining adapter removal stay open. |
 | 4. Allocation, GC and ownership | Source207's original census and suspended-root controls pass on complete macOS/Linux Rust. Source215 repairs its separate vector-copy census omission, with its new twenty-case control passing. Real category counters, honest physical totals, remaining ownership/retention review and collection-cost explanations stay open. |
-| 5. VM/function-call work | Removing the per-record program cache repairs mutation between calls. A transient decoded activation still misses code changes during a call. Direct authoritative code bytes, final instruction/allocation profiles and equivalent-work timing remain required. |
+| 5. VM/function-call work | Source223 fetches authoritative canonical bytes and removes decoded caches/heap activations; focused live-mutation, operand-width and suspended-caller controls pass. Broader/release validation, plain-string adapter removal, final instruction/allocation profiles and equivalent-work timing remain required. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
 | 8. Complete validation | Source207 passes complete macOS/Linux Rust, all 226 terminal scenarios and all 519 Linux frozen files. Its bytecode successor remains an isolated partial draft. Final-source Linux/macOS, pinned Darwin compatibility, release and zero-warning requirements remain open. |
