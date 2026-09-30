@@ -40,8 +40,18 @@ in primitives after five completed groups; the terminal log ends during scenario
 33/223. Their [raw evidence](docs/handover/2026-09-30-keymap-interrupted-runs/manifest.json)
 is preserved. Former temporary worktrees and GNU source are absent. Recovery uses
 persistent `target/runtime-goal/recovered-2026-09-30` checkouts and a fresh GNU
-candidate, with complete macOS reruns required. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
-and [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) are active.
+candidate; the GNU rebuild and native ABI check now pass, and complete macOS
+reruns are active. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
+**fails** the unchanged suspended-bytecode reclamation assertion: 2,201 tests
+pass, one fails, and four later groups plus both Cargo stages do not execute.
+[Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) executes
+all 519 files / 7,928 outcomes, with **7,926 matching and two mismatches** in
+autorevert and network-stream. All 1,038 processes exit successfully, but two
+Emaxx outcomes are unexpected failures. The
+[complete failure receipts](docs/handover/2026-09-30-keymap-linux-failures/manifest.json)
+also retain three diagnostic replays: the same exact Rust binary repeats the
+reclamation failure; both ordinary files abort on a freed-cons assertion and
+produce no complete Emaxx outcomes. These failures remain unresolved.
 The source162/163/165 negative comparisons, source164 compiler failure and
 retained-main callback/dispatch failures remain in the linked draft history.
 Source166's selected passes do not substitute for complete validation.
