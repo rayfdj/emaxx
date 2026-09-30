@@ -3071,7 +3071,7 @@ pub(crate) fn keymap_lookup_binding(
 // maps are composed before reading the next event, so menu filters run once
 // and inherited prefixes remain visible. Nil bindings stop parent lookup but
 // allow another map of lower precedence to contribute a binding.
-fn keymap_access_event(
+pub(crate) fn keymap_access_event(
     interp: &mut Interpreter,
     map: Value,
     event: Value,

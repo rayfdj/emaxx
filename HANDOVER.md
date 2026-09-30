@@ -21,7 +21,24 @@ That failure, source155's 17 terminal divergences and source153's native
 reclamation failure/GNU Eglot timeout remain preserved. Later passes do not
 establish the causes of those older source153 failures.
 
-**Current task-branch candidate:** source166 is now applied on top of that main
+**Current task-branch continuation:** read the
+[event and TLS root checkpoint](docs/runtime-representation-event-roots-checkpoint.md).
+Source170 extends source166 with rooted notification batches, traced/cloned
+TLS Lisp state and live special-event lookup. All strict checks, **482 debug
+and 482 release controls**, and **27 ordinary GNU comparisons** pass; complete
+validation is pending. Its [portable evidence](docs/handover/2026-09-30-event-roots/manifest.json)
+preserves source168's compiler and source169's new-test failures, negative
+source166 comparisons and an unresolved post-deinit TLS difference. This does
+not yet clear the original Linux failures and is not ready for main.
+
+The recovered source166 macOS gate passes **3,019 tests**, including native
+artifact identity, with two existing terminal ignores. Its second terminal
+run was interrupted during **112/223**, without a final result. The first
+instrumented Linux reclamation diagnosis passes with a different binary and
+loses its captured child trace; it cannot clear the ordinary failure.
+These receipts and limitations are retained in the event-root archive.
+
+**Previous task-branch candidate:** source166 is now applied on top of that main
 checkpoint. Read the [live keymap checkpoint](docs/runtime-representation-live-keymap-checkpoint.md)
 and its [portable draft evidence](docs/handover/2026-09-30-keymap-live-authority-draft/manifest.json).
 It
@@ -40,8 +57,8 @@ in primitives after five completed groups; the terminal log ends during scenario
 33/223. Their [raw evidence](docs/handover/2026-09-30-keymap-interrupted-runs/manifest.json)
 is preserved. Former temporary worktrees and GNU source are absent. Recovery uses
 persistent `target/runtime-goal/recovered-2026-09-30` checkouts and a fresh GNU
-candidate; the GNU rebuild and native ABI check now pass, and complete macOS
-reruns are active. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
+candidate; the GNU rebuild and native ABI check now pass. The recovered macOS
+outcomes are recorded above. [Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36647925886)
 **fails** the unchanged suspended-bytecode reclamation assertion: 2,201 tests
 pass, one fails, and four later groups plus both Cargo stages do not execute.
 [Linux frozen](https://github.com/rayfdj/emaxx/actions/runs/36647928962) executes

@@ -82,19 +82,15 @@ pub(crate) fn run_pending_user_signal_events(
             None => break,
         };
         handled = true;
-        let name = match event.kind() {
-            Kind::Symbol(name) => name.to_string(),
-            other => other
-                .value()
-                .car()
-                .ok()
-                .and_then(|head| head.as_symbol().ok().map(str::to_string))
-                .unwrap_or_default(),
-        };
         let keymap = interp
             .lookup_var("special-event-map", env)
             .unwrap_or(Value::Nil);
-        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[Value::symbol(&name)])?;
+        // keyboard.c:read_char uses access_keymap on the actual event.
+        // Filters may collect after a thread event leaves the pending queue,
+        // before last-input-event becomes its Lisp-visible root.
+        let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![event, keymap]);
+        let binding = keymap_access_event(interp, keymap, event, false, env)?.unwrap_or(Value::Nil);
+        roots.push(binding);
         interp.set_variable("last-input-event", event, env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;
@@ -105,7 +101,7 @@ pub(crate) fn run_pending_user_signal_events(
             break;
         }
 
-        let keys = Value::list([Value::symbol("vector-literal"), event]);
+        let keys = Value::vector([event]);
         interp.call_function_value(
             Value::Symbol("command-execute".into()),
             Some("command-execute"),

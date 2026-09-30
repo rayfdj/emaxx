@@ -12425,6 +12425,49 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn process_tls_state_survives_collection_before_and_after_async_handshake() {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve local TLS collection control port");
+    let port = reservation.local_addr().expect("reserved address").port();
+    drop(reservation);
+    let mut server = Server(
+        std::process::Command::new("gnutls-serv")
+            .args([
+                "--quiet",
+                "--echo",
+                "--priority",
+                "NORMAL:+ANON-ECDH",
+                "--port",
+                &port.to_string(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start the same local GnuTLS server for both interpreters"),
+    );
+    wait_for_local_test_server(&mut server.0, port, "TLS collection control");
+    // process.h keeps pending boot parameters in the marked Lisp slots.
+    // Our retained peer report must also survive while its process owns it.
+    // No Lisp variable holds the report across the explicit collections.
+    let program = include_str!("../../../tests/fixtures/process-tls-gc.el")
+        .replace("@PORT@", &port.to_string());
+    assert_oracle_contract_matches_interpreter(
+        &program,
+        include_str!("../../../tests/fixtures/process-tls-gc.expected").trim(),
+        "process-owned TLS state across collection",
+    );
+}
+
 #[test]
 fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     struct Server(std::process::Child);
@@ -13793,6 +13836,16 @@ fn timers_run_inside_a_child_threads_sleep_with_its_bindings() {
         program,
         "(global (timer global) (timer global) (timer global) (timer kid) (nil t))",
         "timers in threads",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn special_event_maps_use_live_lookup_through_collecting_filters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/keymap-special-events.el"),
+        include_str!("../../../tests/fixtures/keymap-special-events.expected").trim(),
+        "special-event keymaps with collecting filters and deep inheritance",
     );
 }
 

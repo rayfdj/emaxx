@@ -4179,11 +4179,16 @@ impl Interpreter {
             }
         }
         for notification in &self.pending_file_notifications {
-            for (_, callback) in &notification.callbacks {
+            if let Some(event) = &notification.raw_event {
+                mark(event);
+            }
+            for (descriptor, callback) in &notification.callbacks {
+                mark(descriptor);
                 mark(callback);
             }
         }
         for watch in self.file_notify_watches.values() {
+            mark(&watch.descriptor);
             mark(&watch.callback);
         }
         for frame in &self.backtrace_frames {
@@ -4280,6 +4285,8 @@ impl Interpreter {
                 &process.encoding,
                 &process.plist,
                 &process.contact,
+                &process.gnutls.boot_parameters,
+                &process.gnutls.peer_status,
             ] {
                 mark(value);
             }
@@ -4703,6 +4710,8 @@ impl Interpreter {
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
                 process.contact = c.copy(&process.contact.clone());
+                process.gnutls.boot_parameters = c.copy(&process.gnutls.boot_parameters);
+                process.gnutls.peer_status = c.copy(&process.gnutls.peer_status);
             }
         }
 

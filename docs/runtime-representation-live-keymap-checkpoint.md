@@ -72,7 +72,11 @@ groups and Cargo stages do not execute. The terminal log stops during scenario
 [interrupted-run receipts](handover/2026-09-30-keymap-interrupted-runs/manifest.json)
 remain incomplete. Their interruption cause is not established. On continuation,
 the old temporary worktrees/GNU source were absent. Persistent project checkouts
-and a fresh source/ABI-matched GNU build now support active complete reruns.
+and a fresh source/ABI-matched GNU build support the recovered runs. The full
+Rust rerun passes 3,019 tests, with two existing terminal ignores and native
+artifact identity passing. Its terminal rerun is interrupted during scenario
+112/223 without a final result. The [event-root continuation](runtime-representation-event-roots-checkpoint.md)
+retains these raw receipts and the next candidate's selected validation.
 The fresh GNU native ABI check passes; its executable still differs from the
 Darwin frozen pin. No pin, test selector, timeout or expected outcome changed.
 

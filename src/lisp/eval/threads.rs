@@ -2978,7 +2978,7 @@ impl Interpreter {
         env: &mut Env,
         include_kernel_events: bool,
     ) -> Result<bool, LispError> {
-        let (pending, retained): (Vec<_>, Vec<_>) =
+        let (mut pending, retained): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.pending_file_notifications)
                 .into_iter()
                 .partition(|notification| {
@@ -2986,39 +2986,48 @@ impl Interpreter {
                 });
         self.pending_file_notifications = retained;
         let ran = !pending.is_empty();
-        let mut pending = pending.into_iter();
-        while let Some(mut notification) = pending.next() {
-            let mut callbacks = std::mem::take(&mut notification.callbacks).into_iter();
-            while let Some(callback) = callbacks.next() {
-                let outcome = if let Some(event) = &notification.raw_event {
-                    primitives::deliver_raw_file_notification(self, env, *event, vec![callback])
-                } else {
-                    primitives::deliver_file_notification(
-                        self,
-                        env,
-                        &notification.path,
-                        &notification.action,
-                        notification.secondary_path.as_deref(),
-                        vec![callback],
-                    )
-                };
-                let Err(error) = outcome else {
-                    continue;
-                };
-                // This input event was consumed, but later recipients and
-                // later kernel events remain queued.  Dropping the tail here
-                // made one failing callback erase unrelated watches.
-                let remaining_callbacks = callbacks.collect::<Vec<_>>();
-                let mut remaining = Vec::new();
-                if !remaining_callbacks.is_empty() {
-                    notification.callbacks = remaining_callbacks;
-                    remaining.push(notification);
+        // GNU's keyboard event queue keeps the complete event and callback
+        // reachable until dispatch. Taking this batch out of the interpreter
+        // must not hide later events from a collection in an earlier callback.
+        let outcome = self.with_lisp_stack_roots(&pending, |interpreter| {
+            for (event_index, notification) in pending.iter().enumerate() {
+                for (callback_index, callback) in notification.callbacks.iter().copied().enumerate()
+                {
+                    let outcome = if let Some(event) = &notification.raw_event {
+                        primitives::deliver_raw_file_notification(
+                            interpreter,
+                            env,
+                            *event,
+                            callback.1,
+                        )
+                    } else {
+                        primitives::deliver_file_notification(
+                            interpreter,
+                            env,
+                            &notification.path,
+                            &notification.action,
+                            notification.secondary_path.as_deref(),
+                            callback,
+                        )
+                    };
+                    if let Err(error) = outcome {
+                        return Err((event_index, callback_index, error));
+                    }
                 }
-                remaining.extend(pending);
-                remaining.append(&mut self.pending_file_notifications);
-                self.pending_file_notifications = remaining;
-                return Err(error);
             }
+            Ok(())
+        });
+        if let Err((event_index, callback_index, error)) = outcome {
+            // The current recipient consumed its event. Preserve the rest,
+            // including events newly queued by the failing callback.
+            pending.drain(..event_index);
+            pending[0].callbacks.drain(..=callback_index);
+            if pending[0].callbacks.is_empty() {
+                pending.remove(0);
+            }
+            pending.append(&mut self.pending_file_notifications);
+            self.pending_file_notifications = pending;
+            return Err(error);
         }
         Ok(ran)
     }
