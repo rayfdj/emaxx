@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
         description: Upstream file for affected/ordinary-samples mode, or inclusive start for remaining mode
@@ -34,6 +34,7 @@ on:
         default: sysinfo
 permissions:
   contents: read
+  actions: read
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -136,6 +137,7 @@ jobs:
           VALIDATION_RUST_FILTER: ${{ inputs.rust_filter }}
           VALIDATION_RUST_PRELUDE: ${{ inputs.rust_prelude }}
           VALIDATION_TRACE_REVISION: ${{ inputs.trace_revision }}
+          GH_TOKEN: ${{ github.token }}
           BASELINE_REVISION: ${{ inputs.baseline_revision || 'fb45ffdf253d23d4442cf87c56ae4d4291b86562' }}
           STARTUP_SYSCALL: ${{ inputs.startup_syscall || 'sysinfo' }}
         run: |
@@ -389,6 +391,14 @@ jobs:
                   --revision "$VALIDATION_TRACE_REVISION" \
                   --output target/frozen-ci/rust-root-trace
               ;;
+            rust-exact-roots)
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/diagnose_exact_weak_roots.py \
+                  --artifact-run 36656497828 \
+                  --revision 3bada057ce99da19609909d97088e73d69cd27f3 \
+                  --filter suspended_bytecode_retains_operand_and_unwind_roots \
+                  --key-head runtime-key --output target/frozen-ci/rust-exact-roots
+              ;;
             rust-tail)
               # Explicit continuation after the documentation-only failure in
               # the 37197db library gate. Its original results remain failed;
@@ -435,7 +445,7 @@ jobs:
               ;;
           esac
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        if: always()
+        if: always() && inputs.validation != 'rust-exact-roots'
         with:
           path: |
             ~/.cargo/registry
