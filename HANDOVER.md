@@ -68,8 +68,9 @@ with GNU-compatible conservative cons-root validation.
   successful processes** on exact runtime `d186d40b`. Per editor: 7,670 passes,
   47 expected failures and 211 skips; the latter are not passes.
 
-Do not promote PR #79 while the census failures or complete candidate validation
-remain unresolved. The preceding source201 passed full Rust, terminal and Linux
+Source207 now repairs both census failures on the complete Linux Rust run below.
+Its complete Rust, terminal and Linux frozen results are audited below. The
+preceding source201 passed full Rust, terminal and Linux
 frozen gates; those results do not certify source204. Preserve all failed results,
 unexecuted stages, expected failures, skips, and artifact/environment limits.
 
@@ -86,20 +87,72 @@ evidence, not a timing or Linux repair result. Its
 [complete selected audit and full-gate launch](docs/handover/2026-09-30-shared-reader-draft/source207-eval-selected-validation-manifest.json)
 verify **596 gate / 596 release passes**, nine focused controls per profile,
 **40 exact ordinary comparisons**, and fresh executable/image identities.
-Supervisor **52334 has exited**. Complete macOS Rust supervisor **54295** and
-terminal supervisor **54296** are running. Linux
-[Rust 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045) and
-[frozen 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711)
-run on exact published `092fef67`. Preserve the checkout and helpers while
-those processes or their children remain live.
-The original census assertions and expectations are unchanged. This isolated
-candidate now occupies the task branch. Linux confirmation and full candidate
-validation remain required; source204's full passes do not certify source207.
+Supervisors **52334 and 54295 have exited**. The
+[complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source207-macos-complete-rust-manifest.json)
+verifies **3,059 passes**, two existing ignores, all 2,962 library names/verdicts,
+410 source inputs and four retained executable/image files. The
+[complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source207-linux-complete-rust-manifest.json),
+[run 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045), verifies
+**3,071 passes**, two existing ignores, all 2,970 library names/verdicts and four
+retained artifacts on exact `092fef67`. Native artifact identity passes on both.
+Both original census assertions and both original suspended-root survival and
+reclamation controls pass, unchanged. Only the evaluator source differs from
+runtime204; the old failed results remain failed historical evidence.
+
+The [complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source207-complete-terminal-manifest.json)
+verifies all **226 scenarios / 686 comparisons** (658 screen, 28 filesystem),
+the unchanged inventories and all eight execution inputs. Supervisor **54296
+has exited**. GNU matches source/native ABI but is not the pinned Darwin
+executable. The [complete Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source207-linux-frozen-manifest.json),
+[run 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711), verifies
+**519 files / 7,928 matching outcomes / 1,038 successful processes** on exact
+`092fef67`. Each editor reports 7,670 passes, 47 expected failures and 211 skips;
+the latter categories are not passes. All source207 validation supervisors have
+exited. These results certify this checkpoint's tested scope; the separate
+bytecode draft, final pinned Darwin gate and performance goal remain unfinished.
 
 ## Separate unfinished bytecode draft
 
-The current **source208** in
-`target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx` carries evaluator207
+The current **source216** in
+`target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx` replaces detached
+bytecode records with the same inline PVEC_CLOSURE used by interpreted functions.
+The [source214 patch and audited controls](docs/handover/2026-09-30-shared-reader-draft/source214-shared-closure-draft-and-controls-manifest.json)
+preserve **five passes / one failure** across the six original controls, with
+zero-warning strict checks. Both layout controls now finish all 4/5/6-slot
+checks, native stores and GC tracing; the four-slot allocation is **40 bytes**.
+Constructor validation, shared constants/cloning and mutation between calls pass.
+Active-call code mutation still returns `(41 194)` instead of `(67 194)`.
+
+The draft removes closure host records, IDs, the per-record program cache and
+slot-mutation notices. Interpreter/VM/native access, reading, copying, printing,
+predicates, GC and dumping use the actual inline fields. Active and suspended
+VM roots retain the actual function. A temporary decoded activation remains;
+direct execution from authoritative string bytes is still required.
+
+Review found source214's new vector-copy path omitted its live-vector census
+increment. [Source215's portable draft and strict checks](docs/handover/2026-09-30-shared-reader-draft/source215-shared-closure-draft-manifest.json)
+repair that increment and add twenty copy-census/identity cases. Supervisor
+**61972 has exited** after the [seven audited controls](docs/handover/2026-09-30-shared-reader-draft/source215-shared-closure-controls-manifest.json):
+**six pass / one fails**, including the passing new census/identity control.
+Its [broader failure and diagnosis](docs/handover/2026-09-30-shared-reader-draft/source215-broad-failure-and-diagnosis-manifest.json)
+preserve **839 passes / nine failures** across all 848 affected-module tests.
+Five GNU-output checks pass unchanged when the helper restores the ordinary
+gate's C locale. GNU rejects three old constructor fixtures; valid unibyte code
+and actual vectors preserve their original call/identity/mutation contracts.
+The probe wrapper's omitted text-property print notation also remains a failed
+expectation. Active-call code mutation is still a runtime defect.
+
+[Source216's portable draft](docs/handover/2026-09-30-shared-reader-draft/source216-bytecode-fixture-repair-draft-manifest.json)
+changes only those three unit fixtures from source215, preserving every original
+behavior assertion, and restores the helper locale. All 418 inputs and file modes
+replay exactly; strict checks pass with zero warnings. Supervisor **64424** runs
+ten focused controls and the unchanged 848-test broader inventory. Keep its
+checkout and helpers frozen while it or its children run. No complete source216
+validation is claimed. Earlier compiler/lint failures and every intermediate
+patch remain preserved.
+No bytecode repair is applied to the task branch.
+
+The preserved **source208** carries evaluator207
 and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
 and [audited controls](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-results-manifest.json)
 retain twelve ordinary negative constructor cases. Strict checks pass; six gate
@@ -115,10 +168,10 @@ four failures**. Both layout controls and both code-string mutation controls fai
 constant sharing, cloning, GC and rejected closure `aset` pass. Supervisor
 **51384 has exited**. No bytecode repair is applied to the task branch.
 
-The bytecode closure still has detached 88-byte record/slot storage versus GNU's
+The source204 baseline has detached 88-byte record/slot storage versus GNU's
 40-byte four-slot closure. Mutating its code string is visible through Lisp but
 execution uses stale decoded instructions, even during an active call. An
-entry-only cache refresh cannot fix that case. The earlier
+entry-only cache refresh cannot fix that case; source214 still fails it. The earlier
 [source205 baseline](docs/handover/2026-09-30-shared-reader-draft/source205-bytecode-negative-baseline-manifest.json)
 retains the original ordinary probes, including the invalid closure-aset attempt.
 

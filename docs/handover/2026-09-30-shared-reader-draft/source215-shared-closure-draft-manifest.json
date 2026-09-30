@@ -1,0 +1,143 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated shared-closure draft; runtime validation running",
+    "inputs": 418,
+    "strict_checks": "passed",
+    "supervisor": 61972,
+    "qualification": "Source214 passes five original controls and still fails active-call code mutation. Source215 repairs a subsequently identified missing live-vector census increment in direct constant-vector copying, and adds a 20-case census/identity control. This archive contains no source215 runtime verdict. No implementation from this separate draft is applied to the task branch. Full shared-string/VM architecture, broad validation and performance criteria remain open."
+  },
+  "archive": {
+    "path": "source215-shared-closure-draft.tar.gz",
+    "bytes": 113792,
+    "sha256": "11c887ba42ed665f400b6aabca448e71068864a6aa251ca86ebc274b8c0a638a"
+  },
+  "files": [
+    {
+      "path": "audit-source215-patch.py",
+      "bytes": 2787,
+      "sha256": "33bac87585b232c43d1ea5c859cd7c4185375b6a03297301ca93602aa78e6bc3"
+    },
+    {
+      "path": "check-bytecode208.py",
+      "bytes": 2032,
+      "sha256": "18425e292d0b6c837a2f65577c42970ceb905b178147672c304ff394ba3fe804"
+    },
+    {
+      "path": "freeze-bytecode-candidate.py",
+      "bytes": 2069,
+      "sha256": "4f48745df77abdfa68d2e61109d6028505db4f4e0f09979e2121acb1b28a987d"
+    },
+    {
+      "path": "package-source207-rust-and215-draft.py",
+      "bytes": 4353,
+      "sha256": "d9dbea3ac5591ffd893c9b94f707f11245fc6466e6b7467164ac23fabf933abc"
+    },
+    {
+      "path": "run-source215-validation.py",
+      "bytes": 1174,
+      "sha256": "4d7ed65b4a7cf14fb68ee9782f55138427b7cf4509ccd93a7eb65608dd348d0f"
+    },
+    {
+      "path": "source215-base.json",
+      "bytes": 1057,
+      "sha256": "afa24c9ead6885a851c9ab1028555040a7c518f89b7da7b0f115ce71a2865f79"
+    },
+    {
+      "path": "source215-check-command.json",
+      "bytes": 485,
+      "sha256": "0e665ab258b0390d99111b5e61025057b0cc658f6287a3691a3875e0d281dd83"
+    },
+    {
+      "path": "source215-check-result.json",
+      "bytes": 81,
+      "sha256": "c53a82c809d8b4d52c1440b608c88a205e5d258127df0d215f6b29c0e6b02185"
+    },
+    {
+      "path": "source215-check.log",
+      "bytes": 197,
+      "sha256": "f8323c8fe8f5dd89bbc72188478c6a9dc669542b0815a4c0e31f4c501aa53f27"
+    },
+    {
+      "path": "source215-clippy-command.json",
+      "bytes": 473,
+      "sha256": "fd1254f0df216029401661d7511e604446940b8c66f61f884e4380608ce50ae9"
+    },
+    {
+      "path": "source215-clippy-result.json",
+      "bytes": 89,
+      "sha256": "cd480ac150ff3855bd26febad28668d25d9ac36a795f7bd84d5e8bc39cadf8e7"
+    },
+    {
+      "path": "source215-clippy.log",
+      "bytes": 198,
+      "sha256": "bfe29cc99a1ee810c5002748d139048e1c568a06f4b80464dc0e279b214e6c2b"
+    },
+    {
+      "path": "source215-complete.patch",
+      "bytes": 387486,
+      "sha256": "482a101becc574b928a744a9191fc1460183f2558a808171520001086020b45b"
+    },
+    {
+      "path": "source215-diff-command.json",
+      "bytes": 389,
+      "sha256": "8e12ba95de9237b67a0360121a78d50eaab8439188cf4d7ae6c08a9dd95d8c14"
+    },
+    {
+      "path": "source215-diff-result.json",
+      "bytes": 89,
+      "sha256": "7708c5ad3debca68c7f4a90a95e9f3d2e154163d5865c0ea1a4e53c35ef51591"
+    },
+    {
+      "path": "source215-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source215-fmt-command.json",
+      "bytes": 413,
+      "sha256": "3be74bb423b96bf9306218701e12aae1716b358f6cea724e045b77dc2e7b3178"
+    },
+    {
+      "path": "source215-fmt-result.json",
+      "bytes": 89,
+      "sha256": "57334704cb7e9dccd9523cc0d381a2a141393166954c3383c1675509dd06489a"
+    },
+    {
+      "path": "source215-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source215-manifest.json",
+      "bytes": 47503,
+      "sha256": "25c2a87de5d00ef60769ce767209638da05b8f349f2353eb9a1255ec215bf784"
+    },
+    {
+      "path": "source215-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "201ef01d2245eda3ab2da4f9119fb3984bc7239ea1d9c6e7b7e0bf7cefd03f58"
+    },
+    {
+      "path": "source215-validation-launch.json",
+      "bytes": 525,
+      "sha256": "6fb47c200db8dd88ef26068019885becfa4594ee53dd1b2a09c47a225e1964f7"
+    },
+    {
+      "path": "static-bytecode208.py",
+      "bytes": 1557,
+      "sha256": "8ba906f2016337491a7971f9b0f2d9e27ff6195726c6f766da7c1bbe1382c230"
+    },
+    {
+      "path": "test-bytecode-broad215.py",
+      "bytes": 2995,
+      "sha256": "3c637d5fd8ccd97e6484b39cff72a93c25524aab306156d891a2e75bb2ca49a4"
+    },
+    {
+      "path": "test-bytecode-controls215.py",
+      "bytes": 3612,
+      "sha256": "9692d7340340d1b9d97b66c6737dcb22ebc7e9cec63f57b1f30289b67f25a99e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

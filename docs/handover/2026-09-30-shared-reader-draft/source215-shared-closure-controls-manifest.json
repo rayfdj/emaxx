@@ -1,0 +1,170 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "partial bytecode repair; active-call mutation still fails",
+    "inputs_verified": 418,
+    "binary_sha256": "dd5a53cfa026b7d820d0963d82290488647c915509c9903a4099490ecdbe5f89",
+    "strict_checks": "passed with zero warnings",
+    "passed": 6,
+    "failed": 1,
+    "ignored": 0,
+    "passing_names": [
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots",
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_copy_counts_both_actual_allocations",
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload",
+      "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots",
+      "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu",
+      "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing"
+    ],
+    "failing_names": [
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu"
+    ],
+    "raw_libtest_exit_code": 101,
+    "broad_inventory_verified": 848,
+    "qualification": "All six original controls plus the new twenty-case closure/constant-copy census and identity test execute. The reviewed live-vector census omission is repaired. Active-call code mutation remains (41 194), expected (67 194). Broader modules are launched separately; this focused audit does not assign their outcome or certify complete closure/VM architecture or performance.",
+    "raw_hashes": {
+      "source215-gate-controls.log": "1900ff5c636c3820087860a3e55b097f658c8b296faab141ff1adba9ed686c3d",
+      "source215-gate-controls-command.json": "ace2617ae8dfe209df3d3b35421f7aafafcd2f0b389c6572f1b64be376cc7eca",
+      "source215-gate-controls-result.json": "603b968ca9631c29d0266376718806c34294d4a372e46fa0fc402d72a9fbd88e",
+      "source215-gate-broad-command.json": "b7bfc72e9f9e4d1fdfbaaa22adac9501ba48e54286da78d0beff72431354f8ce"
+    }
+  },
+  "archive": {
+    "path": "source215-shared-closure-controls.tar.gz",
+    "bytes": 109720,
+    "sha256": "e5436a1456526e5d24d231a05588a85e5a5782e7b1f862a4be6c7dc2d345dc53"
+  },
+  "files": [
+    {
+      "path": "audit-source215-controls.py",
+      "bytes": 3365,
+      "sha256": "0f389e931b91ce72afccab5af807edc2f7872dd1f90901722d98c3c4dcdca6ec"
+    },
+    {
+      "path": "package-source215-controls.py",
+      "bytes": 1041,
+      "sha256": "538297c535b9df6b5cf8a6ae4621a03b783a4ca3479e1ff3fb8182399f2d51c0"
+    },
+    {
+      "path": "source214-gate-controls-command.json",
+      "bytes": 2384,
+      "sha256": "8d4ba96178216e65698e22bc1665b37d7999e4ad9c40cf49b0420b7704c6fde1"
+    },
+    {
+      "path": "source215-check-command.json",
+      "bytes": 485,
+      "sha256": "0e665ab258b0390d99111b5e61025057b0cc658f6287a3691a3875e0d281dd83"
+    },
+    {
+      "path": "source215-check-result.json",
+      "bytes": 81,
+      "sha256": "c53a82c809d8b4d52c1440b608c88a205e5d258127df0d215f6b29c0e6b02185"
+    },
+    {
+      "path": "source215-check.log",
+      "bytes": 197,
+      "sha256": "f8323c8fe8f5dd89bbc72188478c6a9dc669542b0815a4c0e31f4c501aa53f27"
+    },
+    {
+      "path": "source215-clippy-command.json",
+      "bytes": 473,
+      "sha256": "fd1254f0df216029401661d7511e604446940b8c66f61f884e4380608ce50ae9"
+    },
+    {
+      "path": "source215-clippy-result.json",
+      "bytes": 89,
+      "sha256": "cd480ac150ff3855bd26febad28668d25d9ac36a795f7bd84d5e8bc39cadf8e7"
+    },
+    {
+      "path": "source215-clippy.log",
+      "bytes": 198,
+      "sha256": "bfe29cc99a1ee810c5002748d139048e1c568a06f4b80464dc0e279b214e6c2b"
+    },
+    {
+      "path": "source215-controls-audit.json",
+      "bytes": 1939,
+      "sha256": "009969276b18e565d8ac68952a42725ac782ccdc6b4cce90630046ceac8cde4e"
+    },
+    {
+      "path": "source215-diff-command.json",
+      "bytes": 389,
+      "sha256": "8e12ba95de9237b67a0360121a78d50eaab8439188cf4d7ae6c08a9dd95d8c14"
+    },
+    {
+      "path": "source215-diff-result.json",
+      "bytes": 89,
+      "sha256": "7708c5ad3debca68c7f4a90a95e9f3d2e154163d5865c0ea1a4e53c35ef51591"
+    },
+    {
+      "path": "source215-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source215-fmt-command.json",
+      "bytes": 413,
+      "sha256": "3be74bb423b96bf9306218701e12aae1716b358f6cea724e045b77dc2e7b3178"
+    },
+    {
+      "path": "source215-fmt-result.json",
+      "bytes": 89,
+      "sha256": "57334704cb7e9dccd9523cc0d381a2a141393166954c3383c1675509dd06489a"
+    },
+    {
+      "path": "source215-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source215-gate-broad-command.json",
+      "bytes": 157299,
+      "sha256": "b7bfc72e9f9e4d1fdfbaaa22adac9501ba48e54286da78d0beff72431354f8ce"
+    },
+    {
+      "path": "source215-gate-build-command.json",
+      "bytes": 1124,
+      "sha256": "374cf0bd1f34fc1578254bfeb465acdc0c666d932b7e3cf0d9358897eecf5474"
+    },
+    {
+      "path": "source215-gate-build-result.json",
+      "bytes": 84,
+      "sha256": "48133e1b765112edf05ef7be0e3f135a6c493cafbd309e6656875dd6ef891ebf"
+    },
+    {
+      "path": "source215-gate-build.log",
+      "bytes": 216115,
+      "sha256": "7d075eb325ad263f704ed1752175bde5ebb4e1ef9522bc187e3983ebe44cde7e"
+    },
+    {
+      "path": "source215-gate-controls-command.json",
+      "bytes": 2602,
+      "sha256": "ace2617ae8dfe209df3d3b35421f7aafafcd2f0b389c6572f1b64be376cc7eca"
+    },
+    {
+      "path": "source215-gate-controls-result.json",
+      "bytes": 91,
+      "sha256": "603b968ca9631c29d0266376718806c34294d4a372e46fa0fc402d72a9fbd88e"
+    },
+    {
+      "path": "source215-gate-controls.log",
+      "bytes": 1248,
+      "sha256": "1900ff5c636c3820087860a3e55b097f658c8b296faab141ff1adba9ed686c3d"
+    },
+    {
+      "path": "source215-gate-inventory.txt",
+      "bytes": 261840,
+      "sha256": "e93074ac14510a10231ac1fbbf9d42eea2a41effc35c5b27e16047b0d52e4301"
+    },
+    {
+      "path": "test-bytecode-broad215.py",
+      "bytes": 2995,
+      "sha256": "3c637d5fd8ccd97e6484b39cff72a93c25524aab306156d891a2e75bb2ca49a4"
+    },
+    {
+      "path": "test-bytecode-controls215.py",
+      "bytes": 3612,
+      "sha256": "9692d7340340d1b9d97b66c6737dcb22ebc7e9cec63f57b1f30289b67f25a99e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

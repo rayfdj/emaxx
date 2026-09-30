@@ -3,7 +3,7 @@
 Read the [complete goal](runtime-representation-goal.md), the
 [reader handover](runtime-representation-shared-reader-draft.md) and the
 [allocator continuation](runtime-representation-vector-allocation-draft.md).
-**Source207 is the current task-branch candidate; source204's complete Linux Rust fails two census assertions.**
+**Source207 is the current task-branch candidate. Its complete macOS and Linux Rust gates pass, including source204's two failed census assertions.**
 Source204's 410 inputs remain in the frozen `cons-roots/emaxx` checkout; source207
 changes only the evaluator as documented below. Main remains
 source174 and PR #79 remains draft. The preceding source201 passes complete macOS
@@ -192,14 +192,29 @@ unchanged. The purecopy callback contract remains in the full terminal suite;
 its earlier invalid-mode batch result remains failed. All 410 source inputs
 match the isolated checkout and task branch. Supervisor 52334 has exited.
 
-Complete macOS Rust supervisor **54295** and complete terminal supervisor
-**54296** are running in the frozen `eval-frames/emaxx` checkout. Preserve their
-source, helpers and artifacts while either process or children remain live.
-[Linux Rust 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045)
-and [Linux frozen 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711)
-are running on exact `092fef67`. Source204's complete passes do not certify this
-evaluator change; Linux confirmation and complete candidate validation remain
-required before promoting PR #79.
+The [complete source207 macOS Rust audit](handover/2026-09-30-shared-reader-draft/source207-macos-complete-rust-manifest.json)
+verifies **3,059 passes**, two existing ignores, all 2,962 library names/verdicts,
+410 source inputs and four retained artifacts. Supervisor **54295 has exited**.
+The [complete source207 Linux Rust audit](handover/2026-09-30-shared-reader-draft/source207-linux-complete-rust-manifest.json),
+[run 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045), verifies
+**3,071 passes**, two existing ignores and all 2,970 library names/verdicts, with
+four retained executable/image files on exact `092fef67`. Native artifact
+identity passes on both platforms. Both original census assertions and both
+original suspended-root survival/reclamation controls pass unchanged. The
+compiled/test-input diff from runtime204 contains only `src/lisp/eval/core.rs`.
+This verifies the repair on source207; the original failed runs stay preserved.
+
+The [complete source207 terminal audit](handover/2026-09-30-shared-reader-draft/source207-complete-terminal-manifest.json)
+verifies all 226 scenarios / 686 comparisons (658 screen, 28 filesystem),
+unchanged inventories, all 410 source inputs and eight execution inputs.
+Supervisor **54296 has exited**. GNU matches source/native ABI but is not the
+pinned Darwin executable. The [complete source207 Linux frozen audit](handover/2026-09-30-shared-reader-draft/source207-linux-frozen-manifest.json),
+[run 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711), verifies
+519 files / 7,928 matching outcomes and all 1,038 processes successful on exact
+`092fef67`. Each editor has 7,670 passes, 47 expected failures and 211 skips;
+these remain distinct. All source207 supervisors have exited. These completed
+checkpoint results do not certify the separately edited bytecode draft, pinned
+Darwin compatibility or the performance goal.
 
 [Complete Linux frozen compatibility](handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json)
 now passes all 519 files / 7,928 matching outcomes / 1,038 successful processes
@@ -210,7 +225,7 @@ and 211 skips; these categories remain separate. Receipts and reproduction helpe
 required before promotion.
 
 No timing, RSS or GNU performance-parity claim follows from the smaller field
-handle. Full candidate validation, Linux confirmation of the repair, remaining
+handle. Final pinned-platform comparisons, remaining
 symbol/object authority, honest physical allocation and GC accounting, final
 adversarial review and the locked performance criteria remain open.
 

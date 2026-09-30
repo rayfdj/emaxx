@@ -1,8 +1,83 @@
-# Bytecode representation and mutation baseline — 1 October 2026
+# Shared bytecode closure draft — 1 October 2026
 
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
-This is a separate unfinished draft, **not an applied task-branch repair**. Source205 adds
+This is a separate unfinished draft, **not an applied task-branch repair**.
+
+## Current source216
+
+The current checkout remains
+`target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx`. The
+[source214 patch and audited controls](handover/2026-09-30-shared-reader-draft/source214-shared-closure-draft-and-controls-manifest.json)
+replace detached bytecode `RecordState`/`Vec<Value>` storage with the same
+`ClosureRef`/PVEC_CLOSURE allocation as interpreted functions. The public Rust
+view is now `Kind::Closure`. `RecordKind::Closure`, its IDs/registry entries,
+the dense per-record program cache, and slot-mutation cache invalidation are
+removed. Constructor, reader, interpreter, VM/native entry, predicates, printing,
+copying, GC and image restoration use the actual inline fields. `make-closure`
+copies the actual closure and constants without a temporary outer slot vector.
+
+Strict compiler, fmt, Clippy and diff checks pass with zero warnings. All six
+original controls execute: **five pass / one fails**. The layout controls now
+finish all four/five/six-slot cases, native word stores and current-child tracing.
+The four-slot allocation is **40 bytes**, with no detached payload; block metadata
+is separate. Constructor validation, original constant sharing/cloning/GC and
+mutation between calls pass. Active-call code mutation still returns `(41 194)`
+instead of GNU's `(67 194)`. It remains an ordinary failed assertion.
+
+Active and suspended VM roots now retain the actual function word, including
+across collecting redefinition of a named function. That implementation still
+needs the broader original thread/GC tests. The VM currently builds a temporary
+decoded activation at entry; the immutable-string decode cache also remains.
+This does not establish the required direct byte cursor or instruction/call
+performance. Mutable strings still use Rust text storage, so direct execution
+must address authoritative code bytes without adding a mutable mirror or a
+linear character scan per instruction.
+
+Review after source214 found that its new direct vector copy called a census
+helper whose ordinary-vector arm does nothing. The missing live-vector increment
+is not covered by those six controls. The
+[source215 portable draft and strict results](handover/2026-09-30-shared-reader-draft/source215-shared-closure-draft-manifest.json)
+repair the real allocation-site increment and add twenty copy-census/identity
+cases: zero/1/3/17/257 constants with 4/5/6/9 closure fields. Strict checks pass.
+Its [audited focused results](handover/2026-09-30-shared-reader-draft/source215-shared-closure-controls-manifest.json)
+verify **six passes / one failure** across all seven controls, including the new
+copy-census/identity test. Supervisor **61972 has exited**. Its
+[audited broader failure and diagnosis](handover/2026-09-30-shared-reader-draft/source215-broad-failure-and-diagnosis-manifest.json)
+preserve **839 passes / nine failures**, with all 848 bytecode/native-runtime/
+pdumper/primitives names and verdicts checked. The failed executable and post-run
+image are retained by hash; the latter is not a per-test image-use transcript.
+
+Five failures occur in GNU-output assertions before Emaxx executes. The helper
+omitted the ordinary grouped gate's `LANG=C` and `LC_ALL=C`; an unchanged-source,
+unchanged-assertion replay under those settings passes all five. Three old VM
+tests construct bytecode with multibyte code strings; two also supply obsolete
+list-form vector literals. Ordinary GNU rejects those inputs. A separate probe
+confirms that actual unibyte strings and vectors preserve increment, repeated
+argument identity and shared property/text mutation. Its wrapper initially
+omits the property's printed notation from its expected string, fails, and is
+preserved; the later audit verifies the actual property-bearing output. No
+constructor validation is relaxed. Active-call mutation remains a real failure.
+
+[Source216's portable draft](handover/2026-09-30-shared-reader-draft/source216-bytecode-fixture-repair-draft-manifest.json)
+changes only those three unit-test constructors from source215, preserving every
+original behavior assertion, and restores the established gate locale in its
+helpers. Its 418-input patch and file modes replay exactly, and strict checks
+pass with zero warnings. Supervisor **64424** runs ten focused controls and the
+unchanged 848-test broader inventory, including active-call mutation. This draft
+archive assigns no runtime verdict. Preserve its checkout and helpers while the
+supervisor or its children run.
+
+All **418 inputs** of sources209–215 replay exactly from main `21d20f0e`, including
+executable modes. The source214 archive preserves source209's three compiler
+errors, source210's missed thread-context rename, source211/212's obsolete-helper
+warnings, and source213's strict single-match lint failure. None ran runtime tests.
+Source214's original executable, all six raw verdicts and the later census review
+finding remain distinct from source215. No later pass overwrites a failed attempt.
+
+## Preserved baselines
+
+Source205 adds
 only two tests in `src/lisp/native_comp/runtime/record_layout_tests.rs`, in
 `target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx`. Its runtime is
 identical to published source204 `d186d40b`. No associated process remains live.
@@ -18,7 +93,7 @@ rejected closure `aset` pass. Runtime204 is unchanged; only tests and six fixtur
 files differ. Supervisor **51384 has exited**. These are preserved failures,
 not expected-failure annotations or a repair.
 
-The current isolated checkout is **source208**. Its
+The preserved **source208** constructor candidate's
 [418-input patch and constructor negative baseline](handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
 carry evaluator207 and add GNU `alloc.c:Fmake_byte_code`'s four field checks
 before allocation: fixnum/cons/nil arguments, an unibyte code string, a normal
@@ -81,12 +156,13 @@ reject this with `wrong-type-argument arrayp` and exit 255; their backtraces
 differ. That invalid probe is preserved as failed and is not evidence that GNU
 supports Lisp closure-slot mutation. Do not broaden `aset` to make it pass.
 
-Current bytecode is stored in `RecordState` plus a detached `Vec<Value>`;
+Baseline bytecode is stored in `RecordState` plus a detached `Vec<Value>`;
 interpreted closures already have inline PVEC_CLOSURE storage. A shared closure
 layout must cover predicates, interpreter/VM/native access, printing, cloning,
 GC and image restoration. Mutable unibyte strings currently use Rust text
 storage, which also needs scrutiny before adopting a direct byte cursor.
-Only constructor field validation is repaired in the separate draft; no layout
-migration or live mutation repair has been implemented. Linux evaluator validation,
-symbol authority, physical accounting, final validation/audit and the locked
-performance criterion all remain open.
+The current draft repairs that layout and mutation between calls; active-call
+mutation remains failed. Source207's complete Linux/macOS Rust, terminal and
+Linux frozen results certify only the published checkpoint. Broader bytecode validation, remaining
+symbol/string authority, physical accounting, final validation/audit and the
+locked performance criterion all remain open.

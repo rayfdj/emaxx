@@ -1,0 +1,142 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "strict checks pass; selected and broader runtime validation launched",
+    "inputs": 418,
+    "supervisor": 64424,
+    "qualification": "Source215 runtime unchanged; three GNU-invalid unit-test constructors now use genuine unibyte code strings and ordinary vectors. Every original behavior assertion is preserved. Validation helpers restore the existing grouped gate C locale. Ten focused controls and all 848 broader module tests include the unresolved active-call mutation failure. This archive assigns no source216 runtime verdict. Separate draft only; no bytecode implementation applied to the task branch."
+  },
+  "archive": {
+    "path": "source216-bytecode-fixture-repair-draft.tar.gz",
+    "bytes": 114303,
+    "sha256": "cc751898d8793067a573329aab42032194eeb92225d460a08b670f23eaef3d68"
+  },
+  "files": [
+    {
+      "path": "audit-source216-patch.py",
+      "bytes": 2787,
+      "sha256": "e13175f2b2ce79beda3b8f8742fbe5812ae9e5a6a63b91fc68343ab56fbed010"
+    },
+    {
+      "path": "check-bytecode208.py",
+      "bytes": 2032,
+      "sha256": "18425e292d0b6c837a2f65577c42970ceb905b178147672c304ff394ba3fe804"
+    },
+    {
+      "path": "freeze-bytecode-candidate.py",
+      "bytes": 2069,
+      "sha256": "4f48745df77abdfa68d2e61109d6028505db4f4e0f09979e2121acb1b28a987d"
+    },
+    {
+      "path": "package-source207-frozen-and216-draft.py",
+      "bytes": 3755,
+      "sha256": "6bca116224a98ad01566c6e753cdd2037895abc9325e7272f166f6de234e970c"
+    },
+    {
+      "path": "run-source216-validation.py",
+      "bytes": 1174,
+      "sha256": "00712191c7fe61d5fc2ccb4b07f05263b8588d06d60acaf7a890b255e2b2f0ca"
+    },
+    {
+      "path": "source216-base.json",
+      "bytes": 1207,
+      "sha256": "5eeafc43bca722d45ab4b326dbef96da2dde4b9d1d55fa786feb19f3a71d7376"
+    },
+    {
+      "path": "source216-check-command.json",
+      "bytes": 485,
+      "sha256": "aa25cbb2af0b5210cdb2bd19283bba91dd71ce8cda832e182e10f7d7e569b39e"
+    },
+    {
+      "path": "source216-check-result.json",
+      "bytes": 83,
+      "sha256": "9a0318ac2b8b94ef7cfdf9c1794fc023dcd2e050698aef557f4bd8aa045fc7ba"
+    },
+    {
+      "path": "source216-check.log",
+      "bytes": 197,
+      "sha256": "15c0e9eacfb395d92204e0475b8b24b8c255bf664d9891b5ad9a9d52135b2198"
+    },
+    {
+      "path": "source216-clippy-command.json",
+      "bytes": 473,
+      "sha256": "fd1254f0df216029401661d7511e604446940b8c66f61f884e4380608ce50ae9"
+    },
+    {
+      "path": "source216-clippy-result.json",
+      "bytes": 83,
+      "sha256": "e6d464fa4549dfd5cf2329ba4d77751f17b1823c65d158ad4de85db99f4cf557"
+    },
+    {
+      "path": "source216-clippy.log",
+      "bytes": 198,
+      "sha256": "b641b89a85721fc13aadf300af1906892966a5bba97e80539c363dbb2a9e1840"
+    },
+    {
+      "path": "source216-complete.patch",
+      "bytes": 389865,
+      "sha256": "3c3b0874662ad8dbb86625242e30ce559d5164c257d3c6844c1895c33a4ef674"
+    },
+    {
+      "path": "source216-diff-command.json",
+      "bytes": 389,
+      "sha256": "8e12ba95de9237b67a0360121a78d50eaab8439188cf4d7ae6c08a9dd95d8c14"
+    },
+    {
+      "path": "source216-diff-result.json",
+      "bytes": 90,
+      "sha256": "3db482a0792f88401d06fca30381b297979872c58ee123709c8320c8d78477aa"
+    },
+    {
+      "path": "source216-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source216-fmt-command.json",
+      "bytes": 413,
+      "sha256": "3be74bb423b96bf9306218701e12aae1716b358f6cea724e045b77dc2e7b3178"
+    },
+    {
+      "path": "source216-fmt-result.json",
+      "bytes": 82,
+      "sha256": "73ded93d2deb145299c64d04777cb4d6cb387bc6d5b24f6cec3a53b97edd3074"
+    },
+    {
+      "path": "source216-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source216-manifest.json",
+      "bytes": 47503,
+      "sha256": "b52bb29e9b9c1ca83e6e25ac8c99d4a7f87f019d9fc902d18b31511f9a1db936"
+    },
+    {
+      "path": "source216-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "36edf2ff07c9bd35ccd59dc78dfdeadf10a7f6f4055e321ac1849fbf8a4f42d4"
+    },
+    {
+      "path": "source216-validation-launch.json",
+      "bytes": 552,
+      "sha256": "8b208b8933173e67c57ebae4fd91098c1b0b47ab8a6d1a89fcd6cae45a85f4b8"
+    },
+    {
+      "path": "static-bytecode208.py",
+      "bytes": 1557,
+      "sha256": "8ba906f2016337491a7971f9b0f2d9e27ff6195726c6f766da7c1bbe1382c230"
+    },
+    {
+      "path": "test-bytecode-broad216.py",
+      "bytes": 3019,
+      "sha256": "677c3d152d5aa62e481e9902de70172d7819a3fcfcdee8b5287c0d5ff2da55de"
+    },
+    {
+      "path": "test-bytecode-controls216.py",
+      "bytes": 3796,
+      "sha256": "23b708ec81c8181dcd40039069b1a85dcd117801f5d55ec3305a75295f418fde"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

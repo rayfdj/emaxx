@@ -14,14 +14,29 @@ diagnosis reproduces both failures. Its first debugger run hits an observer
 limit; the revised run completes and traces a stale closure pointer in unused
 evaluator error-path stack space. Source207 removes value reconstruction and
 outlines that error construction. Published as `092fef67`, it passes strict
-checks, 596 gate / 596 release controls and 40 ordinary GNU comparisons. Full
-macOS Rust/terminal and Linux Rust/frozen validation are running.
-Complete terminal validation passes all
-226 scenarios / 686 comparisons; Linux frozen matches 519 files / 7,928 outcomes.
-The separate [bytecode baseline](runtime-representation-bytecode-draft.md) also
-exposes detached closure storage and stale execution after code-string mutation.
-Its separate source208 adds constructor validation: two controls pass while both
-layout and both live-code mutation controls remain failed.
+checks, 596 gate / 596 release controls and 40 ordinary GNU comparisons. Its
+complete macOS/Linux Rust audits now verify **3,059 / 3,071 passes**, two existing
+ignores each, native artifact identity and every library name/verdict. Both
+original census assertions and both original suspended-root survival/reclamation
+controls pass unchanged. Source207's complete terminal audit verifies all 226
+scenarios / 686 comparisons; its pinned Linux frozen audit verifies 519 files /
+7,928 matching outcomes and 1,038 successful processes. Per editor, 7,670 passes,
+47 expected failures and 211 skips remain separate. All source207 supervisors
+have exited. The Darwin oracle is source/ABI-matched, not the pinned executable.
+
+The separate [bytecode draft](runtime-representation-bytecode-draft.md) now
+replaces detached closure storage with inline GNU fields and removes the host
+record/program cache. Source214 passes five of the six original controls,
+including all layout/native-store/tracing cases and code mutation between calls.
+Active-call mutation still fails. Source215 repairs a reviewed missing vector-copy
+census increment and adds twenty census/identity cases; strict checks and six
+of seven controls pass. Its broader run finishes with 839 passes / nine failures.
+Five GNU-output checks pass unchanged after restoring the standard gate locale;
+GNU rejects three old unit-fixture constructors. Source216 preserves its runtime
+and all original assertions while fixing those fixture inputs and the helper
+locale. Strict checks pass; ten focused controls and all 848 broader tests are
+running. Active-call mutation remains failed. No draft runtime is
+applied to the task branch.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
@@ -29,12 +44,12 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately; final measurement provenance remains required. |
 | 2. GNU architectural reference | Current cons and vector changes trace to GNU's allocation, field access and conservative-root rules. Per-change handovers preserve other references and deviations; final complete-path review remains open. |
-| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. Source204 removes padded field handles. Source205's isolated negative controls expose bytecode's 88-byte record/slot storage versus GNU's 40 bytes. Allocated symbol authority, bytecode migration and adapter removal remain open. |
-| 4. Allocation, GC and ownership | Reachability/reclamation controls are preserved. The exact old Linux failure now has a traced cause and source204 repair under full validation. Real category counters, physical byte accounting, remaining retention/ownership review and collection-cost explanations remain open. |
-| 5. VM/function-call work | Ordinary probes expose stale decoded bytecode after code-string mutation, including during an active call. Representation/VM repair and final dynamic instruction/allocation profiles and equivalent-work timing remain required. |
+| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. The isolated bytecode draft reduces the four-field closure from 88 detached bytes to 40 inline bytes, with native writes and tracing verified. Broader closure validation, authoritative allocated symbols/strings and remaining adapter removal stay open. |
+| 4. Allocation, GC and ownership | Source207's original census and suspended-root controls pass on complete macOS/Linux Rust. Source215 repairs its separate vector-copy census omission, with its new twenty-case control passing. Real category counters, honest physical totals, remaining ownership/retention review and collection-cost explanations stay open. |
+| 5. VM/function-call work | Removing the per-record program cache repairs mutation between calls. A transient decoded activation still misses code changes during a call. Direct authoritative code bytes, final instruction/allocation profiles and equivalent-work timing remain required. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source204 macOS Rust, terminal and Linux frozen pass; Linux Rust fails two census controls. Exact-artifact diagnosis traces their retaining stack word. Source207 has only selected local evidence so far. Final-source Linux/macOS, pinned compatibility, release and zero-warning requirements remain open. |
+| 8. Complete validation | Source207 passes complete macOS/Linux Rust, all 226 terminal scenarios and all 519 Linux frozen files. Its bytecode successor remains an isolated partial draft. Final-source Linux/macOS, pinned Darwin compatibility, release and zero-warning requirements remain open. |
 | 9. Independently checkable delivery | Portable patches, source hashes, commands and raw evidence are committed. Checkpoint validation does not establish final architectural completion, final audit or performance acceptance. |
 
 # Historical record — 27 September 2026
