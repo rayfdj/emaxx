@@ -27,7 +27,20 @@ terminal supervisor has exited.
 Keep the checkout, helpers and artifacts frozen while these processes or their
 children run. [Complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36756877353)
 and [complete Linux frozen compatibility](https://github.com/rayfdj/emaxx/actions/runs/36756885097)
-are dispatched on that exact published head. All complete results remain pending.
+are dispatched on that exact published head. The
+[complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source201-macos-complete-rust-manifest.json)
+now verifies **2,957 library passes, 60 binary passes and 39 integration passes**:
+3,056 passes, including native artifact identity, with two existing ignores.
+Every one of the 2,959 library names/verdicts is checked against its inventory;
+all 410 inputs match the isolated checkout, task worktree and published source.
+The tested executable and four post-run images are retained with hashes. Those
+images do not establish which test used each file. Supervisor 33431 has exited.
+The [complete Linux Rust audit](handover/2026-09-30-shared-reader-draft/source201-linux-complete-rust-manifest.json)
+also passes: 2,965 library, 61 binary and 42 integration tests, totaling **3,068**
+passes, with the same two existing ignores. All 2,967 raw library names/verdicts,
+native artifact identity and retained hashes are verified on clean `320d0a2e`.
+Both original survival/reclamation assertions pass. Terminal and Linux frozen
+results remain pending; no GNU performance parity is established.
 
 The [source200 broad failure](handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved: **453 gate passes / one old record-footprint expectation failure**;
@@ -96,14 +109,23 @@ uses source198's original retained artifacts. Its
 [audited raw result](handover/2026-09-30-shared-reader-draft/source198-five-process-exact-diagnosis-manifest.json)
 reproduces the ordinary failure, while all five debugger processes pass with
 two watched keys and four collection-source snapshots, without callback
-exceptions. No retaining root is established. The next diagnostic compares
-the exact direct child with and without the observer's environment variable.
-It then keeps that variable out of the inferior, preserves inherited display
+exceptions. The subsequent [environment-controlled run](https://github.com/rayfdj/emaxx/actions/runs/36758535929)
+compares the exact direct child with and without the observer's environment
+variable. It keeps that variable out of the inferior, preserves inherited display
 dimensions and disables GDB's extra startup shell, using GDB's documented
 [environment controls](https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Environment.html)
 and [startup option](https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Starting.html).
-This tests the environment hypothesis; it does not establish it. Source201's
-macOS selected passes do not clear the original failure.
+Its [audited evidence](handover/2026-09-30-shared-reader-draft/source198-exact-environment-root-diagnosis-manifest.json)
+reproduces the original failure in the ordinary wrapper, direct child and all
+five debugger children. Adding only the observer variable makes the direct
+child pass. The original executable, startup image and all 398 compiled inputs
+remain unchanged; no debugger callback errors occur. Each failing trace reaches
+the second weak key through a cons selected by a malformed stack word at offset
+32 in `eval_call`. The word contains a one-byte cdr `ConsSlot` selector beside
+old pointer bytes. GNU rejects that cons offset; Emaxx accepts it. The
+[cons field and root continuation](runtime-representation-cons-roots-draft.md)
+preserves the complete diagnosis, negative controls and separate repair draft.
+Source201's passes do not establish that this layout-sensitive defect is fixed.
 
 Complete source201 validation, the Linux reclamation diagnosis, broader object
 authority and allocation accounting, final adversarial audit and the locked

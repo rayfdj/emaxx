@@ -1,0 +1,97 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "compiler failure",
+    "cause": "missing std::ptr::NonNull import",
+    "runtime_tests_executed": 0,
+    "qualification": "Unfinished candidate. Source204 corrects the import without changing assertions."
+  },
+  "archive": {
+    "path": "source203-cons-field-root-compiler-failure.tar.gz",
+    "bytes": 81952,
+    "sha256": "488b75dc173ee4662ee5c0be5cb9d6d6dd6b53d4f2e9b4265da77f63955f9ea1"
+  },
+  "files": [
+    {
+      "path": "audit-source203-patch.py",
+      "bytes": 2787,
+      "sha256": "d166c89a26fc6446c540dd4fe24bc8c96a8ee0cec85ed0882b179f1329b67424"
+    },
+    {
+      "path": "build-cons203.py",
+      "bytes": 2414,
+      "sha256": "1cb289fa88f8b5bf839f60b203a584d6b61d59ea679dd6f68e6ea732a6de1591"
+    },
+    {
+      "path": "check-cons203.py",
+      "bytes": 2020,
+      "sha256": "4d72e8ef222b023645938d7aea22dd84212b8e52b105407a7e26548b924e01f2"
+    },
+    {
+      "path": "queue-source203-validation.py",
+      "bytes": 2412,
+      "sha256": "2e554f962db1d9a25c5a6cdb2ddb2b74f37cd2515c1205b531c105219a26f0d1"
+    },
+    {
+      "path": "source203-base.json",
+      "bytes": 482,
+      "sha256": "cb8d5874d83da7a000a5f5c09764c63d79e0235a50d586120c40c5572bce95a5"
+    },
+    {
+      "path": "source203-check-command.json",
+      "bytes": 473,
+      "sha256": "0e2b6dce51ef9240bd02a985da83e2a3c61cb7d3b17af7338870929554eae272"
+    },
+    {
+      "path": "source203-check-result.json",
+      "bytes": 85,
+      "sha256": "3563d8a8b850fd5df3e32151cf6d89137d12689e2d1d7e11fcd1e0f7405765c1"
+    },
+    {
+      "path": "source203-check.log",
+      "bytes": 1933,
+      "sha256": "5e1474c55dda0ba8194c1cf0f50d5dd5fb824a81dbf981f10558279ab63dd8ca"
+    },
+    {
+      "path": "source203-complete.patch",
+      "bytes": 256118,
+      "sha256": "94a035cb32e2013b1f5c38dffbc678ea4c2cdd4cad59dddd1e976ac2323c0765"
+    },
+    {
+      "path": "source203-manifest.json",
+      "bytes": 46477,
+      "sha256": "2877be7d99e455cadc0da80acaa4b194edab830c7deafa3b1db43e6abf535bba"
+    },
+    {
+      "path": "source203-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "549cfeb93bacf415b6cf14c31c6f9de9e70aa909500ae778df0715a05839f1cb"
+    },
+    {
+      "path": "source203-selected-validation-driver.log",
+      "bytes": 77,
+      "sha256": "2dd48c7835d41b52dc546f2f144ce5f8a5d267e33c95980224077f1ad42d7798"
+    },
+    {
+      "path": "source203-selected-validation-launch.json",
+      "bytes": 209,
+      "sha256": "e25da5c42ed06146158e593f08641ea96d6b15eb6e1b26f3bc362e743995face"
+    },
+    {
+      "path": "source203-selected-validation-result.json",
+      "bytes": 533,
+      "sha256": "117a5a99c32597bce376d3e9bb721b9599b30fdf2a69ef43dadefb640741e640"
+    },
+    {
+      "path": "static-cons203.py",
+      "bytes": 1545,
+      "sha256": "7ae3d921affa4948cca40e4e307882a19c7d43b8de55aed82b61426bba8c6869"
+    },
+    {
+      "path": "test-cons203.py",
+      "bytes": 5266,
+      "sha256": "d0d562376e43e4d134d180b0b3924bdb2aeb0f0c86264f0b331e2190becec6b3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

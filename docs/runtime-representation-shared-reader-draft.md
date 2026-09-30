@@ -3,7 +3,11 @@
 The [source201 allocator continuation](runtime-representation-vector-allocation-draft.md)
 now occupies the task branch on top of the reader/macro changes described here.
 Its strict checks, 454 gate controls, 454 release controls and 36 ordinary exact
-GNU comparisons pass; complete validation is running. Main remains source174.
+GNU comparisons pass. Complete Rust audits now pass 3,056 macOS and 3,068 Linux
+tests; terminal and Linux frozen validation remain running. The
+[cons field/root continuation](runtime-representation-cons-roots-draft.md)
+records the original Linux failure's retaining root and a separate repair
+candidate with seven focused gate passes. Main remains source174.
 
 **Source198 is an unfinished candidate, not production.** Its complete
 patch is based on main `21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199`, the verified

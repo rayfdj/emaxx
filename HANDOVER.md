@@ -5,9 +5,15 @@ Read the [allocator continuation](docs/runtime-representation-vector-allocation-
 after the complete goal and shared-reader handover. Its
 [audited selected results](docs/handover/2026-09-30-shared-reader-draft/source201-vector-selected-validation-manifest.json)
 pass all strict checks, **454 gate / 454 release controls and 36 ordinary exact
-GNU comparisons**. All 410 inputs match the task worktree. Complete macOS Rust
-and terminal supervisors **33431 / 33432** are running in the frozen
-`macro-reader/emaxx` checkout. Runtime source201 is
+GNU comparisons**. All 410 inputs match the task worktree. Its
+[complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source201-macos-complete-rust-manifest.json)
+passes **3,056 tests** and its
+[complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source201-linux-complete-rust-manifest.json)
+passes **3,068 tests**, including native artifact identity and both original
+reclamation assertions, with two existing ignores on each platform. Every raw
+library name/verdict is checked. macOS supervisor **33431** has exited; terminal
+supervisor **33432** remains live in the frozen `macro-reader/emaxx` checkout.
+Runtime source201 is
 [published as **`320d0a2e`**](docs/handover/2026-09-30-shared-reader-draft/source201-publication-manifest.json).
 Its [complete Linux Rust](https://github.com/rayfdj/emaxx/actions/runs/36756877353)
 and [Linux frozen comparison](https://github.com/rayfdj/emaxx/actions/runs/36756885097)
@@ -28,11 +34,21 @@ It records rejected name reads, preserves five separate debugger outcomes and
 checks restored image hashes after each process. Its
 [audited result](docs/handover/2026-09-30-shared-reader-draft/source198-five-process-exact-diagnosis-manifest.json)
 reproduces the ordinary failure; all five debugger children pass without callback
-exceptions. No retaining root is established. The next diagnostic compares the
-unchanged direct child with and without the observer environment variable, then
-removes that variable and newly introduced display dimensions from the inferior
-and disables GDB's startup shell. This is a controlled diagnostic change, not a
-runtime repair; preserve all original failures and passing debugger outcomes.
+exceptions. The subsequent [environment-controlled diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36758535929)
+now reproduces the failure in all five debugger children. Its
+[audited traces](docs/handover/2026-09-30-shared-reader-draft/source198-exact-environment-root-diagnosis-manifest.json)
+identify a malformed cons pointer from the one-byte cdr `ConsSlot` selector in
+`eval_call`. GNU rejects this offset; Emaxx currently accepts it. Adding only
+the observer environment variable makes the direct child pass, explaining the
+earlier passing debugger layout. The source201 passes do not establish a repair.
+Read the new [cons field and root continuation](docs/runtime-representation-cons-roots-draft.md)
+next. Source202's two new controls fail on unchanged runtime201; source203's
+compiler failure is preserved. Source204 corrects the import and validates in
+the separate `cons-roots/emaxx` checkout under supervisor **41205**. Its
+[strict checks and seven focused gate controls](docs/handover/2026-09-30-shared-reader-draft/source204-cons-field-root-focused-manifest.json)
+pass, including both original reclamation assertions. The archive contains its
+complete replay-verified patch and all 410 input hashes. Broader gate, release
+and ordinary results remain pending under that supervisor; keep the checkout frozen.
 
 Source200's [453-pass / one-failure gate](docs/handover/2026-09-30-shared-reader-draft/source200-vector-selected-failure-manifest.json)
 is preserved. Source201 keeps its runtime and corrects the old record word-count
@@ -412,6 +428,8 @@ Read these in order:
 
 1. [Complete goal and completion requirements](docs/runtime-representation-goal.md).
    Then read the [current shared-reader draft](docs/runtime-representation-shared-reader-draft.md).
+   Then read the [allocator continuation](docs/runtime-representation-vector-allocation-draft.md)
+   and [cons field/root repair draft](docs/runtime-representation-cons-roots-draft.md).
    Then read the [shared hash-table allocation checkpoint](docs/runtime-representation-hash-allocation-checkpoint.md).
    Then read the [current task-branch follow-up](docs/runtime-representation-call-window-checkpoint.md).
    Then read the [complete Rust gates and main checkpoint](docs/runtime-representation-main-candidate.md).
