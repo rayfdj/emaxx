@@ -1986,12 +1986,13 @@ mod tests {
         let materialized = interp
             .materialize_read_object_literals(literal, &mut env)
             .expect("reader construction must treat every closure slot as data");
-        let super::types::Kind::Record(record_id) = materialized.kind() else {
+        let super::types::Kind::Closure(closure) = materialized.kind() else {
             panic!("byte-code reader form must become a closure pseudovector");
         };
-        let record = interp
-            .find_record(record_id)
-            .expect("materialized closure record");
-        assert_eq!(record.slots[4], callable_looking_data);
+        // lread.c:bytecode_from_rev_list constructs PVEC_CLOSURE and keeps
+        // this slot as data. Ordinary GNU confirms the five-slot object
+        // without invoking the callable-looking documentation form.
+        assert_eq!(closure.public_len(), 5);
+        assert_eq!(closure.get(4), Some(callable_looking_data));
     }
 }

@@ -32,14 +32,31 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let mut environment = Env::new();
     let mut roots = crate::lisp::alloc::RootedVec::new();
-    // Repeated three-word allocations visit odd word offsets and every
-    // bitmap word. Larger vectors exercise split free lists and separate marks.
+    // Repeated three-word allocations visit odd word offsets. Larger
+    // vectors exercise split free lists and separate marks.
     let lengths = [2, 2, 2, 2, 4, 6, 1, 250, 251, 252, 511];
+    let mixed_count = 660;
+    // Two roughly half-block objects can leave no object start in the last
+    // bitmap word. Free-list history decides whether the mixed population
+    // reaches it. Preserve that entire population, then use one-slot vectors
+    // until every bitmap word is represented. This upper bound could fill
+    // every existing block, every block the mixed pass might add, and one
+    // additional block; failure to cover all words still fails the test.
+    let allocation_limit = mixed_count
+        + (blocks_of(BlockKind::VectorBlock).len() + mixed_count + 1)
+            * (VECTOR_BLOCK_BYTES / VBLOCK_BYTES_MIN);
+    let length_at = |index: usize| {
+        if index < mixed_count {
+            lengths[index % lengths.len()]
+        } else {
+            1
+        }
+    };
     let mut odd_offsets = 0;
     let mut bitmap_words = std::collections::BTreeSet::new();
     let mut marks = std::collections::BTreeSet::new();
-    for index in 0..660 {
-        let len = lengths[index % lengths.len()];
+    for index in 0..allocation_limit {
+        let len = length_at(index);
         let value = Value::vector(std::iter::repeat_n(Value::Integer(index as i64), len));
         let Kind::Vector(vector) = value.kind() else {
             unreachable!("constructed vector")
@@ -76,7 +93,15 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
         }
         vector.set(0, value);
         roots.push(value);
+        if index + 1 >= mixed_count && bitmap_words.len() == VECTOR_MARK_WORDS {
+            break;
+        }
     }
+    println!(
+        "vector bitmap coverage: {} allocations, {} odd offsets, words {bitmap_words:?}",
+        roots.len(),
+        odd_offsets,
+    );
     assert!(
         odd_offsets > 100,
         "many objects must start between 16-byte boundaries"
@@ -90,7 +115,7 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
             let Kind::Vector(vector) = value.kind() else {
                 unreachable!("rooted vector")
             };
-            assert_eq!(vector.len(), lengths[index % lengths.len()]);
+            assert_eq!(vector.len(), length_at(index));
             assert!(vector.get(0).expect("cycle").eq_value(*value));
             if vector.len() > 1 {
                 assert_eq!(

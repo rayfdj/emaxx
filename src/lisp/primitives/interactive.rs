@@ -405,19 +405,18 @@ pub(crate) fn eval_callable_metadata_form(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Kind::Closure(lambda) = func.kind() {
-        // The form under the closure's own environment, as a call of the
-        // closure would install it.
-        let depth = env.len();
-        env.push(crate::lisp::types::EnvFrame::from_alist(
-            lambda.environment_value(),
-        ));
-        let result = interp.eval(form, env);
-        env.truncate(depth);
-        result
-    } else {
-        interp.eval(form, env)
-    }
+    // callint.c:Fcall_interactively passes CLOSURE_CONSTANTS to Feval only
+    // when CLOSURE_CODE is a cons: an interpreted closure's body.  A
+    // bytecode closure stores its constants vector in that same slot.
+    // All other commands evaluate their interactive form with a nil lexical
+    // environment, independently of the caller's lexical bindings.
+    let lexical = match func.kind() {
+        Kind::Closure(closure) if matches!(closure.body().kind(), Kind::Cons(_)) => {
+            closure.environment_value()
+        }
+        _ => Value::Nil,
+    };
+    eval_impl(interp, &[*form, lexical], env)
 }
 
 pub(crate) fn parse_interactive_string(

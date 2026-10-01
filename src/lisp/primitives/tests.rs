@@ -27083,3 +27083,13 @@ fn unused_bytecode_destinations_follow_actual_control_flow() {
         include_str!("../../../tests/fixtures/bytecode-unused-destinations.expected").trim_end();
     assert_oracle_contract_matches_interpreter(program, expected, "unused bytecode destinations");
 }
+
+#[test]
+fn interactive_closures_use_the_gnu_metadata_environment() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/interactive-closure-environments.el"),
+        include_str!("../../../tests/fixtures/interactive-closure-environments.expected")
+            .trim_end(),
+        "interactive closure environments",
+    );
+}

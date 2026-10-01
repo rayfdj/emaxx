@@ -20,23 +20,47 @@ The latest validated main checkpoint is **source174**, merge `21d20f0e` in
 [complete validation record](docs/runtime-representation-call-validation-complete.md)
 remains separate from the unfinished task branch.
 
-The task branch is **runtime-char-tables**, [PR #79](https://github.com/rayfdj/emaxx/pull/79),
-now **draft** while the next runtime checkpoint receives complete validation.
-This checkpoint advances the runtime from source207 to **source231**, matching all
-440 inputs in the isolated `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx`
-checkout. Strict checks and all 31 focused gate controls pass. Its
-[fresh release and ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
-verifies **31 focused / 937 affected release tests and 54 exact GNU comparisons**.
-Its [complete macOS library inventory](docs/handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
-records **2,974 passes / five failures / two existing ignores**. Both later Cargo
-stages never run. Three failures concern stale bytecode-root metadata, one an old
-closure-kind assertion, and one insufficient vector bitmap-word coverage. Linux
-validation is pending. The
-[closed source229 terminal failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
-contains **353 matching comparisons / seven quote-display divergences**, followed
-by a GNU startup-readiness failure. Another 54 scenarios never start. Source231
-has no renderer repair or complete terminal pass. Main remains the checkpoint
-above. Earlier source207 certification remains historical evidence below.
+The task branch is **runtime-char-tables**, [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
+This checkpoint advances source231 (`7cb2cae3`) to **source234**, matching all
+442 runtime/test inputs in `target/runtime-goal/recovered-2026-09-30/display-tables/emaxx`.
+Despite that checkout's name, it contains the interactive-metadata repair, with
+no renderer change. The [portable draft](docs/handover/2026-09-30-shared-reader-draft/source234-interactive-metadata-draft-manifest.json)
+and [focused audit](docs/handover/2026-09-30-shared-reader-draft/source234-focused-validation-manifest.json)
+verify exact patch/mode replay, strict zero-warning checks and **37 gate passes**.
+Release supervisor **8207** and complete macOS supervisor **12104** are active.
+Linux validation of source234 has not yet been dispatched in this saved record.
+
+Source231's [closed Linux failures](docs/handover/2026-09-30-shared-reader-draft/source231-linux-interactive-failure-manifest.json)
+show **1,380 Rust passes followed by an Edebug abort**; 1,608 library tests and
+both Cargo stages never run. Frozen comparison matches **79 files / 1,911 outcomes**
+(1,901 passes, five expected failures and five skips per editor), then Emaxx
+aborts in `edebug-tests.el` with 46 missing outcomes; 439 files never start.
+Both traces reach the same malformed-environment assertion. An ordinary same-input
+probe returns `17` in GNU but a constants-vector `listp` error in source231.
+GNU `callint.c:Fcall_interactively` uses a closure environment only when its code
+slot is a cons. Source234 follows that rule and delegates to existing `Feval`,
+preserving captured mutations and isolating non-interpreted commands from caller
+lexical bindings. Its new GNU fixture and four unchanged Edebug controls pass
+locally; that does not yet establish Linux repair.
+
+The included [source232 library repair](docs/handover/2026-09-30-shared-reader-draft/source232-library-control-repair-manifest.json)
+corrects stale root metadata and the reader's closure-kind assertion. Its vector
+control retains all 660 original mixed allocations and every original assertion,
+then adds dense allocations to guarantee coverage of every bitmap word. The
+original lightweight group passes **545 gate / 544 release tests**, including all
+five previous failures; 31 focused controls also pass in each profile. Its first
+[full-run setup failure](docs/handover/2026-09-30-shared-reader-draft/source232-fixture-relocation-failure-manifest.json)
+retains 232 passes / 154 failures caused by a fixture image built under the relocated
+test executable. The image and failed run are preserved. Supervisor **5593** reruns
+the unchanged full gate with a fresh image from the normal executable; it remains
+active in the string-ops checkout. Source233's formatting-only failure is retained;
+it ran no runtime tests. Source234 corrects only that formatting from source233.
+
+The [closed source229 terminal failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
+still contains **353 matching comparisons / seven quote-display divergences**, followed
+by a GNU startup-readiness failure. Another 54 scenarios never start. Source234
+has no renderer repair or complete terminal pass. Main remains source174.
+Earlier source207 certification remains historical evidence below.
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
 The preceding **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
 adds direct evaluator words and a separate cold error

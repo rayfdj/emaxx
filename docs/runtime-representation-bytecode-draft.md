@@ -2,8 +2,12 @@
 
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
-The full goal remains unfinished. The source231 task checkpoint now carries the
-later closure/string work beyond runtime207; PR #79 is draft and main is unchanged.
+The full goal remains unfinished. The source234 task checkpoint carries the
+later closure/string work and GNU interactive-metadata repair; PR #79 is draft
+and main is unchanged. Its 442 inputs replay exactly, strict checks pass and all
+37 focused gate controls pass. Release and full macOS validation are active.
+The linked string handover records the source231 Linux Edebug abort, the matching
+GNU negative probe, source232 library-control repairs and every evidence limit.
 The next [canonical string-byte draft](runtime-representation-string-bytes-draft.md)
 continues from source216 in a separate checkout.
 
@@ -26,12 +30,13 @@ substring failures and that internal assertion; strict checks and all three
 substring controls pass. Its 31 focused controls retain one added-fixture setup
 failure (bare interpreter lacks GNU `cadr`), while all 937 affected tests and
 54 ordinary comparisons pass. Source231 loads GNU only for that additional
-contract and passes strict checks plus all 31 focused controls. The task worktree
-matches its 440 inputs. Fresh release validation passes all 31 focused controls
+contract and passes strict checks plus all 31 focused controls. The published source231 checkpoint
+matched its 440 inputs before source234. Fresh release validation passes all 31 focused controls
 and 937 affected tests; all 54 ordinary GNU comparisons pass. Complete macOS
 library validation records 2,974 passes, five failures and two existing ignores;
 both later Cargo stages never run. The linked string handover names the root
-metadata, closure assertion and bitmap coverage failures. Linux is pending.
+metadata, closure assertion and bitmap coverage failures. Linux later aborts in
+Edebug; the source234 repair and its still-incomplete validation are recorded above.
 Source229's closed terminal
 run retains seven quote-display divergences and a later GNU startup-readiness
 failure; 54 scenarios never start. No complete terminal or performance pass exists.

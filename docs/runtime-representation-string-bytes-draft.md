@@ -3,13 +3,40 @@
 Read the [complete goal](runtime-representation-goal.md),
 [current handover](../HANDOVER.md) and
 [shared-closure continuation](runtime-representation-bytecode-draft.md).
-The full goal remains unfinished. The source231 task checkpoint advances the
-runtime beyond source207 and matches the isolated string-ops checkout. PR #79 is
-draft pending complete validation and the known terminal repairs; main is unchanged.
+The full goal remains unfinished. **Source234** is the task checkpoint and matches
+all 442 inputs in the isolated `display-tables/emaxx` checkout. PR #79 remains
+draft and main remains source174. The checkout name does not indicate a renderer
+repair. Source232 remains frozen in `string-ops/emaxx` during its complete macOS
+rerun; source229 remains frozen in `string-bytes/emaxx`.
 
-The frozen **source229** checkout is
-`target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`. The current **source231**
-repair is isolated in `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx`.
+The [source231 Linux failure audit](handover/2026-09-30-shared-reader-draft/source231-linux-interactive-failure-manifest.json)
+records 1,380 Rust passes before an Edebug abort and 79 frozen files / 1,911 matching
+outcomes before the same assertion. There are 1,608 unstarted Rust tests and 439
+unstarted frozen files. No later Cargo stage runs. GNU completes the edebug file;
+Emaxx produces no final report for its 46 outcomes. The five expected failures and
+five skips among preceding outcomes are not passes.
+
+The [source234 draft](handover/2026-09-30-shared-reader-draft/source234-interactive-metadata-draft-manifest.json)
+follows `callint.c:Fcall_interactively`: only a cons code slot identifies an
+interpreted closure whose constants slot is an environment. Bytecode and other
+commands pass nil to existing `Feval`; caller lexical bindings cannot leak in.
+The original same-input source231 probe returns a vector/listp error where GNU
+returns 17. The [focused audit](handover/2026-09-30-shared-reader-draft/source234-focused-validation-manifest.json)
+passes all 37 gate controls, including the new GNU fixture, the four original
+Edebug tests and captured-closure mutation. Strict checks pass with zero warnings.
+Release supervisor 8207 and full macOS supervisor 12104 are active; Linux repair
+is not yet verified. All 442 inputs and modes replay exactly.
+
+The [source232 control repair](handover/2026-09-30-shared-reader-draft/source232-library-control-repair-manifest.json)
+clears the five old local failures in the complete lightweight group: 545 gate
+and 544 release passes, with all original behavioral assertions retained. Its
+[first full run](handover/2026-09-30-shared-reader-draft/source232-fixture-relocation-failure-manifest.json)
+fails because the relocated selected-test binary and normal gate reused an image
+with incompatible relative native-library paths. That image and 232-pass/154-fail
+run remain retained. Supervisor 5593 runs the unchanged full gate with a fresh
+image from the normal executable. Source233 passes compiler/Clippy but fails one
+new test's line wrapping; it runs no runtime tests. Source234 fixes that formatting.
+
 The string-byte work starts from
 source216, whose ten focused controls have nine passes/one failure and whose
 unchanged 848-test broader inventory has 847 passes/one failure. The remaining
@@ -209,7 +236,7 @@ ignores**. Three failures concern stale bytecode-root inventory metadata; the
 reader's no-slot-evaluation test still expects a host record; and the vector
 bitmap control covers only three of four words. Both later Cargo stages never
 run. The failed executable/image and all original assertions remain preserved.
-Linux and complete terminal validation remain pending. The full gate supplies the
+The later Linux run fails as recorded above; complete terminal validation remains open. The full gate supplies the
 complete gate-profile inventory after this test-only change; the passing
 source230 selected gate is not redundantly repeated. No complete pass is claimed.
 
@@ -303,7 +330,7 @@ reference command/output is retained.
 The direct byte cursor and source225's flow repair pass selected tests in both
 profiles; its full runs fail in completion. Source229 passes selected gate/release
 and ordinary controls but fails full Rust and has a live terminal divergence.
-Source231 passes focused validation with complete/release runs active. Instruction and call
+Source231 passes selected gate/release and ordinary validation but fails complete macOS and Linux runs. Source234 passes 37 focused gate controls; its release and complete macOS runs are active. Instruction and call
 costs need measured profiles; removing a cache is not a timing result. Complete
 error, callback, rooting, suspended-frame and execution-mode coverage is required.
 

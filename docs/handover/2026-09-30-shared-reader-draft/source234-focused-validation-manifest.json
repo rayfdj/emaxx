@@ -1,0 +1,125 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "37 focused gate controls pass",
+    "goal_complete": false,
+    "source_inputs_verified": 442,
+    "passed": 37,
+    "failed": 0,
+    "ignored": 0,
+    "strict_checks": "passed with zero warnings",
+    "binary": {
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source234-gate-libtest",
+      "sha256": "b7d325dc7bd0bf4fd6fab359dcfbfdd81c4441269dde7d068c42116ef5d52b29"
+    },
+    "image": {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source234/loadup-b7d325dc-44409a21.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source234-focused-retained-inputs/loadup-b7d325dc-44409a21.pdmp",
+      "sha256": "e57ae80af17a098a97c82553948029fb3dcb4643f9a874a0d0dcd37de2f9b2e7"
+    },
+    "qualification": "The new same-input GNU fixture and four unchanged Edebug controls pass, as does the original captured-interactive-closure mutation control and all 31 preceding bytecode/string controls. The retained source231 ordinary reproducer fails while GNU returns 17. Full macOS and release validation are separate; Linux must still verify the repair. Post-run image is retained without a per-test image-use claim. Seven display mismatches and the full architectural/performance requirements remain open."
+  },
+  "archive": {
+    "path": "source234-focused-validation.tar.gz",
+    "bytes": 105124,
+    "sha256": "c81e659f053ce33c952cf88ead627702528f0ab0fd7b4c8e17b7aff0e8bd02f8"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "audit-source234-focused.py",
+      "bytes": 3286,
+      "sha256": "8953323e70f7e988286a0a2531d5affa24a358c698d632f9af087394e3f97102"
+    },
+    {
+      "path": "build-source234.py",
+      "bytes": 2446,
+      "sha256": "ebf84cbde1636a6a561efc78335fb6b3d1c27ad6b54a7472a879c915a6bd178f"
+    },
+    {
+      "path": "compare-source230-fixtures.py",
+      "bytes": 3930,
+      "sha256": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3"
+    },
+    {
+      "path": "package-source234-focused.py",
+      "bytes": 2215,
+      "sha256": "08692cf5fa17c46a426d0ebc229233a08e63c377d1c613f42fccf3c61065b835"
+    },
+    {
+      "path": "run-source234-full-gate.py",
+      "bytes": 3739,
+      "sha256": "5163a142559538c412eeac009bd0b5ef8439a6cbd46d6812ef15003901f5af72"
+    },
+    {
+      "path": "run-source234-ordinary.py",
+      "bytes": 2520,
+      "sha256": "09b699bb285868a0249c39f82f25b5a2a9e710d6c26d9611419cb8aee6ba68dd"
+    },
+    {
+      "path": "run-source234-release-and-ordinary.py",
+      "bytes": 1136,
+      "sha256": "76ae9445d4a3f9797902358b79e3dc38a0e67b48060dda3e37cb23d910d77f8b"
+    },
+    {
+      "path": "source234-focused-audit.json",
+      "bytes": 1325,
+      "sha256": "699900a2b17d83a1114ed198594e7947a5d8bb17137f89ce8bb7d12e73ae77d7"
+    },
+    {
+      "path": "source234-full-gate-launch.json",
+      "bytes": 361,
+      "sha256": "baa2c5cc841a99fd93c8a73541d89e7c4829138276e2c48a8e67e1e745b31263"
+    },
+    {
+      "path": "source234-gate-build-command.json",
+      "bytes": 1156,
+      "sha256": "f17930eee04e5d4ca10c057fe78725741f700ca5d5de037ef316bba573ad092d"
+    },
+    {
+      "path": "source234-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "0f1a9c8b8b4837d680634cb42d92c5a46f4f62ba3b5032cde1ad587d43ba50d0"
+    },
+    {
+      "path": "source234-gate-build.log",
+      "bytes": 220388,
+      "sha256": "6f090b654c3048408eb892eedfaee5d5ee7cc95c2c0b8db61d4a887444991453"
+    },
+    {
+      "path": "source234-gate-controls-command.json",
+      "bytes": 8294,
+      "sha256": "583ded54d7717218063b6b684bbadb4ce70b5c4eb99e3759e7388546d1605d96"
+    },
+    {
+      "path": "source234-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "3795d14730ec522c3ecaae3473609f37d5c91aa210103100356a3b5e5c39c5c6"
+    },
+    {
+      "path": "source234-gate-controls.log",
+      "bytes": 5072,
+      "sha256": "b4a3c8c7928b1ee365465f0b130a2402b5220798be766a9db234886ce6231164"
+    },
+    {
+      "path": "source234-gate-inventory.txt",
+      "bytes": 263053,
+      "sha256": "ef55ceb1647302330be36da1b486b2e816aec20dc3849f6024affae0e283b071"
+    },
+    {
+      "path": "source234-manifest.json",
+      "bytes": 50386,
+      "sha256": "c7c4c52e2faef74cccf2d7bfb80fe797ad6be4e843f5a6554d2809fc2a9bf58c"
+    },
+    {
+      "path": "test-source234-broad.py",
+      "bytes": 3090,
+      "sha256": "55b3fcd3157f00530e21290a4c7adc953b7212a3ee269e3006384ede946ab408"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
