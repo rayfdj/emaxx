@@ -355,7 +355,7 @@ Linux frozen36822376061 on exact `8d4fcd39` fails after **482 completely matchin
 files / 6,911 outcomes**. Per editor these comprise 6,693 passes, 43 expected
 failures and 175 skips. While loading `test/src/comp-tests.el`, Emaxx unexpectedly
 prompts for a coding system and exits255 on batch EOF. No test in that file starts:
-177 outcomes are missing, while GNU runs and passes all177. Another36 files
+177 outcomes are missing, while GNU runs and passes all 177. Another36 files
 never start. Every completed pair, execution hash and the original test inventory
 is audited; the failed run remains failed.
 
@@ -388,7 +388,7 @@ separate corrected auditor verifies existing raw results without rerunning tests
 The [portable source244 repair and selected evidence](handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
 are frozen in `target/runtime-goal/recovered-2026-09-30/coding-selection/emaxx`.
 Its464 inputs and Git checkout modes replay exactly from task `6da1448e` and
-main `21d20f0e`. Root task runtime now matches this candidate.
+main `21d20f0e`. The task runtime matched this candidate before source246 below.
 
 Following `coding.c:Ffind_coding_systems_region_internal`, candidates include
 every registered base coding rather than one detection-category representative.
@@ -415,8 +415,8 @@ excluded from the archive; immutable launch helpers/receipts are included.
 The [closed ordinary audit and Linux dispatch receipts](handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding ordinary comparisons as well: **66 distinct ordinary
 comparisons** match on source244. The runtime is now pushed as **`578955b3`**.
-Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
-and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+Linux [Rust 36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen 36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
 are dispatched on that exact source. Launch is not a pass. Read actual receipts
 before resuming or restarting any job.
 
@@ -425,4 +425,80 @@ particular, GNU also applies encoding translation tables and walks its actual
 coding-system registration list; the current helper still needs that broader
 review. Preserve those limits along with all prior failures. Complete correctness,
 remaining shared-object/accounting/ownership work, pinned Darwin, the final
-adversarial audit and the locked16-workload/3% performance criterion remain open.
+adversarial audit and the locked 16-workload/3% performance criterion remain open.
+
+
+## Closed source244 results and source246 recovery
+
+The [closed source244 archive](handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
+closes all three local supervisors: complete macOS has 3094 passes/two existing
+ignores, native artifact identity and all 2997 raw library names verified. Release
+has 166 focused passes/two ignores and 949 affected passes. All 464 runtime inputs
+match published `578955b3`; all 66 ordinary comparisons remain audited.
+
+Linux frozen 36830884261 processes the complete 519-file / 7,928-outcome inventory and
+all 1,038 processes exit successfully. Exactly 7,927 paired outcomes match. GNU alone
+has an unexpected JSON-RPC timeout in `eglot-test-rust-completion-exit-function`;
+Emaxx passes. Both editors pass all 177 original compiler tests, closing the
+source243 compiler-load failure on Linux. Emaxx has 7,670 passes/47 expected failures/
+211 skips; GNU has 7,669 passes/47 expected failures/one unexpected failure/211 skips.
+The full frozen run remains failed; no status is normalized away.
+
+Linux Rust 36830879269 has 2,258 passes and two failed GNU reference assertions,
+before either control reaches Emaxx: the first empty-record sample is -7 rather
+than 2 slots; the first empty-vector sample is -9 rather than 0. All later samples
+match. Another 745 library tests and both Cargo stages never execute. The actual
+GNU executable and dump are missing from this job's retained inputs; the cause
+is unresolved. Two initial audit helpers expected an older download-receipt
+schema and failed before writing any result. Their scripts and failures are
+preserved; the final auditor checks every actual mapping entry and raw verdict
+without rerunning runtime tests.
+
+Source244 terminal comparison fails at GNU startup readiness in scenario 81,
+`yank-pop`, with GNU still displaying `*scratch*`. All 80 earlier scenarios and
+comparisons match; no divergence is observed. Another 145 scenarios and 606
+comparisons remain unexecuted. This is not a complete terminal pass or evidence
+of an Emaxx crash. All 8 execution inputs and 464 source inputs are verified.
+
+The [source246 selected repair](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
+preserves two new same-input negative fixtures. Source244 ignored encoding-safety
+translation tables and dynamically bound coding lists. Its actual-character
+path also passed U+E080–U+E0FF through a legacy regex-sentinel conversion, falsely
+rejecting real private-use Unicode characters. Source243's unchanged ordinary
+probe accepts those characters for UTF-8, confirming this is a source244
+regression, not merely new coverage. Source245's four invalid Value-accessor
+calls fail compilation; its exact patches and logs remain preserved, with zero
+runtime tests executed.
+
+Source246 follows `coding.c:get_translation_table`,
+`character.c:translate_char` and `coding.c:Ffind_coding_systems_region_internal`:
+it reads live tables/properties and bound lists, applies translations before
+charset membership, preserves registry order/duplicates and EQ exclusions, and
+keeps actual character numbers separate from the legacy raw-byte adapter. The
+original fixtures and expected GNU outputs do not change. All 468 inputs/modes
+replay from `0f5e6ff8` and main `21d20f0e`. Strict checks have zero warnings;
+168 focused passes/two existing ignores, 951 affected passes and 11 ordinary
+comparisons are audited. Both normal editors pass all 177 original compiler
+tests with exactly the frozen selected names/discovered metadata. This local
+GNU is source/native-ABI matched, not the pinned Darwin executable.
+
+Full source246 macOS 86467, release plus 57 preceding ordinary comparisons 86468,
+and unchanged full terminal 86469 are running. Do not modify their frozen
+candidate or helpers. Active logs are excluded from the selected archive.
+Linux dispatch follows the checkpoint push. Current root runtime matches all 468
+source246 inputs; launch is never counted as a result.
+
+The separate CI evidence improvement retains the configured GNU executable,
+dump, config.h and Makefile before Rust/frozen validation and checks both source
+and retained bytes afterward. It runs no warm-up GC and changes no test or
+verdict. Real-GNU capture/verification, shell/YAML parsing and six synthetic
+rejection controls pass: changed original, changed retained copy, missing
+original, incomplete inventory, malformed manifest and duplicate capture.
+
+The safety-helper repair does not establish general encoder/decoder translation
+semantics. The normal fallback registration list still comes from interpreter
+metadata; its authority/order needs review. Legacy charset adapters and nil/t
+translation-symbol or overriding-plist-environment behavior also need review.
+Main remains unchanged; complete correctness, all remaining architecture/
+accounting/ownership requirements, final pinned Darwin/adversarial validation
+and the locked 16-workload/3% performance criterion remain open.

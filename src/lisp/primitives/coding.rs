@@ -384,13 +384,24 @@ pub(crate) fn encode_charset_char(
     charset: &str,
     character: u32,
 ) -> Option<u32> {
-    let canonical = interp.charset_canonical_name(charset)?;
     // CHARACTER may be a Rust-internal char (a raw byte spelled in the
     // regex-internal range) or GNU's own character number (a raw byte at
     // #x3fff80..#x3fffff, as `encode-char' and `char-charset' receive
     // it); both spellings name the same raw byte, which no code space but
     // `eight-bit' contains.
-    let public = gnu_character_number(character);
+    encode_charset_character_number(interp, charset, gnu_character_number(character))
+}
+
+/// Charset membership for an actual Emacs character number. Canonical
+/// string consumers must not reinterpret Unicode private-use characters
+/// as the older Rust-text adapter's raw-byte sentinels.
+fn encode_charset_character_number(
+    interp: &Interpreter,
+    charset: &str,
+    character: u32,
+) -> Option<u32> {
+    let canonical = interp.charset_canonical_name(charset)?;
+    let public = character;
     match canonical.as_str() {
         "ascii" if public <= 0x7f => return Some(public),
         "ascii" => return None,
@@ -419,12 +430,12 @@ pub(crate) fn encode_charset_char(
     }
     if let Some(children) = charset_superset(interp, &canonical) {
         return children.iter().find_map(|(child, offset)| {
-            let child_code = encode_charset_char(interp, child, character)?;
+            let child_code = encode_charset_character_number(interp, child, character)?;
             u32::try_from(i64::from(child_code).checked_add(*offset)?).ok()
         });
     }
     if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
-        let parent_code = i64::from(encode_charset_char(interp, &parent, character)?);
+        let parent_code = i64::from(encode_charset_character_number(interp, &parent, character)?);
         if !(min..=max).contains(&parent_code) {
             return None;
         }
@@ -2800,11 +2811,73 @@ pub(crate) fn detect_coding_region_value(
     ))
 }
 
+/// coding.c:get_translation_table for the encoding-side safety check.
+/// Only a coding's own symbol/list entries are resolved through symbol
+/// properties; a standard table used on its own is passed through as-is.
+fn encoding_safety_translation_tables(
+    interp: &Interpreter,
+    coding: &str,
+    env: &Env,
+) -> Result<Vec<Value>, LispError> {
+    if interp
+        .lookup_var("enable-character-translation", env)
+        .is_some_and(|value| value.is_nil())
+    {
+        return Ok(Vec::new());
+    }
+    let standard = interp
+        .lookup_var("standard-translation-table-for-encode", env)
+        .unwrap_or(Value::Nil);
+    let table =
+        coding_system_property(interp, coding, ":encode-translation-table").unwrap_or(Value::Nil);
+    if table.is_nil() {
+        return Ok(if standard.is_nil() {
+            Vec::new()
+        } else {
+            vec![standard]
+        });
+    }
+    let resolve = |value: Value| match value.kind() {
+        Kind::Symbol(symbol) => interp
+            .get_symbol_property_of(&symbol, &"translation-table".into())
+            .unwrap_or(Value::Nil),
+        _ => value,
+    };
+    let mut tables = if table.cons_values().is_some() {
+        table.to_vec()?.into_iter().map(resolve).collect()
+    } else {
+        vec![resolve(table)]
+    };
+    if matches!(standard.kind(), Kind::CharTable(_)) {
+        tables.push(standard);
+    }
+    Ok(tables)
+}
+
+/// character.c:translate_char applies table lists in order, replacing a
+/// character only with another valid character, and reading live slots.
+fn translate_safety_character(mut table: Value, mut character: u32) -> u32 {
+    if let Kind::CharTable(table) = table.kind() {
+        if let Kind::Integer(translated) = table.get(character).kind()
+            && (0..=i64::from(RAW_BYTE8_BASE + 0xff)).contains(&translated)
+        {
+            return translated as u32;
+        }
+        return character;
+    }
+    while let Some((head, tail)) = table.cons_values() {
+        character = translate_safety_character(head, character);
+        table = tail;
+    }
+    character
+}
+
 pub(crate) fn find_coding_systems_region_internal_value(
     interp: &Interpreter,
     start: &Value,
     end: &Value,
     exclude: Option<&Value>,
+    env: &Env,
 ) -> Result<Value, LispError> {
     let source = if let Some(string) = string_like(start) {
         string
@@ -2848,46 +2921,50 @@ pub(crate) fn find_coding_systems_region_internal_value(
         .transpose()?
         .unwrap_or_default();
     let mut codings = Vec::new();
-    // Detection priority lists contain one representative per category;
-    // encoding candidates include every registered base coding system.
-    for coding in interp.coding_system_list(true) {
+    // coding.c walks the actual Lisp registration list, retaining its
+    // order and duplicates, including a dynamically bound list.
+    let mut registered = interp
+        .lookup_var("coding-system-list", env)
+        .unwrap_or(Value::Nil);
+    while let Some((head, tail)) = registered.cons_values() {
+        let coding_value = head;
+        registered = tail;
         if excluded
             .iter()
-            .any(|candidate| candidate.as_symbol().ok() == Some(coding.as_str()))
+            .any(|candidate| candidate.eq_value(coding_value))
         {
             continue;
         }
-        let Some(state) = interp.coding_system(&coding) else {
+        let coding = coding_value.as_symbol()?;
+        let Some(state) = interp.coding_system(coding) else {
             continue;
         };
+        if state.base != coding {
+            continue;
+        }
         let charsets = match state.charset_list.kind() {
             Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
             Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
-            _ => coding_system_charset_names(interp, &coding),
+            _ => coding_system_charset_names(interp, coding),
         };
+        let translations = encoding_safety_translation_tables(interp, coding, env)?;
         // coding.c:char_encodable_p tests declared charset membership;
         // an encoder's fallback/substitution is not proof of safe encoding.
         if characters.iter().all(|&character| {
-            charsets
-                .iter()
-                .any(|charset| encode_charset_char(interp, charset, character).is_some())
+            let character = translations.iter().fold(character, |code, table| {
+                translate_safety_character(*table, code)
+            });
+            charsets.iter().any(|charset| {
+                encode_charset_character_number(interp, charset, character).is_some()
+            })
         }) {
-            codings.push(coding);
+            codings.push(coding_value);
         }
     }
     // coding.c always supplies these two fallbacks, including when EXCLUDE
     // names them. They do not need a charset-list to preserve the bytes.
-    for coding in ["raw-text", "no-conversion"] {
-        if !codings.iter().any(|existing| existing == coding) {
-            codings.push(coding.to_string());
-        }
-    }
-    Ok(Value::list(
-        codings
-            .into_iter()
-            .map(|value| Value::Symbol(value.into()))
-            .collect::<Vec<_>>(),
-    ))
+    codings.extend([Value::symbol("raw-text"), Value::symbol("no-conversion")]);
+    Ok(Value::list(codings))
 }
 
 pub(crate) fn check_coding_systems_region_value(

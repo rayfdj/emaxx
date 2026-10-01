@@ -17,30 +17,55 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source244**, published as **`578955b3`**, matching all **464 inputs** in the frozen
-`target/runtime-goal/recovered-2026-09-30/coding-selection/emaxx` checkout.
-Its [portable repair and selected validation](docs/handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
-close the reproduced compiler-file load failure below: **all 177 original
-compiler tests pass in both editors**, with exactly the original frozen selected
-names and discovered metadata. Strict checks have zero warnings; **166 focused
-passes / two existing ignores**, **949 affected passes** and **nine ordinary
-comparisons** are audited. The safe-coding helper enumerates all registered base
-codings, tests actual character codes against declared charsets, retains GNU's
-raw fallbacks and reads marker bounds outside narrowing. It does not bypass
-GNU's Lisp-owned file-writing policy or change any upstream selector/assertion.
+The task runtime is now **source246**, with **468 inputs** matching the frozen
+`target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
+Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
+retain source244's same-input negative probes and source245's four compiler
+errors (no runtime tests executed). Source246 repairs live encoding-safety
+translation tables, dynamically bound registration-list order/duplicates and a
+source244 regression that interpreted U+E080–U+E0FF as internal raw-byte sentinels.
+Strict checks have zero warnings; **168 focused passes / two existing ignores**,
+**951 affected passes**, **eleven ordinary comparisons** and **177/177 original
+compiler tests in both editors** are audited. All preceding assertions remain.
 
-Complete macOS **72034**, release plus 57 preceding ordinary comparisons
-**72035**, and full terminal **72036** are active. Read `source244-*` receipts
-before acting; do not modify executing candidates or helpers. The
-[closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
-verify all 57 preceding ordinary comparisons too: **66 distinct comparisons**
-match on source244. Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
-and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
-are dispatched on exact `578955b3`; no completed result is inferred. The source243 full frozen
-failure remains failed, and its full terminal pass does not certify source244.
-Translation-table semantics, internal candidate ordering and broader coding
-behavior are not certified by this targeted repair. Main remains source174;
-the full architecture/performance goal is incomplete.
+Complete macOS **86467**, release plus 57 preceding ordinary comparisons
+**86468**, and full terminal **86469** are active. Read `source246-*` receipts;
+do not edit executing candidates or helpers. Linux dispatch is the next step
+after this validated checkpoint is pushed. Launch does not imply a pass.
+The separately validated CI change retains GNU's executable, dump, configuration
+and Makefile before future Rust/frozen runs and verifies their bytes afterward.
+Six synthetic corruption/overwrite controls reject invalid evidence; runtime
+selectors, assertions, timeouts and outcome rules do not change.
+
+The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
+records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS
+passes / two existing ignores**, native artifact identity, **166 focused / 949
+affected passes in each profile**, and the previously audited 66 ordinary matches.
+Linux [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+processes **all 519 files / 7,928 outcomes**, with **7,927 matches / one mismatch**.
+All original 177 compiler tests now pass in both editors. The sole mismatch is
+GNU's unexpected JSON-RPC timeout in `eglot-test-rust-completion-exit-function`;
+Emaxx passes. Emaxx has 7,670 passes, 47 expected failures and 211 skips; GNU has
+7,669 passes, 47 expected failures, one unexpected failure and 211 skips.
+This full frozen run remains failed.
+
+Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+retains **2,258 passes / two failed GNU reference assertions**: first record
+sample -7 rather than 2 slots, first vector sample -9 rather than 0. All later
+samples match; neither failed control reaches its Emaxx comparison. Another
+745 library tests and both Cargo stages never run. GNU's executable/dump were
+not retained by that job, so the cause remains unresolved. Source244 full
+terminal stops on scenario81 at GNU startup readiness: **80 complete matching
+scenarios / 80 comparisons**, zero observed divergences, **145 unstarted
+scenarios / 606 unexecuted comparisons**. The failed runs remain failed; earlier
+source243 full terminal/Rust passes do not certify source246.
+
+Known limits remain: source246 fixes the safety helper, while general encoding
+and decoding translation behavior, normal registration-list authority/order,
+legacy charset adapters and symbol-property edge cases need further review.
+Main remains source174; complete correctness, shared representation, accounting,
+ownership, final audit, pinned Darwin and the locked 16-workload/3% performance
+requirement remain unfinished. No current performance-parity claim exists.
 
 The preceding **source243** was pushed as `8d4fcd39`, with its evidence below.
 The preceding **source238**, `a7e12de8`, recovered the complete pinned Linux

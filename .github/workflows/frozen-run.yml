@@ -152,6 +152,12 @@ jobs:
               'emacs_repo': str(source),
           }, indent=2) + '\n')
           PY
+          case "$VALIDATION" in
+            rust|frozen)
+              python3 tools/retain_oracle_artifacts.py capture \
+                --oracle-source ../emacs --output target/frozen-ci/oracle-inputs
+              ;;
+          esac
           run_harness() {
             env -i HOME="$HOME" PATH="$PATH" LANG=C CARGO_BUILD_JOBS=2 \
               RUST_MIN_STACK=134217728 RUST_TEST_THREADS=1 target/gate/compat-harness "$@"
@@ -470,10 +476,15 @@ jobs:
       - name: Collect only this run's raw compatibility evidence
         if: always()
         run: |
+          evidence_status=0
+          if [ -f target/frozen-ci/oracle-inputs/manifest.json ]; then
+            python3 tools/retain_oracle_artifacts.py verify \
+              --output target/frozen-ci/oracle-inputs || evidence_status=$?
+          fi
           if [ -f target/frozen-ci/rust/summary.json ]; then
             python3 tools/retain_rust_gate_artifacts.py \
               --summary target/frozen-ci/rust/summary.json \
-              --fixture-directory target/grouped-gate/fixture-images
+              --fixture-directory target/grouped-gate/fixture-images || evidence_status=$?
           fi
           python3 - <<'PY'
           import re, shutil
@@ -489,6 +500,7 @@ jobs:
                       shutil.copytree(source, root / 'compat' / source.name,
                           ignore=lambda directory, names: [n for n in names if n == 'tools' or n.startswith('runtime-')])
           PY
+          exit "$evidence_status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

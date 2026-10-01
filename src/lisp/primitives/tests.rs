@@ -19440,6 +19440,25 @@ fn coding_candidates_use_all_registered_bases_and_actual_charsets() {
 }
 
 #[test]
+fn coding_candidates_apply_live_translation_tables_and_registration_lists() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-translation.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-translation.expected").trim(),
+        "safe coding candidates apply live GNU translation and registry state",
+    );
+}
+
+#[test]
+fn coding_candidates_preserve_private_use_characters_and_symbol_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-character-identities.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-character-identities.expected")
+            .trim(),
+        "safe coding candidates preserve actual characters, identities and duplicates",
+    );
+}
+
+#[test]
 fn bytecode_code_mutation_between_calls_matches_gnu() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.el"),

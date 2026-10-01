@@ -1,5 +1,34 @@
 # Current goal status — 1 October 2026
 
+The task runtime is **source246**, an incomplete correctness-recovery checkpoint.
+Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
+verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
+existing ignores**, **951 affected passes**, **eleven ordinary GNU comparisons**
+and **all 177 original compiler tests passing in both editors**. It repairs live
+coding-safety translations and registry bindings/order/duplicates, including a
+confirmed source244 private-use Unicode regression. Source245's compile failure
+and both negative GNU comparisons remain preserved.
+
+The [closed source244 results](handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
+verify **3,094 macOS passes / two existing ignores**, native identity, 166 focused
+and 949 affected passes in both profiles, and 66 ordinary matches. Full Linux
+frozen reaches all 519 files / 7928 outcomes: **7927 match; one GNU Eglot JSON-RPC
+timeout differs from an Emaxx pass**. Compiler 177 now passes on Linux too. Linux
+Rust fails two GNU reference census assertions after 2258 passes, leaving 745
+library tests and both Cargo stages unexecuted. Full terminal stops at GNU startup
+on scenario 81, after 80 matching scenarios/comparisons; 606 comparisons never run.
+These failures remain failures; the GNU causes are unresolved.
+
+Full source246 macOS 86467, release/ordinary 86468 and terminal 86469 are active;
+Linux dispatch follows the checkpoint push. The CI retention improvement captures
+GNU executable/dump/configuration/Makefile and checks unchanged bytes without
+altering tests. Real-GNU capture and six synthetic rejection controls pass.
+Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
+coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
+and the locked 16-workload/3% performance criterion are still open.
+
+## Source238–244 recovery history
+
 The latest [correctness recovery](runtime-representation-correctness-recovery-draft.md)
 records source238's recovered **complete pinned Linux frozen match: 519 files /
 7,928 outcomes / 1,038 successful processes**, exact `a7e12de8`. Raw inventories,
@@ -64,20 +93,20 @@ The same archive audits bounded Linux diagnosis36825694384 on `3a35ad00`:
 18 GNU probes and the unchanged Rust single/group/single controls pass
 (1/651/1), with GNU executable/image identity retained. This does not resolve
 the cause of the earlier source238 GNU census variation.
-Root runtime now matches **source244**, whose
+The preceding runtime **source244**, whose
 [portable selected validation](handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
 repairs that candidate list while retaining GNU's Lisp-owned selection policy.
-All464 inputs/modes replay from main and the task checkpoint. Zero-warning strict
+All 464 inputs/modes replay from main and the task checkpoint. Zero-warning strict
 checks, **166 focused passes / two existing ignores**, **949 affected passes**,
-**nine ordinary comparisons** and **all177 original compiler tests in both editors**
+**nine ordinary comparisons** and **all 177 original compiler tests in both editors**
 are audited. The new fixture preserves GNU's expected bytes and also covers
 custom coding bases, exclusions, actual characters and narrowed marker bounds.
 The [closed ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding comparisons too, for **66 distinct ordinary matches**.
 Source244 is pushed as `578955b3`; complete macOS72034, release72035 and
-terminal72036 are active. Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
-and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
-target that exact commit; results are pending. Broader coding behavior, including
+terminal72036 are active. Linux [Rust 36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen 36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+target that exact commit; their closed results are reported above. Broader coding behavior, including
 translation-table semantics, is not certified. Main remains source174. Restore
 complete correctness before further architecture work; the full goal and
 performance criterion remain open.

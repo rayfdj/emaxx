@@ -1721,7 +1721,13 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                find_coding_systems_region_internal_value(interp, &args[0], &args[1], args.get(2))
+                find_coding_systems_region_internal_value(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    args.get(2),
+                    env,
+                )
             }
             "decode-sjis-char" => {
                 // coding.c Fdecode_sjis_char, converting through the
