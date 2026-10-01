@@ -17,7 +17,8 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source243**, with its selected validation below.
+The task runtime is now **source243**, pushed as `8d4fcd39`, with its selected
+validation below.
 The preceding **source238**, `a7e12de8`, recovered the complete pinned Linux
 frozen match: **519 files / 7,928 outcomes / 1,038 successful processes** in
 [run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904).
@@ -79,8 +80,12 @@ artifact identity is audited. The first broad-audit helper stopped on an incorre
 rerunning or changing tests. The failed audit remains preserved.
 
 Selected supervisors **53531** and **54143** have exited. Complete macOS
-**55867**, release/57 preceding ordinary comparisons **55868**, and full terminal
-**55869** are active. Existing Linux validation must run on the pushed checkpoint;
+**55867**, release **55868**, and full terminal **55869** are active. The
+[closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
+on source243. Linux [Rust 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
+and [full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
+are dispatched on exact `8d4fcd39`. No complete result is inferred from launch;
 read the current `source243-*` receipts before acting. Do not edit executing
 candidates or helpers. Root runtime exactly matches all 462 candidate inputs.
 **Main is unchanged; complete correctness and the full

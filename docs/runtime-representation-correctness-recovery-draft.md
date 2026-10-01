@@ -284,9 +284,15 @@ runtime tests. No failed audit is relabeled as passed.
 Selected supervisors **53531** and **54143** have exited. Complete macOS **55867**,
 release plus 57 preceding ordinary comparisons **55868**, and the full unchanged
 226-scenario terminal run **55869** have started. Their active logs are excluded
-from this archive. Linux validation must be dispatched on the pushed checkpoint;
-consult the `source243-*` receipts for current job IDs and results. Root task
-runtime matches all 462 source243 inputs; main remains source174. Source238's
+from this archive. Source243 is now pushed as **`8d4fcd39fafcac4d7f69987714164129a769e094`**.
+The [subsequent ordinary audit and Linux dispatch receipts](handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding ordinary comparisons, for **65 distinct ordinary
+comparisons** with the eight already audited. Linux
+[Rust 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375) and
+[full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
+both target exact `8d4fcd39`; launch does not establish a passing result.
+Consult the `source243-*` receipts for current results. Root task runtime
+matches all 462 source243 inputs; main remains source174. Source238's
 complete frozen result does not certify these later changes. The full Linux GNU
 census failure and all architecture, accounting, ownership and performance
 requirements remain open.

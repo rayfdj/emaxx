@@ -34,9 +34,12 @@ corrects the shared error object and passes zero-warning strict checks,
 165 focused tests (two existing ignores), all 948 affected tests, eight ordinary
 GNU comparisons and all 11 original file-lifecycle scenarios / 41 comparisons.
 The original terminal divergence and its three previously unexecuted comparisons
-now match. The actual PTY prompt probe matches too. Full macOS55867,
-release/preceding-ordinary55868 and full-terminal55869 are active; Linux must
-validate the pushed checkpoint. Root runtime now matches source243 and main
+now match. The actual PTY prompt probe matches too. The
+[subsequent ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
+verify 57 more ordinary comparisons, **65 in total**, and dispatch full Linux
+Rust36822371375 and frozen36822376061 on exact pushed `8d4fcd39`.
+Full macOS55867, release55868 and full-terminal55869 are active; the complete
+Linux results are pending. Root runtime now matches source243 and main
 remains source174. Restore complete correctness
 before further architecture work; the full goal and performance criterion are open.
 
@@ -147,7 +150,7 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 | 5. VM/function-call work | Source238 includes direct live-bytecode dispatch and dependent closure/string/reader/interactive-command repairs; complete pinned Linux frozen compatibility matches. All intervening failed checkpoints remain recorded above. Source240 separately closes full-range encoding/copy and complete macOS Rust; source243 closes selected file-writing/error-object failures, with 165 focused passes, 948 affected passes and 11 matching terminal scenarios; its complete runs are active. The 256K-versus-512K stack-capacity gap, frame layout/accounting, remaining adapters, measured profiles and equivalent-work timing remain open. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source238 passes full pinned Linux frozen comparison (519 files / 7,928 outcomes), complete macOS Rust (3,085 passes / two existing ignores), selected release and ordinary checks. Full terminal still has one new-file indicator divergence and three unexecuted comparisons; Linux Rust retains its GNU reference census failure and unstarted stages. Separate source240 passes complete macOS Rust (3,089 passes / two ignores), selected release and 61 ordinary comparisons. Source243 repairs the original terminal divergence plus the three unexecuted comparisons among all 11 unchanged file-lifecycle scenarios; complete macOS/release/terminal runs are active and Linux must validate this checkpoint. Final-source Linux/macOS, pinned Darwin compatibility, full terminal, release and zero-warning requirements remain open. |
+| 8. Complete validation | Source238 passes full pinned Linux frozen comparison (519 files / 7,928 outcomes), complete macOS Rust (3,085 passes / two existing ignores), selected release and ordinary checks. Full terminal still has one new-file indicator divergence and three unexecuted comparisons; Linux Rust retains its GNU reference census failure and unstarted stages. Separate source240 passes complete macOS Rust (3,089 passes / two ignores), selected release and 61 ordinary comparisons. Source243 repairs the original terminal divergence plus the three unexecuted comparisons among all 11 unchanged file-lifecycle scenarios; complete macOS/release/terminal runs are active and Linux Rust and full frozen CI are dispatched on exact 8d4fcd39, with complete results pending. Final-source Linux/macOS, pinned Darwin compatibility, full terminal, release and zero-warning requirements remain open. |
 | 9. Independently checkable delivery | Portable patches, source hashes, commands and raw evidence are committed. Checkpoint validation does not establish final architectural completion, final audit or performance acceptance. |
 
 # Historical record — 27 September 2026
