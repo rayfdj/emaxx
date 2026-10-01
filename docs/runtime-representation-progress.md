@@ -1,18 +1,26 @@
 # Current goal status — 1 October 2026
 
 The latest [correctness recovery](runtime-representation-correctness-recovery-draft.md)
-records complete source234 Rust passes (3,079 macOS / 3,091 Linux, two existing
-ignores each), 37/938 release passes, and 55 ordinary comparisons. Frozen Linux
-now matches Edebug but fails later at rx; 407 files remain unstarted. Source237
-repairs all seven original terminal divergences in the unchanged selected replay.
-The combined source238 checkpoint, pushed as `a7e12de8`, passes strict checks and
-101 focused tests (two existing ignores). All 36 upstream rx tests now pass
-locally through ordinary ERT and the structured runner in both editors. The
-[raw audit and complete-run launches](handover/2026-09-30-shared-reader-draft/source238-rx-repair-and-complete-launch-manifest.json)
-retain those results and exact publication identities. Complete macOS, terminal,
-release/ordinary and fresh Linux Rust/frozen validation remain active. Restore
-complete correctness before further architecture changes; the full goal and
-performance criterion remain open.
+records source238's recovered **complete pinned Linux frozen match: 519 files /
+7,928 outcomes / 1,038 successful processes**, exact `a7e12de8`. Raw inventories,
+outcomes and execution hashes are verified. Per editor, 7,670 passes, 47 expected
+failures and 211 skips remain distinct. Complete macOS Rust passes 3,085 tests
+with two existing ignores and native identity. Release passes 101 focused
+controls with two existing ignores and 940 affected tests; 57 ordinary comparisons
+match. Full terminal has 225 wholly matching scenarios, 682 matching comparisons,
+one new-file coding-indicator divergence and three unexecuted comparisons.
+
+Linux Rust retains 2,250 passes and one GNU reference census failure before that
+control reaches Emaxx; 745 library tests and both Cargo stages never run. An
+unchanged selected replay passes with the same Rust executable; the cause remains
+unresolved and a 643-test group diagnosis is active. The separate 454-input
+[source240 draft](handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
+repairs full-range encoding, canonical string copying and the independently
+reproduced U+F8FF report-writing error. Strict checks, 160 focused gate tests
+(two existing ignores), 944 affected gate tests and four new ordinary comparisons
+pass. Full macOS and release/ordinary supervisors 43216/43217 are active. Root
+runtime remains source238 and main remains source174. Restore complete correctness
+before further architecture work; the full goal and performance criterion are open.
 
 The full objective remains [unchanged](runtime-representation-goal.md). Continue
 from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-cons-roots-draft.md)

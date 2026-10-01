@@ -86,15 +86,48 @@ all raw names and verdicts are checked. Both original local rx failures are
 repaired. This closes their local reproduction, not the pending Linux frozen run.
 Supervisor **27314** has completed all five stages successfully.
 
-Supervisor **30236** runs the complete macOS gate, **31378** runs all 226 original
-terminal scenarios and **31379** runs 57 ordinary comparisons followed by focused
-and affected-module release tests. Linux
-[Rust 36812116311](https://github.com/rayfdj/emaxx/actions/runs/36812116311) and
-[frozen 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904)
-are active on exact runtime commit `a7e12de8`; their build/format/lint stages pass,
-but neither complete verdict is available yet. Publication and exact run heads
-are independently verified in the archive. Later documentation-only commits do
-not change those run identities.
+Supervisors **30236**, **31378** and **31379** have exited. The
+[complete macOS and selected audit](handover/2026-09-30-shared-reader-draft/source238-complete-macos-and-selected-manifest.json)
+verifies 3,085 Rust passes and two existing ignores: 2,986 library, 60 binary
+and 39 integration passes, including native artifact identity. All 2,988 raw
+library names/verdicts and four retained executable/image files are checked.
+The first verifier stopped before artifact retention had run and wrote no
+passing receipt; the separate retention receipt records the setup correction.
+Release passes 101 focused controls with two existing ignores and all 940
+affected controls without ignores. All 57 ordinary GNU comparisons match.
+
+The [complete frozen and terminal evidence](handover/2026-09-30-shared-reader-draft/source238-complete-frozen-and-terminal-failure-manifest.json)
+closes [Linux frozen run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904)
+on exact `a7e12de8`: **519 files / 7,928 matching outcomes / 1,038 successful
+processes**. Each editor has 7,670 passes, 47 expected failures and 211 skips;
+the latter are not passes. All inventories, paired name/status/expectation
+outcomes, raw execution hashes and the pinned Linux oracle identity are verified.
+Both Edebug and rx now match in the complete frozen run.
+
+The full terminal run is still failed. All 226 scenarios start; 225 wholly
+match, with 682 matching comparisons and one divergence:
+`find-alternate-file-missing-revisit::6:verify-created-file`. After saving the
+new file GNU's mode line shows `U` for the coding system, while Emaxx shows `-`.
+The scenario returns early, leaving its final filesystem comparison and both
+revisit comparisons unexecuted. All seven previous quote-display divergence
+labels match. Preserve this failure; no timeout, action or comparison changed.
+
+[Linux Rust 36812116311](https://github.com/rayfdj/emaxx/actions/runs/36812116311)
+fails after 2,250 passes in `native_vector_and_closure_census_matches_gnu_word_layout`.
+Its [failure and selected replay audit](handover/2026-09-30-shared-reader-draft/source238-linux-census-failure-and-replay-manifest.json)
+verifies every executed name and verdict. The helper's GNU reference produces
+`(0 -9)` for its first empty-vector sample instead of `(0 0)`; all remaining
+vector and closure samples match. This assertion precedes Emaxx startup, so
+the control has no Emaxx verdict in that run. Another 745 library tests and
+both Cargo stages never run. No expectation has changed.
+
+An [unchanged selected replay](https://github.com/rayfdj/emaxx/actions/runs/36814333394)
+passes on documentation-only `6ee4bd1b` with the **same Rust executable hash**
+`b872b12e92a71a4475231f7d001a74ec20a1ca5571ab547f441066716d7ba262`.
+Its fresh Emaxx image differs; GNU executable hashes were not retained in these
+Rust jobs. This does not identify the census variation's cause or certify the
+failed full inventory. The unchanged 643-test primitives-group diagnosis
+[36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037) is active.
 
 Helpers and receipts are under `target/runtime-goal/resume-2026-09-28`. Do not
 modify these candidates or their executing helpers/artifacts. Read live receipts
@@ -119,10 +152,46 @@ Unicode command-line prefix under C locale; its original bytes/results are
 preserved separately. The final ASCII-only fixture constructs the prefix with
 `string`, so ordinary and internal evaluation receive the same character.
 
-Focused source238 validation and the complete local rx file pass; complete Rust,
-terminal and Linux frozen results remain pending. The report-writing error must
-remain visible unless independently resolved; a repaired rx suite alone does not
-prove arbitrary failure reports are correct. Audit the running complete gates
-on this combined source, preserving all earlier failures. Continue to the full
-architecture/accounting/ownership and locked performance requirements only after
-recovering correctness.
+## Separate coding/copy recovery: source240
+
+The [portable source240 draft and evidence](handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
+are frozen in `target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx`.
+The 454-input incremental patch replays from `6ee4bd1b`, and a complete patch
+from main is also retained. Git checkout modes and every input byte are verified.
+The first replay audit extracted archive modes verbatim and stopped on 0664
+versus 0644; the replacement helper corrects extraction setup, not source or
+executable bits. Root task-branch runtime remains source238.
+
+Four negative source238 ordinary probes expose character loss or incorrect
+encoding/identity behavior. UTF-8/raw-text encoders now use actual Lisp character
+codes, including surrogates, five-byte characters and byte8, following
+`coding.c:encode_coding_utf_8`, `encode_coding_raw_text` and `code_convert_string`.
+EOL/BOM behavior and GNU's ASCII identity fast path are preserved; conversion
+buffers retain extended characters and input properties. File output retains
+the selected region's character metadata. Copying and `propertize` clone the
+actual canonical string bytes and shallow property values, following
+`fns.c:Fcopy_sequence` and `editfns.c:Fpropertize`.
+
+The prior source239 draft passed strict checks and 155 focused tests, but failed
+two new controls because `propertize` had already lost the characters before
+encoding. Its exact failed executable/image, logs, fixtures and patches remain
+preserved. Source240 leaves those expected outputs unchanged and adds a separate
+canonical-copy control plus both existing property-copy controls. It passes
+zero-warning strict checks, **160 focused gate tests / two existing ignores**,
+all **944 affected gate tests**, and four new ordinary GNU comparisons.
+
+The unchanged structured reporter, given one passing test, one unexpected
+failure, one expected failure and one skip carrying U+F8FF, exits 255 without a
+report on source238. Source240 exits successfully and retains exactly GNU's
+four outcomes and character-bearing messages. The audit compares all report
+fields except editor labels and measured durations; raw reports remain unchanged.
+This independently repairs the reproduced report-writing failure. It does not
+claim every possible report or coding system is correct.
+
+Full macOS supervisor **43216** and release/ordinary supervisor **43217** are
+active. The latter also rechecks all 57 preceding ordinary fixtures. Read live
+receipts before acting; do not modify executing candidates or restart active jobs.
+Source240 has no complete Linux, frozen or terminal certification. The new-file
+coding indicator, unresolved GNU census variation, further display review,
+remaining architecture/accounting/ownership work and locked 16-workload 3%
+performance requirement remain open. No current performance-parity claim exists.

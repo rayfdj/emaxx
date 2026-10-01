@@ -11,42 +11,47 @@ Read the [current cons continuation](docs/runtime-representation-cons-roots-draf
 [bytecode draft](docs/runtime-representation-bytecode-draft.md) and
 [string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
 [accounting continuation](docs/runtime-representation-accounting-draft.md).
-Read the latest [correctness recovery and active source238 draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
+Read the latest [correctness recovery and separate source240 draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The source238 task checkpoint combines the source237 display repair with the
-reader/mapconcat repairs in **446 runtime/test inputs**. Zero-warning strict
-checks and **101 focused gate tests** pass, with two existing TTY end-to-end
-ignores. The display-only source237 also passes all **11 selected terminal
-scenarios / 39 comparisons**, including all seven original failures. This is
-component evidence, not a complete source238 terminal pass.
+The published **source238**, `a7e12de8`, has recovered the complete pinned Linux
+frozen match: **519 files / 7,928 outcomes / 1,038 successful processes** in
+[run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904).
+The [raw audit](docs/handover/2026-09-30-shared-reader-draft/source238-complete-frozen-and-terminal-failure-manifest.json)
+verifies every inventory, paired outcome and execution hash. Each editor has
+7,670 passes, 47 expected failures and 211 skips; the latter are not passes.
 
-The checkpoint is pushed as **`a7e12de8`**. Its unchanged upstream rx file now
-passes **all 36 tests** through ordinary ERT and the structured runner in each
-editor; supervisor **27314** has exited successfully. The
-[rx audit and complete-run launches](docs/handover/2026-09-30-shared-reader-draft/source238-rx-repair-and-complete-launch-manifest.json)
-retain all four processes, input identities and publication receipts.
+[Complete macOS and selected validation](docs/handover/2026-09-30-shared-reader-draft/source238-complete-macos-and-selected-manifest.json)
+verify **3,085 Rust passes / two existing ignores**, native artifact identity,
+101 focused release passes / two existing ignores, 940 affected release passes
+and 57 ordinary comparisons. All source238 local supervisors have exited.
+Its full terminal run remains failed: **225 of 226 scenarios wholly match**,
+682 comparisons match, one coding-system indicator diverges after saving a new
+alternate file and three later comparisons in that scenario never run. The
+seven original quote-display divergences now match.
 
-Full macOS supervisor **30236**, full terminal supervisor **31378** and
-release/ordinary supervisor **31379** are active in the isolated rx-repair
-checkout. Linux [Rust 36812116311](https://github.com/rayfdj/emaxx/actions/runs/36812116311)
-and [frozen 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904)
-are running on exact runtime commit `a7e12de8`. Read live receipts before acting;
-do not restart active jobs or edit their candidates or artifacts. The
-[recovery handover](docs/runtime-representation-correctness-recovery-draft.md)
-links the exact portable patches, failures and remaining display review.
+The [Linux Rust failure and replay](docs/handover/2026-09-30-shared-reader-draft/source238-linux-census-failure-and-replay-manifest.json)
+retain **2,250 passes / one failed GNU reference assertion**; 745 later library
+tests and both Cargo stages never run. The first empty-vector GNU census is -9
+instead of 0, before the Emaxx comparison starts. An unchanged single-test replay
+passes with the same Rust executable hash. This does not identify the cause or
+erase the failed full run. The unchanged 643-test group diagnosis is active in
+[run 36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037).
 
-The published source234 runtime now passes complete macOS/Linux Rust with
-**3,079 / 3,091 passes**, two existing ignores per platform, native identity and
-all raw library names verified. Release passes 37 focused / 938 affected tests;
-55 ordinary GNU comparisons match. Its Linux frozen run now passes Edebug's
-46 outcomes, but stops later at `rx-tests.el`: 111 files / 2,578 matching outcomes,
-36 missing Emaxx outcomes and 407 unstarted files. Local ordinary ERT reproduces
-two real rx failures, plus the structured runner's report-writing error.
-**The full frozen suite is not green; main is unchanged and the goal incomplete.**
+The separate [source240 coding/copy draft](docs/handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
+in `target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx` has **454 inputs**.
+Strict checks have zero warnings; **160 focused tests / two existing ignores**,
+**944 affected gate tests** and four new ordinary GNU comparisons pass. It also
+repairs source238's reproduced U+F8FF failure-report error while preserving the
+known pass, failure, expected-failure and skip outcomes. The failed source239
+draft remains preserved. Full macOS supervisor **43216** and release/ordinary
+supervisor **43217** are active; read their receipts before acting. Do not edit
+executing candidates or helpers. Root runtime is still source238; the draft is
+packaged separately. **Main is unchanged; complete correctness and the full
+architecture/performance goal remain unfinished.**
 
 ## Source234 checkpoint and preceding history
 
