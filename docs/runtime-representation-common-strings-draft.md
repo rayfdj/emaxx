@@ -2,9 +2,10 @@
 
 Read the [complete goal](runtime-representation-goal.md), [current handover](../HANDOVER.md)
 and [correctness recovery](runtime-representation-correctness-recovery-draft.md).
-The full goal is active and incomplete. The task runtime remains source249
-(`99e61fca`); source256 and the subsequent source259 repair are separate, unapplied
-work. Main remains `21d20f0e`.
+The full goal is active and incomplete. The task runtime is now source261, pushed
+as `eddfe782`, with 488 inputs and [closed selected validation](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json).
+The earlier separately packaged drafts and failures remain historical evidence.
+Main remains `21d20f0e`.
 
 The [portable draft](handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)
 contains all 480 source/test input hashes, incremental and complete patches,
@@ -48,13 +49,17 @@ source255 executable, image and raw verdicts remain retained.
 
 Source256 passes formatting, all-target checking, strict Clippy and diff checks
 with zero warnings. Source249 terminal12347 has now exited with all 226 scenarios /
-686 comparisons matching. **Queue17749** is running source256 validation. Its
+686 comparisons matching. **Queue17749** has exited. Its
 [focused gate result](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json)
 is audited: **182 passes / two existing ignores**, with all 184 selectors
-and both retained executable/image inputs verified. All 957 affected tests, release
-and seventeen ordinary comparisons remain separate pending stages. The 174 preceding
-focused selectors and all 955 preceding affected tests remain included. Read current
-receipts before another launch; the original archived queue is not passing evidence.
+and both retained executable/image inputs verified. The
+[broader gate audit](handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+verifies **956 passes / one failure**, all 957 names and the same retained inputs.
+The failed native-call fixture used five bytes of Unicode text for intended opcode
+bytes 137/84/135. Ordinary GNU accepts the unibyte form, retains its identity and
+returns 42; it rejects the Unicode form. Release and seventeen ordinary comparisons
+did not run. Every prior selector remains included. The failure is preserved; its
+correction must retain the native dispatch/result/backtrace/depth assertions.
 
 ## Subsequent comparison and hash repair
 
@@ -96,12 +101,50 @@ runtime failure or pass. Source259 includes the hash repair and passes formattin
 all-target checking, strict Clippy and diff checks with zero warnings. Both packaging
 helper setup failures remain recorded too.
 
-**Queue22381** waits for17749, then validates source259 with all **190 focused
-selectors**, all **962 affected tests** in gate and release, and **21 ordinary GNU
-comparisons**. Every preceding 184/957 common-string control is retained. The archive
-contains its immutable launch and a labeled snapshot, excluding active runtime logs.
-Keep its 488 inputs unchanged. No runtime pass, measured saving or full-goal completion
-is implied by the strict checks or portable patch.
+**Queue22381** has exited. Its [focused gate audit](handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+verifies **188 passes / two existing ignores**, all **190 selectors**, both retained
+inputs, all four GNU fixtures and the extended dump test. The broader gate records
+**961 passes / one failure**, with all 962 names audited. It fails on the same invalid
+native-call fixture as source256. Release and ordinary stages did not run. Every
+preceding 184/957 common-string control and both failed executable/image pairs remain.
+
+## Corrected native fixture: source261
+
+After source259 exited, source260 changed only the existing native-call test to
+construct actual unibyte opcode bytes 137/84/135. It retains target classification,
+the native result 42, empty backtrace and evaluation-depth assertions, and adds
+rejection of the former Unicode form. Ordinary GNU `make-byte-code` confirms both
+cases. Source260's new `.unwrap_err()` violates the existing lint; source261 changes
+only that call to explanatory `expect_err`, with no suppression. Production code
+is byte-identical to source259. Both intermediate patches and failures are retained.
+
+Source261 has **488 exactly replayed inputs** and zero-warning strict checks. Both
+focused profiles pass **189 tests / two existing ignores**, preserving all earlier
+selectors and adding the corrected native fixture to the focused list. Its broader
+gate passes **all 962 tests**. The first release evidence auditor incorrectly expected
+only two retained inputs; the retention helper had also copied the preceding gate
+image. A separate corrected auditor verifies the release executable/image and the
+older gate image against their recorded hashes. The initial audit failure is retained;
+no test rerun or changed expectation is used to repair that bookkeeping.
+
+Continuation **30525** has exited. Its [closed selected audit](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
+verifies **189 focused passes / two existing ignores and 962 affected passes in each
+profile**, plus **22 ordinary exact GNU matches**: the 21 fixtures and unchanged native
+constructor probe. Gate/release inventory differences are only the existing debug-only
+file-descriptor control. All source249 selectors and every original GNU expectation
+remain. The archive contains 368 evidence/helper files, both exact portable patches,
+and the source259, source260 and initial source261 audit failures.
+
+Source261 is now applied and pushed as `eddfe782`. Complete macOS supervisor **31023**
+has verified the selected audit, cloned the idle Cargo cache, cleaned only the new
+target crate's gate artifacts and started the unchanged full Rust inventory. Frozen
+and terminal gates follow sequentially. The clean full-validation checkout is
+`target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, commit `eddfe782`,
+with the same 488 inputs. Exact-head Linux
+[Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are dispatched.
+Keep both source261 checkouts unchanged. No complete platform pass, measured saving
+or full-goal completion is implied by selected checks or a queued command.
 
 ## Remaining requirements
 
@@ -129,6 +172,6 @@ results; source249 fixes six and introduces none in this matrix. This does not
 excuse other recorded regressions or establish general correctness.
 
 Those projection repairs are absent from frozen source256 and implemented separately
-in source259 above. Keep the original negatives and both queued input sets unchanged
+in source259/261 above. Keep the original negatives and both queued input sets unchanged
 while validating. String ordering and version comparison still use host text; neither
 the comparison repair nor the common-string draft completes the architecture.

@@ -931,10 +931,28 @@ failure and two existing ignores. Both new GNU contracts pass. GNU confirms that
 the failing local fixture used Unicode text where `make-byte-code` requires actual
 unibyte storage. Source256 corrects construction, keeps every original assertion
 and adds rejection of the old Unicode form. All strict checks pass with zero
-warnings; all 480 inputs/modes replay exactly. Queue17749 now runs both selected
-profiles, all 957 affected tests and seventeen ordinary comparisons. Its focused
+warnings; all 480 inputs/modes replay exactly. Queue17749 has exited. Its focused
 gate run [passes 182 tests / two existing ignores](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json), with all 184 selectors and
-retained inputs audited. Broader/release/ordinary stages remain separate pending
-results. Source255's failed executable/image, all compiler/lint/helper failures
-and original negatives remain retained. The draft is unapplied; no physical-memory,
+retained inputs audited. The [complete broader gate audit](handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+records 956 passes and one invalid native-bytecode fixture failure. GNU confirms that
+the intended three opcode bytes must be unibyte: that form returns 42 while the
+five-byte Unicode form is rejected. Release/ordinary stages did not run. Separately,
+source259 passes 188 focused tests / two existing ignores, including all four
+comparison/hash GNU fixtures and the extended dump test. Its broader run has closed
+with 961 passes and the same invalid native fixture failure, all 962 names audited.
+After it exited, source261 corrected only that test with actual unibyte storage,
+preserving every native assertion and adding Unicode rejection. Source260's new-test
+lint failure remains recorded. Source261 strict checks have zero warnings; both
+focused profiles pass 189 tests / two existing ignores, and all 962 affected gate
+tests pass. A release retention-count audit failure is preserved and corrected by
+verifying the release executable/image plus the older gate image. Continuation30525
+has exited with all 962 affected release tests and 22 ordinary GNU comparisons
+passing. The [closed selected audit and publication](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
+verify both complete selected profiles and every original fixture/artifact. Source261
+is now applied and pushed as `eddfe782`, with 488 exact inputs. Full macOS supervisor
+31023 runs Rust, then frozen and terminal validation. Exact-head Linux
+[Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are dispatched.
+Source255's failed executable/image, all compiler/lint/helper failures
+and original negatives remain retained. Full source261 validation is pending; no physical-memory,
 ownership, performance or full-goal completion is claimed.

@@ -18,7 +18,24 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The task runtime is now **source249**, pushed as **`99e61fca`**, with **476 inputs** matching the isolated
+The task runtime is now **source261**, pushed as **`eddfe782`**, with **488 verified
+inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
+verify zero-warning strict checks, **189 focused passes / two existing ignores**
+and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
+The common-string and comparison/hash changes below are now applied. Every earlier
+failed draft, invalid fixture and evidence-check failure remains recorded.
+
+Complete macOS supervisor **31023** is running the full Rust gate in clean checkout
+`target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, at the same
+`eddfe782` commit; unchanged frozen and terminal gates follow sequentially. Linux
+[Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
+dispatched on exact `eddfe782`. These full runs are not passing results yet.
+Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
+
+## Preceding source249 validation
+
+The preceding **source249**, pushed as **`99e61fca`**, has **476 inputs** matching the isolated
 `coding-post-read/emaxx` candidate. Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json)
 verifies zero-warning strict checks, **172 focused passes / two existing ignores**
 and **955 affected passes in each profile**, plus **fifteen ordinary GNU matches**.
@@ -77,10 +94,14 @@ unchanged GNU expectations are retained. Source255's selected run has **181 pass
 one invalid Unicode bytecode fixture failure and two existing ignores**. GNU
 confirms the fixture correction in source256; every original assertion remains,
 plus the rejected Unicode case. Source256 passes all strict checks with zero
-warnings. Queue **17749** now runs selected gate/release, all 957 affected tests
-per profile and seventeen ordinary comparisons. Its [focused gate result](docs/handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json) is audited:
+warnings. Queue **17749** has exited. Its [focused gate result](docs/handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json) is audited:
 **182 passes / two existing ignores**, all 184 selectors and retained executable/image
-verified. Broader/release/ordinary stages remain pending. Compact string headers, symbol authority, physical
+verified. The [complete affected gate audit](docs/handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+records **956 passes / one native-bytecode fixture failure**, all 957 names checked.
+GNU confirms that fixture's three intended opcodes were five bytes of Unicode;
+the actual unibyte form returns 42 and the Unicode form is rejected. Release and
+ordinary stages did not run. The failure and its executable/image remain retained.
+Compact string headers, symbol authority, physical
 accounting, ownership and measured performance remain unfinished.
 The [new comparison negative](docs/handover/2026-09-30-shared-reader-draft/source249-string-comparison-gaps-manifest.json)
 finds six wrong results in a 64-pair string matrix. The same fixture had twelve
@@ -95,11 +116,25 @@ policy, and compares/hashes interval values with ordinary equality. String hashi
 also reads bytes directly. Four unchanged GNU fixtures retain the storage, symbol,
 property and hash-table negatives; an existing dump test gains byte-distinct keys.
 Source257's missing-test-import failure and source258's withdrawal before runtime
-execution are retained. Queue **22381** follows17749, then runs **190 focused
-selectors / 962 affected tests per profile / 21 ordinary comparisons**. This is
-unapplied work; no runtime, memory or performance pass is inferred. Both candidate
-input sets must remain unchanged while their queues run. See the common-string
-continuation for C references, exact limits and remaining requirements.
+execution are retained. Queue **22381** has exited: its [focused gate](docs/handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+passes **188 tests / two existing ignores**; its complete broader gate records
+**961 passes / one failure** in the same invalid native fixture. Release and ordinary
+stages did not run. Every original selector and failed artifact remains retained.
+
+The subsequent source261 corrects only that native test, following ordinary GNU
+constructor evidence, with all original assertions and a Unicode rejection check.
+Source260's new-test unwrap lint failure is preserved; source261 uses an explanatory
+`expect_err`, with no lint allowance. Its **488 inputs** replay exactly and strict
+checks have zero warnings. Both focused profiles pass **189 tests / two existing
+ignores**; all **962 affected gate tests pass**. The first release auditor stopped
+because retention included the preceding gate image as well as the release image.
+The corrected auditor verifies all three retained inputs; no test or source changes.
+Continuation **30525** has exited: all **962 affected release tests** and **22 ordinary
+GNU comparisons** pass. The [complete selected audit](docs/handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
+checks both inventories, every raw verdict, original fixtures and retained inputs.
+Source261 is applied and pushed as `eddfe782`; the full macOS/Linux runs above remain
+active. No full-runtime, memory or performance pass is inferred from selected checks.
+See the common-string continuation for exact evidence and remaining requirements.
 
 The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
