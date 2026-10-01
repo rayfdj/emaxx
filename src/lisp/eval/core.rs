@@ -390,12 +390,6 @@ impl Interpreter {
             // A vector is self-evaluating and keeps its reader identity.
             Kind::Vector(_) | Kind::LispRecord(_) | Kind::HashTable(_) => Ok(*expr),
 
-            // Evaluating a string literal yields a string object with its
-            // own identity, so `eq' distinguishes evaluations of distinct
-            // literals while `(memq (car l) l)' still finds the element the
-            // evaluation put there (GNU strings are always heap objects).
-            Kind::String(_) => Ok(Self::stored_value(*expr)),
-
             Kind::SymbolWithPos(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>

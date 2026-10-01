@@ -13,7 +13,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{CharTableRef, Kind, SharedText, SubCharTableRef, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SubCharTableRef, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -1008,14 +1008,9 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text: std::borrow::Cow<'_, str> = match name.kind() {
-            Kind::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
-            other => std::borrow::Cow::Owned(
-                string_like(&other.value())
-                    .map(|string| string.text)
-                    .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?,
-            ),
-        };
+        let name_text = name
+            .as_string()
+            .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
         if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
             return Ok(SymbolName::make_uninterned(
                 name,
@@ -1040,16 +1035,13 @@ impl Loader<'_> {
             }
             return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
         }
-        Ok(SymbolName::intern_with_lisp_name(
-            name_text.into_owned(),
-            Some(name),
-        ))
+        Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
     }
 
     fn load_string(
         &mut self,
         offset: u32,
-        kind: DumpType,
+        _kind: DumpType,
     ) -> Result<(Value, Option<u32>), LoadError> {
         let size = self.reader.word(offset)? as usize;
         let size_byte = self.reader.word(offset + 8)?;
@@ -1064,17 +1056,11 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let value = match kind {
-            DumpType::String => {
-                let (text, _) = decode_internal_bytes(bytes, multibyte)?;
-                Value::String(SharedText::with_storage_bytes(text, nbytes))
-            }
-            _ => crate::lisp::types::string_object_value_with_storage_bytes(
-                SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
-                    .map_err(|error| LoadError::Error(error.to_string()))?,
-                nbytes,
-            ),
-        };
+        let value = crate::lisp::types::string_object_value_with_storage_bytes(
+            SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
+                .map_err(|error| LoadError::Error(error.to_string()))?,
+            nbytes,
+        );
         Ok((value, (intervals != 0).then_some(intervals)))
     }
 

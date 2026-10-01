@@ -3398,7 +3398,7 @@ fn redraw_with_echo_policy(
                         interpreter
                             .lookup_var("overlay-arrow-string", &crate::lisp::types::Env::new())
                     })
-                    .and_then(|value| value.as_string().map(str::to_string).ok())
+                    .and_then(|value| value.as_string().ok())
                     .unwrap_or_else(|| "=>".to_string());
                 let arrow: String = arrow
                     .chars()
@@ -7356,7 +7356,7 @@ fn make_menu_executor(
                         }
                     };
                     let name = match command.kind() {
-                        Kind::Symbol(name) => name.as_str(),
+                        Kind::Symbol(_) => command.as_symbol().expect("symbol command"),
                         Kind::T => "tty-menu-exit",
                         _ => "",
                     };

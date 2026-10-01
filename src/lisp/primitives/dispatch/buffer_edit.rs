@@ -393,7 +393,9 @@ define_dispatch!(
                 let ch = match event.kind() {
                     Kind::Integer(code) => char::from_u32(code as u32),
                     Kind::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
-                    Kind::String(text) if text.chars().count() == 1 => text.chars().next(),
+                    Kind::StringObject(text) if text.borrow().len() == 1 => {
+                        text.borrow().text().chars().next()
+                    }
                     _ => None,
                 }
                 .ok_or_else(|| LispError::Signal("No self-insert character".into()))?;
@@ -2059,9 +2061,6 @@ define_dispatch!(
                 }
                 let props = plist_pairs(&args[2])?;
                 if let Some(object) = args.get(3) {
-                    if matches!(object.kind(), Kind::String(_)) {
-                        return Ok(Value::T);
-                    }
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;

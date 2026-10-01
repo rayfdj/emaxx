@@ -13,7 +13,7 @@ pub(crate) struct CompletionCandidate {
 
 fn completion_result_value(value: &Value, name: &str) -> Value {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => *value,
+        Kind::StringObject(_) => *value,
         // minibuf.c's Fall_completions and Ftry_completion answer with
         // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
         // symbol's own name object, which the symbol keeps reachable (a
@@ -354,9 +354,6 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::String(_), Kind::String(_))
-        | (Kind::String(_), Kind::StringObject(_))
-        | (Kind::StringObject(_), Kind::String(_)) => false,
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
@@ -551,7 +548,7 @@ pub(crate) fn default_intern_soft_result(
 
 pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError> {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_text(value),
+        Kind::StringObject(_) => string_text(value),
         Kind::Nil => Ok("nil".into()),
         Kind::T => Ok("t".into()),
         Kind::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(&symbol).to_string()),
@@ -559,18 +556,6 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
             "string-or-symbol".into(),
             value.type_name(),
         )),
-    }
-}
-
-pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
-    let current = item.get();
-    match current.kind() {
-        Kind::String(text) => {
-            let shared = string_like_value(text.to_string(), Vec::new());
-            item.set(shared);
-            Ok(shared)
-        }
-        value => Ok(value.value()),
     }
 }
 
@@ -593,7 +578,7 @@ pub(crate) fn completion_list_candidates(
                         Value::String("Circular list".into()),
                     ])));
                 }
-                let item = ensure_completion_list_item_identity(&ConsSlot::car(&cons_cell))?;
+                let item = cons_cell.car.get();
                 // minibuf.c: an element that is neither a string nor a
                 // symbol "is not a possible completion" — it is skipped,
                 // never an error (semantic's texi tables carry characters).
@@ -1569,7 +1554,7 @@ pub(crate) fn callable_interactive_form_items(
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     for form in body.iter() {
-        if matches!(form.kind(), Kind::String(_) | Kind::StringObject(_)) {
+        if matches!(form.kind(), Kind::StringObject(_)) {
             continue;
         }
         // Internal evaluator closure markers precede the interactive form

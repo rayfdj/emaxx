@@ -201,7 +201,7 @@ fn graph_matches(
         (Kind::Integer(x), Kind::Integer(y)) if x == y => Ok(()),
         (Kind::BigInteger(x), Kind::BigInteger(y)) if *x == *y => Ok(()),
         (Kind::Float(x), Kind::Float(y)) if x.to_bits() == y.to_bits() => Ok(()),
-        (Kind::String(_), Kind::String(_)) | (Kind::StringObject(_), Kind::StringObject(_)) => {
+        (Kind::StringObject(_), Kind::StringObject(_)) => {
             let x = string_like(a).expect("a string");
             let y = string_like(b).expect("a string");
             if x.text != y.text
@@ -866,6 +866,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let program = r#"
         (let ((eq-table (make-hash-table :test 'eq))
               (equal-table (make-hash-table :test 'equal :size 100))
+              (byte-table (make-hash-table :test 'equal))
               (weak (make-hash-table :weakness 'key))
               (empty (make-hash-table))
               (shared (list 1 2)))
@@ -875,8 +876,11 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
           (puthash "k2" 2 equal-table)
           (remhash "k1" equal-table)
           (puthash "k3" 3 equal-table)
+          (puthash (unibyte-string #x80) 10 byte-table)
+          (puthash (string #x3fff80) 20 byte-table)
+          (puthash (string #xe080) 30 byte-table)
           (puthash 'w 'x weak)
-          (vector eq-table equal-table weak empty shared))"#;
+          (vector eq-table equal-table weak empty shared byte-table))"#;
     let form = crate::lisp::reader::Reader::new(program)
         .read()
         .expect("setup parses")
@@ -901,6 +905,24 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let weak = slots[2];
     let empty = slots[3];
     let shared = slots[4];
+    let byte_table = slots[5];
+    assert_eq!(
+        call_in(&mut target, "hash-table-count", &[byte_table]),
+        Value::Integer(3)
+    );
+    // The image stores key/value pairs and thaw recomputes their hashes
+    // after relocation. Storage distinctions must survive the new index.
+    for (constructor, code, expected) in [
+        ("unibyte-string", 0x80, 10),
+        ("string", 0x3fff80, 20),
+        ("string", 0xe080, 30),
+    ] {
+        let key = call_in(&mut target, constructor, &[Value::Integer(code)]);
+        assert_eq!(
+            call_in(&mut target, "gethash", &[key, byte_table]),
+            Value::Integer(expected)
+        );
+    }
     assert_eq!(
         call_in(
             &mut target,

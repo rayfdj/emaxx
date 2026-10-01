@@ -6,7 +6,7 @@ pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
-    if matches!(value.kind(), Kind::String(_) | Kind::StringObject(_)) {
+    if matches!(value.kind(), Kind::StringObject(_)) {
         return shared_string_copy(value);
     }
 

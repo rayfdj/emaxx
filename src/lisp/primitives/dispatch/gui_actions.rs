@@ -279,7 +279,7 @@ define_dispatch!(
             "x-close-connection" => {
                 need_args(name, args, 1)?;
                 match args[0].kind() {
-                    Kind::Nil | Kind::String(_) | Kind::StringObject(_) => {}
+                    Kind::Nil | Kind::StringObject(_) => {}
                     Kind::Frame(id) if interp.frame_is_live(id) => {}
                     Kind::Terminal(terminal) if terminal.borrow().live => {}
                     terminal => {

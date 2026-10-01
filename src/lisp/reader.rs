@@ -1415,8 +1415,7 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError("missing bool vector length".into()));
                 }
                 let bytes = match (self.read()?.ok_or(LispError::EndOfInput())?).kind() {
-                    Kind::String(text) => text,
-                    Kind::StringObject(state) => state.borrow().text().into(),
+                    Kind::StringObject(state) => state.borrow().text(),
                     other => {
                         return Err(LispError::ReadError(format!(
                             "invalid bool vector literal bytes: expected string, got {}",
@@ -1651,7 +1650,6 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let (text, mut props, multibyte, extended_chars) = match first.kind() {
-            Kind::String(text) => (text.to_string(), Vec::new(), false, Vec::new()),
             Kind::StringObject(state) => {
                 let state = state.borrow();
                 (

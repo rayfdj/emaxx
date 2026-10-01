@@ -3915,8 +3915,7 @@ fn process_identity_supports_desktop_lock_checks() {
     assert_eq!(items[0], Value::T);
     assert_eq!(items[1], Value::T);
     assert!(
-        matches!(items[2].kind(), Kind::String(name) if !name.is_empty())
-            || matches!(items[2].kind(), Kind::StringObject(state) if !state.borrow().text().is_empty())
+        matches!(items[2].kind(), Kind::StringObject(state) if !state.borrow().text().is_empty())
     );
     assert_eq!(items[3], Value::Nil);
     assert!(items[4].is_truthy());

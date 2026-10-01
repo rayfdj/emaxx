@@ -341,7 +341,7 @@ impl Interpreter {
 fn selector_atom(value: &Value) -> String {
     match unquote(value).kind() {
         Kind::Symbol(name) => name.to_string(),
-        Kind::String(value) => value.to_string(),
+        Kind::StringObject(value) => value.borrow().text(),
         other => other.to_string(),
     }
 }
@@ -354,7 +354,7 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
         Kind::Symbol(name) if name == "t" => true,
         Kind::Symbol(name) if name == "nil" => false,
         Kind::Symbol(name) => test.name == name,
-        Kind::String(pattern) => Regex::new(&pattern)
+        Kind::StringObject(pattern) => Regex::new(&pattern.borrow().text())
             .map(|regex| regex.is_match(&test.name))
             .unwrap_or(false),
         Kind::Cons(_) => {

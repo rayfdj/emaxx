@@ -18,7 +18,7 @@
 //! -- that no other OS thread holds Lisp objects in registers or on its
 //! stack while it runs.
 
-use super::types::{ConsCell, Kind, MarkBit, Value};
+use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
@@ -45,7 +45,6 @@ pub(crate) use vectors::{
 /// 16-/8-byte payloads in 32 KiB blocks. Weak-reference serials and a second
 /// bitmap reduce the cons slots per block; floats only need the extra bitmap.
 const C_BLOCK_BYTES: usize = (1 << 15) - 8;
-const C_MALLOC_SIZE_NEAR_1024: usize = 1016;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
 /// Space for each 16-byte cons, an eight-byte weak-reference serial and two
 /// bitmap bits, plus the block epoch and alignment padding. GNU needs only
@@ -55,9 +54,6 @@ pub(crate) const CELLS_PER_BLOCK: usize = (((1 << 15) - 8) * 8) / (16 * 8 + 64 +
 /// and allocation state for checked native-word decoding. GNU has one mark
 /// bit; the allocation bit replaces this runtime's in-object FREE_MARK.
 pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 2);
-/// `STRING_BLOCK_SIZE': (MALLOC_SIZE_NEAR (1024) - sizeof (struct
-/// string_block *)) / sizeof (struct Lisp_String), a 32-byte string.
-pub(crate) const STRINGS_PER_BLOCK: usize = (C_MALLOC_SIZE_NEAR_1024 - 8) / 32;
 /// `SYMBOL_BLOCK_SIZE': (1020 - sizeof (struct symbol_block *)) /
 /// sizeof (struct Lisp_Symbol), a 48-byte symbol.
 pub(crate) const SYMBOLS_PER_BLOCK: usize = (1020 - 8) / 48;
@@ -68,7 +64,6 @@ fn block_bytes(kind: BlockKind) -> usize {
     let cells = match kind {
         BlockKind::Cons => std::mem::size_of::<ConsBlock>(),
         BlockKind::Float => std::mem::size_of::<FloatBlock>(),
-        BlockKind::String => STRINGS_PER_BLOCK * STRING_CELL_SIZE,
         BlockKind::Symbol => SYMBOLS_PER_BLOCK * symbols::SYMBOL_CELL_SIZE,
         BlockKind::VectorBlock | BlockKind::LargeVector => {
             unreachable!("vector storage is allocated by its own module")
@@ -95,7 +90,6 @@ pub(crate) const FREE_MARK: u32 = u32::MAX;
 pub(crate) enum BlockKind {
     Cons,
     Float,
-    String,
     /// alloc.c's `MEM_TYPE_VECTOR_BLOCK': small vectors carved by size.
     VectorBlock,
     /// alloc.c's `MEM_TYPE_VECTORLIKE': one large vector on its own.
@@ -445,256 +439,8 @@ pub(crate) fn live_floats() -> usize {
 pub(crate) enum Found {
     Cons(*mut ConsCell),
     Float(*mut FloatCell),
-    String(*mut StringCell),
     Vectorlike(*mut VectorHeader),
     Symbol(*mut SymbolCell),
-}
-
-/// alloc.c's `string_block', `string_free_list' and the index into the
-/// newest block; gcstat's `total_strings' and `total_string_bytes'.
-static STRING_FREE_LIST: AtomicPtr<StringCell> = AtomicPtr::new(std::ptr::null_mut());
-static STRING_BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
-static STRING_BUMP_END: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRING_BYTES: AtomicUsize = AtomicUsize::new(0);
-static FREE_STRINGS: AtomicUsize = AtomicUsize::new(0);
-const STRING_CELL_SIZE: usize = std::mem::size_of::<StringCell>();
-
-/// The storage size of a text that is not a Lisp string allocation at
-/// all (a symbol's host-side key): counted nowhere.
-pub(crate) const UNTRACKED_TEXT: usize = usize::MAX;
-
-/// alloc.c's `struct Lisp_String': the text (its bytes on the Rust heap,
-/// as a large string's are malloc'd in C; there is no sblock and no
-/// compaction), `size_byte' as the storage size the census reads, the
-/// and mark word. No decoded-code identity cache retains these addresses.
-#[repr(C)]
-pub struct StringCell {
-    // This existing size word also distinguishes plain text storage from
-    // the current property-bearing string allocation. It adds no word or
-    // lookup. Both storage forms now use GNU's string tag at their address.
-    storage_bytes: usize,
-    text: String,
-    mark: MarkBit,
-}
-
-/// `Lisp_Object' for a string: the cell's address, copied freely, valid
-/// while the collector can reach the cell.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct TextRef(NonNull<StringCell>);
-
-impl TextRef {
-    #[inline]
-    fn cell(&self) -> &StringCell {
-        // SAFETY: a `TextRef' names an allocated cell (see `ConsRef').
-        let cell = unsafe { self.0.as_ref() };
-        debug_assert!(
-            cell.mark.raw() != FREE_MARK,
-            "use of a string the collector freed"
-        );
-        cell
-    }
-
-    /// The text, as the `String' the cell owns.
-    #[inline]
-    pub(crate) fn text(&self) -> &String {
-        &self.cell().text
-    }
-
-    /// The text.  Its lifetime is the cell's, which the collector keeps
-    /// while the string is reachable: a `Lisp_Object' read of `SDATA'.
-    #[inline]
-    pub fn as_str(&self) -> &'static str {
-        // SAFETY: the cell is allocated while the caller holds a value
-        // naming it (the collector's contract); the text is not moved or
-        // freed before the cell is.
-        unsafe { &*(self.cell().text.as_str() as *const str) }
-    }
-
-    /// The handle for a cell the allocator handed out (a value's word).
-    ///
-    /// # Safety
-    /// CELL must be an allocated string cell.
-    #[inline(always)]
-    pub(crate) unsafe fn from_raw(cell: *mut StringCell) -> Self {
-        // SAFETY: the caller's contract.
-        Self(unsafe { NonNull::new_unchecked(cell) })
-    }
-
-    pub(crate) fn identity_ptr(&self) -> usize {
-        self.0.as_ptr() as usize
-    }
-
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.cell().mark
-    }
-
-    /// The text copied out (the cell keeps its own until the sweep).
-    pub fn into_string(self) -> String {
-        self.cell().text.clone()
-    }
-}
-
-struct FreeString {
-    next: *mut StringCell,
-}
-
-/// alloc.c's `empty_unibyte_string': one permanently rooted empty string,
-/// outside every block (no sweep reaches it), returned by every
-/// zero-length allocation so that `(eq "" "")' holds.
-static EMPTY_TEXT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-pub(crate) fn empty_text() -> TextRef {
-    let address = *EMPTY_TEXT.get_or_init(|| {
-        Box::leak(Box::new(StringCell {
-            text: String::new(),
-            storage_bytes: UNTRACKED_TEXT,
-            mark: MarkBit::default(),
-        })) as *mut StringCell as usize
-    });
-    // SAFETY: a leaked cell: always allocated.
-    TextRef(unsafe { NonNull::new_unchecked(address as *mut StringCell) })
-}
-
-/// alloc.c:allocate_string: the free list's head, else the next cell of
-/// the newest string block; the text's bytes stay where the `String'
-/// keeps them (allocate_string_data's large-string case).
-pub(crate) fn allocate_string(text: String, storage_bytes: usize) -> TextRef {
-    // GNU's STRING_BYTES_BOUND is below the pseudovector flag. Enforce the
-    // allocator invariant even for an invalid internal/image caller before
-    // publishing a word whose storage class is read from this header.
-    assert!(storage_bytes < (1 << (usize::BITS - 2)) || storage_bytes == UNTRACKED_TEXT);
-    let head = STRING_FREE_LIST.load(Ordering::Relaxed);
-    let slot = if head.is_null() {
-        bump_string()
-    } else {
-        // SAFETY: a free cell's first word is the free-list link.
-        let next = unsafe { (*head.cast::<FreeString>()).next };
-        STRING_FREE_LIST.store(next, Ordering::Relaxed);
-        FREE_STRINGS.store(
-            FREE_STRINGS.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
-        head
-    };
-    if storage_bytes != UNTRACKED_TEXT {
-        LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-        LIVE_STRING_BYTES.store(
-            LIVE_STRING_BYTES.load(Ordering::Relaxed) + storage_bytes,
-            Ordering::Relaxed,
-        );
-    }
-    // SAFETY: SLOT is a free cell of a string block; every field is
-    // written before a handle is made (the epoch as for a cons).
-    unsafe {
-        std::ptr::write(
-            slot,
-            StringCell {
-                text,
-                storage_bytes,
-                mark: MarkBit::default(),
-            },
-        );
-        (*slot).mark.set_raw(super::types::current_mark_epoch());
-        TextRef(NonNull::new_unchecked(slot))
-    }
-}
-
-fn bump_string() -> *mut StringCell {
-    let next = STRING_BUMP_NEXT.load(Ordering::Relaxed);
-    let end = STRING_BUMP_END.load(Ordering::Relaxed);
-    if next < end {
-        STRING_BUMP_NEXT.store(next + STRING_CELL_SIZE, Ordering::Relaxed);
-        return next as *mut StringCell;
-    }
-    let block = new_block(BlockKind::String);
-    STRING_BUMP_NEXT.store(block + STRING_CELL_SIZE, Ordering::Relaxed);
-    STRING_BUMP_END.store(
-        block + STRINGS_PER_BLOCK * STRING_CELL_SIZE,
-        Ordering::Relaxed,
-    );
-    block as *mut StringCell
-}
-
-/// alloc.c:sweep_strings, as `sweep_conses': an unmarked cell's text is
-/// dropped (its bytes freed) and the cell goes back on the free list.
-pub(crate) fn sweep_strings(epoch: u32) -> (usize, usize) {
-    let bump_next = STRING_BUMP_NEXT.load(Ordering::Relaxed);
-    let bump_end = STRING_BUMP_END.load(Ordering::Relaxed);
-    let mut free_list: *mut StringCell = std::ptr::null_mut();
-    let mut num_free = 0usize;
-    let mut num_used = 0usize;
-    let mut used_bytes = 0usize;
-    let mut released = Vec::new();
-    for start in blocks_of(BlockKind::String) {
-        let lim = if bump_end == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
-            (bump_next - start) / STRING_CELL_SIZE
-        } else {
-            STRINGS_PER_BLOCK
-        };
-        let chain_before = free_list;
-        let mut this_free = 0usize;
-        for index in 0..lim {
-            let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-            // SAFETY: inside a registered string block.
-            let mark = unsafe { (*cell).mark.raw() };
-            if mark == epoch {
-                num_used += 1;
-                // SAFETY: a marked, allocated cell.
-                let bytes = unsafe { (*cell).storage_bytes };
-                if bytes != UNTRACKED_TEXT {
-                    used_bytes += bytes;
-                }
-                continue;
-            }
-            if mark != FREE_MARK {
-                // SAFETY: an allocated, unmarked cell: nothing reaches
-                // it, so its text is dropped and the slot becomes free.
-                unsafe {
-                    std::ptr::drop_in_place(std::ptr::addr_of_mut!((*cell).text));
-                    if cfg!(debug_assertions) {
-                        std::ptr::write_bytes(
-                            cell.cast::<u8>().add(std::mem::size_of::<FreeString>()),
-                            0xA5,
-                            STRING_CELL_SIZE - std::mem::size_of::<FreeString>(),
-                        );
-                    }
-                    (*cell).mark.set_raw(FREE_MARK);
-                }
-            }
-            this_free += 1;
-            // SAFETY: a free cell's first word is the free-list link.
-            unsafe { (*cell.cast::<FreeString>()).next = free_list };
-            free_list = cell;
-        }
-        if this_free == STRINGS_PER_BLOCK && num_free > STRINGS_PER_BLOCK {
-            free_list = chain_before;
-            released.push(start);
-        } else {
-            num_free += this_free;
-        }
-    }
-    STRING_FREE_LIST.store(free_list, Ordering::Relaxed);
-    for start in released {
-        release_block(start, BlockKind::String);
-    }
-    LIVE_STRINGS.store(num_used, Ordering::Relaxed);
-    LIVE_STRING_BYTES.store(used_bytes, Ordering::Relaxed);
-    FREE_STRINGS.store(num_free, Ordering::Relaxed);
-    (num_used, used_bytes)
-}
-
-pub(crate) fn live_strings() -> usize {
-    LIVE_STRINGS.load(Ordering::Relaxed)
-}
-
-pub(crate) fn live_string_bytes() -> usize {
-    LIVE_STRING_BYTES.load(Ordering::Relaxed)
 }
 
 thread_local! {
@@ -1601,17 +1347,6 @@ fn new_block(kind: BlockKind) -> usize {
                     .write(FloatMarks::new())
             };
         }
-        BlockKind::String => {
-            for index in 0..STRINGS_PER_BLOCK {
-                let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-                // SAFETY: as for a float block.
-                unsafe {
-                    std::ptr::addr_of_mut!((*cell).mark)
-                        .cast::<u32>()
-                        .write(FREE_MARK)
-                };
-            }
-        }
         BlockKind::Symbol => {
             // SAFETY: the block just allocated.
             unsafe { symbols::init_block(start) };
@@ -1634,8 +1369,8 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
     if let Some(vector) = vectors::zero_vector_at(address) {
         return Some(Found::Vectorlike(vector));
     }
-    if EMPTY_TEXT.get().is_some_and(|&empty| empty == address) {
-        return Some(Found::String(address as *mut StringCell));
+    if let Some(string) = vectors::empty_string_at(address) {
+        return Some(Found::Vectorlike(string));
     }
     let blocks = BLOCKS
         .lock()
@@ -1663,16 +1398,6 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
             // SAFETY: inside a registered float block.
             let mark = unsafe { float_mark(cell) };
             mark.allocated().then_some(Found::Float(cell))
-        }
-        BlockKind::String => {
-            let index = offset / STRING_CELL_SIZE;
-            if index >= STRINGS_PER_BLOCK {
-                return None;
-            }
-            let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-            // SAFETY: inside a registered string block.
-            let mark = unsafe { (*cell).mark.raw() };
-            (mark != FREE_MARK).then_some(Found::String(cell))
         }
         BlockKind::VectorBlock => {
             vectors::live_small_vector_holding(start, address).map(Found::Vectorlike)
@@ -1884,9 +1609,9 @@ fn describe(value: &super::types::Value) -> String {
         Kind::Symbol(symbol) => format!("symbol {}", symbol.as_str()),
         Kind::Integer(n) => format!("integer {n}"),
         Kind::Cons(cell) => format!("cons {:#x}", cell.as_ptr() as usize),
-        Kind::String(text) => format!(
+        Kind::StringObject(text) => format!(
             "string {:?}",
-            text.as_str().chars().take(24).collect::<String>()
+            text.borrow().text().chars().take(24).collect::<String>()
         ),
         other => other.value().type_name().to_string(),
     }
@@ -2087,7 +1812,6 @@ pub(crate) fn conservative_value(word: usize) -> Option<Value> {
             Value::Cons(unsafe { ConsRef::from_raw(cell) })
         }
         Found::Float(cell) => Value::Float(FloatRef(unsafe { NonNull::new_unchecked(cell) })),
-        Found::String(cell) => Value::String(TextRef(unsafe { NonNull::new_unchecked(cell) })),
         Found::Vectorlike(header) => unsafe { vectors::value_of(header) },
         Found::Symbol(cell) => Value::Symbol(super::types::SymbolName::from_ref(unsafe {
             SymbolRef::from_raw(cell)

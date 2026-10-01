@@ -729,7 +729,7 @@ pub(crate) fn write_region_value_with_logical_path(
     need_arg_range("write-region", args, 3, 7)?;
     let mut normalized = [Value::Nil; 7];
     normalized[..args.len()].copy_from_slice(args);
-    if !args[0].is_nil() && !matches!(args[0].kind(), Kind::String(_) | Kind::StringObject(_)) {
+    if !args[0].is_nil() && !matches!(args[0].kind(), Kind::StringObject(_)) {
         let start = position_from_value(interp, &args[0])?;
         let end = position_from_value(interp, &args[1])?;
         if start.min(end) < interp.buffer.borrow().point_min()
@@ -1180,7 +1180,7 @@ pub(crate) fn native_print_updates_batch_last_char(
                 && render_princ_integer_as_character(&Value::Integer(integer)).is_some()
         }
         Kind::BigInteger(_) | Kind::Float(_) => false,
-        Kind::String(_) | Kind::StringObject(_) => escaped,
+        Kind::StringObject(_) => escaped,
         Kind::Symbol(name) => !name.is_empty(),
         _ => true,
     }

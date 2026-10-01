@@ -68,7 +68,7 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     let components = args.get(2).cloned().unwrap_or(Value::Nil);
     if !matches!(
         components.kind(),
-        Kind::Nil | Kind::Integer(_) | Kind::Cons(_) | Kind::String(_) | Kind::StringObject(_)
+        Kind::Nil | Kind::Integer(_) | Kind::Cons(_) | Kind::StringObject(_)
     ) && !is_vector_value(&components)
     {
         return Err(wrong_type_argument("vectorp", components));
@@ -206,7 +206,7 @@ fn components_vector(components: &Value, chars: &[char]) -> Result<Value, LispEr
             .map(|character| Value::Integer(*character as i64))
             .collect(),
         Kind::Integer(_) => vec![*components],
-        Kind::String(_) | Kind::StringObject(_) => string_like(components)
+        Kind::StringObject(_) => string_like(components)
             .expect("string variant must be string-like")
             .text
             .chars()
@@ -291,7 +291,7 @@ fn register_composition(
     }
     if !matches!(
         components.kind(),
-        Kind::Nil | Kind::Integer(_) | Kind::String(_) | Kind::StringObject(_) | Kind::Cons(_)
+        Kind::Nil | Kind::Integer(_) | Kind::StringObject(_) | Kind::Cons(_)
     ) && !is_vector_value(&components)
     {
         return Ok(None);

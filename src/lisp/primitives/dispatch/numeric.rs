@@ -489,16 +489,9 @@ define_dispatch!(
             }
             "string-equal" => {
                 need_args(name, args, 2)?;
-                let a = string_comparison_text(&args[0])?;
-                let b = string_comparison_text(&args[1])?;
-                // fns.c's Fstring_equal compares the character count, the
-                // byte count and the bytes: the same non-ASCII characters
-                // in a unibyte and a multibyte string are not equal.
-                let equal = a == b
-                    && (a.is_ascii()
-                        || crate::lisp::primitives::string_argument_multibyte(&args[0])
-                            == crate::lisp::primitives::string_argument_multibyte(&args[1]));
-                Ok(if equal { Value::T } else { Value::Nil })
+                let a = string_comparison_object(interp, &args[0], env)?;
+                let b = string_comparison_object(interp, &args[1], env)?;
+                Ok(if a == b { Value::T } else { Value::Nil })
             }
             "string-lessp" => {
                 need_args(name, args, 2)?;

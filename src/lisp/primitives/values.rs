@@ -234,26 +234,7 @@ fn values_equal_recursive_with_env(
         // fns.c internal_equal: floats compare by representation
         // (same_float), like eql: NaN equals NaN, 0.0 differs from -0.0.
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
-        (Kind::String(a), Kind::String(b)) => a == b,
-        (Kind::StringObject(a), Kind::StringObject(b)) => {
-            let a = a.borrow();
-            let b = b.borrow();
-            a.text_parts() == b.text_parts()
-        }
-        (Kind::String(a), Kind::StringObject(b)) => {
-            let b = b.borrow();
-            {
-                let (text, extended) = b.text_parts();
-                extended.is_empty() && a.as_str() == text
-            }
-        }
-        (Kind::StringObject(a), Kind::String(b)) => {
-            let a = a.borrow();
-            {
-                let (text, extended) = a.text_parts();
-                extended.is_empty() && text == b.as_str()
-            }
-        }
+        (Kind::StringObject(a), Kind::StringObject(b)) => a == b,
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
@@ -402,7 +383,6 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -475,11 +455,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.ptr_eq(&b),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::String(_), Kind::StringObject(_)) | (Kind::StringObject(_), Kind::String(_)) => {
-            false
-        }
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
@@ -592,7 +568,6 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     match value.kind() {
         // fns.c:Flength reads SCHARS: the character count in place, no
         // copy of the text.
-        Kind::String(text) => Ok(text.as_str().chars().count() as i64),
         Kind::StringObject(state) => Ok(state.borrow().len() as i64),
         Kind::Nil => Ok(0),
         // fns.c:Flength reads ASIZE directly; taking the size must not
@@ -611,24 +586,18 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     }
 }
 
-fn text_property_plists_equal_including_properties(
+fn text_property_plists_equal(
     interp: &Interpreter,
     left: &[(String, Value)],
     right: &[(String, Value)],
-    seen: &mut HashSet<(usize, usize)>,
     env: &Env,
 ) -> bool {
     left.len() == right.len()
         && left.iter().all(|(key, left_value)| {
             right.iter().any(|(right_key, right_value)| {
-                right_key == key
-                    && values_equal_including_properties_recursive(
-                        interp,
-                        left_value,
-                        right_value,
-                        seen,
-                        env,
-                    )
+                // intervals.c:intervals_equal_1(..., true) uses Fequal
+                // for property values, not Fequal_including_properties.
+                right_key == key && values_equal_in_env(interp, left_value, right_value, env)
             })
         })
 }
@@ -659,19 +628,25 @@ pub(crate) fn values_equal_including_properties_recursive(
     {
         return equal;
     }
-    if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
+    if let (Kind::StringObject(left_string), Kind::StringObject(right_string)) =
+        (left.kind(), right.kind())
+    {
+        // fns.c:internal_equal checks BASE_EQ before inspecting contents.
+        if left_string.ptr_eq(&right_string) {
+            return true;
+        }
+        let left_string = left_string.borrow();
+        let right_string = right_string.borrow();
+        if !left_string.contents_equal(&right_string) {
+            return false;
+        }
         // GNU's compare_string_intervals walks POSITIONS, so interval
         // segmentation is not significant, and plists within a span
         // compare as sets (intervals_equal in intervals.c).
-        if left_string.text != right_string.text
-            || left_string.extended_chars != right_string.extended_chars
-        {
-            return false;
-        }
-        let len = left_string.text.chars().count();
-        let collect_props = |string: &StringLike, pos: usize| {
+        let len = left_string.len();
+        let collect_props = |spans: &[StringPropertySpan], pos: usize| {
             let mut out: Vec<(String, Value)> = Vec::new();
-            for span in &string.props {
+            for span in spans {
                 if span.start <= pos && pos < span.end {
                     for (key, value) in &span.props {
                         if !out.iter().any(|(existing, _)| existing == key) {
@@ -694,11 +669,10 @@ pub(crate) fn values_equal_including_properties_recursive(
             if pos >= len {
                 break;
             }
-            if !text_property_plists_equal_including_properties(
+            if !text_property_plists_equal(
                 interp,
-                &collect_props(&left_string, pos),
-                &collect_props(&right_string, pos),
-                seen,
+                &collect_props(&left_string.props, pos),
+                &collect_props(&right_string.props, pos),
                 env,
             ) {
                 return false;
@@ -867,7 +841,7 @@ pub(crate) fn plain_symbol_name(value: &Value) -> Option<&str> {
     match value.kind() {
         Kind::Nil => Some("nil"),
         Kind::T => Some("t"),
-        Kind::Symbol(symbol) => Some(symbol.as_str()),
+        Kind::Symbol(_) => value.symbol_name_by_tag(),
         _ => None,
     }
 }
@@ -1649,7 +1623,9 @@ pub(crate) fn hash_props(
                 interp,
                 state,
                 value,
-                true,
+                // fns.c:hash_interval hashes the plist with sxhash_obj;
+                // its property values use ordinary equal, like intervals.c.
+                false,
                 depth + 1,
                 remove_symbol_positions,
             );
@@ -1702,11 +1678,6 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
         Kind::StringObject(shared) => {
             hash_mix(state, 4);
             hash_mix(state, shared.identity() as u64);
-        }
-        Kind::String(text) => {
-            hash_mix(state, 5);
-            hash_mix(state, text.as_ptr() as usize as u64);
-            hash_mix(state, text.len() as u64);
         }
         Kind::Vector(vector) => {
             hash_mix(state, 16);
@@ -1854,18 +1825,13 @@ pub(crate) fn hash_value_equal_at(
             };
             hash_mix(state, bits);
         }
-        Kind::String(text) => {
-            hash_mix(state, 35);
-            hash_str(state, &text);
-        }
         Kind::StringObject(shared) => {
             hash_mix(state, 35);
             let shared = shared.borrow();
-            let (text, extended) = shared.text_parts();
-            hash_str(state, &text);
-            for (index, code) in &extended {
-                hash_mix(state, *index as u64);
-                hash_mix(state, u64::from(*code));
+            // fns.c:sxhash_obj hashes SDATA/SBYTES, without converting
+            // internal characters to a host text representation.
+            for byte in shared.bytes() {
+                hash_mix(state, u64::from(*byte));
             }
             if include_properties {
                 hash_props(interp, state, &shared.props, depth, remove_symbol_positions);
@@ -4337,7 +4303,6 @@ pub(crate) fn key_parts_are_remap(parts: &[Value]) -> bool {
 fn preferred_modifier_name(interp: &Interpreter, env: &Env) -> Option<String> {
     match (interp.lookup_var("where-is-preferred-modifier", env)?).kind() {
         Kind::Symbol(symbol) => Some(symbol.to_string()),
-        Kind::String(text) => Some(text.to_string()),
         Kind::StringObject(state) => Some(state.borrow().text()),
         _ => None,
     }

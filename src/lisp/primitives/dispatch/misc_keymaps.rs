@@ -750,7 +750,7 @@ define_dispatch!(
                     Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => {
                         user_full_name_from_uid(legacy_unsigned_id(requested)?)
                     }
-                    Kind::String(_) | Kind::StringObject(_) => {
+                    Kind::StringObject(_) => {
                         let login = string_text(requested)?;
                         user_full_name(Some(&login))
                     }
@@ -1616,7 +1616,6 @@ define_dispatch!(
                     Kind::Integer(_) => "integer",
                     Kind::BigInteger(_) => "integer",
                     Kind::Float(_) => "float",
-                    Kind::String(_) => "string",
                     Kind::StringObject(_) => "string",
                     Kind::Symbol(_) => "symbol",
                     Kind::SymbolWithPos(_) if symbols_with_pos_enabled(interp, env) => "symbol",

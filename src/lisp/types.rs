@@ -6,13 +6,11 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
-    borrow::Borrow,
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::Deref,
-    path::Path,
     ptr::NonNull,
 };
 
@@ -227,105 +225,53 @@ impl MarkBit {
     }
 }
 
-/// One Lisp string: alloc.c's `struct Lisp_String' in a string block,
-/// named by its address (`TextRef'); the text's bytes on the Rust heap.
-pub type SharedText = crate::lisp::alloc::TextRef;
+/// A handle to the single canonical Lisp string payload. Rust text is
+/// converted only at construction; variable bindings copy this handle.
+pub type SharedText = StringObjectRef;
 
-impl Eq for SharedText {}
-
-impl PartialOrd for SharedText {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+impl SharedText {
+    pub fn new(text: String) -> Self {
+        // Host callers still use the existing raw-byte text convention.
+        // This conversion happens once, before publishing the Lisp object.
+        let multibyte = !text.is_ascii()
+            && text.chars().any(|ch| {
+                !crate::lisp::primitives::is_raw_byte_regex_char(ch) && u32::from(ch) > 127
+            });
+        let value = string_object_value(SharedStringState::new(
+            text,
+            Vec::new(),
+            multibyte,
+            Vec::new(),
+        ));
+        let Kind::StringObject(state) = value.kind() else {
+            unreachable!("string constructor")
+        };
+        state
     }
-}
 
-impl Ord for SharedText {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other.as_str())
+    pub fn into_string(self) -> String {
+        self.borrow().text()
     }
 }
 
 impl PartialEq for SharedText {
     fn eq(&self, other: &Self) -> bool {
-        // Interned symbol names share one allocation, so the common case
-        // (`eq'-style symbol comparison) never reaches the byte compare.
-        self.ptr_eq(other) || self.text() == other.text()
+        if self.ptr_eq(other) {
+            return true;
+        }
+        let left = self.borrow();
+        let right = other.borrow();
+        left.contents_equal(&right)
     }
 }
+
+impl Eq for SharedText {}
 
 impl std::hash::Hash for SharedText {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(self.text(), state);
-    }
-}
-
-impl SharedText {
-    pub fn new(text: String) -> Self {
-        if text.is_empty() {
-            return crate::lisp::alloc::empty_text();
-        }
-        let storage_bytes = crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
-        note_string_allocation(storage_bytes);
-        crate::lisp::alloc::allocate_string(text, storage_bytes)
-    }
-
-    /// A string whose storage size the image records (`size_byte' of the
-    /// dumped Lisp_String): pdumper.c relocates the string in place and
-    /// scans nothing, so neither does the loader.
-    pub(crate) fn with_storage_bytes(text: String, storage_bytes: usize) -> Self {
-        if text.is_empty() {
-            return crate::lisp::alloc::empty_text();
-        }
-        note_string_allocation(storage_bytes);
-        crate::lisp::alloc::allocate_string(text, storage_bytes)
-    }
-
-    /// Host-only text which is not a Lisp string allocation.  Uninterned
-    /// symbols need an identity-bearing lookup key in Emaxx, but GNU stores
-    /// that identity in the symbol object rather than appending bytes to its
-    /// Lisp-visible name string.  Keep the encoded key out of both allocation
-    /// and live-string accounting (it lives in a string block all the same,
-    /// marked with its symbol).
-    fn new_untracked(text: String) -> Self {
-        crate::lisp::alloc::allocate_string(text, crate::lisp::alloc::UNTRACKED_TEXT)
-    }
-}
-
-impl Deref for SharedText {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        self.text()
-    }
-}
-
-impl AsRef<str> for SharedText {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl AsRef<Path> for SharedText {
-    fn as_ref(&self) -> &Path {
-        Path::new(self.as_str())
-    }
-}
-
-impl Borrow<str> for SharedText {
-    fn borrow(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl fmt::Debug for SharedText {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.text().fmt(f)
-    }
-}
-
-impl fmt::Display for SharedText {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.text().fmt(f)
+        let text = self.borrow();
+        std::hash::Hash::hash(&text.len(), state);
+        std::hash::Hash::hash(text.bytes(), state);
     }
 }
 
@@ -367,49 +313,7 @@ impl From<SharedText> for String {
 
 impl From<&SharedText> for String {
     fn from(text: &SharedText) -> Self {
-        text.as_str().to_owned()
-    }
-}
-
-impl PartialEq<str> for SharedText {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&str> for SharedText {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for SharedText {
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<SharedText> for String {
-    fn eq(&self, other: &SharedText) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SharedText> for str {
-    fn eq(&self, other: &SharedText) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SymbolName> for SharedText {
-    fn eq(&self, other: &SymbolName) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl PartialEq<SharedText> for SymbolName {
-    fn eq(&self, other: &SharedText) -> bool {
-        self.as_str() == other.as_str()
+        text.borrow().text()
     }
 }
 
@@ -576,7 +480,7 @@ impl SymbolName {
             let visible = visible_symbol_name(&text).to_owned();
             return Self::new_uninterned(
                 lisp_name.unwrap_or_else(|| Value::String(SharedText::from(visible))),
-                SharedText::new_untracked(text),
+                text,
             );
         }
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
@@ -585,17 +489,12 @@ impl SymbolName {
             }
             crate::lisp::native_comp::note_lisp_allocation(48);
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
-            let text = if private || lisp_name.is_some() {
-                SharedText::new_untracked(text)
-            } else {
-                SharedText::from(text)
-            };
             let lisp_name = lisp_name.unwrap_or_else(|| {
-                Value::String(if private {
-                    SharedText::from(visible_symbol_name(&text))
+                Value::String(SharedText::from(if private {
+                    visible_symbol_name(&text)
                 } else {
-                    text
-                })
+                    text.as_str()
+                }))
             });
             let id = symbol_id_for(text.as_str(), false);
             let name = Self(crate::lisp::alloc::allocate_symbol(
@@ -696,13 +595,10 @@ impl SymbolName {
     }
 
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
-        Self::new_uninterned(
-            name,
-            SharedText::new_untracked(make_uninterned_symbol_name(visible, id)),
-        )
+        Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
     }
 
-    fn new_uninterned(lisp_name: Value, internal: SharedText) -> Self {
+    fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
         let id = symbol_id_for(internal.as_str(), true);
         let key = internal
@@ -726,7 +622,7 @@ impl SymbolName {
 
     /// The name's text; its lifetime is the symbol's, which the collector
     /// keeps while the symbol is reachable (an interned one, always).
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         self.0.internal.as_str()
     }
 
@@ -757,11 +653,6 @@ impl SymbolName {
     pub(crate) fn lisp_name_ref(&self) -> &Value {
         &self.0.lisp_name
     }
-
-    /// The host-side key text (a string cell the symbol keeps alive).
-    pub(crate) fn internal_text(&self) -> &SharedText {
-        &self.0.internal
-    }
 }
 
 /// The obarray as a root (alloc.c staticpro's `Vobarray'): every
@@ -778,7 +669,6 @@ pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
                 // This adapter goes when the builtin symbol allocation
                 // also owns the value, function and property cells.
                 name.mark_bit().mark(current_mark_epoch());
-                mark(&Value::String(*name.internal_text()));
                 mark(name.lisp_name_ref());
             } else {
                 mark(&value);
@@ -821,7 +711,7 @@ impl Deref for SymbolName {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
-        self.0.internal.text()
+        &self.0.internal
     }
 }
 
@@ -831,7 +721,7 @@ impl AsRef<str> for SymbolName {
     }
 }
 
-impl Borrow<str> for SymbolName {
+impl std::borrow::Borrow<str> for SymbolName {
     fn borrow(&self) -> &str {
         self.as_str()
     }
@@ -887,7 +777,7 @@ impl From<SharedText> for SymbolName {
 
 impl From<SymbolName> for SharedText {
     fn from(name: SymbolName) -> Self {
-        name.0.internal
+        name.as_str().into()
     }
 }
 
@@ -1320,6 +1210,9 @@ pub(crate) fn string_object_value_with_storage_bytes(
     state: SharedStringState,
     bytes: usize,
 ) -> Value {
+    if state.len() == 0 && !state.is_multibyte() {
+        return Value::StringObject(crate::lisp::alloc::vectors::empty_unibyte_string());
+    }
     note_string_allocation(bytes);
     Value::StringObject(crate::lisp::alloc::VectorlikeRef::allocate(RefCell::new(
         state,
@@ -1345,12 +1238,11 @@ pub(crate) fn census_live_conses() -> usize {
 }
 
 pub(crate) fn census_live_strings() -> StringCensus {
-    // The texts and the string objects, both counted by the sweep and
-    // raised by allocation (gcstat's total_strings, total_string_bytes).
+    // One allocator census for every Lisp string.
     let (objects, bytes, property_spans) = crate::lisp::alloc::live_string_object_census();
     StringCensus {
-        count: crate::lisp::alloc::live_strings() + objects,
-        bytes: crate::lisp::alloc::live_string_bytes() + bytes,
+        count: objects,
+        bytes,
         property_spans,
     }
 }
@@ -1649,7 +1541,6 @@ pub enum Kind {
     Integer(i64),
     BigInteger(SharedBigInt),
     Float(SharedFloat),
-    String(SharedText),
     StringObject(StringObjectRef),
     Symbol(SymbolName),
     /// GNU PVEC_SYMBOL_WITH_POS: the symbol and position in the allocation.
@@ -1726,7 +1617,7 @@ impl Value {
     }
     #[inline]
     pub fn String(text: SharedText) -> Value {
-        Value::from_bits(text.identity_ptr() | TAG_STRING)
+        Value::StringObject(text)
     }
     #[inline]
     pub fn StringObject(state: StringObjectRef) -> Value {
@@ -1859,22 +1750,10 @@ impl Value {
                 }))
             }
             TAG_STRING => {
-                let address = word & !TAG_MASK;
-                // SAFETY: both current string allocations start with an
-                // initialized size word. Plain text sizes (including the
-                // untracked-name sentinel) cannot have the StringObject
-                // pseudovector tag. No native bridge pointer is involved.
-                unsafe {
-                    if crate::lisp::alloc::vectors::header_tag(address as *mut _)
-                        == crate::lisp::alloc::VectorTag::StringObject
-                    {
-                        Kind::StringObject(crate::lisp::alloc::VectorlikeRef::from_raw(
-                            address as *mut _,
-                        ))
-                    } else {
-                        Kind::String(SharedText::from_raw(address as *mut _))
-                    }
-                }
+                // SAFETY: every string word names the canonical payload.
+                Kind::StringObject(unsafe {
+                    crate::lisp::alloc::VectorlikeRef::from_raw((word & !TAG_MASK) as *mut _)
+                })
             }
             TAG_FLOAT => {
                 // SAFETY: as above, a float cell.
@@ -1964,15 +1843,13 @@ impl Value {
     /// may ask it of a dead object's field (whose target, a vectorlike,
     /// might already be freed, and whose header `kind' would read).
     #[inline]
-    pub(crate) fn symbol_by_tag(self) -> Option<SymbolName> {
+    pub(crate) fn symbol_name_by_tag(&self) -> Option<&str> {
         if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
             // SAFETY: a symbol-tagged word names a symbol cell; symbol
-            // cells are swept after the vectors and the conses.
-            Some(SymbolName::from_ref(unsafe {
-                crate::lisp::alloc::SymbolRef::from_raw(
-                    self.0 as *mut crate::lisp::alloc::SymbolCell,
-                )
-            }))
+            // cells are swept after the vectors and the conses. Its host
+            // key is immutable and the borrow cannot outlive this handle.
+            let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
+            Some(cell.internal.as_str())
         } else {
             None
         }
@@ -2008,7 +1885,6 @@ impl Kind {
             Kind::Integer(n) => Value::Integer(n),
             Kind::BigInteger(v) => Value::BigInteger(v),
             Kind::Float(v) => Value::Float(v),
-            Kind::String(v) => Value::String(v),
             Kind::StringObject(v) => Value::StringObject(v),
             Kind::Symbol(v) => Value::Symbol(v),
             Kind::Cons(v) => Value::Cons(v),
@@ -2425,7 +2301,7 @@ impl Value {
         Value::Closure(crate::lisp::alloc::ClosureRef::allocate(slots))
     }
 
-    pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
+    pub fn buffer(id: u64, name: impl Into<String>) -> Self {
         Value::Buffer(BufferRef::new(id, crate::buffer::Buffer::new(&name.into())))
     }
 
@@ -2521,9 +2397,9 @@ impl Value {
         }
     }
 
-    pub fn as_string(&self) -> Result<&str, LispError> {
+    pub fn as_string(&self) -> Result<String, LispError> {
         match self.kind() {
-            Kind::String(s) => Ok(s.as_str()),
+            Kind::StringObject(s) => Ok(s.borrow().text()),
             _ => Err(LispError::WrongTypeArgument("stringp".into(), *self)),
         }
     }
@@ -2532,7 +2408,7 @@ impl Value {
         match self.kind() {
             Kind::Nil => Ok("nil"),
             Kind::T => Ok("t"),
-            Kind::Symbol(s) => Ok(s.as_str()),
+            Kind::Symbol(_) => Ok(self.symbol_name_by_tag().expect("symbol tag")),
             _ => Err(LispError::WrongTypeArgument("symbolp".into(), *self)),
         }
     }
@@ -2652,7 +2528,6 @@ impl Value {
             Kind::Integer(_) => "integer".into(),
             Kind::BigInteger(_) => "integer".into(),
             Kind::Float(_) => "float".into(),
-            Kind::String(_) => "string".into(),
             Kind::StringObject(_) => "string".into(),
             Kind::Symbol(_) => "symbol".into(),
             Kind::Cons(_) => "cons".into(),
@@ -2722,26 +2597,7 @@ fn values_equal_recursive(
         // fns.c internal_equal via same_float: representation equality
         // (NaN equals NaN; 0.0 differs from -0.0).
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
-        (Kind::String(a), Kind::String(b)) => a == b,
-        (Kind::StringObject(a), Kind::StringObject(b)) => {
-            let a = RefCell::borrow(a.as_ref());
-            let b = RefCell::borrow(b.as_ref());
-            a.text_parts() == b.text_parts()
-        }
-        (Kind::String(a), Kind::StringObject(b)) => {
-            let b = RefCell::borrow(b.as_ref());
-            {
-                let (text, extended) = b.text_parts();
-                extended.is_empty() && a.as_str() == text
-            }
-        }
-        (Kind::StringObject(a), Kind::String(b)) => {
-            let a = RefCell::borrow(a.as_ref());
-            {
-                let (text, extended) = a.text_parts();
-                extended.is_empty() && text == b.as_str()
-            }
-        }
+        (Kind::StringObject(a), Kind::StringObject(b)) => a == b,
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::Cons(a), Kind::Cons(b)) => {
             if SharedCons::ptr_eq(&a, &b) {
@@ -2834,7 +2690,6 @@ fn format_value(
         Kind::Integer(n) => write!(f, "{}", n),
         Kind::BigInteger(n) => write!(f, "{}", n),
         Kind::Float(v) => write!(f, "{}", format_float(v.get())),
-        Kind::String(s) => write!(f, "\"{}\"", s),
         Kind::StringObject(state) => {
             write!(f, "\"{}\"", state.as_ref().borrow().text())
         }
@@ -3048,7 +2903,6 @@ impl fmt::Display for LispErrorKind {
                         && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "search-failed") =>
                 {
                     match items[1].kind() {
-                        Kind::String(text) => write!(f, "{text:?}"),
                         Kind::StringObject(object) => {
                             write!(
                                 f,
@@ -3064,21 +2918,20 @@ impl fmt::Display for LispErrorKind {
                         && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
                 {
                     let message = match items[1].kind() {
-                        Kind::String(text) => text.as_str(),
+                        Kind::StringObject(text) => text.borrow().text(),
                         _ => return write!(f, "{}", value),
                     };
                     let detail = match items[2].kind() {
-                        Kind::String(text) => text.as_str(),
+                        Kind::StringObject(text) => text.borrow().text(),
                         _ => return write!(f, "{}", value),
                     };
                     let path = match items[3].kind() {
-                        Kind::String(text) => text.as_str(),
+                        Kind::StringObject(text) => text.borrow().text(),
                         _ => return write!(f, "{}", value),
                     };
                     write!(f, "{}: {}, {}", message, detail, path)
                 }
                 Ok(items) if items.len() >= 2 => match items[1].kind() {
-                    Kind::String(text) => write!(f, "{text}"),
                     Kind::StringObject(object) => {
                         write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text())
                     }
@@ -3281,15 +3134,6 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                 out.push_str(&brief);
                 out.push('"');
             }
-            Kind::String(text) => {
-                let mut brief: String = text.chars().take(48).collect();
-                if brief.chars().count() < text.chars().count() {
-                    brief.push('…');
-                }
-                out.push('"');
-                out.push_str(&brief);
-                out.push('"');
-            }
             other => {
                 let _ = std::fmt::Write::write_fmt(out, format_args!("{other}"));
             }
@@ -3331,9 +3175,9 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, Kind, LispError, SharedCons, SymbolName, Value, assq_binding, census_live_conses,
-        census_live_floats, census_live_vectors, environment_declares_special,
-        make_uninterned_symbol_name,
+        EnvFrame, Kind, LispError, SharedCons, SharedStringState, SymbolName, Value, assq_binding,
+        census_live_conses, census_live_floats, census_live_vectors, environment_declares_special,
+        make_uninterned_symbol_name, string_object_value,
     };
 
     #[test]
@@ -3501,11 +3345,45 @@ mod tests {
     fn cloning_string_reuses_the_text_allocation() {
         let value = Value::string("shared text");
         let clone = value;
-        let (Kind::String(text), Kind::String(cloned_text)) = (value.kind(), clone.kind()) else {
+        let (Kind::StringObject(text), Kind::StringObject(cloned_text)) =
+            (value.kind(), clone.kind())
+        else {
             unreachable!("constructed string values")
         };
 
         assert!(text.ptr_eq(&cloned_text));
+    }
+
+    #[test]
+    fn string_value_equality_uses_bytes_and_character_counts() {
+        let from_char = |code| {
+            string_object_value(
+                SharedStringState::from_characters(&[Value::Integer(code)])
+                    .expect("valid Lisp character"),
+            )
+        };
+        // These are the storage distinctions in the ordinary GNU string
+        // comparison fixture. The Rust Value API must preserve them too.
+        let unibyte = string_object_value(SharedStringState::from_unibyte(vec![0x80]));
+        let byte8 = from_char(0x3fff80);
+        let private_use = from_char(0xe080);
+        assert_ne!(unibyte, byte8);
+        assert_ne!(byte8, private_use);
+        assert_ne!(unibyte, private_use);
+
+        // The bytes alone are insufficient: these same two bytes represent
+        // two unibyte characters or one multibyte character (GNU SCHARS).
+        let two_characters = string_object_value(SharedStringState::from_unibyte(vec![0xc2, 0x80]));
+        assert_ne!(two_characters, from_char(0x80));
+
+        let ascii = Value::string("x");
+        let multibyte_ascii = string_object_value(
+            SharedStringState::repeated_character(u32::from(b'x'), 1, true)
+                .expect("valid ASCII character"),
+        );
+        assert_eq!(ascii, multibyte_ascii);
+        assert_eq!(byte8, from_char(0x3fff80));
+        assert_eq!(byte8, byte8);
     }
 
     #[test]
@@ -3674,11 +3552,11 @@ mod tests {
     #[test]
     fn uninterned_symbol_keeps_its_supplied_lisp_name() {
         let name = Value::string("temporary");
-        let Kind::String(expected) = name.kind() else {
+        let Kind::StringObject(expected) = name.kind() else {
             unreachable!("constructed string")
         };
         let symbol = SymbolName::make_uninterned(name, "temporary", 1);
-        let Kind::String(actual) = symbol.lisp_name().kind() else {
+        let Kind::StringObject(actual) = symbol.lisp_name().kind() else {
             unreachable!("immutable supplied name")
         };
 

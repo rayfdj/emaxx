@@ -434,10 +434,10 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     }
     let mut properties = std::collections::HashMap::new();
     for pair in items[1..].as_chunks::<2>().0 {
-        let Kind::Symbol(key) = pair[0].kind() else {
+        let Ok(key) = pair[0].as_symbol() else {
             return false;
         };
-        if !key.starts_with(':') || properties.insert(key.as_str(), &pair[1]).is_some() {
+        if !key.starts_with(':') || properties.insert(key, &pair[1]).is_some() {
             return false;
         }
     }
@@ -457,8 +457,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     type_supported
         && matches!(
             (file.map(|v| v.kind()), data.map(|v| v.kind())),
-            (Some(Kind::String(_) | Kind::StringObject(_)), None)
-                | (None, Some(Kind::String(_) | Kind::StringObject(_)))
+            (Some(Kind::StringObject(_)), None) | (None, Some(Kind::StringObject(_)))
         )
 }
 
@@ -1362,7 +1361,6 @@ fn tty_supports_face_attributes(
             // face_attr_equal_p compares color strings case-insensitively.
             let text_of = |value: &Value| -> Option<String> {
                 match value.kind() {
-                    Kind::String(text) => Some(text.to_string()),
                     Kind::StringObject(state) => Some(std::cell::RefCell::borrow(&state).text()),
                     _ => None,
                 }
@@ -3124,7 +3122,7 @@ define_dispatch!(
                     Some(value) => Value::String(string_text(&value.value())?.into()),
                 };
                 interp.external_debugging_output_target = match target.kind() {
-                    Kind::String(path) => Some(path.to_string()),
+                    Kind::StringObject(path) => Some(path.borrow().text()),
                     _ => None,
                 };
                 Ok(target)

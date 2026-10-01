@@ -131,6 +131,13 @@ impl SharedStringState {
         self.bytes.len()
     }
 
+    /// fns.c:Fstring_equal and internal_equal compare SCHARS, SBYTES and
+    /// the stored bytes. The multibyte flag and text properties do not
+    /// participate: ASCII contents compare equal in either representation.
+    pub(crate) fn contents_equal(&self, other: &Self) -> bool {
+        self.characters == other.characters && self.bytes == other.bytes
+    }
+
     /// character.c:str_as_unibyte preserves every internal byte except
     /// the two-byte byte8 forms, which become their one-byte equivalent.
     pub(crate) fn as_unibyte_bytes(&self) -> Vec<u8> {
@@ -273,6 +280,34 @@ impl SharedStringState {
             .expect("string replacement must supply valid Lisp characters");
         self.characters = text.chars().count();
         self.multibyte = multibyte;
+    }
+
+    /// fns.c:Ffillarray validates ITEM even for an empty string. Unibyte
+    /// strings store its low byte; multibyte fills cannot resize the payload.
+    /// Existing intervals and aliases continue to name the same object.
+    pub(crate) fn fill(&mut self, item: Value) -> Result<(), LispError> {
+        let code = character_code(item)?;
+        if self.characters == 0 {
+            return Ok(());
+        }
+        let (encoded, width) = if self.multibyte {
+            encode_character(code)?
+        } else {
+            ([code as u8, 0, 0, 0, 0], 1)
+        };
+        if self.characters.checked_mul(width) != Some(self.bytes.len()) {
+            return Err(LispError::Signal(
+                "Attempt to change byte length of a string".into(),
+            ));
+        }
+        if width == 1 {
+            self.bytes.fill(encoded[0]);
+        } else {
+            for bytes in self.bytes.chunks_exact_mut(width) {
+                bytes.copy_from_slice(&encoded[..width]);
+            }
+        }
+        Ok(())
     }
 
     /// fns.c:Fclear_string clears actual storage bytes and makes it unibyte.

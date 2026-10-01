@@ -778,11 +778,9 @@ impl Interpreter {
     }
     pub(crate) fn set_keyboard_binding_on(&mut self, id: u64, name: &str, value: Value) {
         if id == 0 {
-            self.globals.insert_by_name(name, Self::stored_value(value));
+            self.globals.insert_by_name(name, value);
         } else if let Some(mut terminal) = self.terminal_state_mut(id).filter(|state| state.live) {
-            terminal
-                .keyboard
-                .insert(name.into(), Self::stored_value(value));
+            terminal.keyboard.insert(name.into(), value);
         }
     }
 

@@ -603,7 +603,7 @@ define_dispatch!(
                             set_random_seed(nondeterministic_random_seed());
                             Ok(Value::Integer(random_fixnum()))
                         }
-                        Kind::String(_) | Kind::StringObject(_) => {
+                        Kind::StringObject(_) => {
                             let seed = string_like(&args[0])
                                 .expect("string variants should be string-like")
                                 .text;
@@ -739,7 +739,7 @@ define_dispatch!(
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
                 match args[0].kind() {
-                    Kind::String(_) | Kind::StringObject(_) => {
+                    Kind::StringObject(_) => {
                         match crate::lisp::primitives::strings::string_char_code_at_in_place(
                             &args[0], idx,
                         ) {
@@ -821,7 +821,7 @@ define_dispatch!(
                         set_bool_vector_bit(interp, &value.value(), idx, args[2].is_truthy())?;
                         Ok(args[2])
                     }
-                    Kind::String(_) | Kind::StringObject(_) => {
+                    Kind::StringObject(_) => {
                         aset_string_value(&args[0], idx, &args[2])?;
                         Ok(args[2])
                     }
@@ -855,36 +855,8 @@ define_dispatch!(
                         Ok(args[0])
                     }
                     Kind::StringObject(state) => {
-                        let mut state = state.borrow_mut();
-                        let len = state.len();
-                        let fill_code = args[1].as_integer()?;
-                        let fill_char = if state.is_multibyte() {
-                            char::from_u32(fill_code as u32)
-                                .ok_or_else(|| LispError::Signal("Invalid character".into()))?
-                        } else if !(0..=255).contains(&fill_code) {
-                            return Err(LispError::Signal("Invalid character".into()));
-                        } else if fill_code <= 0x7F {
-                            char::from(fill_code as u8)
-                        } else {
-                            raw_byte_regex_char(fill_code as u8)
-                        };
-                        let multibyte = state.is_multibyte();
-                        state.replace_text(
-                            std::iter::repeat_n(fill_char, len).collect(),
-                            multibyte,
-                            Vec::new(),
-                        );
-                        state.props.clear();
+                        state.borrow_mut().fill(args[1])?;
                         Ok(args[0])
-                    }
-                    Kind::String(text) => {
-                        let len = text.chars().count();
-                        let fill_code = args[1].as_integer()?;
-                        if !(0..=0x7F).contains(&fill_code) {
-                            return Err(LispError::Signal("Invalid character".into()));
-                        }
-                        let fill_char = char::from(fill_code as u8);
-                        Ok(Value::String(std::iter::repeat_n(fill_char, len).collect()))
                     }
                     value if is_bool_vector_value(interp, &value.value()) => {
                         let len = bool_vector_bits(interp, &value.value())?.len();
@@ -1018,7 +990,6 @@ define_dispatch!(
                         state.clear();
                         Ok(Value::Nil)
                     }
-                    Kind::String(_) => Ok(Value::Nil),
                     other => Err(LispError::WrongTypeArgument(
                         "stringp".into(),
                         other.value(),
@@ -1032,7 +1003,6 @@ define_dispatch!(
                 }
                 let len = match args[0].kind() {
                     Kind::StringObject(state) => state.borrow().len(),
-                    Kind::String(text) => text.chars().count(),
                     _ => return Err(LispError::WrongTypeArgument("stringp".into(), args[0])),
                 };
                 // editfns.c:Fpropertize starts with Fcopy_sequence, sharing

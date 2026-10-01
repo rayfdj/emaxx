@@ -170,7 +170,7 @@ fn args_out_of_range(object: Value, position: Value) -> LispError {
 
 fn symbol_property(value: &Value, lowercase: bool) -> Result<Value, LispError> {
     let name = match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
+        Kind::StringObject(_) => string_text(value)?,
         Kind::Nil => return Ok(Value::Nil),
         Kind::T => "t".into(),
         Kind::Symbol(name) => name.to_string(),
@@ -597,7 +597,7 @@ fn fontset_index(interp: &Interpreter, name: &str) -> Option<usize> {
 fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
     match value.kind() {
         Kind::Nil | Kind::T => Ok(0),
-        Kind::String(_) | Kind::StringObject(_) => {
+        Kind::StringObject(_) => {
             let name = string_text(value)?;
             fontset_index(interp, &name)
                 .ok_or_else(|| LispError::Signal(format!("Fontset {name} does not exist")))
@@ -610,7 +610,7 @@ fn font_pattern_component(value: &Value) -> Result<Option<String>, LispError> {
     match value.kind() {
         Kind::Nil => Ok(None),
         Kind::Symbol(symbol) => Ok(Some(symbol.to_string())),
-        Kind::String(_) | Kind::StringObject(_) => Ok(Some(string_text(value)?)),
+        Kind::StringObject(_) => Ok(Some(string_text(value)?)),
         _ => Err(invalid_font_property()),
     }
 }
@@ -637,7 +637,7 @@ fn font_pattern(
             let record = font_record(interp, value)?;
             Ok(Some(font_pattern_from_slots(&record.slots)))
         }
-        Kind::String(_) | Kind::StringObject(_) => {
+        Kind::StringObject(_) => {
             let slots = make_font_spec(&[Value::symbol(":name"), *value])?;
             Ok(Some(font_pattern_from_slots(&slots)))
         }
@@ -1101,7 +1101,11 @@ define_dispatch!(
                     .map(|v| v.kind())
                 {
                     Some(Kind::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
-                        Some(add.as_str())
+                        Some(if add == "prepend" {
+                            "prepend"
+                        } else {
+                            "append"
+                        })
                     }
                     Some(value) => {
                         return Err(LispError::Signal(format!("Invalid ADD argument: {value}")));

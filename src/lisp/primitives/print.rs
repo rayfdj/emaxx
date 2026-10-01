@@ -271,7 +271,6 @@ pub(crate) fn print_ref_key(
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
-        Kind::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
         Kind::Closure(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
         Kind::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
         Kind::Symbol(symbol)
@@ -1111,19 +1110,6 @@ pub(crate) fn render_prin1_body(
             };
             Ok(rendered.unwrap_or_else(|| value.to_string()))
         }
-        Kind::String(text) if !context.options.escape => Ok(render_princ_string(
-            interp,
-            &text,
-            string_argument_multibyte(value),
-            env,
-            context.options.output_is_function,
-        )),
-        Kind::String(text) => Ok(render_prin1_string(
-            interp,
-            &text,
-            string_argument_multibyte(value),
-            env,
-        )),
         Kind::StringObject(state) if !context.options.escape => {
             let state = state.borrow();
             Ok(render_princ_string(
@@ -1536,7 +1522,7 @@ fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
         .lookup_var("load-true-file-name", env)
         .map(|v| v.kind())
     {
-        Some(file @ Kind::String(_)) => LispError::SignalValue(Value::list([
+        Some(file @ Kind::StringObject(_)) => LispError::SignalValue(Value::list([
             Value::Symbol("end-of-file".into()),
             file.value(),
         ])),
@@ -1653,7 +1639,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::String(_) | Kind::StringObject(_) => {
+        Kind::StringObject(_) => {
             let text = reader_string_source_text(source)?;
             read_one_positioned_form(interp, env, &text, 0).map(|(value, _)| value)
         }
@@ -2174,7 +2160,7 @@ fn read_from_lisp_source_raw(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::String(_) | Kind::StringObject(_) => {
+        Kind::StringObject(_) => {
             let s = reader_string_source_text(source)?;
             read_one_form_in_env(interp, &s, env).map(|(value, _)| value)
         }

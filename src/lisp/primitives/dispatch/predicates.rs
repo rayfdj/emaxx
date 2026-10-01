@@ -323,9 +323,7 @@ define_dispatch!(
                 else {
                     return Ok(Value::Nil);
                 };
-                if matches!(function.kind(), Kind::String(_) | Kind::StringObject(_))
-                    || is_vector_value(&function)
-                {
+                if matches!(function.kind(), Kind::StringObject(_)) || is_vector_value(&function) {
                     return Ok(if for_call_interactively {
                         Value::Nil
                     } else {

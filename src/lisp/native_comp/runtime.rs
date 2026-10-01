@@ -3912,7 +3912,6 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
-        crate::lisp::alloc::sweep_strings(epoch);
     }
 
     fn end_call(&mut self) {
@@ -4038,7 +4037,6 @@ impl NativeHeap {
         if tag == TAG_STRING {
             if !live_word {
                 let allocated = match unsafe { crate::lisp::alloc::mem_find(address) } {
-                    Some(crate::lisp::alloc::Found::String(cell)) => cell as usize == address,
                     Some(crate::lisp::alloc::Found::Vectorlike(header)) => {
                         header as usize == address
                             && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
@@ -7247,7 +7245,9 @@ mod tests {
         // GNU byte code for one mandatory argument: dup, add1, return.
         let function = Value::allocated_closure(&[
             Value::Integer(257),
-            Value::String("\u{89}\u{54}\u{87}".into()),
+            crate::lisp::types::string_object_value(
+                crate::lisp::types::SharedStringState::from_unibyte(vec![0o211, 0o124, 0o207]),
+            ),
             Value::list([Value::symbol("vector-literal")]),
             Value::Integer(3),
         ]);
@@ -7270,6 +7270,19 @@ mod tests {
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
+
+        // alloc.c:Fmake_byte_code rejects the former Unicode fixture:
+        // those three characters occupy five bytes, not three opcodes.
+        assert_eq!(
+            crate::lisp::bytecode::ByteCodeObject::from_slots(&[
+                Value::Integer(257),
+                Value::String("\u{89}\u{54}\u{87}".into()),
+                Value::vector([]),
+                Value::Integer(3),
+            ])
+            .expect_err("GNU rejects Unicode text as byte-code storage"),
+            crate::lisp::bytecode::ByteCodeError::NonUnibyteCode { char_index: 0 }
+        );
     }
 
     #[test]
@@ -11230,10 +11243,7 @@ mod tests {
         for value in [
             Value::string(""),
             Value::string("plain λ\0text"),
-            Value::String(crate::lisp::alloc::allocate_string(
-                "internal-name".into(),
-                crate::lisp::alloc::UNTRACKED_TEXT,
-            )),
+            Value::string("internal-name"),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "mutable λ\0text".into(),
                 Vec::new(),

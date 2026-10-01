@@ -103,7 +103,6 @@ pub(crate) fn collect_interactive_args(
         return Ok(Vec::new());
     };
     match spec.kind() {
-        Kind::String(spec) => parse_interactive_string(&spec, interp, env),
         Kind::StringObject(state) => parse_interactive_string(&state.borrow().text(), interp, env),
         _ => {
             if let Some(items) = interactive_list_form_items(&spec) {

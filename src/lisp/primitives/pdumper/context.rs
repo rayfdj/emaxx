@@ -26,7 +26,6 @@ pub(crate) const WEIGHT_STRONG: LinkWeight = LinkWeight(1200);
 pub(crate) enum ObjectKey {
     Cons(usize),
     String(usize),
-    StringObject(usize),
     Symbol(u32),
     SymbolWithPos(usize),
     Vector(usize),
@@ -56,8 +55,7 @@ pub(crate) enum ObjectKey {
 pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
     Some(match value.kind() {
         Kind::Cons(cell) => ObjectKey::Cons(ConsCell::identity(&cell)),
-        Kind::String(text) => ObjectKey::String(text.identity_ptr()),
-        Kind::StringObject(state) => ObjectKey::StringObject(state.identity()),
+        Kind::StringObject(state) => ObjectKey::String(state.identity()),
         Kind::Symbol(name) => {
             if name == "nil" || name == "t" {
                 return None;
@@ -537,8 +535,7 @@ impl DumpContext {
         }
         match value.kind() {
             Kind::Cons(_) => DumpType::Cons,
-            Kind::String(_) => DumpType::String,
-            Kind::StringObject(_) => DumpType::StringObject,
+            Kind::StringObject(_) => DumpType::String,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
             Kind::LispRecord(_) => DumpType::LispRecord,
@@ -1039,7 +1036,7 @@ impl DumpContext {
         // Object needs to be dumped.
         self.set_referrer(*object);
         let (offset, kind) = match object.kind() {
-            Kind::String(_) | Kind::StringObject(_) => self.dump_string(interp, object)?,
+            Kind::StringObject(_) => self.dump_string(interp, object)?,
             Kind::Vector(vector) => (self.dump_vector(&vector)?, DumpType::Vector),
             Kind::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
             Kind::Cons(cell) => (self.dump_cons(&cell)?, DumpType::Cons),
@@ -1104,25 +1101,33 @@ impl DumpContext {
         interp: &Interpreter,
         object: &Value,
     ) -> Result<(u32, DumpType), DumpError> {
-        let string = string_like(object).expect("a string");
-        let kind = match object.kind() {
-            Kind::String(_) => DumpType::String,
-            _ => DumpType::StringObject,
+        let Kind::StringObject(state) = object.kind() else {
+            unreachable!("dumping a string")
         };
-        let size = string.text.chars().count() as u64;
-        let size_byte = if string.multibyte {
-            crate::lisp::primitives::strings::lisp_string_byte_len(
-                &string.text,
-                true,
-                &string.extended_chars,
-            )? as u64
-        } else {
-            // -1: a unibyte string.
-            u64::MAX
+        let (size, size_byte, props) = {
+            let string = state.borrow();
+            let props = string
+                .props
+                .iter()
+                .map(|span| TextPropertySpan {
+                    start: span.start,
+                    end: span.end,
+                    props: span.props.clone(),
+                })
+                .collect::<Vec<_>>();
+            (
+                string.len() as u64,
+                if string.is_multibyte() {
+                    string.storage_bytes() as u64
+                } else {
+                    u64::MAX
+                },
+                props,
+            )
         };
         self.object_start()?;
         let mut words = [size, size_byte, 0, 0];
-        let has_props = !string.props.is_empty();
+        let has_props = !props.is_empty();
         if has_props {
             words[2] = FIXUP_PLACEHOLDER;
         }
@@ -1130,10 +1135,10 @@ impl DumpContext {
         self.remember_cold_op(ColdOp::String(*object));
         let offset = self.object_finish(&words)?;
         if has_props {
-            let properties = self.dump_text_properties(interp, &string.props)?;
+            let properties = self.dump_text_properties(interp, &props)?;
             self.remember_fixup_ptr_raw(offset + 16, properties);
         }
-        Ok((offset, kind))
+        Ok((offset, DumpType::String))
     }
 
     /// The string's property spans: count, then (start, end, nprops,

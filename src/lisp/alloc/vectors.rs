@@ -212,6 +212,12 @@ impl VectorHeader {
                 &(*(address as *const ZeroVector)).mark
             }));
         }
+        if empty_string_at(address).is_some() {
+            // SAFETY: the permanent empty string owns its separate mark.
+            return VectorMark(VectorMarkStorage::Separate(unsafe {
+                &(*(address as *const EmptyString)).mark
+            }));
+        }
         let nbytes = self.nbytes();
         if nbytes > VBLOCK_BYTES_MAX {
             // SAFETY: allocate_vectorlike reserves and initializes a mark
@@ -537,6 +543,41 @@ fn zero_vector() -> *mut VectorHeader {
             mark: MarkBit::default(),
         })) as *mut ZeroVector as usize
     }) as *mut VectorHeader
+}
+
+/// alloc.c's empty_unibyte_string: one permanent empty canonical string.
+/// It is outside the swept blocks and the allocated Lisp-string census.
+#[repr(C)]
+struct EmptyString {
+    header: VectorHeader,
+    state: RefCell<SharedStringState>,
+    mark: MarkBit,
+}
+
+static EMPTY_STRING: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+pub(super) fn empty_string_at(address: usize) -> Option<*mut VectorHeader> {
+    EMPTY_STRING
+        .get()
+        .filter(|&&empty| empty == address)
+        .map(|&empty| empty as *mut VectorHeader)
+}
+
+pub(crate) fn empty_unibyte_string() -> VectorlikeRef<RefCell<SharedStringState>> {
+    let address = *EMPTY_STRING.get_or_init(|| {
+        Box::leak(Box::new(EmptyString {
+            header: VectorHeader {
+                size: VectorHeader::pseudovector_size_word(
+                    VectorTag::StringObject,
+                    HEADER_SIZE + std::mem::size_of::<RefCell<SharedStringState>>(),
+                ),
+            },
+            state: RefCell::new(SharedStringState::from_unibyte(Vec::new())),
+            mark: MarkBit::default(),
+        })) as *mut EmptyString as usize
+    });
+    // SAFETY: the permanent allocation uses the same header/payload layout.
+    unsafe { VectorlikeRef::from_raw(address as *mut VectorHeader) }
 }
 
 /// `Lisp_Object' for an ordinary vector: the header's address.

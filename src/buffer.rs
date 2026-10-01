@@ -2894,7 +2894,6 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         // string-valued span per character (shr-zoom-image's
         // next-single-property-change saw a "change" at every char of the
         // alt text and replaced two characters of a twenty-char image).
-        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)

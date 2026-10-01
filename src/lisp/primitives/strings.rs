@@ -53,20 +53,6 @@ pub(crate) fn substring_value(
                 Ok(crate::lisp::types::string_object_value(result))
             }
         }
-        Kind::String(_) => {
-            // The remaining host-text API has no intervals. Keep its inferred
-            // encoding even when the selected range contains only ASCII.
-            let string = string_like(&array).expect("plain string kind");
-            let (from, to) = validate_subarray(array, from, to, string.text.chars().count())?;
-            if from == to && !string.multibyte {
-                return Ok(Value::String("".into()));
-            }
-            Ok(make_shared_string_value_with_multibyte(
-                string.text.chars().skip(from).take(to - from).collect(),
-                Vec::new(),
-                string.multibyte,
-            ))
-        }
         _ => Err(LispError::WrongTypeArgument(
             if properties { "arrayp" } else { "stringp" }.into(),
             array,
@@ -146,13 +132,6 @@ pub(crate) fn lisp_string_storage_byte_len(
         .sum()
 }
 
-pub(crate) fn immutable_lisp_string_storage_byte_len(text: &str) -> usize {
-    let multibyte = text
-        .chars()
-        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
-    lisp_string_storage_byte_len(text, multibyte, &[])
-}
-
 pub(crate) fn emacs_multibyte_char_len(code: u32) -> Result<usize, LispError> {
     Ok(match code {
         0x000000..=0x00007F => 1,
@@ -212,12 +191,10 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     }
 }
 
-/// The text of a string VALUE without copying it when the string is a
-/// shared text (`Value::String'): what a primitive reads and never keeps.
-/// A `StringObject' is copied out of its cell as `string_like' copies it.
+/// A transient Rust text view of canonical bytes. It is never retained as
+/// mutable string state; consumers needing characters or bytes use the payload.
 pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
     match value.kind() {
-        Kind::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
         Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text())),
         _ => None,
     }
@@ -225,17 +202,6 @@ pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> 
 
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
-        Kind::String(text) => Some(StringLike {
-            text: text.to_string(),
-            props: Vec::new(),
-            extended_chars: Vec::new(),
-            // The byte scan first: ASCII text (most stored strings) never
-            // walks its characters.
-            multibyte: !text.is_ascii()
-                && text
-                    .chars()
-                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
-        }),
         Kind::StringObject(state) => {
             let state = state.borrow();
             let (text, extended_chars) = state.text_parts();
@@ -265,30 +231,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
 /// string: no copy of the text).  `None' for a non-string or an index past
 /// the end.
 pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Option<i64> {
-    fn code_in(
-        text: &str,
-        multibyte: bool,
-        extended: &[(usize, u32)],
-        index: usize,
-    ) -> Option<i64> {
-        if let Ok(position) = extended.binary_search_by_key(&index, |(position, _)| *position) {
-            return Some(i64::from(extended[position].1));
-        }
-        if text.is_ascii() {
-            return text.as_bytes().get(index).map(|byte| i64::from(*byte));
-        }
-        text.chars()
-            .nth(index)
-            .map(|ch| string_character_code(multibyte, ch))
-    }
     match value.kind() {
-        Kind::String(text) => {
-            let text = text.as_str();
-            let multibyte = text
-                .chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-            code_in(text, multibyte, &[], index)
-        }
         Kind::StringObject(state) => state.borrow().character_at(index),
         _ => None,
     }
@@ -300,42 +243,32 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
 /// other multibyte and any character is not ASCII (a raw byte is one
 /// byte unibyte and two multibyte).  `None' when either is not a string.
 pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
-    if let (Kind::StringObject(left), Kind::StringObject(right)) = (left.kind(), right.kind()) {
-        let left = left.borrow();
-        let right = right.borrow();
-        return Some(left.len() == right.len() && left.bytes() == right.bytes());
-    }
+    let (Kind::StringObject(left), Kind::StringObject(right)) = (left.kind(), right.kind()) else {
+        return None;
+    };
+    Some(left == right)
+}
 
-    fn with_parts<R>(
-        value: &Value,
-        f: impl FnOnce(&str, &[(usize, u32)], Option<bool>) -> R,
-    ) -> Option<R> {
-        match value.kind() {
-            Kind::String(text) => Some(f(text.as_str(), &[], None)),
-            Kind::StringObject(state) => {
-                let state = state.borrow();
-                let (text, extended) = state.text_parts();
-                Some(f(&text, &extended, Some(state.is_multibyte())))
-            }
-            _ => None,
+/// fns.c:Fstring_equal accepts SYMBOLP arguments and reads SYMBOL_NAME,
+/// which is the original Lisp string, not the symbol's host lookup key.
+/// lisp.h:SYMBOLP accepts positioned symbols only while the C flag is set.
+pub(crate) fn string_comparison_object(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<crate::lisp::types::StringObjectRef, LispError> {
+    let symbol = match value.kind() {
+        Kind::StringObject(string) => return Ok(string),
+        Kind::Nil | Kind::T | Kind::Symbol(_) | Kind::SymbolWithPos(_) => {
+            checked_symbol_identity(interp, value, env)
+                .map_err(|_| LispError::WrongTypeArgument("stringp".into(), *value))?
         }
-    }
-    fn multibyte_of(text: &str, known: Option<bool>) -> bool {
-        known.unwrap_or_else(|| {
-            text.chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F)
-        })
-    }
-    with_parts(left, |left_text, left_extended, left_multibyte| {
-        with_parts(right, |right_text, right_extended, right_multibyte| {
-            left_text == right_text
-                && left_extended == right_extended
-                && (left_text.is_ascii()
-                    || multibyte_of(left_text, left_multibyte)
-                        == multibyte_of(right_text, right_multibyte))
-        })
-    })
-    .flatten()
+        _ => return Err(LispError::WrongTypeArgument("stringp".into(), *value)),
+    };
+    let Kind::StringObject(string) = symbol.lisp_name().kind() else {
+        unreachable!("a symbol's name is a Lisp string")
+    };
+    Ok(string)
 }
 
 pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
@@ -360,9 +293,6 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
 pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
     match value.kind() {
         Kind::StringObject(state) => state.borrow().is_multibyte(),
-        Kind::String(text) => text
-            .chars()
-            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
         Kind::Symbol(name) => !name.as_str().is_ascii(),
         _ => false,
     }
@@ -740,76 +670,25 @@ pub(crate) fn aset_string_value(
     index: usize,
     new_value: &Value,
 ) -> Result<Value, LispError> {
-    if !matches!(target.kind(), Kind::String(_) | Kind::StringObject(_)) {
+    let Kind::StringObject(state) = target.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *target));
-    }
-    if let Kind::StringObject(state) = target.kind() {
-        let mut state = state.borrow_mut();
-        // data.c:Faset checks the existing character index before NEWELT.
-        if index >= state.len() {
-            drop(state);
-            return Err(args_out_of_range_for_aset(target, index));
-        }
-        let Kind::Integer(code) = new_value.kind() else {
-            return Err(LispError::WrongTypeArgument(
-                "characterp".into(),
-                *new_value,
-            ));
-        };
-        if !(0..=0x3f_ffff).contains(&code) {
-            return Err(LispError::WrongTypeArgument(
-                "characterp".into(),
-                *new_value,
-            ));
-        }
-        if !state.store_character(index, code as u32) {
-            drop(state);
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("args-out-of-range"),
-                *target,
-                *new_value,
-            ])));
-        }
-        return Ok(*target);
-    }
-    let code = new_value.as_integer()?;
-    let mut string = string_like(target)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *target))?;
-    let mut chars: Vec<char> = string.text.chars().collect();
-    if index >= chars.len() {
+    };
+    let mut state = state.borrow_mut();
+    // data.c:Faset checks the existing index before NEWELT.
+    if index >= state.len() {
+        drop(state);
         return Err(args_out_of_range_for_aset(target, index));
     }
-    let ch = if string.multibyte {
-        char_from_integer(code)?
-    } else if (0..=255).contains(&code) {
-        let byte = code as u8;
-        if byte <= 0x7F {
-            byte as char
-        } else {
-            raw_byte_regex_char(byte)
-        }
-    } else {
-        // GNU can promote an all-ASCII unibyte string in place when the new
-        // character needs multibyte storage.  Raw non-ASCII bytes cannot be
-        // reinterpreted during that promotion, so they keep the documented
-        // args-out-of-range failure instead.
-        if chars.iter().any(|ch| !ch.is_ascii()) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("args-out-of-range".into()),
-                *target,
-                Value::Integer(code),
-            ])));
-        }
-        string.multibyte = true;
-        char_from_integer(code)?
-    };
-    chars[index] = ch;
-    string.text = chars.into_iter().collect();
-    Ok(make_shared_string_value_with_multibyte(
-        string.text,
-        string.props,
-        string.multibyte,
-    ))
+    let code = crate::lisp::types::string_data::character_code(*new_value)?;
+    if !state.store_character(index, code) {
+        drop(state);
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *target,
+            *new_value,
+        ])));
+    }
+    Ok(*target)
 }
 
 pub(crate) fn shared_string_props(props: &[TextPropertySpan]) -> Vec<StringPropertySpan> {
@@ -1410,13 +1289,6 @@ where
     F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
 {
     let Kind::StringObject(state) = value.kind() else {
-        // A plain interned string has no shared property state to mutate.
-        // GNU mutates any string in place; Emaxx's immutable representation
-        // drops the write instead of signaling, mirroring the existing
-        // `set-text-properties' policy for this case.
-        if matches!(value.kind(), Kind::String(_)) {
-            return Ok(());
-        }
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
     let mut state = state.borrow_mut();

@@ -1385,8 +1385,8 @@ impl RecordState {
     /// `symbol_type_name' for the sweep, which must not read the type
     /// tag's object: a dead record's type may be a class record the same
     /// sweep has already freed.  The word's tag alone decides.
-    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&'static str> {
-        self.type_tag.symbol_by_tag().map(|symbol| symbol.as_str())
+    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&str> {
+        self.type_tag.symbol_name_by_tag()
     }
 
     pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
@@ -3223,7 +3223,6 @@ impl LispReachability {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::String(value) => value.mark_bit().is_marked(self.epoch),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Symbol(symbol) => {
                 crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
@@ -3312,7 +3311,6 @@ impl LispReachability {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
             Kind::Float(value) => value.mark_bit().mark(self.epoch),
-            Kind::String(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
@@ -3343,7 +3341,6 @@ impl LispReachability {
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
-                symbol.internal_text().mark_bit().mark(self.epoch);
                 self.enqueue(symbol.lisp_name_ref());
             }
             Kind::Finalizer(object) => {
@@ -3485,7 +3482,6 @@ impl LispReachability {
             | Kind::Integer(_)
             | Kind::BigInteger(_)
             | Kind::Float(_)
-            | Kind::String(_)
             | Kind::BuiltinFunc(_)
             | Kind::Marker(_)
             | Kind::Unbound => {}
@@ -7299,7 +7295,7 @@ impl Interpreter {
         let value = Value::list(
             load_path
                 .into_iter()
-                .map(|path| Self::stored_value(Value::String(path.display().to_string().into()))),
+                .map(|path| Value::String(path.display().to_string().into())),
         );
         self.set_load_path_value(value);
     }
@@ -7469,14 +7465,6 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                     len: (end - beg) as usize,
                 }
             }
-            Some((Kind::String(text), Kind::Integer(pos))) => crate::buffer::UndoEntry::Delete {
-                pos: pos.unsigned_abs() as usize,
-                point_after: pos < 0,
-                text: text.to_string(),
-                props: Vec::new(),
-                extended_chars: Vec::new(),
-                markers: Vec::new(),
-            },
             _ => crate::buffer::UndoEntry::Opaque(*value),
         },
         _ => crate::buffer::UndoEntry::Opaque(*value),

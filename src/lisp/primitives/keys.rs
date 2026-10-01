@@ -664,11 +664,11 @@ pub(crate) fn string_sequence_value(string: &StringLike, ch: char) -> Value {
 
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_like(value),
+        Kind::StringObject(_) => string_like(value),
         Kind::Cons(_) => {
             let items = value.to_vec().ok()?;
             if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
-                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::String(_)))
+                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::StringObject(_)))
             {
                 string_like(value)
             } else {
@@ -688,7 +688,6 @@ pub(crate) fn single_key_description_text(
         Kind::Integer(code) => Ok(describe_key_code(code)),
         Kind::Symbol(symbol) => Ok(describe_symbolic_key(&symbol, no_angles)),
         Kind::T => Ok(describe_symbolic_key("t", no_angles)),
-        Kind::String(text) => Ok(text.to_string()),
         Kind::StringObject(state) => Ok(state.borrow().text()),
         Kind::Cons(_) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
@@ -736,18 +735,6 @@ pub(crate) fn list_event_key_description_text(
             } else {
                 Ok(describe_symbolic_key(
                     &symbolic_kbd_event(bits, &symbol),
-                    no_angles,
-                ))
-            }
-        }
-        Kind::String(text) => {
-            if let Some(ch) = event_name_character(&text) {
-                Ok(describe_key_code(ch as i64 | bits))
-            } else if bits == 0 {
-                Ok(text.to_string())
-            } else {
-                Ok(describe_symbolic_key(
-                    &symbolic_kbd_event(bits, &text),
                     no_angles,
                 ))
             }

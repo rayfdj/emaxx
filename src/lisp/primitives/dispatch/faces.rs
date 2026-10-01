@@ -6,7 +6,7 @@ use crate::lisp::types::Kind;
 fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     let mut name = match value.kind() {
         Kind::Symbol(name) => name.to_string(),
-        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
+        Kind::StringObject(_) => string_text(value)?,
         _ => return Err(wrong_type_argument("symbolp", *value)),
     };
     let mut seen = HashSet::new();
@@ -491,10 +491,7 @@ define_dispatch!(
             }
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(
-                    args[0].kind(),
-                    Kind::Symbol(_) | Kind::String(_) | Kind::StringObject(_)
-                ) {
+                if !matches!(args[0].kind(), Kind::Symbol(_) | Kind::StringObject(_)) {
                     return Ok(Value::Nil);
                 }
                 let face = resolve_face_name(interp, &args[0])?;

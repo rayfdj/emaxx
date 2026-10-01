@@ -3,18 +3,6 @@
 use super::{Kind, LispError, SharedStringState, StringPropertySpan, Value};
 use super::{allocate_bytes, character_code, encode_character, string_overflow};
 
-fn plain_multibyte(text: &str) -> bool {
-    !text.is_ascii()
-        && text
-            .chars()
-            .any(|ch| !crate::lisp::primitives::is_raw_byte_regex_char(ch) && u32::from(ch) > 127)
-}
-
-fn plain_codes(text: &str, multibyte: bool) -> impl Iterator<Item = u32> + '_ {
-    text.chars()
-        .map(move |ch| crate::lisp::primitives::string_character_code(multibyte, ch) as u32)
-}
-
 fn visit_sequence(
     value: Value,
     mut visit: impl FnMut(Value) -> Result<(), LispError>,
@@ -68,19 +56,6 @@ impl SharedStringState {
                     let state = state.borrow();
                     (state.characters, state.bytes.len(), state.multibyte)
                 }
-                Kind::String(text) if text.is_ascii() => (text.len(), text.len(), false),
-                Kind::String(text) => {
-                    let flag = plain_multibyte(&text);
-                    let mut count = 0usize;
-                    let mut bytes = 0usize;
-                    for code in plain_codes(&text, flag) {
-                        count += 1;
-                        bytes = bytes
-                            .checked_add(if flag { encode_character(code)?.1 } else { 1 })
-                            .ok_or_else(string_overflow)?;
-                    }
-                    (count, bytes, flag)
-                }
                 _ => {
                     if matches!(arg.kind(), Kind::Cons(_)) {
                         arg.visit_list_elements(|_| Ok(()))?;
@@ -116,9 +91,6 @@ impl SharedStringState {
                             state.bytes.iter().filter(|byte| **byte >= 128).count()
                         }
                     }
-                    Kind::String(text) if !plain_multibyte(&text) => plain_codes(&text, false)
-                        .filter(|code| *code >= 128)
-                        .count(),
                     _ => 0,
                 };
                 nbytes = nbytes.checked_add(extra).ok_or_else(string_overflow)?;
@@ -148,22 +120,6 @@ impl SharedStringState {
                     }
                     copy_properties(&mut props, &state.props, offset);
                     offset += state.characters;
-                }
-                Kind::String(text) if text.is_ascii() => {
-                    bytes.extend_from_slice(text.as_bytes());
-                    offset += text.len();
-                }
-                Kind::String(text) => {
-                    // The remaining immutable host-text API is adapted here;
-                    // canonical strings above never materialize Rust text.
-                    let flag = plain_multibyte(&text);
-                    for mut code in plain_codes(&text, flag) {
-                        if multibyte && !flag && code >= 128 {
-                            code += 0x3fff00;
-                        }
-                        extend_encoded(&mut bytes, code, multibyte)?;
-                        offset += 1;
-                    }
                 }
                 _ => visit_sequence(arg, |value| {
                     extend_encoded(&mut bytes, character_code(value)?, multibyte)?;

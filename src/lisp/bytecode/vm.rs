@@ -732,7 +732,7 @@ impl BytecodeActivation {
 fn build_activation(object: &ByteCodeObject) -> Result<BytecodeActivation, LispError> {
     Ok(BytecodeActivation {
         argspec: object.argspec,
-        code: object.code.clone(),
+        code: object.code,
         constants: object.constants,
         stack_depth: object.stack_depth,
     })
@@ -1693,7 +1693,7 @@ fn run_frames(
                         );
                         interp.capture_current_backtrace_context(
                             match func.kind() {
-                                Kind::Symbol(name) => Some(name.as_str()),
+                                Kind::Symbol(_) => func.as_symbol().ok(),
                                 _ => None,
                             },
                             env,
@@ -3007,7 +3007,10 @@ fn canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding() {
     // starts. The separate diagnostic parser still rejects corrupt streams.
     let program = closure_program(closure).expect("entry reads fields, not dead instructions");
     assert_eq!(program.code.original().word(), code.word());
-    assert!(program.code.legacy.is_none());
+    assert_eq!(
+        std::mem::size_of::<crate::lisp::bytecode::CodeBytes>(),
+        std::mem::size_of::<Value>()
+    );
     program.code.with_bytes(|bytes| {
         let state = state.borrow();
         assert_eq!(bytes.as_ptr(), state.bytes().as_ptr());

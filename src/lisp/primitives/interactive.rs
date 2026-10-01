@@ -136,7 +136,6 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
             .and_then(char::from_u32)
             .map(|character| character.to_string().into_bytes())
             .unwrap_or_else(|| format!("<{code}>").into_bytes()),
-        Kind::String(text) => text.as_bytes().to_vec(),
         Kind::StringObject(state) => state.borrow().text().as_bytes().to_vec(),
         Kind::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
         other => format!("<{other}>").into_bytes(),
@@ -221,7 +220,7 @@ pub(crate) fn function_documentation(
     lambda.documentation().filter(|documentation| {
         matches!(
             documentation.kind(),
-            Kind::String(_) | Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
+            Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
         )
     })
 }
@@ -739,7 +738,7 @@ pub(crate) fn parse_interactive_string(
             _ => return Err(invalid_interactive_control_letter(code)),
         }
         if seen.is_nil()
-            && let Some(Kind::String(_) | Kind::StringObject(_)) = values.last().map(|v| v.kind())
+            && let Some(Kind::StringObject(_)) = values.last().map(|v| v.kind())
         {
             seen = values.last().cloned().unwrap_or(Value::Nil);
         }
@@ -1556,7 +1555,6 @@ pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
                 _ => None,
             }
         }
-        Kind::String(text) => text.chars().next(),
         Kind::StringObject(state) => state.borrow().text().chars().next(),
         _ => None,
     }

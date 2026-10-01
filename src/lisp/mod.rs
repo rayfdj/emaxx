@@ -1153,7 +1153,6 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
 
 fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispError> {
     match value.kind() {
-        types::Kind::String(text) => Ok(text.to_string()),
         types::Kind::StringObject(state) => Ok(state.borrow().text()),
         other => Err(types::LispError::WrongTypeArgument(
             "stringp".into(),

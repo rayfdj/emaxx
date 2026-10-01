@@ -101,20 +101,6 @@ impl Interpreter {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 
-    pub(super) fn stored_value(value: Value) -> Value {
-        match value.kind() {
-            Kind::String(_) => {
-                let string = primitives::string_like(&value).expect("string_like handles strings");
-                primitives::make_shared_string_value_with_multibyte(
-                    string.text,
-                    string.props,
-                    string.multibyte,
-                )
-            }
-            other => other.value(),
-        }
-    }
-
     pub(crate) fn resolve_load_target(
         &mut self,
         target: &str,
@@ -1459,12 +1445,7 @@ impl Interpreter {
         purpose: Value,
         initial: Value,
     ) -> Result<Value, LispError> {
-        let name = match purpose.kind() {
-            Kind::Nil => "nil",
-            Kind::T => "t",
-            Kind::Symbol(name) => name.as_str(),
-            _ => return Err(LispError::WrongTypeArgument("symbolp".into(), purpose)),
-        };
+        let name = purpose.as_symbol()?;
         let extra = self
             .get_symbol_property(name, "char-table-extra-slots")
             .unwrap_or(Value::Nil);
@@ -2019,7 +2000,7 @@ impl Interpreter {
         // recognizes that state by the final string in current-load-list.
         if !matches!(
             entries.last().map(|v| v.kind()),
-            Some(Kind::String(_) | Kind::StringObject(_))
+            Some(Kind::StringObject(_))
         ) {
             return;
         }
@@ -2080,7 +2061,7 @@ impl Interpreter {
             let next = cell.cdr.get();
             if next.is_nil() {
                 let last = cell.car.get();
-                if matches!((last).kind(), Kind::String(_) | Kind::StringObject(_)) {
+                if matches!((last).kind(), Kind::StringObject(_)) {
                     file = last;
                 }
             }

@@ -174,19 +174,9 @@ fn purecopy_inner(
     let copied = match value.kind() {
         Kind::BigInteger(integer) => Value::big_integer((*integer).clone()),
         Kind::Float(number) => Value::Float(number),
-        Kind::String(text) => Value::String(text.to_string().into()),
-        Kind::StringObject(_) => {
-            let string = string_like(value).expect("StringObject is string-like");
-            if string.extended_chars.is_empty() {
-                Value::String(string.text.into())
-            } else {
-                make_shared_string_value_with_extended_chars(
-                    string.text,
-                    Vec::new(),
-                    string.multibyte,
-                    string.extended_chars,
-                )
-            }
+        Kind::StringObject(state) => {
+            let copy = state.borrow().clone_without_properties();
+            crate::lisp::types::string_object_value(copy)
         }
         Kind::Vector(_) => return purecopy_vector(interp, value, env),
         Kind::Cons(_) if is_vector_value(value) => {

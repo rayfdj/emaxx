@@ -16875,8 +16875,8 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
     )
     .expect("symbol-name returns the copied name");
     assert!(
-        matches!(copied.kind(), Kind::String(_)),
-        "Fpurecopy strips mutable string storage"
+        matches!(copied.kind(), Kind::StringObject(_)),
+        "Fpurecopy retains canonical string storage"
     );
     assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
     let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
@@ -16944,7 +16944,7 @@ fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
         &mut env,
     )
     .expect("symbol-name should preserve the visible name");
-    let (Kind::String(supplied), Kind::String(left), Kind::String(right)) =
+    let (Kind::StringObject(supplied), Kind::StringObject(left), Kind::StringObject(right)) =
         (supplied_name.kind(), left_name.kind(), right_name.kind())
     else {
         unreachable!("immutable symbol names")
@@ -23834,11 +23834,11 @@ fn emaxx_batch_output(program: &str) -> String {
     let value = interp
         .lookup_var("contract-out", &env)
         .expect("program sets contract-out");
-    let Kind::String(text) = value.kind() else {
+    let Kind::StringObject(text) = value.kind() else {
         let text = format!("{value}");
         return text.trim_matches('"').to_string();
     };
-    text.to_string()
+    text.borrow().text()
 }
 
 const SCROLL_CONTRACT_PROGRAM: &str = "(progn (setq contract-out \"\")
@@ -27254,5 +27254,60 @@ fn file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation(
         include_str!("../../../tests/fixtures/file-write-order.el"),
         include_str!("../../../tests/fixtures/file-write-order.expected").trim_end(),
         "file coding overwrite and exclusive creation order",
+    );
+}
+
+#[test]
+fn host_created_strings_preserve_mutation_properties_and_fill_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/host-string-mutation.el"),
+        include_str!("../../../tests/fixtures/host-string-mutation.expected").trim_end(),
+        "host-created strings share canonical mutation and fill contracts",
+    );
+}
+
+#[test]
+fn vector_held_host_strings_preserve_binding_identity_and_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/host-string-vector-mutation.el"),
+        include_str!("../../../tests/fixtures/host-string-vector-mutation.expected").trim_end(),
+        "vector-held host strings retain identity through binding, stores and GC",
+    );
+}
+
+#[test]
+fn string_equality_compares_actual_storage_with_and_without_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-storage.el"),
+        include_str!("../../../tests/fixtures/string-equality-storage.expected").trim_end(),
+        "string equality compares actual bytes and character counts",
+    );
+}
+
+#[test]
+fn string_equality_uses_lisp_symbol_names_and_positioned_symbol_policy() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-symbol-names-positioned.el"),
+        include_str!("../../../tests/fixtures/string-equality-symbol-names-positioned.expected")
+            .trim_end(),
+        "string equality uses original name objects and the symbol position flag",
+    );
+}
+
+#[test]
+fn string_property_values_use_equal_across_mutation_gc_and_interval_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-property-values.el"),
+        include_str!("../../../tests/fixtures/string-equality-property-values.expected").trim_end(),
+        "string intervals compare property values with ordinary equal",
+    );
+}
+
+#[test]
+fn string_property_hashes_follow_equal_through_nested_mutation_and_lookup() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-property-hashes.el"),
+        include_str!("../../../tests/fixtures/string-equality-property-hashes.expected").trim_end(),
+        "equal string property values preserve hashes and custom table lookup",
     );
 }

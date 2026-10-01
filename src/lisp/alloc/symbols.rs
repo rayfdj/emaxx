@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 /// alloc.c's `struct Lisp_Symbol', as this implementation keeps it.
 #[repr(C)]
 pub struct SymbolCell {
-    /// The host-side key text (the string cell the symbol keeps alive).
-    pub(crate) internal: super::TextRef,
+    /// Immutable host lookup key, owned and released with the symbol.
+    pub(crate) internal: String,
     /// `SYMBOL_NAME': the Lisp-visible name object.
     pub(crate) lisp_name: Value,
     pub(crate) mark: MarkBit,

@@ -1059,7 +1059,7 @@ impl Interpreter {
         let Some(binding) = assq_binding_named(environment, name)? else {
             return Ok(false);
         };
-        binding.cdr.set(Self::stored_value(value));
+        binding.cdr.set(value);
         Ok(true)
     }
 
@@ -1077,7 +1077,7 @@ impl Interpreter {
         let Some(binding) = assq_binding(environment, symbol)? else {
             return Ok(false);
         };
-        binding.cdr.set(Self::stored_value(value));
+        binding.cdr.set(value);
         Ok(true)
     }
 
@@ -1101,7 +1101,7 @@ impl Interpreter {
         if self.globals.plain_store(resolved)
             && let Some(existing) = self.globals.value_mut(resolved)
         {
-            *existing = Self::stored_value(value);
+            *existing = value;
             return Ok(());
         }
         self.notify_assignment_symbol(resolved, value, env)?;
@@ -1120,11 +1120,10 @@ impl Interpreter {
     /// `set_symbol_value_cell' for a symbol whose alias chain is resolved.
     pub(crate) fn set_symbol_value_cell_resolved(&mut self, symbol: &SymbolName, value: Value) {
         let resolved = symbol.as_str();
-        let value = Self::stored_value(value);
+
         if resolved == "buffer-file-name" {
             let file = match value.kind() {
                 Kind::Nil => None,
-                Kind::String(path) => Some(path.to_string()),
                 Kind::StringObject(state) => Some(state.borrow().text()),
                 other => Some(other.to_string()),
             };
@@ -1134,7 +1133,6 @@ impl Interpreter {
         if resolved == "buffer-file-truename" {
             self.buffer.borrow_mut().file_truename = match value.kind() {
                 Kind::Nil => None,
-                Kind::String(path) => Some(path.to_string()),
                 Kind::StringObject(state) => Some(state.borrow().text()),
                 other => Some(other.to_string()),
             };

@@ -9,7 +9,6 @@
 pub mod vm;
 
 use super::types::{Kind, Value, VectorRef};
-use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,8 +41,7 @@ pub enum ByteCodeError {
     /// The object's slots do not form a genuine GNU byte-code function
     /// (wrong types or too few slots).
     MalformedObject(String),
-    /// The code string contains a char above U+00FF, so it cannot be a
-    /// unibyte opcode string.
+    /// The code string is multibyte, which `make-byte-code` rejects.
     NonUnibyteCode { char_index: usize },
 }
 
@@ -615,54 +613,37 @@ impl ArgSpec {
     }
 }
 
-/// The original code string. Mutable strings are always read directly.
-///
-/// The remaining immutable `Kind::String` Rust API adapter decodes non-ASCII
-/// host text once at entry. It has no registry or mutation cache and must be
-/// removed with the plain-string representation. Lisp reader/constructor and
-/// restored code strings use canonical bytes and allocate nothing here.
-#[derive(Clone, Debug)]
+/// The original canonical code string, fetched directly at each instruction.
+#[derive(Clone, Copy, Debug)]
 pub struct CodeBytes {
     original: Value,
-    legacy: Option<Rc<[u8]>>,
 }
 
 impl CodeBytes {
     fn new(original: Value) -> Result<Self, ByteCodeError> {
-        let legacy = match original.kind() {
-            Kind::StringObject(state) => {
-                if state.borrow().is_multibyte() {
-                    return Err(ByteCodeError::NonUnibyteCode { char_index: 0 });
-                }
-                None
-            }
-            Kind::String(text) if text.is_ascii() => None,
-            Kind::String(text) => Some(Rc::from(unibyte_bytes(&text)?)),
-            _ => {
-                return Err(ByteCodeError::MalformedObject(
-                    "code slot is not a string".into(),
-                ));
-            }
+        let Kind::StringObject(state) = original.kind() else {
+            return Err(ByteCodeError::MalformedObject(
+                "code slot is not a string".into(),
+            ));
         };
-        Ok(Self { original, legacy })
+        if state.borrow().is_multibyte() {
+            return Err(ByteCodeError::NonUnibyteCode { char_index: 0 });
+        }
+        Ok(Self { original })
     }
 
     pub(crate) fn original(&self) -> Value {
         self.original
     }
 
-    /// BODY must not invoke Lisp, collect, or mutate the code string. The
-    /// borrow ends before the VM dispatches a callback or switches frames.
+    /// BODY must not invoke Lisp, collect, or mutate the code string.
+    /// The borrow ends before callbacks and frame changes.
     #[inline]
     pub(crate) fn with_bytes<R>(&self, body: impl FnOnce(&[u8]) -> R) -> R {
-        if let Some(bytes) = &self.legacy {
-            return body(bytes);
-        }
-        match self.original.kind() {
-            Kind::StringObject(state) => body(state.borrow().bytes()),
-            Kind::String(text) => body(text.as_bytes()),
-            _ => unreachable!("validated code string"),
-        }
+        let Kind::StringObject(state) = self.original.kind() else {
+            unreachable!("validated code string")
+        };
+        body(state.borrow().bytes())
     }
 }
 
@@ -702,29 +683,6 @@ fn fetch_instruction(
     // decode bounds-checks the actual PC before reading any bytes, so even
     // an invalid taken branch cannot perform an out-of-bounds Rust access.
     Ok(instr)
-}
-
-// The reader stores raw high bytes of unibyte strings (`\200`-style
-// escapes) as private-use chars U+E000+byte (reader.rs
-// RAW_BYTE_REGEX_BASE); decoding must map them back.
-const RAW_BYTE_BASE: u32 = 0xE000;
-
-/// Extract the unibyte bytes of a code string.  Chars are either plain
-/// U+0000..U+00FF or the reader's U+E000+byte raw-byte encoding;
-/// anything else cannot be an opcode byte.
-fn unibyte_bytes(text: &str) -> Result<Vec<u8>, ByteCodeError> {
-    let mut bytes = Vec::with_capacity(text.len());
-    for (char_index, ch) in text.chars().enumerate() {
-        let code_point = u32::from(ch);
-        if code_point <= 0xFF {
-            bytes.push(code_point as u8);
-        } else if (RAW_BYTE_BASE..=RAW_BYTE_BASE + 0xFF).contains(&code_point) {
-            bytes.push((code_point - RAW_BYTE_BASE) as u8);
-        } else {
-            return Err(ByteCodeError::NonUnibyteCode { char_index });
-        }
-    }
-    Ok(bytes)
 }
 
 /// Whether record slots look like a GENUINE GNU byte-code function
@@ -1152,11 +1110,15 @@ pub(crate) mod tests {
 
     #[test]
     fn from_slots_parses_genuine_object() {
-        // #[257 "\211\207" [] 3] — identity: stack-ref1; return... using
+        // #[257 "\211\207" [] 3] — identity: dup; return... using
         // real GNU compiler output shape: argspec 257 = 1 mandatory, 1 max.
-        let slots = [
+        // alloc.c:Fmake_byte_code requires actual unibyte storage. Rust's
+        // U+0089/U+0087 text instead constructs a multibyte Lisp string.
+        let mut slots = [
             Value::Integer(257),
-            Value::String("\u{89}\u{87}".into()),
+            crate::lisp::types::string_object_value(
+                crate::lisp::types::SharedStringState::from_unibyte(vec![0o211, 0o207]),
+            ),
             Value::list([Value::symbol("vector-literal")]),
             Value::Integer(3),
         ];
@@ -1173,6 +1135,11 @@ pub(crate) mod tests {
             .code
             .with_bytes(|code| assert_eq!(code, &[0o211, 0o207]));
         assert_eq!(object.stack_depth, 3);
+        slots[1] = Value::String("\u{89}\u{87}".into());
+        assert_eq!(
+            ByteCodeObject::from_slots(&slots).unwrap_err(),
+            ByteCodeError::NonUnibyteCode { char_index: 0 }
+        );
     }
 
     #[test]

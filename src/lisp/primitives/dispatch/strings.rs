@@ -929,7 +929,7 @@ fn registered_unicode_property(
         return Ok(None);
     };
     let filename = match registered.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_text(&registered)?,
+        Kind::StringObject(_) => string_text(&registered)?,
         _ => return Ok(Some(registered)),
     };
     let target = format!("international/{filename}");

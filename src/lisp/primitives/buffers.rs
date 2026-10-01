@@ -755,7 +755,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         }
         Kind::BigInteger(_) => "bignum",
         Kind::Float(_) => "float",
-        Kind::String(_) | Kind::StringObject(_) => "string",
+        Kind::StringObject(_) => "string",
         Kind::Symbol(_) => "symbol",
         Kind::Vector(_) => "vector",
         Kind::Cons(_) if is_vector_value(value) => "vector",

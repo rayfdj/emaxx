@@ -2,7 +2,7 @@ use super::eval::{BufferDisposition, Interpreter, RunningProcess};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{
-    ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
+    EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
 };
 use crate::buffer::TextPropertySpan;
 use crate::file_system as fs;
