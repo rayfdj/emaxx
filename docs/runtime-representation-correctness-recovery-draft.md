@@ -949,10 +949,25 @@ verifying the release executable/image plus the older gate image. Continuation30
 has exited with all 962 affected release tests and 22 ordinary GNU comparisons
 passing. The [closed selected audit and publication](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
 verify both complete selected profiles and every original fixture/artifact. Source261
-is now applied and pushed as `eddfe782`, with 488 exact inputs. Full macOS supervisor
-31023 runs Rust, then frozen and terminal validation. Exact-head Linux
+is now applied and pushed as `eddfe782`, with 488 exact inputs. Its
+[complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
+verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
+artifact identity, four retained inputs and unchanged source. Supervisor31023 now
+runs frozen validation; terminal follows. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
-[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are dispatched.
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are still running.
 Source255's failed executable/image, all compiler/lint/helper failures
-and original negatives remain retained. Full source261 validation is pending; no physical-memory,
+and original negatives remain retained. Remaining full validation is pending; no physical-memory,
 ownership, performance or full-goal completion is claimed.
+
+The [source262 ordering negatives and repair draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
+retain **154 wrong source261 results among 1,024 symbol/storage ordering rows** and
+**56 among 400 version rows**. Four ordering regressions are bracketed after
+source207 and by source249; source261's whole ordering matrix matches source249.
+The exact introducing commit is unestablished. Version output is unchanged from
+main. Earlier frozen passes did not cover these defects. Source262 follows actual
+GNU `string_cmp` and `filenvercmp`, replacing host-text ordering with canonical bytes
+and Lisp symbol names. Its 492 inputs replay exactly and all strict checks pass.
+Queue38430 waits for supervisor31023 before selected runtime validation; no runtime
+pass is claimed and the draft remains unapplied. Original negatives and unchanged
+GNU expectations are preserved.

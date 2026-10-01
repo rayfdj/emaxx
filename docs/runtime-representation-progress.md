@@ -4,12 +4,25 @@ The task runtime is **source261**, pushed as `eddfe782`, with **488 verified inp
 Its [closed selected evidence and full-validation launches](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
 verify zero-warning strict checks, **189 focused passes / two existing ignores**
 and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
-Full macOS supervisor31023 runs Rust, then frozen and terminal validation in a clean
-checkout at that same commit. Linux
+The [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
+verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
+artifact identity, four retained inputs and unchanged source. Supervisor31023 now
+runs frozen validation in the clean checkout at that same commit; terminal follows.
+Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are dispatched
-on exact `eddfe782`. No complete platform verdict or measured performance claim is
-inferred. Main remains `21d20f0e`, and the full goal remains open.
+on exact `eddfe782` and still running. Their verdicts and the macOS frozen/terminal
+verdicts remain pending. Main remains `21d20f0e`, and the full goal remains open.
+
+The [unapplied source262 ordering draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
+preserves new ordinary negatives: source261 has 154 wrong symbol/storage ordering
+rows out of 1,024, and 56 wrong version rows out of 400. Four ordering regressions
+are bracketed after source207 and by source249, whose entire matrix matches source261.
+The version matrix matches main. Source262 ports the actual GNU `string_cmp` and
+`filenvercmp` paths to canonical string bytes and Lisp symbol names. All 492 inputs
+replay exactly; strict checks pass with zero warnings. Queue38430 waits for the
+complete local source261 supervisor before selected runtime validation. No source262
+runtime pass, memory saving or performance result is claimed.
 
 The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):

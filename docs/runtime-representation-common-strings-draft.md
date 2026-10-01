@@ -135,16 +135,54 @@ file-descriptor control. All source249 selectors and every original GNU expectat
 remain. The archive contains 368 evidence/helper files, both exact portable patches,
 and the source259, source260 and initial source261 audit failures.
 
-Source261 is now applied and pushed as `eddfe782`. Complete macOS supervisor **31023**
-has verified the selected audit, cloned the idle Cargo cache, cleaned only the new
-target crate's gate artifacts and started the unchanged full Rust inventory. Frozen
-and terminal gates follow sequentially. The clean full-validation checkout is
+Source261 is now applied and pushed as `eddfe782`. The
+[complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
+verifies **3,107 passes / two existing ignores**: 3,008 library, 60 binary and 39
+integration passes. All 3,010 raw library names, native artifact identity and four
+retained executable/image files are checked. The original and retained GNU
+executable/dump/configuration/Makefile also match. An initial bounded-input audit
+used the wrong metadata key and wrote no passing receipt; its correction is recorded.
+Supervisor **31023** now runs the unchanged frozen comparison; terminal follows.
+The clean full-validation checkout is
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, commit `eddfe782`,
 with the same 488 inputs. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
-[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are dispatched.
-Keep both source261 checkouts unchanged. No complete platform pass, measured saving
-or full-goal completion is implied by selected checks or a queued command.
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are still running.
+Keep both source261 checkouts unchanged. Frozen, terminal and Linux results remain
+pending. No measured saving or full-goal completion is implied by the closed Rust gate.
+
+## Subsequent ordering repair: source262
+
+The [portable source262 draft and ordinary negatives](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
+contain two unchanged GNU fixtures. The first has 1,024 rows across `string-lessp`,
+`string-version-lessp`, actual symbol names, positioned-symbol policy, unibyte,
+byte8, private-use text and invalid arguments. Source261 has **154 wrong results**.
+Main/source174 has the same count but four different wrong rows. Retained source207
+matches all main rows; source249 matches all source261 rows. Those four regressions
+therefore appeared after source207 and by source249; the introducing commit is not
+established. Four other rows improved in that interval. This does not establish
+general regression absence. The second fixture has 400 version pairs including
+dot names, suffixes, tilde, leading zeros, 96-digit numbers and embedded NUL.
+Source261 and main give identical output, with **56 wrong results**. All negative
+processes, exact executable/image identities and historical outputs remain retained.
+
+Source262 uses canonical string bytes and actual Lisp symbol names for ordering.
+It follows `fns.c:string_cmp`: direct bytes for unibyte/ASCII strings, a shared-byte
+prefix followed by full character decoding for multibyte strings, and decoded
+characters versus actual octets for mixed storage. Version ordering follows the
+actual `lib/filevercmp.c:filenvercmp`, including dot, suffix, tilde and arbitrary
+length digit handling. It adds no lexical tie-break absent from that C code. The
+unused host-text comparison helper is removed. Two tests use the unchanged GNU
+fixtures; the original compatibility version test remains byte-identical.
+
+The isolated checkout is `target/runtime-goal/recovered-2026-09-30/string-ordering/emaxx`.
+Its **492 inputs and modes** replay exactly from `7c6bb8ce` and main. Formatting,
+all-target checking, strict Clippy and diff checks pass with zero warnings. Queue
+**38430** waits for the complete source261 local supervisor before 194 focused
+selectors, 1,050 affected tests in each profile and 24 ordinary comparisons.
+All original selectors remain. No runtime stage has executed yet and the draft is
+unapplied. Keep its source and executing helpers unchanged. The documented negatives
+remain open until an actual successful comparison closes them.
 
 ## Remaining requirements
 
@@ -173,5 +211,6 @@ excuse other recorded regressions or establish general correctness.
 
 Those projection repairs are absent from frozen source256 and implemented separately
 in source259/261 above. Keep the original negatives and both queued input sets unchanged
-while validating. String ordering and version comparison still use host text; neither
-the comparison repair nor the common-string draft completes the architecture.
+while validating. Published source261 ordering still uses host text; the separate
+source262 draft above is not yet validated or applied. Neither repair completes
+the architecture.

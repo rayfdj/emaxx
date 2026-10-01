@@ -25,13 +25,29 @@ and **962 affected passes in each profile**, plus **22 ordinary exact GNU matche
 The common-string and comparison/hash changes below are now applied. Every earlier
 failed draft, invalid fixture and evidence-check failure remains recorded.
 
-Complete macOS supervisor **31023** is running the full Rust gate in clean checkout
-`target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, at the same
-`eddfe782` commit; unchanged frozen and terminal gates follow sequentially. Linux
+The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
+verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
+artifact identity and four retained executable/image files. The clean checkout
+`target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx` remains at
+`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** now runs the
+unchanged frozen comparison; full terminal validation follows. Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
-dispatched on exact `eddfe782`. These full runs are not passing results yet.
+dispatched on exact `eddfe782` and still running. Frozen, terminal and Linux verdicts
+are pending; the closed Rust result does not certify them.
 Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
+
+The [separate source262 ordering draft and negatives](docs/handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
+retain **154 wrong results among 1,024 symbol/storage ordering rows**, plus **56
+wrong results among 400 version rows** on source261. Four ordering results regressed
+after source207 and by source249; the exact introducing commit is unestablished.
+Source261 and source249 agree throughout that ordering matrix. The version matrix
+is unchanged from main. These defects remain open, despite earlier frozen passes.
+Source262 follows actual `fns.c:string_cmp` and `lib/filevercmp.c`, uses canonical
+bytes and Lisp symbol names, and removes the host-text comparison adapter. Its
+**492 inputs** replay exactly and strict checks pass with zero warnings. Queue
+**38430** waits for supervisor31023 before selected gate/release and 24 ordinary
+comparisons. No source262 runtime test has run; the draft is unapplied.
 
 ## Preceding source249 validation
 
