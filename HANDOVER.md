@@ -30,9 +30,12 @@ compiler tests in both editors** are audited. All preceding assertions remain.
 
 The [closed release and Linux Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
 closes release **86468**: **168 focused passes / two existing ignores** and
-**951 affected passes**, matching gate. Complete macOS **86467** and full terminal
-**86469** remain active in this saved record. Read `source246-*` receipts before
-acting; do not edit executing candidates or helpers. The [ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+**951 affected passes**, matching gate. The [complete frozen/macOS/terminal audit](docs/handover/2026-09-30-shared-reader-draft/source246-complete-frozen-macos-terminal-manifest.json)
+closes macOS **86467** and terminal **86469**: **3,096 macOS passes / two existing
+ignores**, native artifact identity, all 2,999 raw library names, four retained
+artifacts, and **226 terminal scenarios / 686 comparisons** verified. Both
+supervisors have exited. Read `source246-*` receipts before acting.
+The [ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
 closes all 57 preceding comparisons too: **68 distinct comparisons** match.
 Linux [Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
 fails on exact `aaf31ce7`: **2,260 passes / two failed GNU reference assertions**,
@@ -46,7 +49,14 @@ The [raw diagnostic audit](docs/handover/2026-09-30-shared-reader-draft/source24
 does not establish the retaining root or environmental cause; the full run remains
 failed. Emaxx images differ, but both failed assertions precede Emaxx comparison.
 Linux [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
-is still active. Launch does not imply a pass.
+now **passes all 519 files / 7,928 matching outcomes / 1,038 successful processes**
+on exact `aaf31ce7`. Each editor has 7,670 passes, 47 expected failures and 211
+skips; the latter are not passes. Every raw execution hash and paired outcome is
+verified, together with the actual retained GNU executable/dump/configuration/
+Makefile. This pass does not explain the earlier Eglot timeout or Linux Rust failure.
+The [supplemental load markers](docs/handover/2026-09-30-shared-reader-draft/source246-frozen-load-markers-manifest.json)
+complete the archive's raw file coverage; only the hashed GNU executable/dump are
+excluded from the portable bundle and retained locally.
 The separately validated CI change retains GNU's executable, dump, configuration
 and Makefile before future Rust/frozen runs and verifies their bytes afterward.
 Six synthetic corruption/overwrite controls reject invalid evidence; runtime
@@ -61,9 +71,22 @@ ignores**, **952 affected passes**, twelve ordinary comparisons and original
 compiler-file load are audited. Supervisor **90626** has exited.
 Source248 adds GNU's first-match rule when an overriding property is nil before
 a duplicate; the old helper incorrectly continues to the later value.
-Its **472 inputs/modes** replay exactly. Queue **94807** has started its selected
-validation after source247's completed audit/cache copy. Do not edit either
-candidate or executing helpers. Neither draft is applied to the root runtime.
+Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
+verifies **472 inputs/modes**, zero-warning strict checks, **170 focused passes /
+two existing ignores**, **953 affected passes**, thirteen ordinary matches and
+successful compiler-file load in both editors. Both original negative property
+fixtures now match GNU without changed expectations. Queue **94807** has exited.
+Complete original compiler comparison **1840** is running; no 177-test result or
+complete platform certification is claimed for source248 yet. Do not edit its
+candidate or executing helper. Neither draft is applied to the root runtime.
+
+The same complete source246 archive preserves the new GNU GC trace preparation:
+20 ordinary macOS smoke processes match, fifteen synthetic header/block decoder
+controls pass, and all eight workflow shell blocks parse. `gnu-census-trace` runs
+the unchanged census fixtures, records explicit environment-padding variants and
+reads GNU's first eight GC inventories/possible stack references under GDB. It
+makes no inferior calls/stores or warm-up collections. Actual Linux GDB execution
+is still required; preparation is not a root-cause diagnosis or full-run repair.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS

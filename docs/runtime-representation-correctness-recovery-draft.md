@@ -583,3 +583,54 @@ this saved record. Main remains source174. General encoder/decoder translations,
 normal registry authority/order, legacy adapters, shared representation,
 accounting, ownership, final validation/audit, pinned Darwin and the unchanged
 16-workload/3% performance criterion remain open.
+
+## Source246 complete frozen/macOS/terminal recovery and source248 selected pass
+
+The [complete source246 archive](handover/2026-09-30-shared-reader-draft/source246-complete-frozen-macos-terminal-manifest.json)
+closes macOS86467 and terminal86469, both now exited. Complete macOS has **3,096
+passes / two existing ignores** (2,997 library, 60 binary and 39 integration
+passes), native artifact identity, all 2,999 raw library names/verdicts and four
+retained executable/image files verified. All 468 inputs match `aaf31ce7`.
+Terminal comparison matches all **226 unchanged scenarios / 686 comparisons**
+(658 screen, 28 filesystem), with all eight execution inputs rehashed. Local GNU
+matches source/native ABI and remains different from the pinned Darwin executable.
+
+Linux [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
+passes the complete **519-file / 7,928-outcome** inventory on exact `aaf31ce7`.
+All **1,038 processes** succeed. GNU and Emaxx each have 7,670 passes, 47 expected
+failures and 211 skips. All paired names/statuses/expectations, execution hashes,
+inventory metadata and 5,204 downloaded artifact members are audited. The actual
+configured GNU executable, dump, configuration and Makefile were captured before
+the run and verified unchanged afterward; the supplemental raw audit adds this
+actual-artifact evidence to the generic verifier's provenance-only qualification.
+The original 177 compiler tests pass in both editors. No selector, expectation,
+timeout or comparison rule changed. Earlier failed runs stay failed; this result
+does not establish the cause of the GNU Eglot timeout or Linux Rust census failure.
+The [load-marker supplement](handover/2026-09-30-shared-reader-draft/source246-frozen-load-markers-manifest.json)
+preserves the 1,038 `.loaded` files and recorded AppArmor profile omitted by the
+first archive's extension filter. Together both archives retain every downloaded
+frozen member except the two GNU executable/dump files; their actual bytes remain
+locally retained and verified. No raw result or earlier archive is rewritten.
+
+The [closed source248 selected archive](handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
+closes queue94807. All 472 inputs/modes are frozen; zero-warning strict checks,
+**170 focused passes / two existing ignores**, **953 affected passes**, thirteen
+ordinary comparisons and the original compiler-file load pass. The two retained
+source246 negative property fixtures now match GNU unchanged. Source248 is still
+isolated in `coding-property-order/emaxx`; original complete compiler comparison
+1840 is running. Its selected results do not supply full platform, release,
+frozen, pinned Darwin or performance certification. Root runtime remains source246.
+
+The complete source246 archive also retains the new GNU-only GC diagnosis helper,
+read-only GDB observer, static validator and ordinary macOS smoke. Twenty ordinary
+processes use the two unchanged census fixtures, varying only a documented unused
+environment padding value; all match their original expected output. Fifteen
+synthetic checks validate normal/pseudo/bool vector sizes, mixed small/large/free
+inventory traversal and rejection of invalid sizes/block chains. Both Python ASTs,
+the workflow YAML and all eight shell blocks pass static checks. The observer
+checks the actual GNU ABI, reads vector mark bits and possible C-stack references
+at the first eight explicit collections, and requires its live-slot sum to match
+GNU's returned census. It performs no inferior calls or writes and adds no GC.
+Actual Linux GDB execution is required before claiming any observation; candidate
+stack references alone would not establish the real marking root. The new workflow
+mode is diagnostic only. No full Linux Rust repair or completed goal is claimed.

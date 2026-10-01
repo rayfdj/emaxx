@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, gnu-census-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
         description: Upstream file/range, or retained artifact run ID for rust-exact-roots
@@ -394,6 +394,12 @@ jobs:
               # from preceding Rust tests. This is not complete validation.
               LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
                 python3 tools/diagnose_gnu_census.py --output target/frozen-ci/gnu-census
+              ;;
+            gnu-census-trace)
+              # Read GNU GC inventories; preserve every ordinary mismatch.
+              # No fixture, assertion, oracle byte or gate verdict changes.
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/diagnose_gnu_census_trace.py --output target/frozen-ci/gnu-census-trace
               ;;
             rust-root-trace)
               # A separately recorded dirty checkout only. The ordinary

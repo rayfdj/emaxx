@@ -27,9 +27,14 @@ controls reach Emaxx; 745 library tests and both Cargo stages never run. The exa
 GNU inputs are now retained. The [bounded diagnosis](handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
 passes 18 GNU probes and Rust single/group/single (1/654/1) with the same Rust
 executable and all four GNU inputs. This narrows execution-context investigation;
-no cause or full-run repair is established. macOS **86467**, terminal **86469** and
-[frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747) remain
-active in this saved record. The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+no cause or full-run repair is established. The [complete source246 results](handover/2026-09-30-shared-reader-draft/source246-complete-frozen-macos-terminal-manifest.json)
+close macOS86467 with **3,096 passes / two existing ignores** and native identity,
+terminal86469 with **226 scenarios / 686 comparisons**, and
+[frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747) with
+**all 519 files / 7,928 matching outcomes / 1,038 successful processes**. Raw names,
+verdicts, inventories and retained GNU inputs are audited. Each editor's 47
+expected failures and 211 skips remain distinct from its 7,670 passes.
+The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
 also closes all 57 preceding comparisons, for **68 distinct ordinary matches**.
 The CI retention improvement captures
 GNU executable/dump/configuration/Makefile and checks unchanged bytes without
@@ -39,9 +44,14 @@ retain two confirmed source246 negative probes. Source247's 470 inputs share act
 `get` for nil/t translation symbols and overriding properties: strict checks,
 169 focused passes/two existing ignores, 952 affected passes, twelve ordinary
 matches and the original compiler-file load pass. Supervisor 90626 has exited.
-Source248's 472 inputs add GNU's first-nil-duplicate lookup rule; queue94807 has
-started validation using the completed source247 cache. No source248 runtime pass
-or complete platform result is claimed; root runtime remains source246.
+Source248's 472 inputs add GNU's first-nil-duplicate lookup rule. Its [closed
+selected audit](handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
+verifies strict zero-warning checks, 170 focused passes/two existing ignores,
+953 affected passes, thirteen ordinary matches and successful original compiler
+load. Queue94807 has exited; complete compiler comparison1840 is running. No
+complete source248 platform result is claimed; root runtime remains source246.
+The new GNU GC observer has twenty ordinary macOS smoke matches and fifteen
+synthetic decoder checks; actual Linux GDB observation is still required.
 Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
 coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
 and the locked 16-workload/3% performance criterion are still open.
