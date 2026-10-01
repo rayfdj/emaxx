@@ -513,5 +513,73 @@ with every process, input and output verified. The checkpoint is pushed as
 are dispatched on that exact source. The raw launch receipts' final narrative
 sentence mislabeled source246 selected counts as source244; their machine fields
 identify the correct source and commit. A supplemental correction preserves both
-original receipts without changing any result. Full macOS/release/terminal remain
-active; read actual receipts before acting. Main and the full goal are unchanged.
+original receipts without changing any result. Those launch-time states are
+superseded by the closed results below. Main and the full goal are unchanged.
+
+## Closed source246 release/Linux Rust and isolated property repairs
+
+The [closed release and Linux Rust archive](handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
+closes release supervisor86468: 168 focused passes/two existing ignores and all
+951 affected passes, matching gate. All names, verdicts, 468 inputs and retained
+executable/image hashes are verified. The single existing debug-only descriptor
+ownership control explains the gate/release inventory difference.
+
+Full Linux Rust36840211567 fails on exact `aaf31ce7` with 2,260 passes and the same
+two GNU reference assertions: first empty record -7 rather than 2 slots, first
+empty vector -9 rather than 0. All later samples match. Neither control reaches
+Emaxx; 745 library tests and both Cargo stages never run. This time the GNU
+executable, dump, configuration and Makefile were retained before validation and
+verified unchanged afterward. GNU executable/dump hashes are `5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf`
+and `bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae`.
+
+The [closed bounded diagnosis and source247 selected evidence](handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
+verify Linux diagnosis36842893035 on `de944b6a`, with all 468 source246 inputs.
+All 18 ordinary GNU probes and unchanged Rust single/group/single controls pass
+(1/654/1), with every raw name/verdict and all eight retained artifacts checked.
+The Rust test executable and all four GNU inputs match the failed full run byte
+for byte. Emaxx images differ, but the failed assertions precede either Emaxx
+comparison. The retaining root or environmental cause remains unproven; the full
+run remains failed. The first raw auditor assumed verdicts occupied one line and
+missed thirteen blocks containing emitted runtime messages. Its separate repaired
+auditor verifies each complete named block's terminal verdict; no runtime test,
+log, inventory or expectation changes, and the first failed helper is preserved.
+
+Two new ordinary GNU/source246 fixtures expose property defects. Translation-table
+resolution omitted `nil` and `t` as symbols and bypassed dynamically overriding
+properties. The public `get` helper also continues past a matching nil override
+to a later duplicate. GNU instead stops at the first key, and a nil override
+falls back to the symbol's own plist. Same-name uninterned symbol/key identity and
+skipping atom entries already match; the probes do not establish an identity bug.
+
+The [portable source247/248 drafts](handover/2026-09-30-shared-reader-draft/source248-property-drafts-manifest.json)
+preserve both negative source246 results and exact incremental/complete patches.
+Source247, in `coding-properties/emaxx`, shares the existing direct `get` helper
+for translation-table properties and recognizes GNU's symbol types. Its 470
+inputs have zero-warning strict checks, 169 focused passes/two existing ignores,
+952 affected passes, twelve ordinary comparisons and a successful original
+compiler-file load. The original GNU outputs remain unchanged. Supervisor90626
+has exited and all selected evidence is audited. This is not a complete 177-test
+compiler run or release/platform validation.
+
+Source248, in `coding-property-order/emaxx`, includes source247 and changes only
+the shared lookup's first-nil-match behavior, with an additional GNU fixture.
+Its 472 inputs and modes replay from `de944b6a` and main. Queue94807 waited for
+source247's actual successful exit and audit, copied its completed build cache,
+and has started source248 selected validation. Do not edit either frozen candidate
+or the executing helpers. Source248 has no audited runtime result yet; neither
+draft is applied to root source246. Read current receipts rather than restarting.
+
+The source244 Eglot trace retains a completion reply containing 91 items in the
+GNU process-buffer dump despite the request timeout. Two connections and duplicated
+dumps prevent proving its request association/timing. The same signature appears
+in the historical `docs/frozen-run-success.md` record, including a later unchanged
+single-file pass; no new Emaxx regression or GNU repair follows from this trace.
+An additional read-only search of task-target and configured GNU source locations
+found no pinned Darwin executable; that limited search does not prove universal
+absence. No oracle identity or pin was changed.
+
+Full source246 macOS86467, terminal86469 and frozen36840217747 remain active in
+this saved record. Main remains source174. General encoder/decoder translations,
+normal registry authority/order, legacy adapters, shared representation,
+accounting, ownership, final validation/audit, pinned Darwin and the unchanged
+16-workload/3% performance criterion remain open.

@@ -28,17 +28,42 @@ Strict checks have zero warnings; **168 focused passes / two existing ignores**,
 **951 affected passes**, **eleven ordinary comparisons** and **177/177 original
 compiler tests in both editors** are audited. All preceding assertions remain.
 
-Complete macOS **86467**, release plus 57 preceding ordinary comparisons
-**86468**, and full terminal **86469** are active. Read `source246-*` receipts;
-do not edit executing candidates or helpers. The [ordinary audit and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
-close all 57 preceding ordinary comparisons too: **68 distinct comparisons**
-match. Linux [Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
-and [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
-are dispatched on exact `aaf31ce7`. Launch does not imply a pass.
+The [closed release and Linux Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
+closes release **86468**: **168 focused passes / two existing ignores** and
+**951 affected passes**, matching gate. Complete macOS **86467** and full terminal
+**86469** remain active in this saved record. Read `source246-*` receipts before
+acting; do not edit executing candidates or helpers. The [ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+closes all 57 preceding comparisons too: **68 distinct comparisons** match.
+Linux [Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
+fails on exact `aaf31ce7`: **2,260 passes / two failed GNU reference assertions**,
+leaving 745 library tests and both Cargo stages unexecuted. GNU's first empty
+record/vector samples are -7/-9 rather than 2/0; neither control reaches Emaxx.
+All four GNU inputs are now retained and verified unchanged. The
+[bounded diagnosis36842893035](https://github.com/rayfdj/emaxx/actions/runs/36842893035)
+passes 18 GNU probes and unchanged Rust single/group/single controls (1/654/1)
+with the **same Rust executable and GNU executable/dump/configuration/Makefile**.
+The [raw diagnostic audit](docs/handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
+does not establish the retaining root or environmental cause; the full run remains
+failed. Emaxx images differ, but both failed assertions precede Emaxx comparison.
+Linux [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
+is still active. Launch does not imply a pass.
 The separately validated CI change retains GNU's executable, dump, configuration
 and Makefile before future Rust/frozen runs and verifies their bytes afterward.
 Six synthetic corruption/overwrite controls reject invalid evidence; runtime
 selectors, assertions, timeouts and outcome rules do not change.
+
+Two same-input ordinary probes expose further source246 property defects. The
+[separate portable property drafts](docs/handover/2026-09-30-shared-reader-draft/source248-property-drafts-manifest.json)
+preserve both negative results. Source247 shares the existing `get` implementation
+for translation-table symbols, including `nil`, `t` and overriding property lists.
+Its **470 inputs**, zero-warning strict checks, **169 focused passes / two existing
+ignores**, **952 affected passes**, twelve ordinary comparisons and original
+compiler-file load are audited. Supervisor **90626** has exited.
+Source248 adds GNU's first-match rule when an overriding property is nil before
+a duplicate; the old helper incorrectly continues to the later value.
+Its **472 inputs/modes** replay exactly. Queue **94807** has started its selected
+validation after source247's completed audit/cache copy. Do not edit either
+candidate or executing helpers. Neither draft is applied to the root runtime.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS
@@ -51,6 +76,10 @@ GNU's unexpected JSON-RPC timeout in `eglot-test-rust-completion-exit-function`;
 Emaxx passes. Emaxx has 7,670 passes, 47 expected failures and 211 skips; GNU has
 7,669 passes, 47 expected failures, one unexpected failure and 211 skips.
 This full frozen run remains failed.
+The retained GNU process-buffer dump contains the completion reply despite the
+request timeout. Two connections and duplicated dumps prevent establishing which
+connection/timing it belongs to. The same signature was documented before this
+runtime work in `docs/frozen-run-success.md`; its cause remains unresolved.
 
 Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
 retains **2,258 passes / two failed GNU reference assertions**: first record
@@ -65,7 +94,7 @@ source243 full terminal/Rust passes do not certify source246.
 
 Known limits remain: source246 fixes the safety helper, while general encoding
 and decoding translation behavior, normal registration-list authority/order,
-legacy charset adapters and symbol-property edge cases need further review.
+legacy charset adapters and complete validation of the property repairs remain open.
 Main remains source174; complete correctness, shared representation, accounting,
 ownership, final audit, pinned Darwin and the locked 16-workload/3% performance
 requirement remain unfinished. No current performance-parity claim exists.

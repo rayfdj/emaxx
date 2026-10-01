@@ -19,14 +19,29 @@ library tests and both Cargo stages unexecuted. Full terminal stops at GNU start
 on scenario 81, after 80 matching scenarios/comparisons; 606 comparisons never run.
 These failures remain failures; the GNU causes are unresolved.
 
-Full source246 macOS 86467, release/ordinary 86468 and terminal 86469 are active;
+The [closed source246 release/Linux Rust evidence](handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
+verifies **168 focused / 951 affected release passes**, with two existing ignores.
 [Linux Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
-and [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
-are dispatched on that exact commit. The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+fails after **2,260 passes / two GNU reference assertion failures**, before those
+controls reach Emaxx; 745 library tests and both Cargo stages never run. The exact
+GNU inputs are now retained. The [bounded diagnosis](handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
+passes 18 GNU probes and Rust single/group/single (1/654/1) with the same Rust
+executable and all four GNU inputs. This narrows execution-context investigation;
+no cause or full-run repair is established. macOS **86467**, terminal **86469** and
+[frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747) remain
+active in this saved record. The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
 also closes all 57 preceding comparisons, for **68 distinct ordinary matches**.
 The CI retention improvement captures
 GNU executable/dump/configuration/Makefile and checks unchanged bytes without
 altering tests. Real-GNU capture and six synthetic rejection controls pass.
+The [separate property drafts](handover/2026-09-30-shared-reader-draft/source248-property-drafts-manifest.json)
+retain two confirmed source246 negative probes. Source247's 470 inputs share actual
+`get` for nil/t translation symbols and overriding properties: strict checks,
+169 focused passes/two existing ignores, 952 affected passes, twelve ordinary
+matches and the original compiler-file load pass. Supervisor 90626 has exited.
+Source248's 472 inputs add GNU's first-nil-duplicate lookup rule; queue94807 has
+started validation using the completed source247 cache. No source248 runtime pass
+or complete platform result is claimed; root runtime remains source246.
 Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
 coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
 and the locked 16-workload/3% performance criterion are still open.

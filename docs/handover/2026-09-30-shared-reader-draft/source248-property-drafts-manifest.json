@@ -1,0 +1,668 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source247_focused": {
+      "status": "passed",
+      "profile": "gate",
+      "passed": 169,
+      "failed": 0,
+      "ignored": [
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "names": [
+        "lisp::bytecode::vm::canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_argument_prologue_preserves_string_identity",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_direct_string_arguments_are_mutable_lisp_objects",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_primitive_executes_program",
+        "lisp::bytecode::vm::native_surface_tests::make_byte_code_object_is_callable",
+        "lisp::bytecode::vm::taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame",
+        "lisp::eval::tests::eval_01::file_remote_p_parses_tramp_style_names",
+        "lisp::eval::tests::eval_02::quoted_bytecode_reader_forms_are_materialized_as_records",
+        "lisp::eval::tests::eval_03::call_interactively_preserves_interactive_form_closure_mutations",
+        "lisp::eval::tests::eval_05::edebug_global_break_condition_preserves_the_complete_minibuffer_expression",
+        "lisp::eval::tests::eval_05::edebug_instrumented_cl_macrolet_preserves_expander_arguments",
+        "lisp::eval::tests::eval_05::edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent",
+        "lisp::eval::tests::eval_05::edebug_step_into_generic_method_uses_the_correct_source_stop_points",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_copy_counts_both_actual_allocations",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload",
+        "lisp::primitives::tests::all_completions_preserves_propertized_string_candidate_identity",
+        "lisp::primitives::tests::bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata",
+        "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots",
+        "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu",
+        "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing",
+        "lisp::primitives::tests::bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers",
+        "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear",
+        "lisp::primitives::tests::case_folded_try_completion_preserves_unextended_input_spelling",
+        "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system",
+        "lisp::primitives::tests::char_table_compressed_unicode_slots_decode_into_the_canonical_tree",
+        "lisp::primitives::tests::character_table_literal_materializes_nested_bytecode_decoder",
+        "lisp::primitives::tests::charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c",
+        "lisp::primitives::tests::coding_candidates_apply_live_translation_tables_and_registration_lists",
+        "lisp::primitives::tests::coding_candidates_preserve_private_use_characters_and_symbol_identity",
+        "lisp::primitives::tests::coding_candidates_resolve_translation_symbols_through_live_properties",
+        "lisp::primitives::tests::coding_candidates_use_all_registered_bases_and_actual_charsets",
+        "lisp::primitives::tests::coding_conversions_preserve_extended_characters_regions_and_eol",
+        "lisp::primitives::tests::coding_detection_follows_detect_coding_system",
+        "lisp::primitives::tests::coding_encoders_preserve_full_character_codes_and_file_bytes",
+        "lisp::primitives::tests::coding_encoders_preserve_gnu_identity_properties_and_byte_results",
+        "lisp::primitives::tests::coding_errors_preserve_the_offending_symbol_object",
+        "lisp::primitives::tests::coding_system_eol_type_exposes_base_variant_vectors",
+        "lisp::primitives::tests::coding_system_mnemonics_match_the_oracle",
+        "lisp::primitives::tests::completion_predicates_preserve_string_list_membership",
+        "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity",
+        "lisp::primitives::tests::composition_gstring_uses_the_effective_terminal_coding_system",
+        "lisp::primitives::tests::concat_preserves_canonical_bytes_properties_and_sequence_characters",
+        "lisp::primitives::tests::copied_and_propertized_strings_preserve_canonical_bytes_and_properties",
+        "lisp::primitives::tests::file_reads_consult_the_coding_alist_and_name_like_the_oracle",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_lisp_policy_callbacks_and_restrictions",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation",
+        "lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state",
+        "lisp::primitives::tests::input_decode_autoloaded_prefix_collects_before_the_next_input_event",
+        "lisp::primitives::tests::input_decode_case_state_matches_gnu",
+        "lisp::primitives::tests::input_decode_command_reader_preserves_reached_prefix_and_live_remapping",
+        "lisp::primitives::tests::input_decode_default_function_map_supplies_shifted_tab_translation",
+        "lisp::primitives::tests::input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks",
+        "lisp::primitives::tests::input_decode_extra_matches_gnu",
+        "lisp::primitives::tests::input_decode_function_keys_consult_live_undefined_command_remapping",
+        "lisp::primitives::tests::input_decode_general_matches_gnu",
+        "lisp::primitives::tests::input_decode_initial_maps_keep_identity_and_the_shared_function_parent",
+        "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline",
+        "lisp::primitives::tests::input_decode_macro_nested_state_survives_collecting_commands_and_errors",
+        "lisp::primitives::tests::input_decode_macro_raw_readers_observe_directly_bound_arrays",
+        "lisp::primitives::tests::input_decode_macro_reads_the_live_array_and_stops_on_t",
+        "lisp::primitives::tests::input_decode_macro_roots_survive_callbacks_then_release_completed_arrays",
+        "lisp::primitives::tests::input_decode_macro_timed_reads_preserve_queue_order_and_errors",
+        "lisp::primitives::tests::input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding",
+        "lisp::primitives::tests::input_decode_minibuffer_shares_macro_and_unread_translation_state",
+        "lisp::primitives::tests::input_decode_mouse_menu_uses_unchanged_lisp_translation",
+        "lisp::primitives::tests::input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind",
+        "lisp::primitives::tests::input_decode_non_mouse_menu_events_mark_the_shared_position",
+        "lisp::primitives::tests::input_decode_pipeline_matches_gnu",
+        "lisp::primitives::tests::input_decode_positions_follow_display_motion_without_moving_point",
+        "lisp::primitives::tests::input_decode_raw_reads_unwrap_pending_events_before_terminal_polling",
+        "lisp::primitives::tests::input_decode_reader_contract_matches_gnu",
+        "lisp::primitives::tests::input_decode_restarts_after_an_unbound_prefix_loses_all_translations",
+        "lisp::primitives::tests::input_decode_shifted_tab_character_and_function_key_follow_distinct_maps",
+        "lisp::primitives::tests::interactive_closures_use_the_gnu_metadata_environment",
+        "lisp::primitives::tests::iso_2022_and_raw_text_encoders_follow_coding_c",
+        "lisp::primitives::tests::iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files",
+        "lisp::primitives::tests::make_network_process_coding_precedence_matches_gnu",
+        "lisp::primitives::tests::make_process_accepts_nil_coding_like_emacs",
+        "lisp::primitives::tests::make_string_and_aset_share_the_internal_character_encoding",
+        "lisp::primitives::tests::make_string_follows_alloc_c_for_the_multibyte_flag",
+        "lisp::primitives::tests::mapconcat_preserves_canonical_bytes_and_character_sequences",
+        "lisp::primitives::tests::md5_coding_endpoints_and_noerror_follow_gnu_in_native_calls",
+        "lisp::primitives::tests::native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model",
+        "lisp::primitives::tests::native_syntax_description_decodes_the_shared_descriptor_bits",
+        "lisp::primitives::tests::new_file_coding_lifecycle_matches_gnu_after_save_and_revisit",
+        "lisp::primitives::tests::nil_coding_system_queries_match_the_gnu_primitive_contract",
+        "lisp::primitives::tests::propertize_preserves_existing_string_properties",
+        "lisp::primitives::tests::read_coding_system_matches_the_gnu_coding_primitive_contract",
+        "lisp::primitives::tests::reader_callable_encoding_match_gnu",
+        "lisp::primitives::tests::reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count",
+        "lisp::primitives::tests::shared_string_bytes_are_the_authoritative_unibyte_payload",
+        "lisp::primitives::tests::string_byte_conversions_use_the_internal_encoding",
+        "lisp::primitives::tests::string_constructors_preserve_gnu_full_character_range_and_errors",
+        "lisp::primitives::tests::string_decode_names_last_coding_system_used_like_the_oracle",
+        "lisp::primitives::tests::string_to_syntax_encodes_classes_flags_and_matching_characters",
+        "lisp::primitives::tests::subr_frontier_reader_decodes_the_complete_classic_string_escape_table",
+        "lisp::primitives::tests::substring_copies_canonical_bytes_properties_and_vector_fields",
+        "lisp::primitives::tests::substring_of_completion_result_accepts_text_properties",
+        "lisp::primitives::tests::substring_reversed_bounds_signal_without_host_panics",
+        "lisp::primitives::tests::substring_validates_gnu_array_types_and_index_error_order",
+        "lisp::primitives::tests::text_property_copies_follow_add_text_properties_order",
+        "lisp::primitives::tests::undecided_decode_detects_shift_jis_like_coding_c",
+        "lisp::primitives::tests::unicode_property_internal_encoders_follow_gnu_decision_table",
+        "lisp::primitives::tests::unused_bytecode_destinations_follow_actual_control_flow",
+        "lisp::primitives::tests::write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events",
+        "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected",
+        "tty::tests::align_to_display_specs_lay_out_as_blank_columns",
+        "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions",
+        "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer",
+        "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters",
+        "tty::tests::control_characters_use_ascii_codes",
+        "tty::tests::display_columns_match_tab_expansion",
+        "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits",
+        "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell",
+        "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table",
+        "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point",
+        "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation",
+        "tty::tests::embedded_display_newlines_are_hard_row_boundaries",
+        "tty::tests::function_keys_encode_as_symbols",
+        "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules",
+        "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu",
+        "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph",
+        "tty::tests::hscroll_marker_precedes_the_requested_source_column",
+        "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell",
+        "tty::tests::interactive_execution_inserts_through_lisp",
+        "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers",
+        "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells",
+        "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input",
+        "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys",
+        "tty::tests::key_descriptions_follow_gnu_spellings",
+        "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined",
+        "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty",
+        "tty::tests::margin_default_foreground_preserves_an_extending_background",
+        "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent",
+        "tty::tests::meta_becomes_the_escape_prefix",
+        "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face",
+        "tty::tests::minibuffer_cursor_follows_echo_wrapping",
+        "tty::tests::non_selected_windows_render_from_their_start_without_recentering",
+        "tty::tests::overlay_display_string_replaces_its_covered_buffer_range",
+        "tty::tests::paint_rows_compare_by_text_and_attribute",
+        "tty::tests::plain_characters_encode_as_their_codes",
+        "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis",
+        "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows",
+        "tty::tests::point_precedes_a_point_max_overlay_after_string",
+        "tty::tests::prefix_echo_accumulates_like_gnu",
+        "tty::tests::propertized_string_display_specs_replace_the_covered_text",
+        "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops",
+        "tty::tests::segment_counts_follow_the_wrap_geometry",
+        "tty::tests::selected_windows_recenter_around_an_off_window_point",
+        "tty::tests::sgr_sequences_reset_then_select_each_attribute",
+        "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators",
+        "tty::tests::terminal_editing_keys_use_gnu_codes",
+        "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns",
+        "tty::tests::text_only_blits_preserve_an_extending_base_face",
+        "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer",
+        "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column",
+        "tty::tests::truncating_windows_keep_one_row_per_logical_line",
+        "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order",
+        "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows",
+        "tty::tests::universal_argument_prefixes_dispatch_through_simple_el",
+        "tty::tests::visual_row_positions_follow_wrap_geometry",
+        "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs",
+        "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail",
+        "tty::tests::window_margin_display_strings_do_not_enter_the_text_body",
+        "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces",
+        "tty::tests::wrapped_echo_preserves_a_faced_trailing_space",
+        "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row",
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "inputs_verified": 470,
+      "retained_files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source247-gate-libtest",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source247-gate-focused-retained-inputs/source247-gate-libtest",
+          "sha256": "7ddbf855588a14d833fb3aaafbc8fe40a8c646a0803eaad8eb68559c34ba0295",
+          "bytes": 29638608
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source247/loadup-7ddbf855-44409a21.pdmp",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source247-gate-focused-retained-inputs/loadup-7ddbf855-44409a21.pdmp",
+          "sha256": "c5aa605b512fb855ce7958bf9f206ef1f3da0671ce6b3c526e5d72dfa2587f2b",
+          "bytes": 22363128
+        }
+      ],
+      "strict_checks": "zero-warning pass",
+      "qualification": "Every preceding selected control remains present and passes; the additional unchanged GNU-backed fixture passes. It covers nil/t translation symbols and dynamic non-nil/nil overriding properties. The separately observed first-nil duplicate property bug remains outside this repair. Complete upstream/compiler, frozen, terminal, Linux and performance evidence remains separate."
+    },
+    "source247_patch": {
+      "status": "exact",
+      "replays": [
+        {
+          "source": "source247",
+          "patch": "incremental",
+          "inputs": 470,
+          "base": "de944b6a19257a50f9d873fa9b43b43fd28b0d7b",
+          "patch_sha256": "de1426d76dfce5bda3f7db4d826c9bd0e20f48ef2f3c2a1b84c62aab63eacad1",
+          "bytes_and_git_checkout_modes": "exact"
+        },
+        {
+          "source": "source247",
+          "patch": "complete",
+          "inputs": 470,
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "patch_sha256": "6f224a00a332589dc1eae011c38144a3e8dad3d531508c1555a0b32877837e02",
+          "bytes_and_git_checkout_modes": "exact"
+        }
+      ],
+      "qualification": "Both incremental and complete patches reproduce all 470 inputs and Git checkout modes. Separate source247 property-resolution repair; runtime validation is separate. Published source246 and its active full runs remain unchanged."
+    },
+    "source248_patch": {
+      "status": "exact",
+      "replays": [
+        {
+          "source": "source248",
+          "patch": "incremental",
+          "inputs": 472,
+          "base": "de944b6a19257a50f9d873fa9b43b43fd28b0d7b",
+          "patch_sha256": "ddf05f6ac048fbc16fcc24c771e09599c258ec3804f8a1eff283fb7146b9f3cd",
+          "bytes_and_git_checkout_modes": "exact"
+        },
+        {
+          "source": "source248",
+          "patch": "complete",
+          "inputs": 472,
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "patch_sha256": "c22b942352e648d01e3a452d220df4898f32b832b41033f07a087ca10cc36dfe",
+          "bytes_and_git_checkout_modes": "exact"
+        }
+      ],
+      "qualification": "Both incremental and complete patches reproduce all 472 inputs and Git checkout modes. Separate source248 property-resolution repair; runtime validation is separate. Published source246 and its active full runs remain unchanged."
+    },
+    "source248_queue": {
+      "pid": 94807,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source248-validation.py"
+      ],
+      "helper_sha256": "363dd363211e9ab83783b41d1e59a75d8a598d50e4927c07d9ee6925142460e1",
+      "qualification": "Queues source248 after authoritative source247 supervisor exit and successful original pipeline/audits. Copies only the completed cache. No source247 or source246 input is modified; launch is not a passing result."
+    },
+    "qualification": "Both same-input source246/GNU negative probes are retained. Source247 shares actual Fget for safety translations, covering nil/t and dynamic property overrides; strict checks and 169 focused passes/two existing ignores are audited, but its complete selected pipeline is still running. Source248 adds the GNU first-match rule when an overriding property has nil before a duplicate; 472 inputs/modes replay exactly, but no source248 runtime result exists. Its validation waits for the real source247 supervisor to exit successfully and for selected evidence auditing before cloning that completed cache. Root runtime remains source246; neither draft is applied there. Active logs are excluded. No complete coding/platform/performance claim."
+  },
+  "archive": {
+    "path": "source248-property-drafts.tar.gz",
+    "bytes": 455304,
+    "sha256": "0d656834194ffe59b3092f87dfdf9215f0e355dd264d226b1b542531c8534026"
+  },
+  "files": [
+    {
+      "path": "audit-source238-release.py",
+      "bytes": 6600,
+      "sha256": "a88af9f455dd1646cf700decd651b977a525af8dc4a7eea81ed76f1812ff182f"
+    },
+    {
+      "path": "audit-source247-focused.py",
+      "bytes": 3453,
+      "sha256": "990d64c05d1f495dca12db505de2a8f49b7dab08246024c089bdfc4cfae03290"
+    },
+    {
+      "path": "audit-source247-patches.py",
+      "bytes": 2924,
+      "sha256": "f8725549d8cf959be830ffd6006ae16c8f88f4e281cd4a431819f4ef331400ec"
+    },
+    {
+      "path": "audit-source247-selected.py",
+      "bytes": 5704,
+      "sha256": "4446b96df66984b346da4b22bd91d62570e96a4ad02dbd1b7a7100c3c478daf5"
+    },
+    {
+      "path": "audit-source248-patches.py",
+      "bytes": 2928,
+      "sha256": "fcc1ebe991d0e96cc6578f7c421221b701d61800b1cbb26521f85aaf827ef0da"
+    },
+    {
+      "path": "build-source247.py",
+      "bytes": 2452,
+      "sha256": "e5ac0769a4591fc22a94a5cca9c278e59722459398120e9f2da01a7ec87c02c9"
+    },
+    {
+      "path": "build-source248.py",
+      "bytes": 2460,
+      "sha256": "459249c5ca20265af7384330395dcf0038f5b215b8a0d74202ba0a16a6d75ddd"
+    },
+    {
+      "path": "check-source247.py",
+      "bytes": 2034,
+      "sha256": "d2ec27615774f79ef80fabf444a534694538c536537d40abcb22d9502644fe5b"
+    },
+    {
+      "path": "check-source248.py",
+      "bytes": 2042,
+      "sha256": "b46ae3ca5eccd3249907215608da6335638d0f84510bb63522228db511d3eb34"
+    },
+    {
+      "path": "coding-candidate-symbol-properties.el",
+      "bytes": 2239,
+      "sha256": "1c087bca8c127d1be2ac6e2fa307fced29f9d53874e09884f9efabcb1f859686"
+    },
+    {
+      "path": "compare-source230-fixtures.py",
+      "bytes": 3930,
+      "sha256": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3"
+    },
+    {
+      "path": "freeze-source247.py",
+      "bytes": 2478,
+      "sha256": "55ab77f6f6d5def1942e7b8da6146925a2c23e836c00e3d28a2a7c84fbcf961c"
+    },
+    {
+      "path": "freeze-source248.py",
+      "bytes": 2461,
+      "sha256": "5bebea938b9ce512bf4fb416c629230b1c58c9b62831a6283dfbb3cf74194b5e"
+    },
+    {
+      "path": "overriding-property-identity.el",
+      "bytes": 897,
+      "sha256": "e09dba300a82d7ca59c7329aa0dd5d932ce75c902b87dbada61945923fd9332d"
+    },
+    {
+      "path": "package-source246-release-and-property-drafts.py",
+      "bytes": 5500,
+      "sha256": "190219fc3d897cde793d1e20f83f3f24bfa3edafa7dfc0dbd093850209744e60"
+    },
+    {
+      "path": "probe-source246-coding-symbol-properties.py",
+      "bytes": 2754,
+      "sha256": "00c7ce130b6ccf57ebfa790b23d8a91c0d653b1d7c41e7f701e861b5561e690a"
+    },
+    {
+      "path": "probe-source246-overriding-property-identity.py",
+      "bytes": 2780,
+      "sha256": "c5ee50f32955c58faa1b240faf5ced04d8ad64fd47fbfc2f35ab283c0ccb11bc"
+    },
+    {
+      "path": "probe-source247-compiler-load.py",
+      "bytes": 3659,
+      "sha256": "2ca50db104824c83a41a770cc52b29fddee64104f8e0c0de4c7504da1c025324"
+    },
+    {
+      "path": "probe-source248-compiler-load.py",
+      "bytes": 3663,
+      "sha256": "b417a6db93e542255376feae0b4656c5d16de0eb338c1344c618740973a8ee1a"
+    },
+    {
+      "path": "queue-source248-validation.py",
+      "bytes": 2934,
+      "sha256": "363dd363211e9ab83783b41d1e59a75d8a598d50e4927c07d9ee6925142460e1"
+    },
+    {
+      "path": "run-source247-validation.py",
+      "bytes": 1369,
+      "sha256": "5f8d1360a00dff37bf848954c63b7d967ac9cd33ea45208440cf1501469f9c72"
+    },
+    {
+      "path": "run-source248-validation.py",
+      "bytes": 1405,
+      "sha256": "6c8877354d36088f2265972067fbe4899005ec1c355a3dbaf723361bea0c956d"
+    },
+    {
+      "path": "source246-coding-symbol-properties-emaxx-command.json",
+      "bytes": 3476,
+      "sha256": "b16de9b85464365e6952e8786a1a48b0f89e4dc4385e0f249f286443d485c3b2"
+    },
+    {
+      "path": "source246-coding-symbol-properties-emaxx-result.json",
+      "bytes": 291,
+      "sha256": "827180f79a677a13ef31086cafe95d53ec764ee2e802597e90f35a90321885f7"
+    },
+    {
+      "path": "source246-coding-symbol-properties-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source246-coding-symbol-properties-emaxx.stdout",
+      "bytes": 81,
+      "sha256": "e1dff407a051cd911f1564d534b00afd77ca0ad832a813afd0f811fb8832bce2"
+    },
+    {
+      "path": "source246-coding-symbol-properties-gnu-command.json",
+      "bytes": 3335,
+      "sha256": "bc273844d87f7d18ca446ea7a28de195fa587d5a20ab5633ce88f462c14d65c8"
+    },
+    {
+      "path": "source246-coding-symbol-properties-gnu-result.json",
+      "bytes": 291,
+      "sha256": "ff1ea51b06dde364f3702959ada3c0e4ff8b9677fb197349e961110fe0439981"
+    },
+    {
+      "path": "source246-coding-symbol-properties-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source246-coding-symbol-properties-gnu.stdout",
+      "bytes": 59,
+      "sha256": "7d68fe3ce60a5530f4f702135b54780c870ffe8edb89f18e49c68608b5db60ff"
+    },
+    {
+      "path": "source246-coding-symbol-properties-negative-audit.json",
+      "bytes": 1042,
+      "sha256": "cb989cbadee214da89e6b4194f1364f7f9b3528a668e289bcd36951410cb235f"
+    },
+    {
+      "path": "source246-overriding-property-identity-emaxx-command.json",
+      "bytes": 2112,
+      "sha256": "15a0812f43ca81dfa68a577e9eca1a64dba20735494a9e5d5424cff373e41ff5"
+    },
+    {
+      "path": "source246-overriding-property-identity-emaxx-result.json",
+      "bytes": 284,
+      "sha256": "1b9378d1e95b86fbb9d24782c5f748b450dfe2064d9e4c9184e7541cc29827fc"
+    },
+    {
+      "path": "source246-overriding-property-identity-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source246-overriding-property-identity-emaxx.stdout",
+      "bytes": 84,
+      "sha256": "ba7c0ea6247868c0f5ec01648c08c2bf3fadc92b428f793240bd81624ac307a7"
+    },
+    {
+      "path": "source246-overriding-property-identity-gnu-command.json",
+      "bytes": 1971,
+      "sha256": "60c71cb7d79a39e881298c1fbe80161a2f49c493f40c374272ab3cf634896d62"
+    },
+    {
+      "path": "source246-overriding-property-identity-gnu-result.json",
+      "bytes": 284,
+      "sha256": "54f440fb78f7cedacc7edb34396fe0f1f450be009752a03e281c56f7b00c5154"
+    },
+    {
+      "path": "source246-overriding-property-identity-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source246-overriding-property-identity-gnu.stdout",
+      "bytes": 77,
+      "sha256": "d05e136e33712add8eeb12996c63f69e240ee72bf0678297a2883d4ef2e9e9c7"
+    },
+    {
+      "path": "source246-overriding-property-identity-negative-audit.json",
+      "bytes": 1052,
+      "sha256": "6afb4a49ea8a2890d78dca71253583feeae2a697dac6ef238bc4f9af56165d86"
+    },
+    {
+      "path": "source247-check-command.json",
+      "bytes": 487,
+      "sha256": "49fdab30bff7f13ae4197a478c9843d1c4f8e38b6f5132ac10af7e5776c44eeb"
+    },
+    {
+      "path": "source247-check-result.json",
+      "bytes": 81,
+      "sha256": "0fdca47bfb6190919603bcb83579be292b7d400baa5726353c1e3011c0e350f6"
+    },
+    {
+      "path": "source247-check.log",
+      "bytes": 199,
+      "sha256": "cd873875587f8984b6063e0902d4c3c8ea8691fd52b47d4a56d48aac4701c012"
+    },
+    {
+      "path": "source247-clippy-command.json",
+      "bytes": 475,
+      "sha256": "fd401b2c01100c651d32d013d26c6f59aedd6d6ec0a00b1f5f661843a37bbc9c"
+    },
+    {
+      "path": "source247-clippy-result.json",
+      "bytes": 83,
+      "sha256": "2e4a18a020882423a1bf61572cab906de48b1bc9e6dd79ac9439d84282b66c96"
+    },
+    {
+      "path": "source247-clippy.log",
+      "bytes": 199,
+      "sha256": "ec09b2ec46d6de45437ed88a84190fb44dd4f480ae1ff16e64cc0ca825726a86"
+    },
+    {
+      "path": "source247-complete.patch",
+      "bytes": 699852,
+      "sha256": "6f224a00a332589dc1eae011c38144a3e8dad3d531508c1555a0b32877837e02"
+    },
+    {
+      "path": "source247-diff-command.json",
+      "bytes": 391,
+      "sha256": "2543ec8d82f9595f4590893c254f815bc42342db9a86285123dcc6229ad792f0"
+    },
+    {
+      "path": "source247-diff-result.json",
+      "bytes": 90,
+      "sha256": "94c85a2cc24cf63f308d17616502f39ce0b1b71685d33545486256678a127658"
+    },
+    {
+      "path": "source247-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source247-fmt-command.json",
+      "bytes": 415,
+      "sha256": "36cd14e042248fb5d63e2a5be593e595cd686293393c8c1b95153a4027eaced9"
+    },
+    {
+      "path": "source247-fmt-result.json",
+      "bytes": 82,
+      "sha256": "0da3f4415f13713aeca8d5486524047e5b76962b4b43cc7462f58371bd8a2f1e"
+    },
+    {
+      "path": "source247-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source247-freeze.json",
+      "bytes": 1006,
+      "sha256": "c5ca34beeb7959b7265cc5934170e91993635c3aee582e7545fd80ffd6adb4e8"
+    },
+    {
+      "path": "source247-gate-build-command.json",
+      "bytes": 1162,
+      "sha256": "e9bc974243d12db2b65ebace8412d5ea40d40a1efc4c4a5b2bf4beb960018fe1"
+    },
+    {
+      "path": "source247-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "030dd96fb75782e6b02e7102f41625aff3097bd76ca62e0e758d1b4b7f7b45a0"
+    },
+    {
+      "path": "source247-gate-build.log",
+      "bytes": 216547,
+      "sha256": "e893178dd4fc100f955755d40550bcffe904b71ea267af82092aff3bc90ea8a6"
+    },
+    {
+      "path": "source247-gate-controls-command.json",
+      "bytes": 30566,
+      "sha256": "f84378f9de62ab4e83cf9ba2295b58568a5d2919a5260e06b49f9425a5a785a3"
+    },
+    {
+      "path": "source247-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "347ce8785c30843c3d2ce6ca25dfba1eeeede3959e0af43772f60c954f101bbc"
+    },
+    {
+      "path": "source247-gate-controls.log",
+      "bytes": 17059,
+      "sha256": "a635ef8f4f9db7c19a87e21027681a79ce9a8ac2a3de54c2b200df6e4c1f714c"
+    },
+    {
+      "path": "source247-gate-focused-audit.json",
+      "bytes": 16141,
+      "sha256": "beccc2cc11845cb41fb5244be73b5c9b777226e252fe09f0b23bc908ca75c8a8"
+    },
+    {
+      "path": "source247-gate-inventory.txt",
+      "bytes": 264791,
+      "sha256": "a2d43356d4b1dd1f36e1c245a0576a3dd56d70c5e4185a4b3febddf17d100b85"
+    },
+    {
+      "path": "source247-incremental.patch",
+      "bytes": 6689,
+      "sha256": "de1426d76dfce5bda3f7db4d826c9bd0e20f48ef2f3c2a1b84c62aab63eacad1"
+    },
+    {
+      "path": "source247-manifest.json",
+      "bytes": 53853,
+      "sha256": "89fa00fade07552983ad412fe7044e7d01fa4532075c1c9a7ffeb5d1b727a209"
+    },
+    {
+      "path": "source247-patch-replay-audit.json",
+      "bytes": 864,
+      "sha256": "4623892a20d7e02bedf7c95bb816a76c2a5647ca01ebee14eb505b654fd05c47"
+    },
+    {
+      "path": "source247-validation-launch.json",
+      "bytes": 477,
+      "sha256": "2bc454646c20fa1849d7d6b12334a528d2954aa46fb12d09dd7016bc3c2fc3f9"
+    },
+    {
+      "path": "source247-worktree-preparation.json",
+      "bytes": 555,
+      "sha256": "fb28d10a06b8df54deb6117e0050569e624a53c6f50955e6a88fc032d938f830"
+    },
+    {
+      "path": "source248-complete.patch",
+      "bytes": 702400,
+      "sha256": "c22b942352e648d01e3a452d220df4898f32b832b41033f07a087ca10cc36dfe"
+    },
+    {
+      "path": "source248-freeze.json",
+      "bytes": 989,
+      "sha256": "eaaafad7a59cc4913c7662cece6be6fbcc469d4c710862996330ebd50523691e"
+    },
+    {
+      "path": "source248-incremental.patch",
+      "bytes": 9237,
+      "sha256": "ddf05f6ac048fbc16fcc24c771e09599c258ec3804f8a1eff283fb7146b9f3cd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source248-patch-replay-audit.json",
+      "bytes": 864,
+      "sha256": "d793d24a8c632c603a58c4de53d9a02c5bd377bf3018b11dce7ef738cb1f7978"
+    },
+    {
+      "path": "source248-validation-queue-launch.json",
+      "bytes": 536,
+      "sha256": "82366e104d08822f640bf2d8b18289b9ba6ecc4231114b4f716bce515c7e436d"
+    },
+    {
+      "path": "source248-worktree-preparation.json",
+      "bytes": 396,
+      "sha256": "14a5c6eccbe00239a71c918ec0620dbaa3c0e5f5efc0b35e8be8c734817e6eea"
+    },
+    {
+      "path": "static-source247.py",
+      "bytes": 1559,
+      "sha256": "75bbf43d439a0af4eb1af226ec72620a8002acd34cf2566ba92775571f51c3a1"
+    },
+    {
+      "path": "static-source248.py",
+      "bytes": 1567,
+      "sha256": "746de139821a6f8b2daf3404e05c9eb4401b78f0f706d8e0a50ca1149c8b41b2"
+    },
+    {
+      "path": "test-source247-broad.py",
+      "bytes": 3096,
+      "sha256": "7ccaf048d7c65c328051e7abbd5ade2d72af77374cbf8ba448652d515b9c48df"
+    },
+    {
+      "path": "test-source247-controls.py",
+      "bytes": 7074,
+      "sha256": "f8ffb2f550dd05910b2e7baf1020302e5b12c7e1adc8390dd92b4547f4997d55"
+    },
+    {
+      "path": "test-source248-broad.py",
+      "bytes": 3104,
+      "sha256": "e180986f246a108214dee25a4bd6f7acdb1bcdbc2be636c4d9c3d9d04d86994c"
+    },
+    {
+      "path": "test-source248-controls.py",
+      "bytes": 7248,
+      "sha256": "db866dc41137ac1692709a488f288cdf56acabc57b17ecdd3e8763b29d3dce99"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
