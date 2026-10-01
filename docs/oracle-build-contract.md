@@ -86,8 +86,24 @@ baseline change rather than an ordinary compatibility fix.
 
 ## Darwin build
 
-Use `compat/build_emacs_homebrew.sh` from a clean checkout.  The pinned Darwin
-binary reports these effective options:
+Rebuild the Darwin reference with the recorded recipe:
+
+```sh
+python3 tools/build_macos_oracle.py /path/to/existing/gnu-checkout /path/to/new/gnu-build --jobs 2
+```
+
+The destination must not exist. The helper clones the local checkout, selects
+pristine revision `636f166c`, reads the exact configure options from the committed
+Darwin native ABI, and links Apple's system libxml2. This is the recipe used for
+the `591acf7b` reference described in [the frozen-run record](frozen-run-success.md#regexp-correction-and-shr-diagnosis).
+The general `compat/build_emacs_homebrew.sh` helper can select a different XML
+parser and does not reproduce that dependency contract.
+
+The helper writes `<destination>-build.json` beside the new checkout, including
+the actual executable hash, configuration and linked libraries. It never changes
+the oracle lock or native ABI. A rebuild can have different executable bytes;
+retain its executable, dump, configuration and Makefile, perform the checks below,
+and record any replacement pin explicitly. The recorded Darwin options are:
 
 ```text
 --with-native-compilation=aot --with-xml2 --with-gnutls --with-modules

@@ -1,0 +1,8 @@
+{
+  "previous_head": "1d187ba63e485ec4ecfe0227c148287a230f8f09",
+  "incremental_patch_sha256": "18b86ffbac957e614ed8dbd87e447488c8d25a5ad54f62e2958a91e604206a65",
+  "source248_verified_before": 472,
+  "source249_verified_after": 476,
+  "selected_audit_sha256": "5d284fdcfaa2bb618ad1c2798725ef52f84a0d94b31b2c526a86a2211c7b5bca",
+  "qualification": "Apply the isolated GNU-backed post-read repair after strict, gate/release selected and fifteen ordinary comparisons pass. Complete source249 validation and the full architectural/performance goal remain open; the rebuilt Darwin pin stays in its isolated candidate."
+}

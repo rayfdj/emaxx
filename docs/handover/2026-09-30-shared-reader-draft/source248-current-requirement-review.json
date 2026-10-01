@@ -1,0 +1,47 @@
+{
+  "runtime_source": "source248",
+  "runtime_inputs_verified": 472,
+  "inspected_rust_sha256": {
+    "src/lisp/alloc.rs": "725b53a45d03fb0dd6f46c2f7cc0a5b3301c7d5c92ca57854d6571de7b826084",
+    "src/lisp/types.rs": "2e476dd677e7c2dfe753300f3f5de17dfaf461d7a2899d0733986142b4d976db",
+    "src/lisp/types/string_data.rs": "aea5ab67e002eb66d88b28d881afc4078b50df84f9e2857ee67b0f113623439d",
+    "src/lisp/bytecode.rs": "fadc46c409911dbcb4c516a7841fe4eaeb5286c12c11fdea9813ab6ef576d9e9",
+    "src/lisp/bytecode/vm.rs": "8a8c872e70de97ae5076eea9c418a29fb6c94d8fe361350e3c0031498d8c5186",
+    "src/lisp/eval.rs": "156b794dea867d64eef65f8efaaca1d499920dcea9b9c2ae2b8e9fb9fb324161",
+    "src/lisp/native_comp/runtime.rs": "2a453dd4329c2f8e4313eb0c8270e1928d6fb9188e84edccb61af97fd7d7b95a",
+    "src/lisp/primitives/strings.rs": "8e5d67c8ae38dba091578914be5fcf2507f43ab3e7b6b85564f202cfd4a91f2f",
+    "src/lisp/primitives/dispatch/misc_keymaps.rs": "cff587feefb6d6deec202081d344b3fbd7e6dc15c25b28e23e675267ef673443"
+  },
+  "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+  "inspected_gnu_sha256": {
+    "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+    "src/alloc.c": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+    "src/bytecode.c": "0383ce4f09d593468cbe01d31a22fa069a7817cef77672585ff494f6cb6e6ea2",
+    "src/thread.c": "db98cd281fea092878bfff530f7082669024b82c883a37141a69e6443322f210"
+  },
+  "locked_suite_sha256": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd",
+  "locked_suite_unchanged_from_main": true,
+  "findings": [
+    {
+      "requirement": "3 shared strings",
+      "current": "TextRef/StringCell owns Rust String; StringObject/SharedStringState separately owns GNU encoded bytes. CodeBytes retains a legacy Rc byte slice for non-ASCII plain strings. StringLike copies/project views for consumers.",
+      "required": "Unify the authoritative allocation and remove the plain-string/VM adapter without losing full character codes, identity, mutation or image/native contracts."
+    },
+    {
+      "requirement": "4 accounting",
+      "current": "Seven category variables initialize to zero; memory-use-counts signals unsupported. note_string_allocation charges a GNU header/data formula rather than recording actual Rust allocations and capacities.",
+      "required": "Count actual category allocations, implement forwarded counter semantics, and record physical capacities, metadata, retained memory and GC work."
+    },
+    {
+      "requirement": "4 ownership",
+      "current": "Value is one word with a non-Send marker. A native activation mutex serializes native entry. Public Value factories and Interpreter::new reach process-global arenas; TextRef::as_str returns a static borrow. This review does not establish a complete host ownership/lifetime contract.",
+      "required": "Enforce the actual public runtime boundary and establish rooting/borrow lifetimes; serial tests and non-Send values alone do not prove it."
+    },
+    {
+      "requirement": "5 VM stack",
+      "current": "BC_STACK_VALUES remains 1<<18 with an obsolete two-word Value comment; BcFrame records are stored in a separate Vec. GNU BC_STACK_SIZE is 512K Lisp words including four-word frame headers placed after each declared maximum stack.",
+      "required": "Repair capacity, frame reservation/layout and honest storage accounting together; increasing only the constant does not reproduce GNU nested-frame bounds."
+    }
+  ],
+  "qualification": "Read-only inspection of current runtime and unchanged GNU C, not runtime validation or performance measurement. The requirement map is updated from stale source238/source243 statements to verified source248 evidence. Source249 remains separate and queued. No architecture-completion, public-API soundness or GNU-speed claim."
+}

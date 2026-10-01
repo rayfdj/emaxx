@@ -16,23 +16,50 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source248**, pushed as **`fa7578ac`**, with **472 inputs** matching the frozen
+The task runtime is now **source249**, with **476 inputs** matching the isolated
+`coding-post-read/emaxx` candidate. Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json)
+verifies zero-warning strict checks, **172 focused passes / two existing ignores**
+and **955 affected passes in each profile**, plus **fifteen ordinary GNU matches**.
+The post-read hook now receives decoded character counts. ASCII string decoding
+returns early, drops properties on a copied result and preserves NOCOPY identity,
+following GNU.
+The original negatives and the first checkout-setup failure remain retained.
+Complete source249 platform/frozen/terminal validation remains required; the
+preceding source248 results below do not certify this newer source.
+
+GNU has been [rebuilt from the recorded recipe](docs/handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
+at pristine revision `636f166c`, with executable SHA-256 **`29cfb20d…`**.
+Capabilities and configure options match the retained source/ABI-matched build;
+fresh native ABI, C primitive and DEFSYM manifests are byte-identical to the
+committed files. The binary, dump, configuration and Makefile are retained.
+The proposed replacement pin is isolated in local candidate **`1c0898fc`**;
+the task branch's original Darwin lock remains unchanged. Frozen retry **58661**
+is active on that candidate with the unchanged 519-file / 7,921-outcome inventory.
+The first launch stopped before tests because its copied Cargo target lacked an
+ownership marker. That failure and cache are preserved; the retry lets the
+unchanged harness create its own empty target. Read current receipts before acting.
+
+The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
 The two property repairs below follow the actual GNU C lookup paths; their
 strict, selected and complete original compiler comparisons pass. Complete
 macOS/Linux Rust and pinned Linux frozen comparisons now pass as detailed below.
-Full terminal retry **14540** is running; the original GNU startup failure and a
-pre-existing general conversion-table gap remain documented. Further architectural
-changes remain on hold.
-The [separate source249 post-read draft](docs/handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
+Full terminal retry **14540** has exited and passes all **226 scenarios / 686 comparisons**.
+The original GNU startup failure and pre-existing conversion gaps remain documented.
+Further architecture work must start from this tested checkpoint and preserve its coverage.
+The [original source249 post-read draft](docs/handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
 has **476 frozen inputs**, with both patches replayed exactly. Its two ordinary
 negative fixtures expose byte-count hook arguments and a missing ASCII early
 return; both also fail identically on retained source174/main and source207.
 The repair follows `coding.c:decode_coding_object/code_convert_string`, preserves
-the exact GNU outputs and remains unapplied. Queue **15814** waits for terminal
-**14540** before building and validating it. Read `source249-*` receipts before
-acting; the packaged queue snapshot and prepared auditors are not runtime passes.
+the exact GNU outputs. Queue **15814** exited after strict
+checks passed and selected gate tests reported 162 passes, ten setup failures and
+two existing ignores. The new checkout lacked its required `../emacs` link.
+Restoring that link makes the same executable and all 174 unchanged selectors pass:
+172 passes / two existing ignores. The original failure and its executable/image
+remain retained. Continuation **17624** has exited; all selected results are now
+audited and the repair is applied to the root. Read `source249-*` receipts;
+the original draft's prepared auditors are historical, not passing results.
 The preceding **source246**, pushed as **`aaf31ce7`**, has **468 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
 Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
@@ -117,10 +144,16 @@ Terminal **4530** has exited after GNU startup fails on scenario162:
 **161 fully matching scenarios / 295 matching comparisons**, zero observed
 divergences, **391 unexecuted comparisons**. The unchanged `recursive-minibuffer`
 replay passes all seven comparisons after the local Rust gate finishes.
-The complete unchanged terminal retry **14540** is running without a simultaneous
-local Rust gate. This does not establish the startup failure's cause or erase it.
-Do not edit the frozen candidate or running retry helper; read its receipts before
-another launch. Pinned Darwin and complete correctness remain open.
+The [complete unchanged terminal retry](docs/handover/2026-09-30-shared-reader-draft/source248-complete-terminal-retry-manifest.json)
+closes **14540** with all **226 scenarios / 686 comparisons** matching: 658 screen
+and 28 filesystem comparisons, zero missing comparisons. All 472 source inputs,
+eight execution inputs and every raw verdict are verified. Commands, selectors,
+actions, timeouts and comparison strictness remain unchanged. The run followed
+the local Rust gate's exit; it does not establish the first startup failure's
+cause or erase that failure. GNU is source/native-ABI matched, not pinned Darwin.
+Keep the source248 and source249 validation checkouts frozen. Continuation17624
+has exited; rebuilt-Darwin frozen retry58661 remains active. The full goal and
+complete replacement-oracle validation remain open.
 The [C-source review and diagnostic failure](docs/handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
 map the fixes to unchanged GNU `coding.c:get_translation_table`, `lisp.h:SYMBOLP`,
 and `fns.c:plist_get/Fget`. Both original failing probes retain their exact bytes

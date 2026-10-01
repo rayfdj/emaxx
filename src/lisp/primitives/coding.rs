@@ -585,7 +585,9 @@ fn run_coding_conversion(
             Value::Integer(interp.buffer.borrow().point_max() as i64),
         ]
     } else {
-        vec![Value::Integer(source.text.len() as i64)]
+        // coding.c:decode_coding_object passes produced_char, not bytes.
+        // The conversion buffer already records the decoded character count.
+        vec![Value::Integer(interp.buffer.borrow().buffer_size() as i64)]
     };
     let result = interp.call_function_value(*function, None, &arguments, env);
     let result_buffer_id = interp.current_buffer_id();
@@ -3358,15 +3360,15 @@ fn charset_spans_to_props(
         .collect()
 }
 
-/// Decode VALUE (a string, or the text of a region when REGION) with
-/// CODING.  code_convert_string's ASCII fast path applies to strings
-/// only; a region goes straight through decode_coding_object.
+/// Decode VALUE with CODING. code_convert_string's ASCII fast path applies
+/// only to a string result; a source region or a buffer destination goes
+/// straight through decode_coding_object (BUFFER_CONVERSION).
 pub(crate) fn decode_coding_text(
     interp: &mut Interpreter,
     value: &Value,
     coding: Option<&str>,
     nocopy: bool,
-    region: bool,
+    buffer_conversion: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string =
@@ -3412,7 +3414,7 @@ pub(crate) fn decode_coding_text(
     // source carries no multibyte content and nothing for eol conversion
     // to do returns the string unchanged -- the decoder never runs, and
     // neither does detection.
-    let fast_path = !region
+    let fast_path = !buffer_conversion
         && coding_system_is_ascii_compatible(interp, &canonical)
         && (if string.multibyte {
             !src_multibyte
@@ -3425,6 +3427,17 @@ pub(crate) fn decode_coding_text(
             || matches!(canonical.as_str(), "no-conversion" | "binary")
             || inhibit_eol_conversion
             || !source_bytes.contains(&b'\r'));
+    if fast_path {
+        // coding.c:code_convert_string returns before post-read conversion.
+        // A copied result is a fresh, unpropertized multibyte ASCII string;
+        // NOCOPY preserves the original object, including its properties.
+        set_last_coding_system_used(interp, coding, env);
+        return Ok(if nocopy {
+            *value
+        } else {
+            make_shared_string_value_with_multibyte(string.text, Vec::new(), true)
+        });
+    }
     let undecided_bytes = if !fast_path
         && interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided")
     {

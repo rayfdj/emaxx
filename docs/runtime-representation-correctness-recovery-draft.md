@@ -794,3 +794,65 @@ translation tables. The general translation repair must respect that behavior,
 table sequences, EOL ordering and raw-character handling; it is not implemented
 here. Broader hook/destination contracts, adapters, ownership, accounting, complete
 platform validation, pinned Darwin and the full performance goal remain open.
+
+## Source248 terminal recovery complete
+
+The [closed full retry](handover/2026-09-30-shared-reader-draft/source248-complete-terminal-retry-manifest.json)
+verifies all **226 scenarios / 686 comparisons**: 658 screen and 28 filesystem
+comparisons, with no divergence or missing comparison. Supervisor14540 has exited.
+Every raw label/verdict, 472 runtime inputs and eight execution inputs is checked.
+The commands, original scenarios/actions, timeouts, settling and comparison rules
+match the first run. This new pass does not erase or explain its GNU startup
+failure; both that failure and the selected replay remain in the archive.
+GNU is source/native-ABI matched, not the pinned Darwin binary.
+
+Source248 now has the complete Rust, pinned Linux frozen and terminal checkpoint
+passes described above. The remaining architectural work can proceed from this
+tested baseline, preserving those contracts. This supersedes the earlier pause
+in architecture work; it does not establish universal correctness or completion
+of the full goal. The updated [requirement map](runtime-representation-progress.md)
+records remaining string/symbol authority, VM stack layout, ownership, accounting,
+final validation/audit and all locked performance requirements.
+
+Queue15814 subsequently passed strict checks and stopped at the selected gate:
+162 passes, ten failures and two existing ignores. Six fixtures could not load
+GNU early Lisp and four could not canonicalize the absent sibling `../emacs`.
+The two new hook tests passed. The raw failure and its executable/image are
+retained in `source249-setup-failure-audit.json`; the first audit helper's incorrect
+assumption about all ten failure locations is also preserved.
+
+Restoring only that checkout link makes the same executable, arguments, full
+174-test selection and environment pass: 172 passes / two existing ignores.
+Continuation17624 has exited. The [closed selected audit](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json)
+verifies strict zero-warning checks, 172 focused passes / two existing ignores
+and 955 affected passes in both profiles, plus all fifteen ordinary GNU matches.
+All previous selected controls remain, with exactly the two new post-read tests;
+the gate/release full inventories differ only by the existing debug-only POSIX
+test. Original fixture and expected-output bytes are unchanged. No runtime,
+expectation, selector or timeout changed for the setup replay. All 476 validated
+inputs are now applied to the root. Complete source249 validation remains open.
+
+## Recorded Darwin oracle rebuild
+
+The user requested rebuilding the GNU reference from the recorded recipe.
+`rebuild-gnu-macos-20261001.py` runs `tools/build_macos_oracle.py` on pristine
+revision `636f166c` into `target/runtime-goal/rebuilt-2026-10-01/emacs`.
+The [closed rebuild record](handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
+verifies successful supervisor17623 and verifier31221; both have exited.
+The executable SHA-256 is
+`29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5`.
+All recorded capabilities/configure options match the retained GNU build, including
+native compilation and Apple's libxml2. Regenerated native ABI, C primitive and
+DEFSYM manifests are byte-identical to the committed files. The executable, dump,
+configuration and Makefile are retained and unchanged; no ABI edit is needed.
+
+Preparation40013 also exited successfully. Local isolated source249 candidate
+`1c0898fc` records the proposed binary pin; only its hash differs in the lock.
+The task branch's lock and the original GNU tree remain unchanged. The first
+frozen launch exits 2 before any test because a copied Cargo target lacks its
+ownership marker. The failure and unclaimed cache are preserved. Retry58661 uses
+the same command, candidate, GNU inputs, inventory, selectors and timeouts, letting
+the unchanged harness create an empty target. It is active; no inventory/frozen
+pass or full-goal completion is claimed by the rebuild archive.
+The [oracle build contract](oracle-build-contract.md#darwin-build) now directly
+documents the Apple-libxml2 recipe previously recorded in the frozen-run history.

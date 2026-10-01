@@ -27203,6 +27203,25 @@ fn coding_conversions_preserve_extended_characters_regions_and_eol() {
 }
 
 #[test]
+fn coding_post_read_conversion_receives_character_counts() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-post-read-character-count.el"),
+        include_str!("../../../tests/fixtures/coding-post-read-character-count.expected")
+            .trim_end(),
+        "post-read conversion counts decoded characters instead of Rust text bytes",
+    );
+}
+
+#[test]
+fn coding_post_read_ascii_shortcut_preserves_identity_and_hook_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-post-read-fast-path.el"),
+        include_str!("../../../tests/fixtures/coding-post-read-fast-path.expected").trim_end(),
+        "post-read conversion is bypassed only for an ASCII string result",
+    );
+}
+
+#[test]
 fn copied_and_propertized_strings_preserve_canonical_bytes_and_properties() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/copied-canonical-string-storage.el"),

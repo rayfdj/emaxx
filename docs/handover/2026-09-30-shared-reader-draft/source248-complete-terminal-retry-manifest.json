@@ -1,0 +1,194 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "terminal": {
+      "status": "passed",
+      "goal_complete": false,
+      "inputs_verified": 472,
+      "execution_inputs_verified": 8,
+      "fully_matching_scenarios": 226,
+      "matching_comparisons": 686,
+      "matching_screen_comparisons": 658,
+      "matching_filesystem_comparisons": 28,
+      "divergent_labels": [],
+      "partial_scenarios": [],
+      "unstarted_scenarios": [],
+      "unexecuted_comparisons": 0,
+      "log_sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "ordinary_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx/target/frame-validation/release/emaxx": {
+          "sha256": "ed2083b484fca9f293557c826d756e465a04c1e53e7448ab9b7a8173cfb7cc6a",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source248-ordinary-emaxx",
+          "bytes": 13278928
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx/target/frame-validation/release/emaxx.pdmp": {
+          "sha256": "6e59a77f4f3de4591215ffa4173c281d277736548b85d8d65097885cd362d719",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source248-ordinary-emaxx.pdmp",
+          "bytes": 22347840
+        }
+      },
+      "qualification": "Second complete unchanged source248 terminal run, after the local Rust gate exited. Original commands, seven execution inputs, selectors, actions, timeouts and comparisons are byte-identical; the wrapper is separately hashed. Every observed comparison is checked against the original full inventory. The first GNU startup failure and selected replay remain separate results; this run cannot establish their cause. GNU is source/native-ABI matched, not pinned Darwin. No performance or full-goal completion claim."
+    },
+    "requirement_review": {
+      "runtime_source": "source248",
+      "runtime_inputs_verified": 472,
+      "inspected_rust_sha256": {
+        "src/lisp/alloc.rs": "725b53a45d03fb0dd6f46c2f7cc0a5b3301c7d5c92ca57854d6571de7b826084",
+        "src/lisp/types.rs": "2e476dd677e7c2dfe753300f3f5de17dfaf461d7a2899d0733986142b4d976db",
+        "src/lisp/types/string_data.rs": "aea5ab67e002eb66d88b28d881afc4078b50df84f9e2857ee67b0f113623439d",
+        "src/lisp/bytecode.rs": "fadc46c409911dbcb4c516a7841fe4eaeb5286c12c11fdea9813ab6ef576d9e9",
+        "src/lisp/bytecode/vm.rs": "8a8c872e70de97ae5076eea9c418a29fb6c94d8fe361350e3c0031498d8c5186",
+        "src/lisp/eval.rs": "156b794dea867d64eef65f8efaaca1d499920dcea9b9c2ae2b8e9fb9fb324161",
+        "src/lisp/native_comp/runtime.rs": "2a453dd4329c2f8e4313eb0c8270e1928d6fb9188e84edccb61af97fd7d7b95a",
+        "src/lisp/primitives/strings.rs": "8e5d67c8ae38dba091578914be5fcf2507f43ab3e7b6b85564f202cfd4a91f2f",
+        "src/lisp/primitives/dispatch/misc_keymaps.rs": "cff587feefb6d6deec202081d344b3fbd7e6dc15c25b28e23e675267ef673443"
+      },
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "inspected_gnu_sha256": {
+        "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+        "src/alloc.c": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+        "src/bytecode.c": "0383ce4f09d593468cbe01d31a22fa069a7817cef77672585ff494f6cb6e6ea2",
+        "src/thread.c": "db98cd281fea092878bfff530f7082669024b82c883a37141a69e6443322f210"
+      },
+      "locked_suite_sha256": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd",
+      "locked_suite_unchanged_from_main": true,
+      "findings": [
+        {
+          "requirement": "3 shared strings",
+          "current": "TextRef/StringCell owns Rust String; StringObject/SharedStringState separately owns GNU encoded bytes. CodeBytes retains a legacy Rc byte slice for non-ASCII plain strings. StringLike copies/project views for consumers.",
+          "required": "Unify the authoritative allocation and remove the plain-string/VM adapter without losing full character codes, identity, mutation or image/native contracts."
+        },
+        {
+          "requirement": "4 accounting",
+          "current": "Seven category variables initialize to zero; memory-use-counts signals unsupported. note_string_allocation charges a GNU header/data formula rather than recording actual Rust allocations and capacities.",
+          "required": "Count actual category allocations, implement forwarded counter semantics, and record physical capacities, metadata, retained memory and GC work."
+        },
+        {
+          "requirement": "4 ownership",
+          "current": "Value is one word with a non-Send marker. A native activation mutex serializes native entry. Public Value factories and Interpreter::new reach process-global arenas; TextRef::as_str returns a static borrow. This review does not establish a complete host ownership/lifetime contract.",
+          "required": "Enforce the actual public runtime boundary and establish rooting/borrow lifetimes; serial tests and non-Send values alone do not prove it."
+        },
+        {
+          "requirement": "5 VM stack",
+          "current": "BC_STACK_VALUES remains 1<<18 with an obsolete two-word Value comment; BcFrame records are stored in a separate Vec. GNU BC_STACK_SIZE is 512K Lisp words including four-word frame headers placed after each declared maximum stack.",
+          "required": "Repair capacity, frame reservation/layout and honest storage accounting together; increasing only the constant does not reproduce GNU nested-frame bounds."
+        }
+      ],
+      "qualification": "Read-only inspection of current runtime and unchanged GNU C, not runtime validation or performance measurement. The requirement map is updated from stale source238/source243 statements to verified source248 evidence. Source249 remains separate and queued. No architecture-completion, public-API soundness or GNU-speed claim."
+    },
+    "qualification": "The unchanged second full source248 terminal run passes all 226 scenarios and 686 comparisons (658 screen, 28 filesystem). Supervisor14540 has exited. All raw verdicts, 472 source inputs and eight execution inputs are checked; original selectors, actions, timeouts and comparison strictness remain. The first GNU startup failure and unchanged selected replay remain distinct preserved results, without a claimed cause. This closes this checkpoint terminal gate, not pinned Darwin or the full architectural/performance objective. Source249 remains isolated and is validating under supervisor15814."
+  },
+  "archive": {
+    "path": "source248-complete-terminal-retry.tar.gz",
+    "bytes": 49499,
+    "sha256": "55c0b4faf8708f460e8038e8c389079d9d49f075c2a391e765cb178e13fd15c5"
+  },
+  "files": [
+    {
+      "path": "audit-source248-terminal-retry.py",
+      "bytes": 5512,
+      "sha256": "afa59d510d37cf0b0459ecafba659689dc50602bb965c7693a39dd1fcdd3d9a7"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source248-terminal-retry.py",
+      "bytes": 2541,
+      "sha256": "bc13772951a4dc878f2a7fe1f1399b707c667b687ab728482790be2fbdd2c864"
+    },
+    {
+      "path": "run-source248-full-tty-retry.py",
+      "bytes": 3899,
+      "sha256": "c1e91d7dbddab4d91068dcfe7de224107c272233e27ce6dc46dc637688f88a4f"
+    },
+    {
+      "path": "run-source248-recursive-minibuffer-replay.py",
+      "bytes": 2695,
+      "sha256": "10709c0cc319ad5e1a9db28a3961ed7218c9de9b4837a9324bde31d2906b258d"
+    },
+    {
+      "path": "source248-current-requirement-review.json",
+      "bytes": 3855,
+      "sha256": "f4619042d8ae5e78a4b6f67a0d7f86ade0dd701fd5d7fe5311deb83b4d879c41"
+    },
+    {
+      "path": "source248-full-ttydiff-command.json",
+      "bytes": 9300,
+      "sha256": "ac5d3b23859560bf4c66d81c98ce192a083c40190657b588b6da46f7ad6966f2"
+    },
+    {
+      "path": "source248-full-ttydiff-result.json",
+      "bytes": 472,
+      "sha256": "711525bce56929cad70b55528a6d9f9fe81e85b5830df0687899afc037099ba6"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-command.json",
+      "bytes": 9201,
+      "sha256": "247ff4780a46dec41b0bf2e5d6e4762efc2ea734282c4cde0a8522bd50c82ccd"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-driver.log",
+      "bytes": 246,
+      "sha256": "b91f7aba1fe0e863d9c9a1a8eab5580ff19f78d9f05f25ce87c835e3e12e4992"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-launch.json",
+      "bytes": 601,
+      "sha256": "f73e875332c3f4408db57a0d3bfe6c07c8466bbb7bd3f482f27c6083472ae5e7"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-result.json",
+      "bytes": 271,
+      "sha256": "0d4b15e55ccf04e9e7cee26fa82a582f8c8a0a922c7caec240cf3a0026a517be"
+    },
+    {
+      "path": "source248-full-ttydiff-retry.log",
+      "bytes": 62615,
+      "sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c"
+    },
+    {
+      "path": "source248-full-ttydiff.log",
+      "bytes": 26675,
+      "sha256": "5594d183903d14cc480c975a20de3cbb24cb8cee57efdaf098b755b9993c69de"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source248-ordinary-artifacts.json",
+      "bytes": 762,
+      "sha256": "c254cb3eb526ae6d217734b62e22e0d13fd14c881fa862a98a75c4287fbe61a4"
+    },
+    {
+      "path": "source248-recursive-minibuffer-replay-command.json",
+      "bytes": 2778,
+      "sha256": "3218d6dc4f43d546e9e1ab1a5151a77b72debd0b8fc2ae9f1c797c362dc884ce"
+    },
+    {
+      "path": "source248-recursive-minibuffer-replay-result.json",
+      "bytes": 1034,
+      "sha256": "f7ce1e6e7a77d1f34be48bc47591cdcc917954f4fef9ebdc07a96ace338147dc"
+    },
+    {
+      "path": "source248-recursive-minibuffer-replay.log",
+      "bytes": 657,
+      "sha256": "7189952d2fd99851f290ccc0d1d0465b819a78a8eb6632b9a491d807fd6e5210"
+    },
+    {
+      "path": "source248-terminal-failure-audit.json",
+      "bytes": 4510,
+      "sha256": "4deb667270233e570da214eaa69c5cdf805a40d9a20938a7ec4f6facecd9e9da"
+    },
+    {
+      "path": "source248-terminal-retry-audit.json",
+      "bytes": 1797,
+      "sha256": "daad858d3e8b0d8e4a91703d9d1778dd2867a29a279eb8474abb8013db1b2666"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
