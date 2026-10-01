@@ -307,7 +307,10 @@ impl CircularReadMaterializer<'_> {
                 Ok(*value)
             }
             Kind::StringObject(state) => {
-                let spans = state.borrow().props.clone();
+                let spans = state.borrow().props.to_vec();
+                if spans.is_empty() {
+                    return Ok(*value);
+                }
                 let mut resolved_spans = Vec::with_capacity(spans.len());
                 for span in spans {
                     let mut props = Vec::with_capacity(span.props.len());
@@ -316,7 +319,7 @@ impl CircularReadMaterializer<'_> {
                     }
                     resolved_spans.push(StringPropertySpan { props, ..span });
                 }
-                state.borrow_mut().props = resolved_spans;
+                state.borrow_mut().props = resolved_spans.into();
                 Ok(*value)
             }
             Kind::ReaderForm(form) => {

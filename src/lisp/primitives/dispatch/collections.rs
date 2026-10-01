@@ -802,6 +802,9 @@ define_dispatch!(
                 {
                     return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
                 }
+                if let Kind::StringObject(state) = args[0].kind() {
+                    state.check_impure()?;
+                }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
@@ -855,7 +858,13 @@ define_dispatch!(
                         Ok(args[0])
                     }
                     Kind::StringObject(state) => {
-                        state.borrow_mut().fill(args[1])?;
+                        // fns.c validates ITEM before the empty fast path and
+                        // before CHECK_IMPURE on a nonempty string.
+                        crate::lisp::types::string_data::character_code(args[1])?;
+                        if state.borrow().len() != 0 {
+                            state.check_impure()?;
+                            state.borrow_mut().fill(args[1])?;
+                        }
                         Ok(args[0])
                     }
                     value if is_bool_vector_value(interp, &value.value()) => {
@@ -986,8 +995,14 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::StringObject(state) => {
-                        let mut state = state.borrow_mut();
-                        state.clear();
+                        let needs_clear = {
+                            let contents = state.borrow();
+                            contents.storage_bytes() != 0 || contents.is_multibyte()
+                        };
+                        if needs_clear {
+                            state.check_impure()?;
+                            state.borrow_mut().clear();
+                        }
                         Ok(Value::Nil)
                     }
                     other => Err(LispError::WrongTypeArgument(

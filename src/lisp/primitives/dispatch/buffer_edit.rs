@@ -2025,20 +2025,22 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |mut current| {
-                            // GNU replaces existing properties in place and
-                            // conses new ones onto the plist head.
-                            for (name, value) in &props {
-                                if let Some((_, existing)) =
-                                    current.iter_mut().find(|(key, _)| key == name)
-                                {
-                                    *existing = *value;
-                                } else {
-                                    current.insert(0, (name.clone(), *value));
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |mut current| {
+                                // GNU replaces existing properties in place and
+                                // conses new ones onto the plist head.
+                                for (name, value) in &props {
+                                    if let Some((_, existing)) =
+                                        current.iter_mut().find(|(key, _)| key == name)
+                                    {
+                                        *existing = *value;
+                                    } else {
+                                        current.insert(0, (name.clone(), *value));
+                                    }
                                 }
-                            }
-                            current
-                        })?;
+                                current
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2064,7 +2066,16 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
+                        let had_properties = match object.kind() {
+                            Kind::StringObject(state) => !state.borrow().props.is_empty(),
+                            _ => unreachable!("string checked above"),
+                        };
                         modify_shared_string_properties(object, start, end, |_| props.clone())?;
+                        return Ok(if start < end && (had_properties || !props.is_empty()) {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2094,12 +2105,14 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |current| {
-                            current
-                                .into_iter()
-                                .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                .collect()
-                        })?;
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |current| {
+                                current
+                                    .into_iter()
+                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
+                                    .collect()
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2128,12 +2141,14 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |current| {
-                            current
-                                .into_iter()
-                                .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                .collect()
-                        })?;
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |current| {
+                                current
+                                    .into_iter()
+                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
+                                    .collect()
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;

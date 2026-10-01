@@ -30,9 +30,9 @@ pub use symbols_with_pos::SymbolWithPosRef;
 #[cfg(test)]
 mod tests;
 
-use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
+use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -100,7 +100,6 @@ pub enum VectorTag {
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
-    StringObject = 40,
     ReaderForm = 41,
 }
 
@@ -122,7 +121,6 @@ impl VectorTag {
             32 => Self::CharTable,
             33 => Self::SubCharTable,
             34 => Self::Record,
-            40 => Self::StringObject,
             41 => Self::ReaderForm,
             _ => Self::Normal,
         }
@@ -210,12 +208,6 @@ impl VectorHeader {
             // allocated ZeroVector, whose mark follows this header.
             return VectorMark(VectorMarkStorage::Separate(unsafe {
                 &(*(address as *const ZeroVector)).mark
-            }));
-        }
-        if empty_string_at(address).is_some() {
-            // SAFETY: the permanent empty string owns its separate mark.
-            return VectorMark(VectorMarkStorage::Separate(unsafe {
-                &(*(address as *const EmptyString)).mark
             }));
         }
         let nbytes = self.nbytes();
@@ -368,9 +360,6 @@ pub(crate) fn take_freed_records() -> Vec<FreedRecord> {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
 }
-static LIVE_STRING_OBJECTS: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRING_OBJECT_BYTES: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRING_OBJECT_SPANS: AtomicUsize = AtomicUsize::new(0);
 
 fn raise(counter: &AtomicUsize, by: usize) {
     counter.store(counter.load(Ordering::Relaxed) + by, Ordering::Relaxed);
@@ -543,41 +532,6 @@ fn zero_vector() -> *mut VectorHeader {
             mark: MarkBit::default(),
         })) as *mut ZeroVector as usize
     }) as *mut VectorHeader
-}
-
-/// alloc.c's empty_unibyte_string: one permanent empty canonical string.
-/// It is outside the swept blocks and the allocated Lisp-string census.
-#[repr(C)]
-struct EmptyString {
-    header: VectorHeader,
-    state: RefCell<SharedStringState>,
-    mark: MarkBit,
-}
-
-static EMPTY_STRING: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-pub(super) fn empty_string_at(address: usize) -> Option<*mut VectorHeader> {
-    EMPTY_STRING
-        .get()
-        .filter(|&&empty| empty == address)
-        .map(|&empty| empty as *mut VectorHeader)
-}
-
-pub(crate) fn empty_unibyte_string() -> VectorlikeRef<RefCell<SharedStringState>> {
-    let address = *EMPTY_STRING.get_or_init(|| {
-        Box::leak(Box::new(EmptyString {
-            header: VectorHeader {
-                size: VectorHeader::pseudovector_size_word(
-                    VectorTag::StringObject,
-                    HEADER_SIZE + std::mem::size_of::<RefCell<SharedStringState>>(),
-                ),
-            },
-            state: RefCell::new(SharedStringState::from_unibyte(Vec::new())),
-            mark: MarkBit::default(),
-        })) as *mut EmptyString as usize
-    });
-    // SAFETY: the permanent allocation uses the same header/payload layout.
-    unsafe { VectorlikeRef::from_raw(address as *mut VectorHeader) }
 }
 
 /// `Lisp_Object' for an ordinary vector: the header's address.
@@ -853,10 +807,6 @@ impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
 
-impl Vectorlike for RefCell<SharedStringState> {
-    const TAG: VectorTag = VectorTag::StringObject;
-}
-
 impl Vectorlike for ReaderForm {
     const TAG: VectorTag = VectorTag::ReaderForm;
 }
@@ -1005,12 +955,6 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
             }
-            VectorTag::StringObject => {
-                let state = (*payload(header).cast::<RefCell<SharedStringState>>()).borrow();
-                raise(&LIVE_STRING_OBJECTS, 1);
-                raise(&LIVE_STRING_OBJECT_BYTES, state.storage_bytes());
-                raise(&LIVE_STRING_OBJECT_SPANS, state.props.len());
-            }
             VectorTag::Subr => unreachable!("static subrs do not enter vector allocation"),
             VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
         }
@@ -1059,9 +1003,6 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::SymbolWithPos => {}
-            VectorTag::StringObject => {
-                std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
-            }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
@@ -1100,9 +1041,6 @@ struct SweepStats {
     overlays: usize,
     records: usize,
     record_slots: usize,
-    string_objects: usize,
-    string_object_bytes: usize,
-    string_object_spans: usize,
 }
 
 impl SweepStats {
@@ -1149,17 +1087,6 @@ impl SweepStats {
                     if slots != 0 {
                         self.records += 1;
                         self.record_slots += slots;
-                    }
-                }
-                VectorTag::StringObject => {
-                    self.string_objects += 1;
-                    // A string object the collection found mutably borrowed
-                    // (its mutator allocating) is counted without its bytes.
-                    if let Ok(state) =
-                        (*payload(header).cast::<RefCell<SharedStringState>>()).try_borrow()
-                    {
-                        self.string_object_bytes += state.storage_bytes();
-                        self.string_object_spans += state.props.len();
                     }
                 }
                 VectorTag::Subr => unreachable!("static subrs are not swept"),
@@ -1275,9 +1202,6 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_OVERLAYS.store(stats.overlays, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
-    LIVE_STRING_OBJECTS.store(stats.string_objects, Ordering::Relaxed);
-    LIVE_STRING_OBJECT_BYTES.store(stats.string_object_bytes, Ordering::Relaxed);
-    LIVE_STRING_OBJECT_SPANS.store(stats.string_object_spans, Ordering::Relaxed);
 }
 
 /// The vector census (gcstat's `total_vectors' and `total_vector_slots'
@@ -1304,15 +1228,6 @@ pub(crate) fn live_record_census() -> (usize, usize) {
     (
         LIVE_RECORDS.load(Ordering::Relaxed),
         LIVE_RECORD_SLOTS.load(Ordering::Relaxed),
-    )
-}
-
-/// The string objects' census: count, storage bytes, property spans.
-pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
-    (
-        LIVE_STRING_OBJECTS.load(Ordering::Relaxed),
-        LIVE_STRING_OBJECT_BYTES.load(Ordering::Relaxed),
-        LIVE_STRING_OBJECT_SPANS.load(Ordering::Relaxed),
     )
 }
 
@@ -1405,7 +1320,6 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),
-            VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {
                 Value::LispRecord(LispRecordRef::from_raw(header))

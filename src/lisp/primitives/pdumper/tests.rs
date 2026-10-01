@@ -31,6 +31,107 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 }
 
 #[test]
+fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability() {
+    use crate::lisp::types::{Env, SharedStringState};
+    let mut source = Interpreter::new();
+    let mut environment = Env::new();
+    source.define_special_variable("purify-flag", Value::T);
+    let unibyte =
+        crate::lisp::types::string_object_value(SharedStringState::from_unibyte(Vec::new()));
+    let multibyte = crate::lisp::types::string_object_value(
+        SharedStringState::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
+    );
+    let ordinary = Value::string("mutable after dump");
+    let mut slots = vec![unibyte, multibyte];
+    for value in [unibyte, multibyte, ordinary] {
+        slots.push(
+            crate::lisp::primitives::purecopy_value(&mut source, &value, &mut environment)
+                .expect("pure copy"),
+        );
+    }
+    slots.push(slots[4]);
+    assert!(!slots[0].eq_value(slots[2]));
+    assert!(!slots[1].eq_value(slots[3]));
+    let graph = Value::vector(slots);
+    source.set_global_binding("string-image-root", graph);
+    let cloned = source.deep_clone_image();
+    let Kind::Vector(cloned_graph) = cloned
+        .lookup_var("string-image-root", &Env::new())
+        .expect("cloned graph")
+        .kind()
+    else {
+        panic!("cloned vector")
+    };
+    for index in 2..=4 {
+        let Kind::StringObject(state) = cloned_graph.get(index).expect("cloned pure string").kind()
+        else {
+            panic!("cloned string")
+        };
+        assert!(
+            state.is_pure(),
+            "image cloning preserves read-only allocation state"
+        );
+    }
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("restore string graph");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("string graph root")
+        .1;
+    let Kind::Vector(vector) = loaded.kind() else {
+        panic!("string graph vector")
+    };
+    let restored = vector.slots().collect::<Vec<_>>();
+    assert!(restored[0].eq_value(unibyte));
+    assert!(restored[1].eq_value(multibyte));
+    assert!(!restored[0].eq_value(restored[2]));
+    assert!(!restored[1].eq_value(restored[3]));
+    assert!(restored[4].eq_value(restored[5]));
+    target.set_global_binding("string-image-root", loaded);
+    let cloned = target.deep_clone_image();
+    let Kind::Vector(cloned_graph) = cloned
+        .lookup_var("string-image-root", &Env::new())
+        .expect("cloned restored graph")
+        .kind()
+    else {
+        panic!("cloned restored vector")
+    };
+    assert!(
+        !cloned_graph
+            .get(0)
+            .expect("empty root")
+            .eq_value(cloned_graph.get(2).expect("distinct empty"))
+    );
+    assert!(
+        !cloned_graph
+            .get(1)
+            .expect("multibyte empty root")
+            .eq_value(cloned_graph.get(3).expect("distinct multibyte empty"))
+    );
+    for &value in &restored {
+        let Kind::StringObject(state) = value.kind() else {
+            panic!("restored string")
+        };
+        // GNU's dumped headers are outside PURE_P's active pure space.
+        assert!(!state.is_pure());
+    }
+    crate::lisp::primitives::call(
+        &mut target,
+        "aset",
+        &[restored[4], Value::Integer(0), Value::Integer(90)],
+        &mut Env::new(),
+    )
+    .expect("write restored formerly-pure string");
+    assert_eq!(
+        restored[5].as_string().expect("shared restored bytes"),
+        "Zutable after dump"
+    );
+}
+
+#[test]
 fn captured_menu_case_table_is_an_independent_image_root() {
     use crate::lisp::primitives::{restore_unicode_menu_case_table, unicode_menu_case_table};
     struct Restore(Value);

@@ -25,17 +25,21 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 
 mod finalizers;
+mod strings;
 mod symbols;
 pub(crate) use finalizers::FinalizerList;
 pub use finalizers::{FinalizerRef, FinalizerState};
+pub use strings::StringObjectRef;
+pub(crate) use strings::{
+    allocate_restored_string, allocate_string, live_string_object_census, sweep_strings,
+};
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
-    FreedRecord, live_record_census, live_string_object_census, live_vector_census, sweep_vectors,
-    take_freed_records,
+    FreedRecord, live_record_census, live_vector_census, sweep_vectors, take_freed_records,
 };
 
 /// alloc.c's block geometry: the cells per block that its formulas give
@@ -65,6 +69,7 @@ fn block_bytes(kind: BlockKind) -> usize {
         BlockKind::Cons => std::mem::size_of::<ConsBlock>(),
         BlockKind::Float => std::mem::size_of::<FloatBlock>(),
         BlockKind::Symbol => SYMBOLS_PER_BLOCK * symbols::SYMBOL_CELL_SIZE,
+        BlockKind::String => strings::STRINGS_PER_BLOCK * strings::STRING_CELL_SIZE,
         BlockKind::VectorBlock | BlockKind::LargeVector => {
             unreachable!("vector storage is allocated by its own module")
         }
@@ -96,6 +101,8 @@ pub(crate) enum BlockKind {
     LargeVector,
     /// alloc.c's `MEM_TYPE_SYMBOL'.
     Symbol,
+    /// alloc.c's MEM_TYPE_STRING.
+    String,
 }
 
 /// The blocks, by start address, with their kinds, for `mem_find'
@@ -441,6 +448,7 @@ pub(crate) enum Found {
     Float(*mut FloatCell),
     Vectorlike(*mut VectorHeader),
     Symbol(*mut SymbolCell),
+    String(*mut strings::StringCell),
 }
 
 thread_local! {
@@ -1351,6 +1359,10 @@ fn new_block(kind: BlockKind) -> usize {
             // SAFETY: the block just allocated.
             unsafe { symbols::init_block(start) };
         }
+        BlockKind::String => {
+            // SAFETY: the block just allocated.
+            unsafe { strings::init_block(start) };
+        }
         BlockKind::VectorBlock | BlockKind::LargeVector => {
             unreachable!("vectors have their own blocks (alloc/vectors.rs)")
         }
@@ -1369,8 +1381,8 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
     if let Some(vector) = vectors::zero_vector_at(address) {
         return Some(Found::Vectorlike(vector));
     }
-    if let Some(string) = vectors::empty_string_at(address) {
-        return Some(Found::Vectorlike(string));
+    if let Some(string) = strings::empty_string_at(address) {
+        return Some(Found::String(string));
     }
     let blocks = BLOCKS
         .lock()
@@ -1408,6 +1420,10 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
         // SAFETY: a registered symbol block.
         BlockKind::Symbol => {
             unsafe { symbols::live_symbol_holding(start, address) }.map(Found::Symbol)
+        }
+        BlockKind::String => {
+            // SAFETY: a registered string block.
+            unsafe { strings::live_string_holding(start, address) }.map(Found::String)
         }
     }
 }
@@ -1813,6 +1829,7 @@ pub(crate) fn conservative_value(word: usize) -> Option<Value> {
         }
         Found::Float(cell) => Value::Float(FloatRef(unsafe { NonNull::new_unchecked(cell) })),
         Found::Vectorlike(header) => unsafe { vectors::value_of(header) },
+        Found::String(cell) => Value::StringObject(unsafe { StringObjectRef::from_raw(cell) }),
         Found::Symbol(cell) => Value::Symbol(super::types::SymbolName::from_ref(unsafe {
             SymbolRef::from_raw(cell)
         })),

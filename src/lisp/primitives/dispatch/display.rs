@@ -1361,7 +1361,7 @@ fn tty_supports_face_attributes(
             // face_attr_equal_p compares color strings case-insensitively.
             let text_of = |value: &Value| -> Option<String> {
                 match value.kind() {
-                    Kind::StringObject(state) => Some(std::cell::RefCell::borrow(&state).text()),
+                    Kind::StringObject(state) => Some(state.borrow().text()),
                     _ => None,
                 }
             };

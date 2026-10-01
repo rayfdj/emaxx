@@ -303,33 +303,15 @@ pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
 /// its bytes (0 to 255) and a multibyte string's its decoded characters
 /// (a raw byte among them is 0x3FFF80 and above).  Symbols compare by
 /// their names.
-pub(crate) fn string_order(left: &Value, right: &Value) -> Result<std::cmp::Ordering, LispError> {
-    let left_text = string_comparison_text(left)?;
-    let right_text = string_comparison_text(right)?;
-    if left_text.is_ascii() && right_text.is_ascii() {
-        return Ok(left_text.as_bytes().cmp(right_text.as_bytes()));
-    }
-    let codes = |value: &Value, text: &str| -> Vec<i64> {
-        match string_like(value) {
-            Some(string) => string.character_codes(),
-            None => {
-                let multibyte = !text.is_ascii();
-                text.chars()
-                    .map(|ch| string_character_code(multibyte, ch))
-                    .collect()
-            }
-        }
-    };
-    Ok(codes(left, &left_text).cmp(&codes(right, &right_text)))
-}
-
-pub(crate) fn string_comparison_text(value: &Value) -> Result<String, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok("nil".into()),
-        Kind::T => Ok("t".into()),
-        Kind::Symbol(name) => Ok(crate::lisp::types::visible_symbol_name(&name).to_string()),
-        _ => string_text(value),
-    }
+pub(crate) fn string_order(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Result<std::cmp::Ordering, LispError> {
+    let left = string_comparison_object(interp, left, env)?;
+    let right = string_comparison_object(interp, right, env)?;
+    Ok(left.borrow().compare_contents(&right.borrow()))
 }
 
 pub(crate) fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
@@ -342,27 +324,11 @@ pub(crate) fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
     simple_upcase_char(codepoint) as i64
 }
 
-pub(crate) fn normalize_compare_strings_end(
-    arg: Option<&Value>,
-    len: i64,
-) -> Result<i64, LispError> {
-    let Some(value) = arg else {
-        return Ok(len);
-    };
-    if value.is_nil() {
-        return Ok(len);
-    }
-    let raw = value.as_integer()?;
-    let index = if raw < 0 { len + raw } else { raw };
-    Ok(index.clamp(0, len))
-}
-
 pub(crate) fn string_compare_codes(
     value: &Value,
     start: Option<&Value>,
     end: Option<&Value>,
     ignore_case: bool,
-    clamp_end: bool,
 ) -> Result<Vec<i64>, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
@@ -372,11 +338,7 @@ pub(crate) fn string_compare_codes(
         .collect::<Result<Vec<_>, _>>()?;
     let len = codes.len() as i64;
     let start = normalize_string_index(start, 0, len)? as usize;
-    let end = if clamp_end {
-        normalize_compare_strings_end(end, len)?
-    } else {
-        normalize_string_index(end, len, len)?
-    } as usize;
+    let end = normalize_string_index(end, len, len)? as usize;
     if start > end {
         return Err(LispError::Signal("Args out of range".into()));
     }
@@ -396,63 +358,85 @@ pub(crate) fn string_compare_ordering(
     ignore_case: bool,
 ) -> Result<Ordering, LispError> {
     Ok(
-        string_compare_codes(left, None, None, ignore_case, false)?.cmp(&string_compare_codes(
+        string_compare_codes(left, None, None, ignore_case)?.cmp(&string_compare_codes(
             right,
             None,
             None,
             ignore_case,
-            false,
         )?),
     )
 }
 
 pub(crate) fn compare_strings_value(
-    left: &Value,
-    left_start: Option<&Value>,
-    left_end: Option<&Value>,
-    right: &Value,
-    right_start: Option<&Value>,
-    right_end: Option<&Value>,
-    ignore_case: bool,
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    // fns.c reads both strings with fetch_string_char_as_multibyte_advance:
-    // a unibyte string's byte above 127 is the raw-byte character.
-    let promote = |codes: Vec<i64>, value: &Value| -> Vec<i64> {
-        if string_argument_multibyte(value) {
-            return codes;
-        }
-        codes
-            .into_iter()
-            .map(|code| {
-                if (0x80..=0xFF).contains(&code) {
-                    RAW_BYTE8_BASE as i64 + code
-                } else {
-                    code
-                }
-            })
-            .collect()
+    // fns.c:Fcompare_strings checks both string types before either
+    // range, then clamps only too-large positive fixnum end arguments.
+    // The dispatch caller has already checked the six/seven argument arity.
+    let Kind::StringObject(left) = args[0].kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
     };
-    let left = promote(
-        string_compare_codes(left, left_start, left_end, ignore_case, true)?,
-        left,
-    );
-    let right = promote(
-        string_compare_codes(right, right_start, right_end, ignore_case, true)?,
-        right,
-    );
-    let common_len = left.len().min(right.len());
-
-    for index in 0..common_len {
-        match left[index].cmp(&right[index]) {
-            Ordering::Less => return Ok(Value::Integer(-((index + 1) as i64))),
-            Ordering::Greater => return Ok(Value::Integer((index + 1) as i64)),
+    let Kind::StringObject(right) = args[3].kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), args[3]));
+    };
+    let clamp_end = |end: Value, length: usize| match end.kind() {
+        Kind::Integer(index) if index > length as i64 => Value::Integer(length as i64),
+        _ => end,
+    };
+    let left_end = clamp_end(args[2], left.borrow().len());
+    let right_end = clamp_end(args[5], right.borrow().len());
+    let (left_start, left_end, mut left_byte) = {
+        let state = left.borrow();
+        let (from, to) = validate_subarray(args[0], args[1], left_end, state.len())?;
+        (
+            from,
+            to,
+            state.byte_offset(from).expect("validated string index"),
+        )
+    };
+    let (right_start, right_end, mut right_byte) = {
+        let state = right.borrow();
+        let (from, to) = validate_subarray(args[3], args[4], right_end, state.len())?;
+        (
+            from,
+            to,
+            state.byte_offset(from).expect("validated string index"),
+        )
+    };
+    let ignore_case = args.get(6).is_some_and(Value::is_truthy);
+    let left_length = left_end - left_start;
+    let right_length = right_end - right_start;
+    let common_length = left_length.min(right_length);
+    for matched in 0..common_length {
+        let mut a = left
+            .borrow()
+            .character_as_multibyte_advance(&mut left_byte)
+            .expect("validated string range");
+        let mut b = right
+            .borrow()
+            .character_as_multibyte_advance(&mut right_byte)
+            .expect("validated string range");
+        if a == b {
+            continue;
+        }
+        if ignore_case {
+            // GNU calls Fupcase on the promoted character only after a
+            // mismatch. Use the same live buffer case tables and numeric
+            // casing path, releasing string borrows before either call.
+            a = casify_value(interp, &Value::Integer(a), CaseAction::Up, env)?.as_integer()?;
+            b = casify_value(interp, &Value::Integer(b), CaseAction::Up, env)?.as_integer()?;
+        }
+        match a.cmp(&b) {
+            Ordering::Less => return Ok(Value::Integer(-((matched + 1) as i64))),
+            Ordering::Greater => return Ok(Value::Integer((matched + 1) as i64)),
             Ordering::Equal => {}
         }
     }
-
-    match left.len().cmp(&right.len()) {
-        Ordering::Less => Ok(Value::Integer(-((common_len + 1) as i64))),
-        Ordering::Greater => Ok(Value::Integer((common_len + 1) as i64)),
+    match left_length.cmp(&right_length) {
+        Ordering::Less => Ok(Value::Integer(-((common_length + 1) as i64))),
+        Ordering::Greater => Ok(Value::Integer((common_length + 1) as i64)),
         Ordering::Equal => Ok(Value::T),
     }
 }
@@ -504,7 +488,7 @@ fn collate_operand_codes(value: &Value) -> Result<Vec<i64>, LispError> {
         }
         other => &other.value(),
     };
-    string_compare_codes(value, None, None, false, false)
+    string_compare_codes(value, None, None, false)
 }
 
 /// sysdep.c str_collate (GNU/Linux): widen both strings to code-point
@@ -673,6 +657,7 @@ pub(crate) fn aset_string_value(
     let Kind::StringObject(state) = target.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *target));
     };
+    state.check_impure()?;
     let mut state = state.borrow_mut();
     // data.c:Faset checks the existing index before NEWELT.
     if index >= state.len() {
@@ -680,7 +665,7 @@ pub(crate) fn aset_string_value(
         return Err(args_out_of_range_for_aset(target, index));
     }
     let code = crate::lisp::types::string_data::character_code(*new_value)?;
-    if !state.store_character(index, code) {
+    if !state.store_character(index, code)? {
         drop(state);
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("args-out-of-range"),
@@ -1284,22 +1269,21 @@ pub(crate) fn modify_shared_string_properties<F>(
     start: usize,
     end: usize,
     mut f: F,
-) -> Result<(), LispError>
+) -> Result<bool, LispError>
 where
     F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
 {
     let Kind::StringObject(state) = value.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
-    let mut state = state.borrow_mut();
-    let len = state.len();
+    let len = state.borrow().len();
     let start = start.min(len);
     let end = end.min(len);
     if start >= end {
-        return Ok(());
+        return Ok(false);
     }
 
-    let original = state.props.clone();
+    let original = state.borrow().props.to_vec();
     let mut updated = Vec::new();
     for span in &original {
         if span.end <= start || span.start >= end {
@@ -1333,6 +1317,7 @@ where
     boundaries.sort_unstable();
     boundaries.dedup();
 
+    let mut changed = false;
     for window in boundaries.windows(2) {
         let seg_start = window[0];
         let seg_end = window[1];
@@ -1340,7 +1325,8 @@ where
             continue;
         }
         let current = string_object_properties_at(&original, seg_start);
-        let next = f(current);
+        let next = f(current.clone());
+        changed |= !crate::buffer::text_property_plists_eq(&current, &next);
         if !next.is_empty() {
             updated.push(StringPropertySpan {
                 start: seg_start,
@@ -1350,6 +1336,13 @@ where
         }
     }
 
-    state.props = merge_string_object_props(updated);
-    Ok(())
+    let updated = merge_string_object_props(updated);
+    // A pure string has no intervals. GNU soft removal therefore returns
+    // without writing; creating intervals invokes CHECK_IMPURE instead.
+    if state.is_pure() && updated.is_empty() {
+        return Ok(false);
+    }
+    state.check_impure()?;
+    state.borrow_mut().props = updated.into();
+    Ok(changed)
 }

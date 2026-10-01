@@ -2932,16 +2932,21 @@ impl ImageGraphCopier {
                 value
             }
             Kind::StringObject(state) => {
+                // Pure strings are immutable and contain no Lisp children;
+                // the two permanent empty roots also retain their identities.
+                if state.is_pure() || state.is_empty_singleton() {
+                    return *value;
+                }
                 let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
                     return *copied;
                 }
-                let copied = crate::lisp::types::string_object_value(
+                let copied = Value::StringObject(crate::lisp::alloc::allocate_restored_string(
                     state.borrow().clone_without_properties(),
-                );
+                ));
                 self.strings.insert(key, copied);
-                let props = state.borrow().props.clone();
-                let copied_props = props
+                let props = state.borrow().props.to_vec();
+                let copied_props: Vec<crate::lisp::types::StringPropertySpan> = props
                     .iter()
                     .map(|span| crate::lisp::types::StringPropertySpan {
                         start: span.start,
@@ -2954,7 +2959,7 @@ impl ImageGraphCopier {
                     })
                     .collect();
                 if let Kind::StringObject(new_state) = copied.kind() {
-                    new_state.borrow_mut().props = copied_props;
+                    new_state.borrow_mut().props = copied_props.into();
                 }
                 copied
             }

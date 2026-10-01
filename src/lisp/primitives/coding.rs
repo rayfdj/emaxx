@@ -769,26 +769,13 @@ pub(crate) fn set_last_coding_system_used(interp: &mut Interpreter, coding: &str
 pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
     // fns.c:Fcopy_sequence copies the actual payload and intervals. A Rust
     // text projection cannot preserve all Lisp characters or byte8 identity.
-    if let Kind::StringObject(object) = value.kind() {
-        let state = object.borrow();
-        if state.len() == 0 {
-            return Ok(*value);
-        }
-        let copy = state.clone();
-        drop(state);
-        return Ok(crate::lisp::types::string_object_value(copy));
-    }
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    if string.text.is_empty() {
-        return Ok(*value);
-    }
-    Ok(make_shared_string_value_with_extended_chars(
-        string.text,
-        string.props,
-        string.multibyte,
-        string.extended_chars,
-    ))
+    // Its ordinary constructors return the normal empty singleton even
+    // when the source is a distinct pure or restored zero-length header.
+    let Kind::StringObject(object) = value.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
+    };
+    let copy = object.borrow().clone();
+    Ok(crate::lisp::types::string_object_value(copy))
 }
 
 /// The character a unibyte Lisp string stores for one byte: ASCII stays

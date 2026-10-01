@@ -535,6 +535,7 @@ impl DumpContext {
         }
         match value.kind() {
             Kind::Cons(_) => DumpType::Cons,
+            Kind::StringObject(state) if state.is_empty_singleton() => DumpType::EmptyString,
             Kind::StringObject(_) => DumpType::String,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
@@ -1138,7 +1139,14 @@ impl DumpContext {
             let properties = self.dump_text_properties(interp, &props)?;
             self.remember_fixup_ptr_raw(offset + 16, properties);
         }
-        Ok((offset, DumpType::String))
+        Ok((
+            offset,
+            if state.is_empty_singleton() {
+                DumpType::EmptyString
+            } else {
+                DumpType::String
+            },
+        ))
     }
 
     /// The string's property spans: count, then (start, end, nprops,

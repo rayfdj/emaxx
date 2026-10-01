@@ -361,7 +361,7 @@ impl Loader<'_> {
         let mut string_props: Vec<(u32, u32)> = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
-                DumpType::String | DumpType::StringObject => {
+                DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
                     let (value, props) = self.load_string(offset, kind)?;
                     if let Some(props) = props {
                         string_props.push((offset, props));
@@ -712,7 +712,7 @@ impl Loader<'_> {
             let spans = self.load_text_properties(props_offset)?;
             match self.objects[&string_offset].kind() {
                 Kind::StringObject(state) => {
-                    state.borrow_mut().props = spans;
+                    state.borrow_mut().props = spans.into();
                 }
                 other => {
                     return Err(LoadError::Error(format!(
@@ -1041,7 +1041,7 @@ impl Loader<'_> {
     fn load_string(
         &mut self,
         offset: u32,
-        _kind: DumpType,
+        kind: DumpType,
     ) -> Result<(Value, Option<u32>), LoadError> {
         let size = self.reader.word(offset)? as usize;
         let size_byte = self.reader.word(offset + 8)?;
@@ -1056,11 +1056,16 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let value = crate::lisp::types::string_object_value_with_storage_bytes(
-            SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
-                .map_err(|error| LoadError::Error(error.to_string()))?,
-            nbytes,
-        );
+        let state = SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
+            .map_err(|error| LoadError::Error(error.to_string()))?;
+        let value = if kind == DumpType::EmptyString {
+            if size != 0 || nbytes != 0 || intervals != 0 {
+                return Err(LoadError::Error("nonempty static empty string".into()));
+            }
+            crate::lisp::types::string_object_value(state)
+        } else {
+            Value::StringObject(crate::lisp::alloc::allocate_restored_string(state))
+        };
         Ok((value, (intervals != 0).then_some(intervals)))
     }
 

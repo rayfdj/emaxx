@@ -155,6 +155,9 @@ fn purecopy_inner(
         | Kind::Overlay(_) => return Ok(*value),
         _ => {}
     }
+    if matches!(value.kind(), Kind::StringObject(state) if state.is_pure()) {
+        return Ok(*value);
+    }
     if matches!(value.kind(), Kind::StringObject(state) if !state.borrow().props.is_empty()) {
         // A callback may detach this string from the original graph before
         // collecting. The message's formatted string is a different object.
@@ -176,7 +179,7 @@ fn purecopy_inner(
         Kind::Float(number) => Value::Float(number),
         Kind::StringObject(state) => {
             let copy = state.borrow().clone_without_properties();
-            crate::lisp::types::string_object_value(copy)
+            Value::StringObject(crate::lisp::alloc::allocate_string(copy, true))
         }
         Kind::Vector(_) => return purecopy_vector(interp, value, env),
         Kind::Cons(_) if is_vector_value(value) => {

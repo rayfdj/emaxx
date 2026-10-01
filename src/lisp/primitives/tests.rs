@@ -893,7 +893,10 @@ fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
       (compare-strings "ẞ" nil nil "ß" nil nil t)))"#;
     assert_upstream_primitive_contract(program, "(t t)");
 
-    let mut interp = Interpreter::new();
+    // GNU loadup installs Unicode case mappings through characters.el.
+    // Bare C initialization contains only ASCII; the same buffer tables
+    // must drive both numeric upcase and compare-strings.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(&program[7..program.len() - 1])
         .read()
         .expect("comparison contract should parse")
@@ -903,6 +906,22 @@ fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
             .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("comparison contract should evaluate"),
         Value::list([Value::T, Value::T])
+    );
+    drop(interp);
+    let mut bare = Interpreter::new();
+    assert_eq!(
+        bare.eval(&form, &mut crate::lisp::types::Env::new())
+            .expect("comparison under bare ASCII case tables"),
+        Value::list([Value::Integer(2), Value::Integer(1)]),
+    );
+    drop(bare);
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-comparison-case-table-initialization.el"),
+        include_str!(
+            "../../../tests/fixtures/string-comparison-case-table-initialization.expected"
+        )
+        .trim_end(),
+        "string-comparison-case-table-initialization",
     );
 }
 
@@ -27309,5 +27328,88 @@ fn string_property_hashes_follow_equal_through_nested_mutation_and_lookup() {
         include_str!("../../../tests/fixtures/string-equality-property-hashes.el"),
         include_str!("../../../tests/fixtures/string-equality-property-hashes.expected").trim_end(),
         "equal string property values preserve hashes and custom table lookup",
+    );
+}
+
+#[test]
+fn string_ordering_uses_canonical_storage_and_lisp_symbol_names() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-ordering-symbol-storage.el"),
+        include_str!("../../../tests/fixtures/string-ordering-symbol-storage.expected").trim_end(),
+        "string ordering reads actual name objects and the positioned-symbol policy",
+    );
+}
+
+#[test]
+fn string_versions_follow_gnu_filenvercmp() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-version-ordering.el"),
+        include_str!("../../../tests/fixtures/string-version-ordering.expected").trim_end(),
+        "version ordering follows GNU suffix, tilde, dot and leading-zero rules",
+    );
+}
+
+#[test]
+fn compare_strings_preserves_gnu_range_errors_and_validation_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-ranges.el"),
+        include_str!("../../../tests/fixtures/compare-strings-ranges.expected").trim_end(),
+        "both string types precede index validation, with GNU end clamping and error data",
+    );
+}
+
+#[test]
+fn compare_strings_promotes_bytes_before_casing_actual_characters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-character-storage.el"),
+        include_str!("../../../tests/fixtures/compare-strings-character-storage.expected")
+            .trim_end(),
+        "actual byte8, Unicode and extended characters stay distinct in both buffer modes",
+    );
+}
+
+#[test]
+fn compare_strings_observes_live_case_table_mutation_and_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-live-case-table.el"),
+        include_str!("../../../tests/fixtures/compare-strings-live-case-table.expected").trim_end(),
+        "comparison follows current-buffer upcase tables through mutation and collection",
+    );
+}
+
+#[test]
+fn numeric_casing_uses_exact_character_table_keys() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-case-character-identities.el"),
+        include_str!("../../../tests/fixtures/string-case-character-identities.expected")
+            .trim_end(),
+        "numeric casing uses actual byte8 and Unicode keys without host-text aliases",
+    );
+}
+
+#[test]
+fn string_empty_constructors_preserve_gnu_storage_identities() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-empty-identities.el"),
+        include_str!("../../../tests/fixtures/string-empty-identities.expected").trim_end(),
+        "string-empty-identities",
+    );
+}
+
+#[test]
+fn pure_strings_preserve_gnu_identity_write_protection_and_error_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-pure-storage-values.el"),
+        include_str!("../../../tests/fixtures/string-pure-storage-values.expected").trim_end(),
+        "string-pure-storage-values",
+    );
+}
+
+#[test]
+fn pure_string_properties_preserve_gnu_noop_and_readonly_behavior() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-pure-property-storage.el"),
+        include_str!("../../../tests/fixtures/string-pure-property-storage.expected").trim_end(),
+        "string-pure-property-storage",
     );
 }

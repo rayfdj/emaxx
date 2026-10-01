@@ -449,7 +449,7 @@ fn walk_print_graph(
                 pending.push(car);
             }
             Kind::StringObject(state) => {
-                let props = state.borrow().props.clone();
+                let props = state.borrow().props.to_vec();
                 for span in props.into_iter().rev() {
                     pending.extend(
                         span.props
@@ -1123,7 +1123,7 @@ pub(crate) fn render_prin1_body(
         Kind::StringObject(state) => {
             let (text, props, multibyte) = {
                 let state = state.borrow();
-                (state.text(), state.props.clone(), state.is_multibyte())
+                (state.text(), state.props.to_vec(), state.is_multibyte())
             };
             if props.is_empty() {
                 return Ok(render_prin1_string(interp, &text, multibyte, env));

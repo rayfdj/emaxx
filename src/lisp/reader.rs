@@ -1654,7 +1654,7 @@ impl<'a> Reader<'a> {
                 let state = state.borrow();
                 (
                     state.text(),
-                    state.props.clone(),
+                    state.props.to_vec(),
                     state.is_multibyte(),
                     state.text_parts().1,
                 )
@@ -2382,7 +2382,7 @@ mod tests {
         let state = state.borrow();
         assert_eq!(state.text(), "abc");
         assert_eq!(
-            state.props,
+            state.props.to_vec(),
             vec![StringPropertySpan {
                 start: 0,
                 end: 1,

@@ -208,10 +208,12 @@ impl DumpHeader {
 #[repr(u8)]
 pub(crate) enum DumpType {
     Cons = 1,
-    /// An immutable host string (`Value::String').
+    /// The common string header (also reads the former host-string wire type).
     String = 2,
-    /// A mutable string object (`Value::StringObject').
+    /// Legacy mutable-string wire type; restored by the common string loader.
     StringObject = 3,
+    /// One of alloc.c's two static empty-string roots, identified by its flag.
+    EmptyString = 30,
     Symbol = 4,
     Vector = 5,
     Float = 6,
@@ -260,6 +262,7 @@ impl DumpType {
             1 => Self::Cons,
             2 => Self::String,
             3 => Self::StringObject,
+            30 => Self::EmptyString,
             4 => Self::Symbol,
             5 => Self::Vector,
             6 => Self::Float,

@@ -54,7 +54,7 @@ impl SharedStringState {
             let (count, bytes, needs_multibyte) = match arg.kind() {
                 Kind::StringObject(state) => {
                     let state = state.borrow();
-                    (state.characters, state.bytes.len(), state.multibyte)
+                    (state.len(), state.bytes().len(), state.is_multibyte())
                 }
                 _ => {
                     if matches!(arg.kind(), Kind::Cons(_)) {
@@ -85,10 +85,10 @@ impl SharedStringState {
                 let extra = match arg.kind() {
                     Kind::StringObject(state) => {
                         let state = state.borrow();
-                        if state.multibyte {
+                        if state.is_multibyte() {
                             0
                         } else {
-                            state.bytes.iter().filter(|byte| **byte >= 128).count()
+                            state.bytes().iter().filter(|byte| **byte >= 128).count()
                         }
                     }
                     _ => 0,
@@ -106,10 +106,10 @@ impl SharedStringState {
             match arg.kind() {
                 Kind::StringObject(state) => {
                     let state = state.borrow();
-                    if state.multibyte == multibyte {
-                        bytes.extend_from_slice(&state.bytes);
+                    if state.is_multibyte() == multibyte {
+                        bytes.extend_from_slice(state.bytes());
                     } else {
-                        for &byte in &state.bytes {
+                        for &byte in state.bytes() {
                             let code = if byte < 128 {
                                 u32::from(byte)
                             } else {
@@ -119,7 +119,7 @@ impl SharedStringState {
                         }
                     }
                     copy_properties(&mut props, &state.props, offset);
-                    offset += state.characters;
+                    offset += state.len();
                 }
                 _ => visit_sequence(arg, |value| {
                     extend_encoded(&mut bytes, character_code(value)?, multibyte)?;
@@ -143,11 +143,6 @@ impl SharedStringState {
                 merged.push(span);
             }
         }
-        Ok(Self {
-            bytes,
-            characters,
-            multibyte,
-            props: merged,
-        })
+        Ok(Self::from_encoded(bytes, characters, multibyte, merged))
     }
 }

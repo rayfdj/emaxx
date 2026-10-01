@@ -919,6 +919,9 @@ impl Interpreter {
                 Ok(Value::Vector(vector))
             }
             Kind::StringObject(state) => {
+                if state.borrow().props.is_empty() {
+                    return Ok(Value::StringObject(state));
+                }
                 let mut borrowed = state.borrow_mut();
                 for span in &mut borrowed.props {
                     for (_, property_value) in &mut span.props {

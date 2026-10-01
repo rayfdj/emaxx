@@ -1154,7 +1154,7 @@ pub use crate::overlay::{OverlayRef, OverlayValue};
 pub use marker::{MarkerRef, MarkerValue};
 pub type FrameRef = crate::lisp::alloc::VectorlikeRef<FrameValue>;
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
-pub type StringObjectRef = crate::lisp::alloc::VectorlikeRef<RefCell<SharedStringState>>;
+pub use crate::lisp::alloc::StringObjectRef;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
@@ -1197,8 +1197,7 @@ pub(crate) fn note_string_allocation(bytes: usize) {
     crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
 }
 
-/// A string OBJECT (text properties, raw bytes, an `aset' target): a
-/// pseudovector of this implementation's, counted with the strings.
+/// A string object with its own GNU-layout header and canonical bytes.
 pub(crate) fn string_object_value(state: SharedStringState) -> Value {
     let bytes = state.storage_bytes();
     string_object_value_with_storage_bytes(state, bytes)
@@ -1210,13 +1209,10 @@ pub(crate) fn string_object_value_with_storage_bytes(
     state: SharedStringState,
     bytes: usize,
 ) -> Value {
-    if state.len() == 0 && !state.is_multibyte() {
-        return Value::StringObject(crate::lisp::alloc::vectors::empty_unibyte_string());
+    if state.len() != 0 {
+        note_string_allocation(bytes);
     }
-    note_string_allocation(bytes);
-    Value::StringObject(crate::lisp::alloc::VectorlikeRef::allocate(RefCell::new(
-        state,
-    )))
+    Value::StringObject(crate::lisp::alloc::allocate_string(state, false))
 }
 
 #[derive(Default)]
@@ -1750,9 +1746,9 @@ impl Value {
                 }))
             }
             TAG_STRING => {
-                // SAFETY: every string word names the canonical payload.
+                // SAFETY: every string word names its direct string header.
                 Kind::StringObject(unsafe {
-                    crate::lisp::alloc::VectorlikeRef::from_raw((word & !TAG_MASK) as *mut _)
+                    StringObjectRef::from_raw((word & !TAG_MASK) as *mut _)
                 })
             }
             TAG_FLOAT => {
@@ -1807,9 +1803,6 @@ impl Value {
                         }
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Closure(crate::lisp::alloc::ClosureRef::from_raw(header))
-                        }
-                        crate::lisp::alloc::VectorTag::StringObject => {
-                            impossible_tag("a string object uses the string tag")
                         }
                         crate::lisp::alloc::VectorTag::ReaderForm => {
                             Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
@@ -2691,7 +2684,7 @@ fn format_value(
         Kind::BigInteger(n) => write!(f, "{}", n),
         Kind::Float(v) => write!(f, "{}", format_float(v.get())),
         Kind::StringObject(state) => {
-            write!(f, "\"{}\"", state.as_ref().borrow().text())
+            write!(f, "\"{}\"", state.borrow().text())
         }
         Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(&s)),
         Kind::Vector(vector) => {
@@ -2904,11 +2897,7 @@ impl fmt::Display for LispErrorKind {
                 {
                     match items[1].kind() {
                         Kind::StringObject(object) => {
-                            write!(
-                                f,
-                                "{:?}",
-                                std::cell::RefCell::borrow(object.as_ref()).text()
-                            )
+                            write!(f, "{:?}", object.borrow().text())
                         }
                         value => write!(f, "{value}"),
                     }
@@ -2933,7 +2922,7 @@ impl fmt::Display for LispErrorKind {
                 }
                 Ok(items) if items.len() >= 2 => match items[1].kind() {
                     Kind::StringObject(object) => {
-                        write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text())
+                        write!(f, "{}", object.borrow().text())
                     }
                     value => write!(f, "{value}"),
                 },
@@ -3125,7 +3114,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                 out.push(')');
             }
             Kind::StringObject(state) => {
-                let text: String = std::cell::RefCell::borrow(&state).text();
+                let text: String = state.borrow().text();
                 let mut brief: String = text.chars().take(48).collect();
                 if brief.len() < text.len() {
                     brief.push('…');

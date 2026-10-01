@@ -6,18 +6,120 @@
 //! neither is retained beside the authoritative bytes.
 
 use super::{Kind, LispError, StringPropertySpan, Value};
+use std::ptr::NonNull;
 
 mod concat;
+mod properties;
+pub use properties::StringProperties;
 
-#[derive(Clone, Debug, PartialEq)]
+/// lisp.h:struct Lisp_String's four authoritative words. The collector's
+/// allocation/borrow metadata belongs to the containing string cell.
+/// Positive SIZE_BYTE is a multibyte byte count; -1 denotes unibyte data.
+#[repr(C)]
 pub struct SharedStringState {
-    bytes: Vec<u8>,
-    characters: usize,
-    multibyte: bool,
-    pub props: Vec<StringPropertySpan>,
+    size: usize,
+    size_byte: isize,
+    pub props: StringProperties,
+    data: NonNull<u8>,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<SharedStringState>() == 32);
+    assert!(std::mem::offset_of!(SharedStringState, size) == 0);
+    assert!(std::mem::offset_of!(SharedStringState, size_byte) == 8);
+    assert!(std::mem::offset_of!(SharedStringState, props) == 16);
+    assert!(std::mem::offset_of!(SharedStringState, data) == 24);
+};
+
+static EMPTY_DATA: u8 = 0;
+
+impl Clone for SharedStringState {
+    fn clone(&self) -> Self {
+        Self::from_encoded(
+            self.bytes().to_vec(),
+            self.len(),
+            self.is_multibyte(),
+            self.props.to_vec(),
+        )
+    }
+}
+
+impl std::fmt::Debug for SharedStringState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedStringState")
+            .field("bytes", &self.bytes())
+            .field("characters", &self.len())
+            .field("multibyte", &self.is_multibyte())
+            .field("props", &self.props)
+            .finish()
+    }
+}
+
+impl PartialEq for SharedStringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.size == other.size
+            && self.size_byte == other.size_byte
+            && self.bytes() == other.bytes()
+            && self.props == other.props
+    }
+}
+
+impl Drop for SharedStringState {
+    fn drop(&mut self) {
+        let nbytes = self.storage_bytes();
+        if nbytes != 0 {
+            // SAFETY: from_encoded transfers one exact boxed allocation,
+            // including its NUL, to this unique owner. Cloning copies bytes.
+            unsafe {
+                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                    self.data.as_ptr(),
+                    nbytes + 1,
+                )));
+            }
+        }
+    }
 }
 
 impl SharedStringState {
+    fn from_encoded(
+        mut bytes: Vec<u8>,
+        characters: usize,
+        multibyte: bool,
+        props: Vec<StringPropertySpan>,
+    ) -> Self {
+        let nbytes = bytes.len();
+        assert!(nbytes < isize::MAX as usize && (multibyte || characters == nbytes));
+        let data = if nbytes == 0 {
+            NonNull::from(&EMPTY_DATA)
+        } else {
+            bytes.push(0);
+            NonNull::new(Box::into_raw(bytes.into_boxed_slice()).cast::<u8>())
+                .expect("boxed string allocation")
+        };
+        Self {
+            size: characters,
+            size_byte: if multibyte { nbytes as isize } else { -1 },
+            props: props.into(),
+            data,
+        }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        let nbytes = self.storage_bytes();
+        if nbytes == 0 {
+            return &mut [];
+        }
+        // SAFETY: the unique mutable header borrow covers its owned bytes;
+        // the trailing NUL remains outside the mutable contents slice.
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), nbytes) }
+    }
+
+    fn replace_storage(&mut self, bytes: Vec<u8>, characters: usize, multibyte: bool) {
+        let mut replacement = Self::from_encoded(bytes, characters, multibyte, Vec::new());
+        std::mem::swap(&mut replacement.props, &mut self.props);
+        *self = replacement;
+    }
     /// character.c:Fstring validates all characters before allocating the
     /// payload. Only an entirely ASCII result has one byte per character.
     pub(crate) fn from_characters(characters: &[Value]) -> Result<Self, LispError> {
@@ -31,12 +133,12 @@ impl SharedStringState {
             let (encoded, width) = encode_character(character_code(character)?)?;
             bytes.extend_from_slice(&encoded[..width]);
         }
-        Ok(Self {
+        Ok(Self::from_encoded(
             bytes,
-            characters: characters.len(),
-            multibyte: nbytes != characters.len(),
-            props: Vec::new(),
-        })
+            characters.len(),
+            nbytes != characters.len(),
+            Vec::new(),
+        ))
     }
 
     /// alloc.c:Fmake_string encodes INIT once, then repeats its actual bytes.
@@ -57,21 +159,17 @@ impl SharedStringState {
                 bytes.extend_from_within(..count);
             }
         }
-        Ok(Self {
+        Ok(Self::from_encoded(
             bytes,
-            characters: length,
-            multibyte: force_multibyte || width != 1,
-            props: Vec::new(),
-        })
+            length,
+            force_multibyte || width != 1,
+            Vec::new(),
+        ))
     }
 
     pub(crate) fn from_unibyte(bytes: Vec<u8>) -> Self {
-        Self {
-            characters: bytes.len(),
-            bytes,
-            multibyte: false,
-            props: Vec::new(),
-        }
+        let characters = bytes.len();
+        Self::from_encoded(bytes, characters, false, Vec::new())
     }
 
     pub(crate) fn from_storage(
@@ -94,12 +192,7 @@ impl SharedStringState {
                 "String character count does not match its bytes".into(),
             ));
         }
-        Ok(Self {
-            bytes,
-            characters,
-            multibyte,
-            props: Vec::new(),
-        })
+        Ok(Self::from_encoded(bytes, characters, multibyte, Vec::new()))
     }
 
     pub(crate) fn new(
@@ -110,48 +203,103 @@ impl SharedStringState {
     ) -> Self {
         let bytes = encode_text(&text, multibyte, &extended_chars)
             .expect("string constructor must supply valid Lisp characters");
-        Self {
-            bytes,
-            characters: text.chars().count(),
-            multibyte,
-            props,
-        }
+        Self::from_encoded(bytes, text.chars().count(), multibyte, props)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
+        // SAFETY: the header owns STORAGE_BYTES initialized bytes plus NUL.
+        // A zero-length header points at EMPTY_DATA; neither case is null.
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
     }
     pub(crate) fn len(&self) -> usize {
-        self.characters
+        self.size
     }
     pub(crate) fn is_multibyte(&self) -> bool {
-        self.multibyte
+        self.size_byte >= 0
     }
     pub(crate) fn storage_bytes(&self) -> usize {
-        self.bytes.len()
+        if self.size_byte >= 0 {
+            self.size_byte as usize
+        } else {
+            self.size
+        }
     }
 
     /// fns.c:Fstring_equal and internal_equal compare SCHARS, SBYTES and
     /// the stored bytes. The multibyte flag and text properties do not
     /// participate: ASCII contents compare equal in either representation.
     pub(crate) fn contents_equal(&self, other: &Self) -> bool {
-        self.characters == other.characters && self.bytes == other.bytes
+        self.len() == other.len() && self.bytes() == other.bytes()
+    }
+
+    /// fns.c:string_cmp compares unibyte characters as their octets and
+    /// multibyte characters as their full internal codes. It does not
+    /// promote unibyte octets to byte8 as Fcompare_strings does.
+    pub(crate) fn compare_contents(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        if (!self.is_multibyte() || self.len() == self.bytes().len())
+            && (!other.is_multibyte() || other.len() == other.bytes().len())
+        {
+            return self.bytes().cmp(other.bytes());
+        }
+        if self.is_multibyte() && other.is_multibyte() {
+            // Skip equal words and the remaining equal bytes, then return
+            // to the beginning of the differing internal character. Safe
+            // slices also cover GNU's possibly unaligned pure-string data.
+            let word = std::mem::size_of::<usize>();
+            let mut offset = self
+                .bytes()
+                .chunks_exact(word)
+                .zip(other.bytes().chunks_exact(word))
+                .take_while(|(left, right)| left == right)
+                .count()
+                * word;
+            let limit = self.bytes().len().min(other.bytes().len());
+            while offset < limit && self.bytes()[offset] == other.bytes()[offset] {
+                offset += 1;
+            }
+            if offset == limit {
+                return self.bytes().len().cmp(&other.bytes().len());
+            }
+            while self.bytes()[offset] & 0xc0 == 0x80 {
+                offset -= 1;
+            }
+            let left = decode_character(&self.bytes()[offset..]).expect("stored character");
+            let right = decode_character(&other.bytes()[offset..]).expect("stored character");
+            return left.0.cmp(&right.0);
+        }
+        if !self.is_multibyte() {
+            return other.compare_contents(self).reverse();
+        }
+        let mut offset = 0;
+        for &byte in other.bytes().iter().take(self.len()) {
+            let (code, width) =
+                decode_character(&self.bytes()[offset..]).expect("stored character");
+            let order = code.cmp(&u32::from(byte));
+            if order != Ordering::Equal {
+                return order;
+            }
+            offset += width;
+        }
+        self.len().cmp(&other.len())
     }
 
     /// character.c:str_as_unibyte preserves every internal byte except
     /// the two-byte byte8 forms, which become their one-byte equivalent.
     pub(crate) fn as_unibyte_bytes(&self) -> Vec<u8> {
-        if !self.multibyte {
-            return self.bytes.clone();
+        if !self.is_multibyte() {
+            return self.bytes().to_vec();
         }
-        let mut result = Vec::with_capacity(self.bytes.len());
+        let mut result = Vec::with_capacity(self.bytes().len());
         let mut offset = 0;
-        while offset < self.bytes.len() {
-            let (code, width) = decode_character(&self.bytes[offset..]).expect("stored character");
+        while offset < self.bytes().len() {
+            let (code, width) =
+                decode_character(&self.bytes()[offset..]).expect("stored character");
             if (0x3fff80..=0x3fffff).contains(&code) {
                 result.push((code - 0x3fff00) as u8);
             } else {
-                result.extend_from_slice(&self.bytes[offset..offset + width]);
+                result.extend_from_slice(&self.bytes()[offset..offset + width]);
             }
             offset += width;
         }
@@ -159,7 +307,7 @@ impl SharedStringState {
     }
 
     pub(crate) fn text_parts(&self) -> (String, Vec<(usize, u32)>) {
-        decode_bytes(&self.bytes, self.multibyte)
+        decode_bytes(self.bytes(), self.is_multibyte())
             .expect("stored string bytes have the internal encoding")
     }
 
@@ -168,26 +316,26 @@ impl SharedStringState {
     }
 
     pub(crate) fn clone_without_properties(&self) -> Self {
-        Self {
-            bytes: self.bytes.clone(),
-            characters: self.characters,
-            multibyte: self.multibyte,
-            props: Vec::new(),
-        }
+        Self::from_encoded(
+            self.bytes().to_vec(),
+            self.len(),
+            self.is_multibyte(),
+            Vec::new(),
+        )
     }
 
     /// fns.c:Fsubstring copies the actual byte range and preserves encoding.
     /// The primitive validates both character bounds before reaching here.
     pub(crate) fn substring(&self, from: usize, to: usize, properties: bool) -> Self {
-        assert!(from <= to && to <= self.characters);
+        assert!(from <= to && to <= self.len());
         let offset = |index| {
-            if index == self.characters {
-                self.bytes.len()
+            if index == self.len() {
+                self.bytes().len()
             } else {
                 self.byte_offset(index).expect("validated character bound")
             }
         };
-        let bytes = self.bytes[offset(from)..offset(to)].to_vec();
+        let bytes = self.bytes()[offset(from)..offset(to)].to_vec();
         let props = if properties {
             self.props
                 .iter()
@@ -205,69 +353,86 @@ impl SharedStringState {
         } else {
             Vec::new()
         };
-        Self {
-            bytes,
-            characters: to - from,
-            multibyte: self.multibyte,
-            props,
-        }
+        Self::from_encoded(bytes, to - from, self.is_multibyte(), props)
     }
 
     pub(crate) fn character_at(&self, index: usize) -> Option<i64> {
-        if !self.multibyte {
-            return self.bytes.get(index).map(|byte| i64::from(*byte));
+        if !self.is_multibyte() {
+            return self.bytes().get(index).map(|byte| i64::from(*byte));
         }
         let offset = self.byte_offset(index)?;
-        decode_character(&self.bytes[offset..])
+        decode_character(&self.bytes()[offset..])
             .ok()
             .map(|(code, _)| i64::from(code))
     }
 
-    fn byte_offset(&self, index: usize) -> Option<usize> {
-        if index >= self.characters {
+    pub(crate) fn byte_offset(&self, index: usize) -> Option<usize> {
+        if index > self.len() {
             return None;
         }
-        if !self.multibyte {
+        if !self.is_multibyte() {
             return Some(index);
         }
         let mut offset = 0;
         for _ in 0..index {
-            offset += decode_character(&self.bytes[offset..]).ok()?.1;
+            offset += decode_character(&self.bytes()[offset..]).ok()?.1;
         }
         Some(offset)
     }
 
+    /// character.h:fetch_string_char_as_multibyte_advance reads one
+    /// character from the actual bytes, promoting an unibyte octet to
+    /// byte8 before any case-table lookup. The caller owns the byte cursor.
+    pub(crate) fn character_as_multibyte_advance(&self, offset: &mut usize) -> Option<i64> {
+        let (code, width) = if self.is_multibyte() {
+            decode_character(self.bytes().get(*offset..)?).ok()?
+        } else {
+            let byte = u32::from(*self.bytes().get(*offset)?);
+            (if byte >= 128 { 0x3fff00 + byte } else { byte }, 1)
+        };
+        *offset += width;
+        Some(i64::from(code))
+    }
+
     /// data.c:Faset. The caller checks the index and character first.
     /// False means a non-ASCII unibyte string cannot be promoted in place.
-    pub(crate) fn store_character(&mut self, index: usize, code: u32) -> bool {
-        assert!(index < self.characters && code <= 0x3f_ffff);
-        if !self.multibyte && code <= 255 {
-            self.bytes[index] = code as u8;
-            return true;
+    pub(crate) fn store_character(&mut self, index: usize, code: u32) -> Result<bool, LispError> {
+        assert!(index < self.len() && code <= 0x3f_ffff);
+        if !self.is_multibyte() && code <= 255 {
+            self.bytes_mut()[index] = code as u8;
+            return Ok(true);
         }
-        let (offset, old_width) = if self.multibyte {
+        let (offset, old_width) = if self.is_multibyte() {
             let offset = self.byte_offset(index).expect("checked string index");
             (
                 offset,
-                decode_character(&self.bytes[offset..])
+                decode_character(&self.bytes()[offset..])
                     .expect("stored character")
                     .1,
             )
         } else {
-            if !self.bytes.is_ascii() {
-                return false;
+            if !self.bytes().is_ascii() {
+                return Ok(false);
             }
-            self.multibyte = true;
+            self.size_byte = self.len() as isize;
             (index, 1)
         };
         let (encoded, width) = encode_character(code).expect("checked Lisp character");
         if width == old_width {
-            self.bytes[offset..offset + width].copy_from_slice(&encoded[..width]);
+            self.bytes_mut()[offset..offset + width].copy_from_slice(&encoded[..width]);
         } else {
-            self.bytes
-                .splice(offset..offset + old_width, encoded[..width].iter().copied());
+            let nbytes = self
+                .storage_bytes()
+                .checked_add(width)
+                .and_then(|length| length.checked_sub(old_width))
+                .ok_or_else(string_overflow)?;
+            let mut bytes = allocate_bytes(nbytes)?;
+            bytes.extend_from_slice(&self.bytes()[..offset]);
+            bytes.extend_from_slice(&encoded[..width]);
+            bytes.extend_from_slice(&self.bytes()[offset + old_width..]);
+            self.replace_storage(bytes, self.len(), true);
         }
-        true
+        Ok(true)
     }
 
     pub(crate) fn replace_text(
@@ -276,10 +441,9 @@ impl SharedStringState {
         multibyte: bool,
         extended: Vec<(usize, u32)>,
     ) {
-        self.bytes = encode_text(&text, multibyte, &extended)
+        let bytes = encode_text(&text, multibyte, &extended)
             .expect("string replacement must supply valid Lisp characters");
-        self.characters = text.chars().count();
-        self.multibyte = multibyte;
+        self.replace_storage(bytes, text.chars().count(), multibyte);
     }
 
     /// fns.c:Ffillarray validates ITEM even for an empty string. Unibyte
@@ -287,23 +451,23 @@ impl SharedStringState {
     /// Existing intervals and aliases continue to name the same object.
     pub(crate) fn fill(&mut self, item: Value) -> Result<(), LispError> {
         let code = character_code(item)?;
-        if self.characters == 0 {
+        if self.len() == 0 {
             return Ok(());
         }
-        let (encoded, width) = if self.multibyte {
+        let (encoded, width) = if self.is_multibyte() {
             encode_character(code)?
         } else {
             ([code as u8, 0, 0, 0, 0], 1)
         };
-        if self.characters.checked_mul(width) != Some(self.bytes.len()) {
+        if self.len().checked_mul(width) != Some(self.bytes().len()) {
             return Err(LispError::Signal(
                 "Attempt to change byte length of a string".into(),
             ));
         }
         if width == 1 {
-            self.bytes.fill(encoded[0]);
+            self.bytes_mut().fill(encoded[0]);
         } else {
-            for bytes in self.bytes.chunks_exact_mut(width) {
+            for bytes in self.bytes_mut().chunks_exact_mut(width) {
                 bytes.copy_from_slice(&encoded[..width]);
             }
         }
@@ -312,9 +476,14 @@ impl SharedStringState {
 
     /// fns.c:Fclear_string clears actual storage bytes and makes it unibyte.
     pub(crate) fn clear(&mut self) {
-        self.bytes.fill(0);
-        self.characters = self.bytes.len();
-        self.multibyte = false;
+        // STRING_SET_UNIBYTE replaces a zero-length local value; it must
+        // not change the original shared empty multibyte header.
+        let nbytes = self.storage_bytes();
+        if nbytes != 0 {
+            self.bytes_mut().fill(0);
+            self.size = nbytes;
+            self.size_byte = -1;
+        }
     }
 }
 
@@ -330,12 +499,12 @@ fn string_overflow() -> LispError {
 }
 
 fn allocate_bytes(length: usize) -> Result<Vec<u8>, LispError> {
-    if length > isize::MAX as usize {
+    if length >= isize::MAX as usize {
         return Err(string_overflow());
     }
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(length)
+        .try_reserve_exact(length + 1)
         .map_err(|_| LispError::Signal("Memory exhausted".into()))?;
     Ok(bytes)
 }

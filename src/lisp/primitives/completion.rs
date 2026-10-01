@@ -436,6 +436,9 @@ pub(crate) fn substitute_object_recurse(
             Ok(*subtree)
         }
         Kind::StringObject(state) => {
+            if state.borrow().props.is_empty() {
+                return Ok(*subtree);
+            }
             let mut state = state.borrow_mut();
             for span in &mut state.props {
                 for (_, prop_value) in &mut span.props {

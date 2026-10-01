@@ -3912,6 +3912,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
+        crate::lisp::alloc::sweep_strings(epoch);
     }
 
     fn end_call(&mut self) {
@@ -4037,11 +4038,7 @@ impl NativeHeap {
         if tag == TAG_STRING {
             if !live_word {
                 let allocated = match unsafe { crate::lisp::alloc::mem_find(address) } {
-                    Some(crate::lisp::alloc::Found::Vectorlike(header)) => {
-                        header as usize == address
-                            && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
-                                == crate::lisp::alloc::VectorTag::StringObject
-                    }
+                    Some(crate::lisp::alloc::Found::String(cell)) => cell as usize == address,
                     _ => false,
                 };
                 if !allocated {
@@ -11259,6 +11256,30 @@ mod tests {
             assert!(value.is_string());
             assert_eq!(word & TAG_MASK, TAG_STRING);
             assert_eq!(word, value.word());
+            let Kind::StringObject(string) = value.kind() else {
+                panic!("string header")
+            };
+            let contents = string.borrow();
+            // Native XSTRING, SCHARS, SBYTES and SDATA address these exact
+            // four header words, without a vector tag or RefCell prefix.
+            let header = (word & !TAG_MASK) as *const usize;
+            // SAFETY: VALUE roots the allocation, and the shared borrow
+            // excludes writes while the native-layout fields are examined.
+            unsafe {
+                assert_eq!(header.read(), contents.len());
+                assert_eq!(
+                    header.add(1).cast::<isize>().read(),
+                    if contents.is_multibyte() {
+                        contents.storage_bytes() as isize
+                    } else {
+                        -1
+                    }
+                );
+                let data = header.add(3).cast::<*const u8>().read();
+                assert_eq!(data, contents.bytes().as_ptr());
+                assert_eq!(*data.add(contents.storage_bytes()), 0);
+            }
+            drop(contents);
             assert_eq!(
                 second.encode(&value).expect("same string in another heap"),
                 word
@@ -11373,6 +11394,55 @@ mod tests {
             "dead property child"
         );
         assert!(heap.decode(hidden[2] ^ HIDE).is_err(), "dead string cycle");
+    }
+
+    #[test]
+    fn pure_string_headers_survive_unrooted_gc_outside_the_ordinary_census() {
+        #[inline(never)]
+        fn make_pure_strings() -> [usize; 3] {
+            use crate::lisp::types::SharedStringState;
+            let before = crate::lisp::alloc::live_string_object_census();
+            let hidden = [
+                SharedStringState::from_unibyte(Vec::new()),
+                SharedStringState::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
+                SharedStringState::from_unibyte(b"pure bytes".to_vec()),
+            ]
+            .map(|state| {
+                Value::StringObject(crate::lisp::alloc::allocate_string(state, true)).word() ^ HIDE
+            });
+            assert_eq!(crate::lisp::alloc::live_string_object_census(), before);
+            hidden
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let hidden = make_pure_strings();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for (index, word) in hidden.into_iter().enumerate() {
+            let restored = heap
+                .decode(word ^ HIDE)
+                .expect("pure header survives without a root");
+            let Kind::StringObject(state) = restored.kind() else {
+                panic!("pure string")
+            };
+            assert!(state.is_pure());
+            assert_eq!(state.borrow().len(), if index == 2 { 10 } else { 0 });
+            assert_eq!(state.borrow().is_multibyte(), index == 1);
+            assert!(
+                state
+                    .mark_bit()
+                    .is_marked(crate::lisp::types::current_mark_epoch())
+            );
+        }
     }
 
     #[test]
