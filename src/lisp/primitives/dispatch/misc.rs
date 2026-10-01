@@ -263,9 +263,10 @@ fn overriding_plist_property(
                 }
                 if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
                     let value = rest.car().ok()?;
-                    if !value.is_nil() {
-                        return Some(value);
-                    }
+                    // plist_get stops at the first key, even when its
+                    // value is nil. Fget then falls back to the real
+                    // plist instead of examining a later duplicate.
+                    return (!value.is_nil()).then_some(value);
                 }
                 plist = rest.cdr().ok()?;
             }
@@ -2275,7 +2276,7 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
 }
 
 /// The `get' primitive, callable directly (a subr's function pointer).
-pub(super) fn direct_get(
+pub(in crate::lisp::primitives) fn direct_get(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,

@@ -17,7 +17,12 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source246**, pushed as **`aaf31ce7`**, with **468 inputs** matching the frozen
+The task runtime is now **source248**, with **472 inputs** matching the frozen
+`target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
+The two property repairs below follow the actual GNU C lookup paths; their
+strict, selected and complete original compiler comparisons pass. Full source248
+platform validation is pending. Further architectural changes remain on hold.
+The preceding **source246**, pushed as **`aaf31ce7`**, has **468 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
 Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 retain source244's same-input negative probes and source245's four compiler
@@ -76,17 +81,30 @@ verifies **472 inputs/modes**, zero-warning strict checks, **170 focused passes 
 two existing ignores**, **953 affected passes**, thirteen ordinary matches and
 successful compiler-file load in both editors. Both original negative property
 fixtures now match GNU without changed expectations. Queue **94807** has exited.
-Complete original compiler comparison **1840** is running; no 177-test result or
-complete platform certification is claimed for source248 yet. Do not edit its
-candidate or executing helper. Neither draft is applied to the root runtime.
+The [compiler audit and complete launches](docs/handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
+close **1840**: all **177 original compiler tests pass in both editors**, with
+the unchanged full inventory, raw process hashes and 472 source inputs checked.
+Source248 is now applied to the root runtime. Full macOS **4528**, release plus
+57 preceding ordinary comparisons **4529**, and terminal **4530** are running.
+Do not edit the frozen candidate or executing helpers. These launches do not
+certify full source248 correctness; the complete source246 results are historical.
+The [C-source review and diagnostic failure](docs/handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
+map the fixes to unchanged GNU `coding.c:get_translation_table`, `lisp.h:SYMBOLP`,
+and `fns.c:plist_get/Fget`. Both original failing probes retain their exact bytes
+and GNU results. No new representation, property cache or weakened assertion is added.
 
 The same complete source246 archive preserves the new GNU GC trace preparation:
 20 ordinary macOS smoke processes match, fifteen synthetic header/block decoder
 controls pass, and all eight workflow shell blocks parse. `gnu-census-trace` runs
 the unchanged census fixtures, records explicit environment-padding variants and
 reads GNU's first eight GC inventories/possible stack references under GDB. It
-makes no inferior calls/stores or warm-up collections. Actual Linux GDB execution
-is still required; preparation is not a root-cause diagnosis or full-run repair.
+makes no inferior calls/stores or warm-up collections. Linux diagnosis
+[36848112001](https://github.com/rayfdj/emaxx/actions/runs/36848112001) fails on
+`2dd1dea8`: ten ordinary first-fixture processes match, then GDB's argument quoting
+with `startup-with-shell off` splits the Lisp argument. GNU stops with end-of-file
+before any explicit collection; the second fixture never starts. Raw evidence
+and the executed helper are preserved. No GC observation or root cause is claimed;
+post-run oracle verification was not reached. The full Linux Rust failure remains open.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS

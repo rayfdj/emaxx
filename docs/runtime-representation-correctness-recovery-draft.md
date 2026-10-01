@@ -634,3 +634,39 @@ GNU's returned census. It performs no inferior calls or writes and adds no GC.
 Actual Linux GDB execution is required before claiming any observation; candidate
 stack references alone would not establish the real marking root. The new workflow
 mode is diagnostic only. No full Linux Rust repair or completed goal is claimed.
+
+## Source248 compiler pass, GNU C review and applied checkpoint
+
+The [compiler audit and complete launches](handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
+close compiler1840 with all **177 original tests passing in both editors**.
+The raw audit checks every name, selector and discovered metadata against the
+original complete frozen compiler inventory, every process hash, and all 472
+source inputs. Source248 is now applied to the root runtime. Full macOS4528,
+release plus 57 preceding ordinary comparisons4529, and terminal4530 are running
+from the unchanged isolated candidate. A launch is not a passing result.
+
+The [C-reference review](handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
+records unchanged GNU revision `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd` and
+hashes of the actual C sources read, with these narrow mappings:
+
+| Repair | GNU C behavior | Emaxx change |
+| --- | --- | --- |
+| Translation-table symbol properties | `coding.c:get_translation_table` calls `Fget` for `SYMBOLP` entries; `lisp.h:SYMBOLP` includes enabled positioned symbols. Nil/t are symbols. | Use the existing `direct_get` path for coding-owned symbol/list entries, including nil/t and dynamic overriding properties. |
+| Nil override before a duplicate | `fns.c:plist_get` returns the first EQ key's value. `Fget` falls back to the real plist when that value is nil. | Stop at the first matching key even when nil, instead of returning a later duplicate. |
+
+Both original source246 negative fixtures, expected outputs and ordinary GNU
+results are byte-identical; the source248 executions now match them. This patch
+adds no representation, property cache or replacement Lisp policy. It does not
+certify every surrounding coding/property behavior. Architecture changes remain
+on hold until complete correctness validation closes.
+
+The same archive preserves failed Linux GNU diagnosis
+[36848112001](https://github.com/rayfdj/emaxx/actions/runs/36848112001) on `2dd1dea8`.
+Ten ordinary first-fixture processes match, then GDB passes the Lisp argument
+split and escaped because the observer disables its startup shell. GNU reports
+end-of-file before any explicit collection. Zero inventories are observed; the
+second fixture and final input/oracle verification never run. All 31 downloaded
+members are verified, the exact executed tools are retained, and the two GNU
+executable/dump files are retained locally with hashes in the portable evidence.
+This is an observer setup failure, not an explanation or repair of the original
+GNU census failures. Main, pinned Darwin and the full goal remain unchanged.

@@ -2815,9 +2815,9 @@ pub(crate) fn detect_coding_region_value(
 /// Only a coding's own symbol/list entries are resolved through symbol
 /// properties; a standard table used on its own is passed through as-is.
 fn encoding_safety_translation_tables(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     coding: &str,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     if interp
         .lookup_var("enable-character-translation", env)
@@ -2837,16 +2837,27 @@ fn encoding_safety_translation_tables(
             vec![standard]
         });
     }
-    let resolve = |value: Value| match value.kind() {
-        Kind::Symbol(symbol) => interp
-            .get_symbol_property_of(&symbol, &"translation-table".into())
-            .unwrap_or(Value::Nil),
-        _ => value,
+    let mut resolve = |value: Value| {
+        // SYMBOLP includes nil/t and enabled positioned symbols. Fget
+        // also observes the current overriding-plist-environment; use
+        // the same primitive path instead of reading the raw plist.
+        if value.is_symbol()
+            || (symbols_with_pos_enabled(interp, env)
+                && symbol_with_pos_parts(interp, &value).is_some())
+        {
+            dispatch::misc::direct_get(interp, &[value, Value::symbol("translation-table")], env)
+        } else {
+            Ok(value)
+        }
     };
     let mut tables = if table.cons_values().is_some() {
-        table.to_vec()?.into_iter().map(resolve).collect()
+        table
+            .to_vec()?
+            .into_iter()
+            .map(resolve)
+            .collect::<Result<Vec<_>, _>>()?
     } else {
-        vec![resolve(table)]
+        vec![resolve(table)?]
     };
     if matches!(standard.kind(), Kind::CharTable(_)) {
         tables.push(standard);
@@ -2873,11 +2884,11 @@ fn translate_safety_character(mut table: Value, mut character: u32) -> u32 {
 }
 
 pub(crate) fn find_coding_systems_region_internal_value(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     start: &Value,
     end: &Value,
     exclude: Option<&Value>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let source = if let Some(string) = string_like(start) {
         string

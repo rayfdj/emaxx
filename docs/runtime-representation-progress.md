@@ -1,6 +1,10 @@
 # Current goal status — 1 October 2026
 
-The task runtime is **source246**, pushed as `aaf31ce7`, an incomplete correctness-recovery checkpoint.
+The task runtime is **source248**, an incomplete correctness-recovery checkpoint
+with **472 frozen inputs**. Its two property repairs follow GNU C, pass the selected
+checks and all 177 original compiler tests in both editors, and are applied to
+the root. Complete validation is running; further architecture changes are on hold.
+The preceding **source246**, pushed as `aaf31ce7`, has the closed results below.
 Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
 existing ignores**, **951 affected passes**, **eleven ordinary GNU comparisons**
@@ -48,10 +52,18 @@ Source248's 472 inputs add GNU's first-nil-duplicate lookup rule. Its [closed
 selected audit](handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
 verifies strict zero-warning checks, 170 focused passes/two existing ignores,
 953 affected passes, thirteen ordinary matches and successful original compiler
-load. Queue94807 has exited; complete compiler comparison1840 is running. No
-complete source248 platform result is claimed; root runtime remains source246.
+load. Queue94807 has exited. The [compiler audit and full launches](handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
+close compiler1840 with all 177 original tests passing in both editors and verify
+root application of all 472 inputs. Full macOS4528, release/ordinary4529 and
+terminal4530 are running. No complete source248 platform result is claimed.
+The [C-source review](handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
+maps each fix to unchanged GNU `get_translation_table`, `SYMBOLP`, `plist_get` and
+`Fget`; both negative fixtures and GNU expectations are unchanged.
 The new GNU GC observer has twenty ordinary macOS smoke matches and fifteen
-synthetic decoder checks; actual Linux GDB observation is still required.
+synthetic decoder checks. Linux diagnosis36848112001 fails: ten ordinary first-fixture
+processes match, then incorrect GDB argument quoting causes GNU end-of-file before
+any GC observation. The second fixture and post-run input verification never run.
+The tool failure is preserved and does not resolve the original Linux Rust failure.
 Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
 coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
 and the locked 16-workload/3% performance criterion are still open.

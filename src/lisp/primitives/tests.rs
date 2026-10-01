@@ -19459,6 +19459,24 @@ fn coding_candidates_preserve_private_use_characters_and_symbol_identity() {
 }
 
 #[test]
+fn coding_candidates_resolve_translation_symbols_through_live_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-symbol-properties.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-symbol-properties.expected").trim(),
+        "safe coding candidates use GNU symbol and overriding property semantics",
+    );
+}
+
+#[test]
+fn symbol_properties_preserve_override_order_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/overriding-property-identity.el"),
+        include_str!("../../../tests/fixtures/overriding-property-identity.expected").trim(),
+        "symbol property overrides retain first-match order and identity",
+    );
+}
+
+#[test]
 fn bytecode_code_mutation_between_calls_matches_gnu() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.el"),
