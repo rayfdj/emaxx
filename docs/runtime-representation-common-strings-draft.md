@@ -147,9 +147,16 @@ The clean full-validation checkout is
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, commit `eddfe782`,
 with the same 488 inputs. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
-[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are still running.
-Keep both source261 checkouts unchanged. Frozen, terminal and Linux results remain
-pending. No measured saving or full-goal completion is implied by the closed Rust gate.
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete.
+Their [closed Linux evidence](handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
+verifies **3,119 Rust passes / two existing ignores**, all 3,018 raw library names,
+native artifact identity and four retained Rust inputs. Full frozen verifies
+**519 files / 7,928 matching outcomes / 1,038 successful processes**; each editor
+has 7,670 passes, 47 expected failures and 211 skips, including all 177 original
+compiler tests passing. Every execution hash, paired outcome and actual GNU
+executable/dump/configuration/Makefile is checked. Historical failures remain.
+Keep both source261 checkouts unchanged. MacOS frozen and terminal results remain
+pending. No measured saving or full-goal completion is implied.
 
 ## Subsequent ordering repair: source262
 
@@ -178,11 +185,45 @@ fixtures; the original compatibility version test remains byte-identical.
 The isolated checkout is `target/runtime-goal/recovered-2026-09-30/string-ordering/emaxx`.
 Its **492 inputs and modes** replay exactly from `7c6bb8ce` and main. Formatting,
 all-target checking, strict Clippy and diff checks pass with zero warnings. Queue
-**38430** waits for the complete source261 local supervisor before 194 focused
-selectors, 1,050 affected tests in each profile and 24 ordinary comparisons.
-All original selectors remain. No runtime stage has executed yet and the draft is
-unapplied. Keep its source and executing helpers unchanged. The documented negatives
-remain open until an actual successful comparison closes them.
+**38430 was withdrawn while still waiting, before its first runtime stage**, in
+favor of source263 below. The original source, helpers, launch and queued state
+remain unchanged. This is neither a runtime pass nor a runtime failure. The
+successor includes all 194 planned focused selectors, all 1,050 affected tests and
+all 24 ordinary comparisons. The documented negatives remain open until an actual
+successful comparison closes them.
+
+## Range and numeric casing repair: source263
+
+The [portable source263 successor](handover/2026-09-30-shared-reader-draft/source263-string-ranges-draft-manifest.json)
+preserves four further ordinary GNU fixtures. Source261 has **12 differences among
+22 range/error cases**, **134 among 1,024 character-comparison rows**, **seven wrong
+comparisons across three live-table phases**, and **nine wrong numeric casing rows
+among 30**. Main/source174 exactly reproduces the range, live-table and numeric
+outputs. Its character matrix exits255 at `(string #x110000)` before producing any
+comparison rows; that failure remains retained and supplies no historical matrix
+attribution. GNU, source261 and main table contents agree in the numeric fixture;
+the wrong character aliases are in lookup. All negative processes and hashes remain.
+
+Following `fns.c:Fcompare_strings` and `validate_subarray`, the repair checks both
+string types before either range, clamps only too-large positive fixnum ends and
+preserves the original bounds in range errors. It uses sequential byte cursors on
+canonical storage, removing decoded string, property and character-vector copies
+from this path. `character.h:fetch_string_char_as_multibyte_advance` promotes
+unibyte octets before casing. Only differing characters invoke numeric `upcase`,
+with string borrows released first. That numeric path now follows actual
+`buffer.h:upcase/downcase` table keys, defaults and parents, keeping the existing
+modifier/C-integer rules. No raw-byte-to-Latin-1 alternate lookup is performed.
+Legacy string-casing text consumers remain outside this bounded repair.
+
+The separate checkout is `target/runtime-goal/recovered-2026-09-30/string-ranges/emaxx`.
+All **500 inputs and modes** replay exactly from `dbf1fbb2` and main. Formatting,
+all-target/all-feature checking, strict Clippy and diff checks pass with zero
+warnings. The four tests use unchanged ordinary GNU output; all source262 code
+and tests remain. Queue **64601** waits for full macOS supervisor31023, then runs
+**199 focused selectors**, **1,054 affected tests in each profile**, and **28 ordinary
+comparisons**, including the original modifier-casing control. No runtime stage has
+run, and the candidate remains unapplied. Keep its source and executing helpers
+unchanged. The full architecture/performance requirements below still apply.
 
 ## Remaining requirements
 
@@ -212,5 +253,5 @@ excuse other recorded regressions or establish general correctness.
 Those projection repairs are absent from frozen source256 and implemented separately
 in source259/261 above. Keep the original negatives and both queued input sets unchanged
 while validating. Published source261 ordering still uses host text; the separate
-source262 draft above is not yet validated or applied. Neither repair completes
+source262/263 drafts above are not yet validated or applied. Neither repair completes
 the architecture.

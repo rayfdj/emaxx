@@ -1,0 +1,3531 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source_review": {
+      "status": "strict checks and C source review passed; runtime validation queued",
+      "source_inputs_verified": 500,
+      "strict_checks": {
+        "check": {
+          "exit_code": 0,
+          "elapsed_seconds": 22.536085958,
+          "source_unchanged": true
+        },
+        "fmt": {
+          "exit_code": 0,
+          "elapsed_seconds": 1.6158049590000019,
+          "source_unchanged": true
+        },
+        "clippy": {
+          "exit_code": 0,
+          "elapsed_seconds": 28.935005874999998,
+          "source_unchanged": true
+        },
+        "diff": {
+          "exit_code": 0,
+          "elapsed_seconds": 0.4441856250000029,
+          "source_unchanged": true
+        }
+      },
+      "gnu_references": {
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "DEFUN (\"compare-strings\"": 363,
+            "validate_subarray (Lisp_Object array": 1557
+          }
+        },
+        "src/character.h": {
+          "sha256": "a3543fd1204530d96ac4bef20b9b860d667e70799aafad84dbd2910cf7348d8c",
+          "anchors": {
+            "fetch_string_char_as_multibyte_advance (Lisp_Object string": 465
+          }
+        },
+        "src/casefiddle.c": {
+          "sha256": "3ff78b55e176521c9e69a8258683e8ebad060a951b905d46022e38fd4fa64b41",
+          "anchors": {
+            "do_casify_natnum (struct casing_context": 251,
+            "case_character_impl (struct casing_str_buf": 115
+          }
+        },
+        "src/buffer.h": {
+          "sha256": "71655d9c7d864421bd11bbe85f63e0bb6ea9bffd75eaa40f5ea8b314bf5c19fe",
+          "anchors": {
+            "upcase (int c)": 1588,
+            "downcase (int c)": 1579
+          }
+        }
+      },
+      "source262_withdrawal": "source262-validation-withdrawal.json",
+      "source263_launch": {
+        "pid": 64601,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ranges263-validation.py"
+        ],
+        "helper_sha256": "b03c5b55dc39ecbe2fa5347c5692bb8475f94b0afeb1877637d1e177c5b24b57",
+        "started_at_unix": 1790881665.702689,
+        "source_manifest": "source263-manifest.json",
+        "qualification": "Supersedes source262 only after recording its pre-runtime withdrawal. Waits for complete source261 macOS supervisor31023. Published runtime and all preceding frozen sources stay unchanged; a queued command is not a passing result."
+      },
+      "mechanisms": [
+        "Fcompare_strings validates both string operands before either range, clamps only too-large positive fixnum ends and retains validate_subarray error data/type ordering.",
+        "Character cursors read actual canonical bytes without decoded String, property or character-vector copies. Unibyte octets are promoted before casing.",
+        "Only differing characters call the existing numeric upcase primitive, following live buffer tables and releasing RefCell string borrows before either call.",
+        "Numeric casing uses direct canonical char-table keys/defaults/parents and accepts nonnegative fixnum mappings as buffer.h does. It no longer aliases raw-byte characters to Latin-1 entries. Existing modifier handling stays in place.",
+        "All source262 changes and tests are retained, with four exact GNU fixtures and the existing modifier-casing test included in focused controls."
+      ],
+      "limits": [
+        "No runtime execution/pass for source263 yet; queue64601 waits for complete source261 macOS supervisor31023.",
+        "Source262 was withdrawn before its first runtime stage; its source, patches, strict results and original queued state remain unchanged.",
+        "Legacy host-text casing, collation and other consumers remain outside this bounded repair.",
+        "Complete platform validation, compact headers, physical accounting, public ownership and the locked performance criterion remain open."
+      ],
+      "goal_complete": false
+    },
+    "comparison_negatives": {
+      "status": "ordinary compare-strings negatives verified",
+      "fixtures": [
+        {
+          "fixture": "compare-strings-ranges",
+          "fixture_sha256": "14d453d3ec4fcafe069e365be14305e18c1f594587d94cc43f277a12cdf1eba9",
+          "compared_rows": 22,
+          "differing_rows": 12,
+          "differences": [
+            {
+              "key": [
+                "negative-end-past-beginning"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "nil",
+                    "-4"
+                  ]
+                ]
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "right-negative-end-past-beginning"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "nil",
+                    "-4"
+                  ]
+                ]
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "left-start-too-large"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "4",
+                    "nil"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "left-start-too-negative"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "-4",
+                    "nil"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "reversed-left-bounds"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "2",
+                    "1"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "reversed-right-bounds"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "args-out-of-range",
+                    "\"abc\"",
+                    "2",
+                    "1"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "right-type-before-left-start"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "stringp",
+                    "23"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "integerp",
+                    "bad"
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "right-type-before-left-end"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "stringp",
+                    "23"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "integerp",
+                    "bad"
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "right-type-before-left-range"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "stringp",
+                    "23"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "end-type-before-start-range"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "integerp",
+                    "bad"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "right-end-type-before-start-range"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "integerp",
+                    "bad"
+                  ]
+                ]
+              ],
+              "source261": [
+                [
+                  "error",
+                  [
+                    "error",
+                    "\"Args out of range\""
+                  ]
+                ]
+              ]
+            },
+            {
+              "key": [
+                "bignum-end-is-not-fixnum"
+              ],
+              "gnu": [
+                [
+                  "error",
+                  [
+                    "wrong-type-argument",
+                    "integerp",
+                    "2305843009213693952"
+                  ]
+                ]
+              ],
+              "source261": [
+                "t"
+              ]
+            }
+          ],
+          "processes": {
+            "gnu": {
+              "fixture": "compare-strings-ranges",
+              "editor": "gnu",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.195786458,
+              "stdout_sha256": "cff86d4f3e19d98a05253065df72516cb3e6c88e6b48b983fffefca7cdd2eb7a",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source261": {
+              "fixture": "compare-strings-ranges",
+              "editor": "source261",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.27192691699999993,
+              "stdout_sha256": "b33ca65fab4bb998445fa07c7a14e1988cc385aabdcd0efa8329dc3e84dd2b40",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source174": {
+              "fixture": "compare-strings-ranges",
+              "editor": "source174",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.6833692079999999,
+              "stdout_sha256": "b33ca65fab4bb998445fa07c7a14e1988cc385aabdcd0efa8329dc3e84dd2b40",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            }
+          },
+          "historical_limit": "Main/source174 output is byte-identical to source261 for this fixture; all observed differences here predate the current task branch."
+        },
+        {
+          "fixture": "compare-strings-character-storage",
+          "fixture_sha256": "b273666c1e8f04808a1377ec834cb8cfc5907ba4d78118a42362a010517ba27d",
+          "compared_rows": 1024,
+          "differing_rows": 134,
+          "differences": [
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-lower",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-lower",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-upper",
+                "byte-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte-upper",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-lower",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-lower",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-upper",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "unicode-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "byte-lower"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "private-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-lower",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "byte-upper"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "byte8-upper",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-lower",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "private-upper",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "extended",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "extended",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "extended",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "maximum",
+                "byte-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "maximum",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "maximum",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "maximum",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "maximum",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-final",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-final",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-final",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-final",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-final",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "nil",
+                "t",
+                "sigma-upper",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-lower",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-lower",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-upper",
+                "byte-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte-upper",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-lower",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "unicode-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "byte-lower"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "private-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-lower",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "byte-upper"
+              ],
+              "gnu": [
+                "t"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "byte8-upper",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "private-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-lower",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "unicode-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "unicode-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "private-upper",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "extended",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "extended",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "extended",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "maximum",
+                "byte-lower"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "maximum",
+                "byte-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "maximum",
+                "extended"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "maximum",
+                "sigma-final"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "maximum",
+                "sigma-upper"
+              ],
+              "gnu": [
+                "1"
+              ],
+              "source261": [
+                "-1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-final",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-final",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-final",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-final",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-final",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-upper",
+                "byte8-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-upper",
+                "byte8-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-upper",
+                "private-lower"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-upper",
+                "private-upper"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "t",
+                "t",
+                "sigma-upper",
+                "maximum"
+              ],
+              "gnu": [
+                "-1"
+              ],
+              "source261": [
+                "1"
+              ]
+            }
+          ],
+          "processes": {
+            "gnu": {
+              "fixture": "compare-strings-character-storage",
+              "editor": "gnu",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.21185583400000008,
+              "stdout_sha256": "10092389fb8fc056bb6812a4858fc1471340a2b5b05f5709a32651dd7e08a7ab",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source261": {
+              "fixture": "compare-strings-character-storage",
+              "editor": "source261",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.2565237910000002,
+              "stdout_sha256": "d482f221f5568eeeaf1f023ecf4754d82fdc39701c641c0815e80d8e34b68315",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source174": {
+              "fixture": "compare-strings-character-storage",
+              "editor": "source174",
+              "exit_code": 255,
+              "timed_out": false,
+              "elapsed_seconds": 0.3954301669999998,
+              "stdout_sha256": "15116ef1ca0d70f4ce7865703df98f52ab3c4cfb7b24823500aca8061283dcf5",
+              "stderr_sha256": "c99f621c216fda2b5a804c24ddc24b9a33e7d32c1e4a67e8cb3017ec8f11c632",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            }
+          },
+          "historical_limit": "Main/source174 exited255 before producing the character matrix; its raw failure is preserved. No historical row attribution is inferred."
+        },
+        {
+          "fixture": "compare-strings-live-case-table",
+          "fixture_sha256": "c8a3c3d77d6fb38db72d37ea2b71342dcdd840a18a373edf9bcd7d1e1fb547e5",
+          "compared_rows": 3,
+          "differing_rows": 3,
+          "differences": [
+            {
+              "key": [
+                "installed"
+              ],
+              "gnu": [
+                "81",
+                "t",
+                "-1",
+                "-1",
+                "t",
+                "1"
+              ],
+              "source261": [
+                "81",
+                "1",
+                "-1",
+                "t",
+                "1",
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "mutated"
+              ],
+              "gnu": [
+                "90",
+                "1",
+                "t",
+                "1",
+                "1",
+                "1"
+              ],
+              "source261": [
+                "90",
+                "1",
+                "-1",
+                "t",
+                "1",
+                "1"
+              ]
+            },
+            {
+              "key": [
+                "after-gc"
+              ],
+              "gnu": [
+                "90",
+                "1",
+                "t",
+                "1",
+                "1",
+                "1"
+              ],
+              "source261": [
+                "90",
+                "1",
+                "-1",
+                "t",
+                "1",
+                "1"
+              ]
+            }
+          ],
+          "processes": {
+            "gnu": {
+              "fixture": "compare-strings-live-case-table",
+              "editor": "gnu",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.1955939579999999,
+              "stdout_sha256": "a7afb98ed2a99ca18e7f4e927ad5ea8c14043df1f169650259d9658a9779e4c6",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source261": {
+              "fixture": "compare-strings-live-case-table",
+              "editor": "source261",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.25540949999999984,
+              "stdout_sha256": "b8258f4034ccd00c1cfa91ff0b2c15332d22a25b9a128057311365cad63661d9",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            },
+            "source174": {
+              "fixture": "compare-strings-live-case-table",
+              "editor": "source174",
+              "exit_code": 0,
+              "timed_out": false,
+              "elapsed_seconds": 0.2543451250000004,
+              "stdout_sha256": "b8258f4034ccd00c1cfa91ff0b2c15332d22a25b9a128057311365cad63661d9",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "source_unchanged": true,
+              "inputs_unchanged": true
+            }
+          },
+          "upcase_observations_match": true,
+          "wrong_comparison_observations": 7,
+          "historical_limit": "Main/source174 output is byte-identical to source261 for this fixture; all observed differences here predate the current task branch."
+        }
+      ],
+      "gnu_references": {
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "DEFUN (\"compare-strings\"": 363,
+            "validate_subarray (Lisp_Object array": 1557
+          }
+        },
+        "src/character.h": {
+          "sha256": "a3543fd1204530d96ac4bef20b9b860d667e70799aafad84dbd2910cf7348d8c",
+          "anchors": {
+            "fetch_string_char_as_multibyte_advance (Lisp_Object string": 465
+          }
+        },
+        "src/casefiddle.c": {
+          "sha256": "3ff78b55e176521c9e69a8258683e8ebad060a951b905d46022e38fd4fa64b41",
+          "anchors": {
+            "case_character_impl (struct casing_str_buf": 115,
+            "do_casify_natnum (": 251
+          }
+        }
+      },
+      "goal_complete": false,
+      "qualification": "Eight ordinary processes complete with empty stderr; the ninth is a preserved main/source174 failure. Inputs, raw output hashes, exact range errors and all matrix keys are checked. Live upcase follows the changed case table while compare-strings does not. Existing frozen/selected inputs are unchanged; this audit does not validate a repair or establish general historical attribution."
+    },
+    "numeric_casing_negatives": {
+      "status": "numeric casing negatives verified",
+      "rows": 30,
+      "differing_rows": 9,
+      "table_contents_match": true,
+      "differences": [
+        {
+          "key": [
+            "nil",
+            "233"
+          ],
+          "gnu": [
+            "233",
+            "233",
+            "201",
+            "233"
+          ],
+          "source261": [
+            "201",
+            "233",
+            "201",
+            "233"
+          ]
+        },
+        {
+          "key": [
+            "nil",
+            "201"
+          ],
+          "gnu": [
+            "201",
+            "201",
+            "201",
+            "233"
+          ],
+          "source261": [
+            "201",
+            "233",
+            "201",
+            "233"
+          ]
+        },
+        {
+          "key": [
+            "nil",
+            "4194281"
+          ],
+          "gnu": [
+            "4194281",
+            "4194281",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "4194249",
+            "4194281",
+            "nil",
+            "nil"
+          ]
+        },
+        {
+          "key": [
+            "nil",
+            "4194249"
+          ],
+          "gnu": [
+            "4194249",
+            "4194249",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "4194249",
+            "4194281",
+            "nil",
+            "nil"
+          ]
+        },
+        {
+          "key": [
+            "nil",
+            "4194303"
+          ],
+          "gnu": [
+            "4194303",
+            "4194303",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "376",
+            "4194303",
+            "nil",
+            "nil"
+          ]
+        },
+        {
+          "key": [
+            "nil",
+            "223"
+          ],
+          "gnu": [
+            "223",
+            "223",
+            "7838",
+            "223"
+          ],
+          "source261": [
+            "158",
+            "223",
+            "7838",
+            "223"
+          ]
+        },
+        {
+          "key": [
+            "t",
+            "4194281"
+          ],
+          "gnu": [
+            "4194281",
+            "4194281",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "4194249",
+            "4194281",
+            "nil",
+            "nil"
+          ]
+        },
+        {
+          "key": [
+            "t",
+            "4194249"
+          ],
+          "gnu": [
+            "4194249",
+            "4194249",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "4194249",
+            "4194281",
+            "nil",
+            "nil"
+          ]
+        },
+        {
+          "key": [
+            "t",
+            "4194303"
+          ],
+          "gnu": [
+            "4194303",
+            "4194303",
+            "nil",
+            "nil"
+          ],
+          "source261": [
+            "376",
+            "4194303",
+            "nil",
+            "nil"
+          ]
+        }
+      ],
+      "processes": {
+        "gnu": {
+          "command": {
+            "command": [
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+              "-Q",
+              "--batch",
+              "--eval",
+              "(prin1 (let ((codes '(?e ?E #xe9 #xc9 #x3fffe9 #x3fffc9 #xe0e9 #xe0c9\n              #x110000 #x3fffff #x3c2 #x3a3 #xd800 #x1e9e #xdf))\n      (result nil))\n  (dolist (multibyte '(nil t))\n    (with-temp-buffer\n      (set-buffer-multibyte multibyte)\n      (dolist (code codes)\n        (push (list multibyte code (upcase code) (downcase code)\n                    (aref (char-table-extra-slot (current-case-table) 0) code)\n                    (aref (current-case-table) code))\n              result))))\n  (nreverse result))\n)"
+            ],
+            "working_directory": "/Users/nbmhqa186/projects/emaxx",
+            "environment_override": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "inputs": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-case-character-identities.el": "2374f2a084ab092202a2b4d63a988b96b530805d3341c0ce4958429906835189",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-case-character.py": "0433f617a265a1c1e2361cc398185a3981ac42c2be752769cbaa25f0782a908b",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/casefiddle.c": "3ff78b55e176521c9e69a8258683e8ebad060a951b905d46022e38fd4fa64b41",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/buffer.h": "71655d9c7d864421bd11bbe85f63e0bb6ea9bffd75eaa40f5ea8b314bf5c19fe",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/character.h": "a3543fd1204530d96ac4bef20b9b860d667e70799aafad84dbd2910cf7348d8c"
+            },
+            "timeout_seconds": 120,
+            "qualification": "Same ordinary Lisp inputs in rebuilt pinned GNU, the retained source261 release and retained main/source174 release at their original locations. Does not modify any frozen runtime input or existing expectation. Historical attribution is limited to this exact probe."
+          },
+          "result": {
+            "fixture": "string-case-character-identities",
+            "editor": "gnu",
+            "exit_code": 0,
+            "timed_out": false,
+            "elapsed_seconds": 0.202567416,
+            "stdout_sha256": "5c34f36c2f3ed3370837add106192528e5d557bfe591ea7c13c101c882c8e77d",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "source_unchanged": true,
+            "inputs_unchanged": true
+          }
+        },
+        "source261": {
+          "command": {
+            "command": [
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx",
+              "-Q",
+              "--batch",
+              "--eval",
+              "(prin1 (let ((codes '(?e ?E #xe9 #xc9 #x3fffe9 #x3fffc9 #xe0e9 #xe0c9\n              #x110000 #x3fffff #x3c2 #x3a3 #xd800 #x1e9e #xdf))\n      (result nil))\n  (dolist (multibyte '(nil t))\n    (with-temp-buffer\n      (set-buffer-multibyte multibyte)\n      (dolist (code codes)\n        (push (list multibyte code (upcase code) (downcase code)\n                    (aref (char-table-extra-slot (current-case-table) 0) code)\n                    (aref (current-case-table) code))\n              result))))\n  (nreverse result))\n)"
+            ],
+            "working_directory": "/Users/nbmhqa186/projects/emaxx",
+            "environment_override": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "inputs": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-case-character-identities.el": "2374f2a084ab092202a2b4d63a988b96b530805d3341c0ce4958429906835189",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-case-character.py": "0433f617a265a1c1e2361cc398185a3981ac42c2be752769cbaa25f0782a908b",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx": "332e1aaaf04e0534096f5719b1bc7ed76cbac59409fe2e59c54187da7a4a7a36",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx.pdmp": "f2200c7191c029ec78f74aad8195f3ac5f6b23515667cf9a2d60b362dfa3b2db",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/casefiddle.c": "3ff78b55e176521c9e69a8258683e8ebad060a951b905d46022e38fd4fa64b41",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/buffer.h": "71655d9c7d864421bd11bbe85f63e0bb6ea9bffd75eaa40f5ea8b314bf5c19fe",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/character.h": "a3543fd1204530d96ac4bef20b9b860d667e70799aafad84dbd2910cf7348d8c"
+            },
+            "timeout_seconds": 120,
+            "qualification": "Same ordinary Lisp inputs in rebuilt pinned GNU, the retained source261 release and retained main/source174 release at their original locations. Does not modify any frozen runtime input or existing expectation. Historical attribution is limited to this exact probe."
+          },
+          "result": {
+            "fixture": "string-case-character-identities",
+            "editor": "source261",
+            "exit_code": 0,
+            "timed_out": false,
+            "elapsed_seconds": 0.257806084,
+            "stdout_sha256": "1364ec35d1a6276a5d5fb3d52907ff647117367ff2034aa213ae8d4c28d4b2b9",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "source_unchanged": true,
+            "inputs_unchanged": true
+          }
+        },
+        "source174": {
+          "command": {
+            "command": [
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx",
+              "-Q",
+              "--batch",
+              "--eval",
+              "(prin1 (let ((codes '(?e ?E #xe9 #xc9 #x3fffe9 #x3fffc9 #xe0e9 #xe0c9\n              #x110000 #x3fffff #x3c2 #x3a3 #xd800 #x1e9e #xdf))\n      (result nil))\n  (dolist (multibyte '(nil t))\n    (with-temp-buffer\n      (set-buffer-multibyte multibyte)\n      (dolist (code codes)\n        (push (list multibyte code (upcase code) (downcase code)\n                    (aref (char-table-extra-slot (current-case-table) 0) code)\n                    (aref (current-case-table) code))\n              result))))\n  (nreverse result))\n)"
+            ],
+            "working_directory": "/Users/nbmhqa186/projects/emaxx",
+            "environment_override": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "inputs": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-case-character-identities.el": "2374f2a084ab092202a2b4d63a988b96b530805d3341c0ce4958429906835189",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-case-character.py": "0433f617a265a1c1e2361cc398185a3981ac42c2be752769cbaa25f0782a908b",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx": "58c99422ffe229e549b8046eb49ceaf578e1c2770ef6d53567b8ac00f355fa3c",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx.pdmp": "ee5d89a296b655ca5a690d26624643c6cb93c319470590123329fd6a4d56b43a",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/casefiddle.c": "3ff78b55e176521c9e69a8258683e8ebad060a951b905d46022e38fd4fa64b41",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/buffer.h": "71655d9c7d864421bd11bbe85f63e0bb6ea9bffd75eaa40f5ea8b314bf5c19fe",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/character.h": "a3543fd1204530d96ac4bef20b9b860d667e70799aafad84dbd2910cf7348d8c"
+            },
+            "timeout_seconds": 120,
+            "qualification": "Same ordinary Lisp inputs in rebuilt pinned GNU, the retained source261 release and retained main/source174 release at their original locations. Does not modify any frozen runtime input or existing expectation. Historical attribution is limited to this exact probe."
+          },
+          "result": {
+            "fixture": "string-case-character-identities",
+            "editor": "source174",
+            "exit_code": 0,
+            "timed_out": false,
+            "elapsed_seconds": 0.253460625,
+            "stdout_sha256": "1364ec35d1a6276a5d5fb3d52907ff647117367ff2034aa213ae8d4c28d4b2b9",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "source_unchanged": true,
+            "inputs_unchanged": true
+          }
+        }
+      },
+      "goal_complete": false,
+      "qualification": "All three ordinary processes exit zero with unchanged input hashes and empty stderr. Actual down/up table contents agree on all30 rows, but nine numeric casing rows differ. Main/source174 output is byte-identical to source261. This isolates the canonical character lookup defect from table construction; it does not validate a repair."
+    },
+    "withdrawal": {
+      "status": "withdrawn while waiting before runtime execution",
+      "pid": 38430,
+      "process": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python -B /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ordering262-validation.py",
+      "helper_sha256": "008d28d6ba1e2da27aea47f5090b3fe5b0b6bd88c1b3c4bbf6b0104d48d5fb20",
+      "state_before": {
+        "status": "waiting for source261 full macOS supervisor to exit",
+        "prior_pid": 31023,
+        "source_manifest": "source262-manifest.json",
+        "helper_sha256": {
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ordering-focused.py": "a9fe0beae1321bf1abfce7c0b758274b860c52896827f3172f2c3ffc35b939c1",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ordering-focused.py": "468dd329b22b6dbf10f3bf3dd1b926f551c7774e7709dab017f3e3f6fca974c1",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-string-ordering-broad.py": "5deb42643565bb05cd7e018382e7d5a705f4f484ea8ee8c4ac8059a619040e05",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ordering-release.py": "41df685ea1c929eb0ec0a630936bdd1ddbc021811369581ee55624a9cc2ba6cf",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ordering-release.py": "04be1543a1ffd70f027de8222bd9eced7abd2a3153fcb45f38aa47358ed9bf3a",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/build-string-ordering-ordinary.py": "efaf331718a67067b9a6d079e66784205c37b2516438918a44895028dfba497d",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/compare-string-ordering-fixtures.py": "d750160370b6bc92155ecf82c9d1484de40dc96d58bfdb72710ee3a48267afcb"
+        },
+        "stages": [
+          [
+            "run-string-ordering-focused.py",
+            "262"
+          ],
+          [
+            "audit-string-ordering-focused.py",
+            "262"
+          ],
+          [
+            "test-string-ordering-broad.py",
+            "262",
+            "gate"
+          ],
+          [
+            "run-string-ordering-release.py",
+            "262"
+          ],
+          [
+            "audit-string-ordering-release.py",
+            "262"
+          ],
+          [
+            "test-string-ordering-broad.py",
+            "262",
+            "release"
+          ],
+          [
+            "build-string-ordering-ordinary.py",
+            "262"
+          ],
+          [
+            "compare-string-ordering-fixtures.py",
+            "source262",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-ordering/emaxx",
+            "coding-post-read-character-count",
+            "coding-post-read-fast-path",
+            "overriding-property-identity",
+            "coding-candidate-symbol-properties",
+            "coding-candidate-translation",
+            "coding-candidate-character-identities",
+            "coding-candidate-inventory",
+            "file-write-coding-selection",
+            "new-file-coding-lifecycle",
+            "file-write-order",
+            "canonical-coding-character-storage",
+            "canonical-coding-identity-storage",
+            "canonical-coding-conversion-storage",
+            "copied-canonical-string-storage",
+            "coding-error-object-storage",
+            "host-string-mutation",
+            "host-string-vector-mutation",
+            "string-equality-storage",
+            "string-equality-symbol-names-positioned",
+            "string-equality-property-values",
+            "string-equality-property-hashes",
+            "native-bytecode-unibyte-constructor",
+            "string-ordering-symbol-storage",
+            "string-version-ordering"
+          ]
+        ],
+        "goal_complete": false
+      },
+      "withdrawn_at_unix": 1790881665.700831,
+      "source_inputs_unchanged": 492,
+      "reason": "Superseded by source263 before any runtime stage. The new candidate contains both ordering fixes and the GNU-confirmed range/numeric-casing repairs, all199 planned focused selectors,1054 affected controls and28 ordinary comparisons. Source262 source, patches, strict results, original launch and waiting state remain unchanged. No runtime pass or failure is claimed for source262.",
+      "goal_complete": false
+    },
+    "launch": {
+      "pid": 64601,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ranges263-validation.py"
+      ],
+      "helper_sha256": "b03c5b55dc39ecbe2fa5347c5692bb8475f94b0afeb1877637d1e177c5b24b57",
+      "started_at_unix": 1790881665.702689,
+      "source_manifest": "source263-manifest.json",
+      "qualification": "Supersedes source262 only after recording its pre-runtime withdrawal. Waits for complete source261 macOS supervisor31023. Published runtime and all preceding frozen sources stay unchanged; a queued command is not a passing result."
+    },
+    "qualification": "Unapplied500-input successor retains all source262 ordering code/tests and repairs GNU-confirmed range validation, byte promotion, live case-table use and exact numeric character keys. Strict checks pass and both patches replay exactly. All four unchanged GNU fixtures and original negatives are retained, including main/source174 failure before its full character matrix. Source262 queue38430 was withdrawn while waiting, before any runtime stage; its source/helpers/evidence remain unchanged. Source263 queue64601 waits for full source261 macOS exit, then runs199 focused selectors/1054 affected tests per profile and28 ordinary comparisons. No runtime, complete-platform, memory or performance pass is claimed for this draft."
+  },
+  "archive": {
+    "path": "source263-string-ranges-draft.tar.gz",
+    "bytes": 698812,
+    "sha256": "8c5e27a0d90b1131b3224b39b67e010b816e6a244ab5480ff52d660f9aefd3ed"
+  },
+  "files": [
+    {
+      "path": "audit-source238-release.py",
+      "bytes": 6600,
+      "sha256": "a88af9f455dd1646cf700decd651b977a525af8dc4a7eea81ed76f1812ff182f"
+    },
+    {
+      "path": "audit-source261-compare-strings.py",
+      "bytes": 5115,
+      "sha256": "93074203ce74fcf4a06a10a8c9a584a13f0bf863a10b4f030ae5042be62e4e58"
+    },
+    {
+      "path": "audit-source262-selected.py",
+      "bytes": 7996,
+      "sha256": "1aaff92464fdc9bb481df41bed54e966368233a9caa42b0cba6f907f744d1b8f"
+    },
+    {
+      "path": "audit-source263-selected.py",
+      "bytes": 8590,
+      "sha256": "8c12d1dd5f828db6552ab0e9d06b9bb5286a2bfa951ab85d4cf108040322589c"
+    },
+    {
+      "path": "audit-source263-string-ranges-patches.py",
+      "bytes": 3114,
+      "sha256": "526e2777abfe3c136c46cf87c102e724c237f6ace1ab24f1ceca9eb8df300ea8"
+    },
+    {
+      "path": "audit-string-ranges-focused.py",
+      "bytes": 3801,
+      "sha256": "350b4897082d7c35d4254f551fe07c2ffe39d48d6a0fe3e191869a6ab43bbd6d"
+    },
+    {
+      "path": "audit-string-ranges-release.py",
+      "bytes": 4650,
+      "sha256": "6ac9eceeb872927565c26b92a28e3efb1f3dfeaa59451b0521e651a1e89ff92b"
+    },
+    {
+      "path": "build-string-ranges-ordinary.py",
+      "bytes": 2470,
+      "sha256": "ffdeb24bb90e381682043ff65b3cb97f22f4fea971cb2fd31d74f2b55f529d6e"
+    },
+    {
+      "path": "check-string-ranges-draft.py",
+      "bytes": 2730,
+      "sha256": "f52fc2e9d33f04d460610c53248fe94b8854d4a2608dd260946034b22a96c258"
+    },
+    {
+      "path": "compare-string-ranges-fixtures.py",
+      "bytes": 4037,
+      "sha256": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd"
+    },
+    {
+      "path": "compare-strings-character-storage.el",
+      "bytes": 1276,
+      "sha256": "b273666c1e8f04808a1377ec834cb8cfc5907ba4d78118a42362a010517ba27d"
+    },
+    {
+      "path": "compare-strings-live-case-table.el",
+      "bytes": 766,
+      "sha256": "c8a3c3d77d6fb38db72d37ea2b71342dcdd840a18a373edf9bcd7d1e1fb547e5"
+    },
+    {
+      "path": "compare-strings-ranges.el",
+      "bytes": 1874,
+      "sha256": "14d453d3ec4fcafe069e365be14305e18c1f594587d94cc43f277a12cdf1eba9"
+    },
+    {
+      "path": "freeze-string-ranges.py",
+      "bytes": 2694,
+      "sha256": "adb10243475ca8b7750bd535e6fe602e465126c06fda51aa7708571ead8c3035"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source261-linux-and263-ranges.py",
+      "bytes": 7441,
+      "sha256": "084f5313fa3f17015b07f9a60d963e26a09a6b599661199392bc352d683de158"
+    },
+    {
+      "path": "probe-source261-compare-strings.py",
+      "bytes": 3866,
+      "sha256": "5fd8f286f830ab098cc841b7fcf5e867b33c230b4da7e2db6bacc395169f8f22"
+    },
+    {
+      "path": "probe-source261-string-case-character.py",
+      "bytes": 3810,
+      "sha256": "0433f617a265a1c1e2361cc398185a3981ac42c2be752769cbaa25f0782a908b"
+    },
+    {
+      "path": "queue-string-ordering262-validation.py",
+      "bytes": 5143,
+      "sha256": "008d28d6ba1e2da27aea47f5090b3fe5b0b6bd88c1b3c4bbf6b0104d48d5fb20"
+    },
+    {
+      "path": "queue-string-ranges263-validation.py",
+      "bytes": 5712,
+      "sha256": "b03c5b55dc39ecbe2fa5347c5692bb8475f94b0afeb1877637d1e177c5b24b57"
+    },
+    {
+      "path": "run-string-ranges-focused.py",
+      "bytes": 6565,
+      "sha256": "c0626e03759714f6ac026f547e7b784aa164b52b4897ebaa97f2d5b47a9d3b9d"
+    },
+    {
+      "path": "run-string-ranges-release.py",
+      "bytes": 6610,
+      "sha256": "f74f9977371762c6850937de0eb8718de2f210543bc038f28f86ba0e07e3cf8c"
+    },
+    {
+      "path": "source174-ordinary-artifacts.json",
+      "bytes": 736,
+      "sha256": "792c48f6f5dc1c66d901a8bfdc4412e88f421dd7230104dc9b347e00c8416d4a"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source261-compare-strings-negative-audit.json",
+      "bytes": 46137,
+      "sha256": "0e91c990cac88dbc700eb7fef630a84d604a676514e3276c5ff1667ba91a5ba6"
+    },
+    {
+      "path": "source261-compare-strings-probes.json",
+      "bytes": 4064,
+      "sha256": "c40d2fce37a4397cd3bf28205666c30b4bac7b1b96adbf1b5f80db7106e54496"
+    },
+    {
+      "path": "source261-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "7adbd58e55a5a6b05c9dd28c5bfbe533c0f44b29277cb386c7cce251cefa24f2"
+    },
+    {
+      "path": "source261-gate-controls-command.json",
+      "bytes": 34325,
+      "sha256": "2a63acac530ba1993598ffa4ea9754048c7e447a4ecc6245503d85612010db9f"
+    },
+    {
+      "path": "source261-gate-inventory.log",
+      "bytes": 265738,
+      "sha256": "3f8d046dff66e5018d76aa4e6354c0d259270f8bf5ff206a9c0128ce2b0840e6"
+    },
+    {
+      "path": "source261-manifest.json",
+      "bytes": 56077,
+      "sha256": "784c94f223f69f48250a2439c0981c2e8f38b667dfc7609f2058087f0f80eda1"
+    },
+    {
+      "path": "source261-ordinary-artifacts.json",
+      "bytes": 780,
+      "sha256": "62b3fc6baa8d99ab0871071843067f1b8e6e1905029194b8f8ff832d7bb40668"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-gnu-command.json",
+      "bytes": 3621,
+      "sha256": "e5424a7dae99f7fdc5ddda7a6fcbe7ea9154bcc684eefc8bf224261f6498e462"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-gnu-result.json",
+      "bytes": 383,
+      "sha256": "ebe327d46cda7770c345ead65315bdc7d74e6843384e58bc81e2a6d85a1270bc"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-gnu.stdout",
+      "bytes": 34260,
+      "sha256": "10092389fb8fc056bb6812a4858fc1471340a2b5b05f5709a32651dd7e08a7ab"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source174-command.json",
+      "bytes": 3738,
+      "sha256": "2134748beeaf1494ddc0106058eb5e0f19cfa4b6ee567a686f1b657a0f1720f7"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source174-result.json",
+      "bytes": 390,
+      "sha256": "fb4b117475d25fcc9e8e968b08fc23c41c36715aa842821652669ffcf97b1478"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source174.stderr",
+      "bytes": 27,
+      "sha256": "c99f621c216fda2b5a804c24ddc24b9a33e7d32c1e4a67e8cb3017ec8f11c632"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source174.stdout",
+      "bytes": 4751,
+      "sha256": "15116ef1ca0d70f4ce7865703df98f52ab3c4cfb7b24823500aca8061283dcf5"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source261-command.json",
+      "bytes": 3804,
+      "sha256": "866ba5d579ef4bbe696419dd40915c11b0cc6a4a6209a5ba66c77efe21f1aba7"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source261-result.json",
+      "bytes": 388,
+      "sha256": "58a9dd484a3e7ecebb5e0369336be4f00e8b2e3969dfcb6f324ab9a3ee8677d3"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-character-storage-source261.stdout",
+      "bytes": 34233,
+      "sha256": "d482f221f5568eeeaf1f023ecf4754d82fdc39701c641c0815e80d8e34b68315"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-gnu-command.json",
+      "bytes": 3115,
+      "sha256": "f7235dc256deb6b95cee97ad94a2bd22209cd1f12a75bcc102a531c15f9c041f"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-gnu-result.json",
+      "bytes": 380,
+      "sha256": "7d1098cb31f002ed6fc70eb7481eb1ae740702ef53b6b66176187198707dc337"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-gnu.stdout",
+      "bytes": 75,
+      "sha256": "a7afb98ed2a99ca18e7f4e927ad5ea8c14043df1f169650259d9658a9779e4c6"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source174-command.json",
+      "bytes": 3232,
+      "sha256": "3096ce8dca2692d5512e9da8ab1f4a15b15fe7aa87582d1bea9b28ec60e7fe87"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source174-result.json",
+      "bytes": 386,
+      "sha256": "7bfc10c323ad070ce458c70d35ba797eb57d5251e67e4281680a57af66094af9"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source174.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source174.stdout",
+      "bytes": 76,
+      "sha256": "b8258f4034ccd00c1cfa91ff0b2c15332d22a25b9a128057311365cad63661d9"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source261-command.json",
+      "bytes": 3298,
+      "sha256": "578c8ac9a15db33550b4ebcfa96b2a55de036035598e8df753829d4dd4a62fc3"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source261-result.json",
+      "bytes": 387,
+      "sha256": "38cfafe81b19735736ca68e3f8b8ca887e9ed3d8be3961f3dab877d41d2c32e3"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-live-case-table-source261.stdout",
+      "bytes": 76,
+      "sha256": "b8258f4034ccd00c1cfa91ff0b2c15332d22a25b9a128057311365cad63661d9"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-gnu-command.json",
+      "bytes": 4285,
+      "sha256": "94c44720a08417b04880fac6f3b3a27bb36f74127cd6ad377686a0326f8b4252"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-gnu-result.json",
+      "bytes": 364,
+      "sha256": "62af9f4bd92e5dd291b13abc57153c540bd0fec8b5a80921c6005bce844d2756"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-gnu.stdout",
+      "bytes": 1164,
+      "sha256": "cff86d4f3e19d98a05253065df72516cb3e6c88e6b48b983fffefca7cdd2eb7a"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source174-command.json",
+      "bytes": 4402,
+      "sha256": "a8080e3887ec094e7a9c7fadb57705b12f1fa3eb47b7f40849e9d4a02ecc6e4d"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source174-result.json",
+      "bytes": 377,
+      "sha256": "9ca771b8bb4c027ff07bacb9899f42f5e42d82794d02d047e10da59d14f07d86"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source174.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source174.stdout",
+      "bytes": 1002,
+      "sha256": "b33ca65fab4bb998445fa07c7a14e1988cc385aabdcd0efa8329dc3e84dd2b40"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source261-command.json",
+      "bytes": 4468,
+      "sha256": "0a03e622730bb216572310b38aca4c650063aca1e8f583f191636b48f8464572"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source261-result.json",
+      "bytes": 378,
+      "sha256": "7bc668d5c6cc25267fe34f5912e2d5aa6a4ed85a955cce3b0df47b24f40ca96c"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-compare-strings-ranges-source261.stdout",
+      "bytes": 1002,
+      "sha256": "b33ca65fab4bb998445fa07c7a14e1988cc385aabdcd0efa8329dc3e84dd2b40"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-gnu-command.json",
+      "bytes": 2841,
+      "sha256": "4f681d15bc26778028eec56bacd147c667e846c66efb0a663d5ed55ea08a1136"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-gnu-result.json",
+      "bytes": 374,
+      "sha256": "8fb7abbb5cda4a29f062329519e607edcbe6f7a77de22961f32c04e379615b1e"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-gnu.stdout",
+      "bytes": 882,
+      "sha256": "5c34f36c2f3ed3370837add106192528e5d557bfe591ea7c13c101c882c8e77d"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source174-command.json",
+      "bytes": 2958,
+      "sha256": "b6031c74b3b815c20f146d237ea2137531b1332db3aec19b0c46eafbc6fc13c0"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source174-result.json",
+      "bytes": 380,
+      "sha256": "c74d12f81d3b2eaf77e5d29f830b83def51e2c7a00c170822d70d08b65243c7f"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source174.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source174.stdout",
+      "bytes": 874,
+      "sha256": "1364ec35d1a6276a5d5fb3d52907ff647117367ff2034aa213ae8d4c28d4b2b9"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source261-command.json",
+      "bytes": 3024,
+      "sha256": "bd89f25939e32e2528cb5fa61f588927e225d13da8619c01337d02c804d11237"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source261-result.json",
+      "bytes": 380,
+      "sha256": "b30f447bd386fe6a2d361b5fb5fb4141b7b91bff426ca4c7a73c963da8e78249"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-case-character-identities-source261.stdout",
+      "bytes": 874,
+      "sha256": "1364ec35d1a6276a5d5fb3d52907ff647117367ff2034aa213ae8d4c28d4b2b9"
+    },
+    {
+      "path": "source261-release-broad-command.json",
+      "bytes": 175733,
+      "sha256": "c2750e75f52ebeaa290732068ea967b02bae255df5667d7b8159de5aa3b36985"
+    },
+    {
+      "path": "source261-release-controls-command.json",
+      "bytes": 34328,
+      "sha256": "f6fdbb2a3ec6a6194dcc7fceaa0917cb904a085d516d80c1485f9d77000e6893"
+    },
+    {
+      "path": "source261-release-inventory.log",
+      "bytes": 265649,
+      "sha256": "680c8531e693395da35996f1c53514e98addccab7a6505c2f819210024c67c7b"
+    },
+    {
+      "path": "source261-selected-audit.json",
+      "bytes": 5009,
+      "sha256": "b5bce4a724360d049f6b2b6bf0b5dff19ab7556005449a9bb1c9bded182afd2d"
+    },
+    {
+      "path": "source261-string-case-character-negative-audit.json",
+      "bytes": 13591,
+      "sha256": "89c48390eee94bf21bf224e7894ab1cb824cc05e2bfe0c9d7ebb6c1ea55112ea"
+    },
+    {
+      "path": "source261-string-case-character-probes.json",
+      "bytes": 1489,
+      "sha256": "756ad5bdfcdc37bc5604d01a024c96c4cba32773eeea9fbeb4f5f580df633763"
+    },
+    {
+      "path": "source262-manifest.json",
+      "bytes": 56563,
+      "sha256": "e7267211716fd37aff684e3de9a40a6f024ccfddd1d3d87c866389400d9b5fdf"
+    },
+    {
+      "path": "source262-validation-at-packaging.json",
+      "bytes": 3331,
+      "sha256": "05cea0057d11992d45d1cab6e1a7ff3c62f27e415fd5c86a318dbf9bb4929402"
+    },
+    {
+      "path": "source262-validation-launch.json",
+      "bytes": 574,
+      "sha256": "eaa87137e6ff7f4a93c61cd2d876afa870ec450230f9f0a456dc47bd7c17b920"
+    },
+    {
+      "path": "source262-validation-withdrawal.json",
+      "bytes": 4154,
+      "sha256": "e8fbd1e5f21ac47ac0d765cca7a005437dd7d332750b7d4031a96c8014d3e016"
+    },
+    {
+      "path": "source263-c-reference-review.json",
+      "bytes": 3762,
+      "sha256": "93e7e64f7bc8bdfc543696270e70d35319e08ebe65cef53250d34dca226df59a"
+    },
+    {
+      "path": "source263-check-command.json",
+      "bytes": 551,
+      "sha256": "c266b6b0707724168eeb72e866de8d3c6e961e616ea37d7fc154e961d8c12de4"
+    },
+    {
+      "path": "source263-check-result.json",
+      "bytes": 83,
+      "sha256": "ed4b4600da0d43e05f7073d8babc3288c68f8be9c3a8cca63d04a361a2374b62"
+    },
+    {
+      "path": "source263-check.log",
+      "bytes": 195,
+      "sha256": "b49b949bcbe720970d0f7c9354ed44af334fe88d5eaaf4ab58798b525e6fddd8"
+    },
+    {
+      "path": "source263-clippy-command.json",
+      "bytes": 588,
+      "sha256": "ed4192b4c37141c381dd0762a12e178b4bb84595ff453e087ea9f9be0cb629cd"
+    },
+    {
+      "path": "source263-clippy-result.json",
+      "bytes": 89,
+      "sha256": "324ac957e97b9b4b83068fb325a669ed6ae97230de620dcd44925b30e377a606"
+    },
+    {
+      "path": "source263-clippy.log",
+      "bytes": 195,
+      "sha256": "91c178be342e2edf829aff580978c13ccf192cd177547eecb87635e5013d38e1"
+    },
+    {
+      "path": "source263-diff-command.json",
+      "bytes": 504,
+      "sha256": "42f7fb38466cf652084039f315bf8d8cb2f18017bd9a8740d955389adfd97ba2"
+    },
+    {
+      "path": "source263-diff-result.json",
+      "bytes": 89,
+      "sha256": "6ea608e67cda3988aa40b2695449bca69d7c9d604e2fe281bcf6791daacfb1c8"
+    },
+    {
+      "path": "source263-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source263-fmt-command.json",
+      "bytes": 528,
+      "sha256": "646996b0cd032ac9e6a9363f55f24d3054fc9371b9245b0b548dd2693fa77950"
+    },
+    {
+      "path": "source263-fmt-result.json",
+      "bytes": 89,
+      "sha256": "1be34d4b6027f1c5092e7312a4487cb3a7c87fe0e1e1d543cc05601f2c14c6f4"
+    },
+    {
+      "path": "source263-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source263-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source263-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source263-freeze.json",
+      "bytes": 1180,
+      "sha256": "e1745b20cef9d77bcb06203a032433826da97b036808e95a653738043f215629"
+    },
+    {
+      "path": "source263-incremental.patch",
+      "bytes": 25507,
+      "sha256": "65ff2e812e571d868986cb573c60d39a5213f0729b7f2646c8c1400937e57261"
+    },
+    {
+      "path": "source263-manifest.json",
+      "bytes": 57559,
+      "sha256": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f"
+    },
+    {
+      "path": "source263-patch-replay-audit.json",
+      "bytes": 1076,
+      "sha256": "3abc94bfbffb10f066965ef25cc2827f0c28ecf2b12b981c803b75fdb8d0d9d6"
+    },
+    {
+      "path": "source263-portable-complete.patch",
+      "bytes": 1003150,
+      "sha256": "53a21d70cc6564bf2965e0b28475e48642cba1e68c45ea96cf53819caf7267d5"
+    },
+    {
+      "path": "source263-portable-incremental.patch",
+      "bytes": 144911,
+      "sha256": "2cfb9ab001392affd3c0b80580f3266409edfba5b3e9ffc9562145f6ddd60d31"
+    },
+    {
+      "path": "source263-unformatted.patch",
+      "bytes": 25377,
+      "sha256": "490a20818742aa27a0077f70e0cbd760cc53630a700f1b76a38b4fbfc3937f06"
+    },
+    {
+      "path": "source263-validation-at-packaging.json",
+      "bytes": 3184,
+      "sha256": "36d7308ddcf75f640806e8bb378bd96149eb0a12c3e19d6d1df1f62c6c09b57f"
+    },
+    {
+      "path": "source263-validation-launch.json",
+      "bytes": 648,
+      "sha256": "f12ed9a6476d7bfcc01ad1d148824c3643301c0eb1bf58fe12f71fc3a3f3401f"
+    },
+    {
+      "path": "string-case-character-identities.el",
+      "bytes": 511,
+      "sha256": "2374f2a084ab092202a2b4d63a988b96b530805d3341c0ce4958429906835189"
+    },
+    {
+      "path": "string-ranges-draft-checkout.json",
+      "bytes": 1003,
+      "sha256": "1fc113a5a4e2b1a9af1f11cbc5f51d8221985acf1cb11c71a25cf124c74c9ecf"
+    },
+    {
+      "path": "test-string-ranges-broad.py",
+      "bytes": 3914,
+      "sha256": "969580f117a6557f013547b0838f137d384967765d2aa16c321beebb6303632f"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-character-storage.el",
+      "bytes": 1276,
+      "sha256": "b273666c1e8f04808a1377ec834cb8cfc5907ba4d78118a42362a010517ba27d"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-character-storage.expected",
+      "bytes": 34261,
+      "sha256": "05575a5598cdb0b20b8f4958ef867d4954d505672fa950647a739345037e3b64"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-live-case-table.el",
+      "bytes": 766,
+      "sha256": "c8a3c3d77d6fb38db72d37ea2b71342dcdd840a18a373edf9bcd7d1e1fb547e5"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-live-case-table.expected",
+      "bytes": 76,
+      "sha256": "5ee97498f6f1783e9e3d2388326a7665edbd64ffae85571e00ca195a10ab5fbc"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-ranges.el",
+      "bytes": 1874,
+      "sha256": "14d453d3ec4fcafe069e365be14305e18c1f594587d94cc43f277a12cdf1eba9"
+    },
+    {
+      "path": "tests/fixtures/compare-strings-ranges.expected",
+      "bytes": 1165,
+      "sha256": "93272c37649fd02d5581b4f828a3d3f4a976681dacaa1693f247ba9ceb6bbb58"
+    },
+    {
+      "path": "tests/fixtures/string-case-character-identities.el",
+      "bytes": 511,
+      "sha256": "2374f2a084ab092202a2b4d63a988b96b530805d3341c0ce4958429906835189"
+    },
+    {
+      "path": "tests/fixtures/string-case-character-identities.expected",
+      "bytes": 883,
+      "sha256": "40a872a7a47345043e117b150268580b6ebbb1d3d90abb95eadb45c36b1336f2"
+    },
+    {
+      "path": "tests/fixtures/string-ordering-symbol-storage.el",
+      "bytes": 1664,
+      "sha256": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc"
+    },
+    {
+      "path": "tests/fixtures/string-ordering-symbol-storage.expected",
+      "bytes": 63157,
+      "sha256": "9fe453d9fb3276844168cf7115c2cb88064f8008075f717e6c59ac16f705ee6d"
+    },
+    {
+      "path": "tests/fixtures/string-version-ordering.el",
+      "bytes": 1040,
+      "sha256": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389"
+    },
+    {
+      "path": "tests/fixtures/string-version-ordering.expected",
+      "bytes": 9553,
+      "sha256": "d51f0fd7a30347c5fd6f220ee7c1d5cea243041a9b11ee03c706d07fadab0d3b"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -33,8 +33,13 @@ artifact identity and four retained executable/image files. The clean checkout
 unchanged frozen comparison; full terminal validation follows. Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
-dispatched on exact `eddfe782` and still running. Frozen, terminal and Linux verdicts
-are pending; the closed Rust result does not certify them.
+complete on exact `eddfe782`. The [closed Linux audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
+verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
+native artifact identity and retained inputs, plus **519 frozen files / 7,928
+matching outcomes / 1,038 successful processes**. Each editor reports 7,670 passes,
+47 expected failures and 211 skips; all 177 original compiler tests pass. Every raw
+execution hash and actual GNU input is checked. MacOS frozen/terminal verdicts remain
+pending; no Linux result certifies them.
 Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
 
 The [separate source262 ordering draft and negatives](docs/handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
@@ -46,8 +51,22 @@ is unchanged from main. These defects remain open, despite earlier frozen passes
 Source262 follows actual `fns.c:string_cmp` and `lib/filevercmp.c`, uses canonical
 bytes and Lisp symbol names, and removes the host-text comparison adapter. Its
 **492 inputs** replay exactly and strict checks pass with zero warnings. Queue
-**38430** waits for supervisor31023 before selected gate/release and 24 ordinary
-comparisons. No source262 runtime test has run; the draft is unapplied.
+**38430 was withdrawn while waiting, before any runtime stage**, in favor of the
+successor below. Its source, helpers and original queued state remain unchanged.
+No source262 runtime test ran; it remains an unapplied precursor.
+
+The [source263 range/casing successor](docs/handover/2026-09-30-shared-reader-draft/source263-string-ranges-draft-manifest.json)
+retains all source262 changes and adds GNU-confirmed `compare-strings` and numeric
+casing repairs. New ordinary probes find **12 range/error differences**, **134
+character-comparison differences**, **seven live-case-table comparison differences**
+and **nine numeric casing differences**. Range, live-table and numeric outputs match
+main exactly; main's character matrix exits255 at its unsupported extended-character
+constructor, which is retained as a failure. The repair reads canonical bytes,
+promotes octets before casing, follows live tables with actual keys and preserves
+GNU's type/range validation order. All **500 inputs** replay exactly and strict
+checks pass with zero warnings. Queue **64601** waits for supervisor31023, then runs
+199 focused selectors and 1,054 affected tests per profile plus 28 ordinary comparisons.
+No source263 runtime stage has run; keep the unapplied checkout and helpers unchanged.
 
 ## Preceding source249 validation
 

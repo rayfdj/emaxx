@@ -955,7 +955,12 @@ verifies **3,107 passes / two existing ignores**, all 3,010 library names, nativ
 artifact identity, four retained inputs and unchanged source. Supervisor31023 now
 runs frozen validation; terminal follows. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
-[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are still running.
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete.
+The [closed Linux audit](handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
+verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
+native artifact identity and **519 frozen files / 7,928 matching outcomes / 1,038
+successful processes**. Every raw execution hash and actual GNU input is checked;
+7,670 passes, 47 expected failures and 211 skips per editor remain distinct.
 Source255's failed executable/image, all compiler/lint/helper failures
 and original negatives remain retained. Remaining full validation is pending; no physical-memory,
 ownership, performance or full-goal completion is claimed.
@@ -968,6 +973,17 @@ The exact introducing commit is unestablished. Version output is unchanged from
 main. Earlier frozen passes did not cover these defects. Source262 follows actual
 GNU `string_cmp` and `filenvercmp`, replacing host-text ordering with canonical bytes
 and Lisp symbol names. Its 492 inputs replay exactly and all strict checks pass.
-Queue38430 waits for supervisor31023 before selected runtime validation; no runtime
-pass is claimed and the draft remains unapplied. Original negatives and unchanged
-GNU expectations are preserved.
+Queue38430 was withdrawn while waiting, before any runtime stage, in favor of
+source263. Its unchanged source, helpers and original queued state are retained;
+no runtime pass or failure is inferred. Original negatives and GNU expectations remain.
+
+The [unapplied source263 successor](handover/2026-09-30-shared-reader-draft/source263-string-ranges-draft-manifest.json)
+adds repairs for 12 range/error differences, 134 character-comparison differences,
+seven live-case-table comparison differences and nine numeric casing differences.
+Main reproduces the range/live/numeric outputs; its character matrix fails before
+comparison at an unsupported extended-character constructor, which stays recorded.
+The repair follows actual GNU validation order, canonical byte cursors, octet
+promotion before casing, and direct numeric case-table keys. All source262 code
+and controls remain. Its 500 inputs replay exactly and strict checks have zero
+warnings. Queue64601 waits for supervisor31023 before 199 focused selectors, 1,054
+affected tests per profile and 28 ordinary comparisons. No runtime pass is claimed.
