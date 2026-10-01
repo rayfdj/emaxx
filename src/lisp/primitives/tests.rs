@@ -19431,6 +19431,15 @@ fn native_vector_and_closure_census_matches_gnu_word_layout() {
 }
 
 #[test]
+fn coding_candidates_use_all_registered_bases_and_actual_charsets() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-inventory.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-inventory.expected").trim(),
+        "safe coding candidates include every base and preserve full character codes",
+    );
+}
+
+#[test]
 fn bytecode_code_mutation_between_calls_matches_gnu() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.el"),

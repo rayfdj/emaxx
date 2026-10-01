@@ -2806,17 +2806,40 @@ pub(crate) fn find_coding_systems_region_internal_value(
     end: &Value,
     exclude: Option<&Value>,
 ) -> Result<Value, LispError> {
-    let (text, multibyte) = if let Some(string) = string_like(start) {
-        (string.text, string.multibyte)
+    let source = if let Some(string) = string_like(start) {
+        string
     } else {
-        (
-            text_from_region_or_string(interp, start, Some(end))?,
-            interp.buffer.borrow().is_multibyte(),
-        )
+        let from = position_from_value(interp, start)?;
+        let to = position_from_value(interp, end)?;
+        let buffer = interp.buffer.borrow();
+        let text = buffer.text_rope();
+        // coding.c checks BEG..Z, including text outside narrowing, and
+        // rejects reversed bounds. No Lisp callback runs while reading it.
+        if from == 0 || from > to || to > text.len_chars() + 1 {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *start,
+                *end,
+            ])));
+        }
+        StringLike {
+            text: text.slice(from - 1..to - 1).to_string(),
+            props: Vec::new(),
+            multibyte: buffer.is_multibyte(),
+            extended_chars: buffer.substring_extended_chars(from, to),
+        }
     };
-    // GNU returns t for an ASCII-only or unibyte source: every coding
-    // system can represent it, so the Lisp wrapper yields `(undecided)'.
-    if !multibyte || ascii_only_text(&text) {
+    if !source.multibyte {
+        return Ok(Value::T);
+    }
+    // GNU's work table checks each non-ASCII character only once. Keep
+    // actual Emacs character numbers, including non-Unicode and byte8.
+    let characters: std::collections::BTreeSet<u32> = source
+        .character_codes_iter()
+        .map(|code| code as u32)
+        .filter(|code| *code >= 0x80)
+        .collect();
+    if characters.is_empty() {
         return Ok(Value::T);
     }
     let excluded = exclude
@@ -2825,33 +2848,38 @@ pub(crate) fn find_coding_systems_region_internal_value(
         .transpose()?
         .unwrap_or_default();
     let mut codings = Vec::new();
-    for coding in interp.coding_system_priority_list() {
+    // Detection priority lists contain one representative per category;
+    // encoding candidates include every registered base coding system.
+    for coding in interp.coding_system_list(true) {
         if excluded
             .iter()
             .any(|candidate| candidate.as_symbol().ok() == Some(coding.as_str()))
         {
             continue;
         }
-        let Some(base) = interp.coding_system_base_name(&coding) else {
+        let Some(state) = interp.coding_system(&coding) else {
             continue;
         };
-        if !interp.has_coding_system(&base) {
-            continue;
+        let charsets = match state.charset_list.kind() {
+            Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
+            Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+            _ => coding_system_charset_names(interp, &coding),
+        };
+        // coding.c:char_encodable_p tests declared charset membership;
+        // an encoder's fallback/substitution is not proof of safe encoding.
+        if characters.iter().all(|&character| {
+            charsets
+                .iter()
+                .any(|charset| encode_charset_char(interp, charset, character).is_some())
+        }) {
+            codings.push(coding);
         }
-        if excluded
-            .iter()
-            .any(|candidate| candidate.as_symbol().ok() == Some(base.as_str()))
-        {
-            continue;
-        }
-        if matches!(base.as_str(), "undecided" | "utf-8-auto" | "no-conversion") {
-            continue;
-        }
-        if codings.iter().any(|existing: &String| existing == &base) {
-            continue;
-        }
-        if string_unencodable_positions(&text, &base, interp)?.is_empty() {
-            codings.push(base);
+    }
+    // coding.c always supplies these two fallbacks, including when EXCLUDE
+    // names them. They do not need a charset-list to preserve the bytes.
+    for coding in ["raw-text", "no-conversion"] {
+        if !codings.iter().any(|existing| existing == coding) {
+            codings.push(coding.to_string());
         }
     }
     Ok(Value::list(

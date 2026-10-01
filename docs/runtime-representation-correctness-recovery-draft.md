@@ -341,3 +341,83 @@ The bounded [Linux diagnosis 36825694384](https://github.com/rayfdj/emaxx/action
 is now dispatched on `3a35ad00` with the same 462 runtime inputs. It explicitly
 retains GNU executable/image identity and preserves failed controls. Its result,
 the complete frozen comparison and full terminal comparison remain pending.
+
+## Closed source243 comparisons and coding-candidate regression
+
+The [complete terminal and frozen-failure archive](handover/2026-09-30-shared-reader-draft/source243-complete-terminal-and-frozen-failure-manifest.json)
+closes both comparisons above. Terminal supervisor55869 finishes successfully:
+all **226 scenarios / 686 comparisons** match, including 658 screen and 28
+filesystem comparisons. Inventories, actions, timeouts and all eight execution
+inputs remain unchanged. Its GNU executable is source/native-ABI matched, not
+the pinned Darwin executable.
+
+Linux frozen36822376061 on exact `8d4fcd39` fails after **482 completely matching
+files / 6,911 outcomes**. Per editor these comprise 6,693 passes, 43 expected
+failures and 175 skips. While loading `test/src/comp-tests.el`, Emaxx unexpectedly
+prompts for a coding system and exits255 on batch EOF. No test in that file starts:
+177 outcomes are missing, while GNU runs and passes all177. Another36 files
+never start. Every completed pair, execution hash and the original test inventory
+is audited; the failed run remains failed.
+
+The unchanged ordinary compiler-file load reproduces the same prompt. A Lisp
+trace shows the compiler's temporary file requests `utf-8-emacs-unix`, but
+`find_coding_systems_region_internal_value` enumerates only one representative
+per detection category. This omits valid base codings, including `utf-8-emacs`.
+Source243's move to GNU's actual Lisp-owned file-writing selector exposes this
+incomplete helper. Source238's passing frozen run and source243's passing Rust
+gates do not certify the resulting file-load behavior.
+
+A same-input negative fixture captures the missing coding candidates, custom
+bases/alias exclusions, actual extended characters, changed category priority,
+markers outside narrowing and the real coding cookie. GNU's expected output is
+retained unchanged. Initial trace/fixture syntax errors remain separately
+preserved; the corrected probes do not alter the runtime or upstream test.
+
+The same archive closes bounded Linux GNU census diagnosis36825694384 on
+source243-equivalent `3a35ad00`: all18 GNU probes and unchanged Rust
+single/group/single controls (1/651/1 passes) match. Every raw verdict,
+3,004-name inventory and eight retained input hashes are verified. The exact
+Rust executable matches the complete source243 Linux gate; GNU executable and
+image identities are explicitly retained here. Earlier source238 GNU identities
+were not retained, so their variation's cause remains unresolved. The initial
+auditors' Python3.9 and multiline-output setup failures remain preserved; the
+separate corrected auditor verifies existing raw results without rerunning tests.
+
+## Source244 coding-candidate repair
+
+The [portable source244 repair and selected evidence](handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
+are frozen in `target/runtime-goal/recovered-2026-09-30/coding-selection/emaxx`.
+Its464 inputs and Git checkout modes replay exactly from task `6da1448e` and
+main `21d20f0e`. Root task runtime now matches this candidate.
+
+Following `coding.c:Ffind_coding_systems_region_internal`, candidates include
+every registered base coding rather than one detection-category representative.
+The helper deduplicates actual non-ASCII Emacs character numbers and checks each
+coding's declared charsets, preserving the non-Unicode and byte8 boundaries.
+It always includes GNU's raw-text/no-conversion fallbacks and reads full-buffer
+marker bounds outside narrowing. File-writing policy remains in GNU Lisp.
+The new fixture and its captured GNU expected output are unchanged from the
+negative source243 reproduction. No upstream selector, timeout, test or result
+expectation is modified.
+
+Strict checks pass with zero warnings. All166 focused tests pass, with the same
+two existing TTY ignores; all949 affected-module tests pass. Every preceding
+selected name is retained. Nine ordinary coding/file-writing comparisons match
+exactly, and the unchanged compiler-file load succeeds in both editors. The
+complete original compiler file then passes **177/177 tests in each editor**.
+Raw reports, process/input hashes, discovered metadata and selected names match
+the original frozen Linux compiler inventory. This is local source/native-ABI
+matched GNU evidence, not pinned Darwin or complete Linux certification.
+
+Full macOS supervisor72034, release/57 preceding ordinary comparisons72035 and
+the unchanged full terminal inventory72036 are active. Their active logs are
+excluded from the archive; immutable launch helpers/receipts are included.
+Linux still requires dispatch after the source244 commit. Read actual receipts
+before resuming or restarting any job.
+
+This repair does not establish every safe-coding primitive contract. In
+particular, GNU also applies encoding translation tables and walks its actual
+coding-system registration list; the current helper still needs that broader
+review. Preserve those limits along with all prior failures. Complete correctness,
+remaining shared-object/accounting/ownership work, pinned Darwin, the final
+adversarial audit and the locked16-workload/3% performance criterion remain open.

@@ -17,8 +17,28 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source243**, pushed as `8d4fcd39`, with its selected
-validation below.
+The task runtime is now **source244**, matching all **464 inputs** in the frozen
+`target/runtime-goal/recovered-2026-09-30/coding-selection/emaxx` checkout.
+Its [portable repair and selected validation](docs/handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
+close the reproduced compiler-file load failure below: **all 177 original
+compiler tests pass in both editors**, with exactly the original frozen selected
+names and discovered metadata. Strict checks have zero warnings; **166 focused
+passes / two existing ignores**, **949 affected passes** and **nine ordinary
+comparisons** are audited. The safe-coding helper enumerates all registered base
+codings, tests actual character codes against declared charsets, retains GNU's
+raw fallbacks and reads marker bounds outside narrowing. It does not bypass
+GNU's Lisp-owned file-writing policy or change any upstream selector/assertion.
+
+Complete macOS **72034**, release plus 57 preceding ordinary comparisons
+**72035**, and full terminal **72036** are active. Read `source244-*` receipts
+before acting; do not modify executing candidates or helpers. Linux validation
+still requires dispatch on the source244 checkpoint. The source243 full frozen
+failure remains failed, and its full terminal pass does not certify source244.
+Translation-table semantics, internal candidate ordering and broader coding
+behavior are not certified by this targeted repair. Main remains source174;
+the full architecture/performance goal is incomplete.
+
+The preceding **source243** was pushed as `8d4fcd39`, with its evidence below.
 The preceding **source238**, `a7e12de8`, recovered the complete pinned Linux
 frozen match: **519 files / 7,928 outcomes / 1,038 successful processes** in
 [run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904).
@@ -87,7 +107,10 @@ verdict verified. The [complete macOS audit](docs/handover/2026-09-30-shared-rea
 now closes **55867**: **3,093 passes / two existing ignores**, native artifact
 identity, every one of 2,996 raw library names/verdicts and four retained input
 hashes verified. The frozen checkout matches all 462 published runtime inputs.
-Full terminal **55869** remains active. The
+The [complete terminal and frozen-failure audit](docs/handover/2026-09-30-shared-reader-draft/source243-complete-terminal-and-frozen-failure-manifest.json)
+now closes terminal **55869**: all **226 scenarios / 686 comparisons** match,
+with unchanged actions, inventories, timeouts and eight execution-input hashes.
+GNU is source/native-ABI matched, not the pinned Darwin executable. The
 [closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
 on source243. The [complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source243-linux-complete-rust-manifest.json)
@@ -97,8 +120,13 @@ all 3,004 raw library names/verdicts and four retained input hashes verified.
 The original GNU census fixture, expectation and helper bodies are unchanged and
 pass in this full run; this does not explain the earlier source238 variation.
 [Full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
-remains active on exact `8d4fcd39`. Read the current `source243-*` receipts before acting. Do not edit executing
-candidates or helpers. Root runtime exactly matches all 462 candidate inputs.
+**fails** on exact `8d4fcd39` after **482 matching files / 6,911 outcomes**
+(6,693 passes, 43 expected failures and 175 skips per editor). Emaxx exits 255
+while loading `test/src/comp-tests.el`: writing a native-compiler temporary file
+unexpectedly requests a coding system. All 177 selected outcomes are missing;
+GNU runs and passes them. Another 36 files never start. The unchanged ordinary
+compiler load reproduces the failure. Read the current `source243-*` receipts before acting. Do not edit executing
+candidates or helpers. The published source243 checkpoint matches its 462 candidate inputs.
 The same macOS archive preserves nine GNU-only workflow-environment probes and
 nine GNU-only smoke probes of `tools/diagnose_gnu_census.py`; all match locally.
 They do not resolve the Linux GNU reference failure. The new optional
@@ -106,8 +134,12 @@ They do not resolve the Linux GNU reference failure. The new optional
 and runs the original single test, complete primitives group and single test
 again, retaining failures and GNU executable/image identities. Linux
 [diagnosis 36825694384](https://github.com/rayfdj/emaxx/actions/runs/36825694384)
-is dispatched on `3a35ad00`, which preserves all 462 runtime inputs. Its result
-is pending; this is diagnostic coverage, not a full gate.
+completed on `3a35ad00`, which preserves all 462 runtime inputs. Its **18 GNU
+probes** and unchanged Rust **single/group/single controls (1/651/1 passes)**
+all pass. Every raw verdict, inventory and eight retained input hashes are
+audited in the same archive. This does not explain the earlier source238 GNU
+census variation; those failures remain failed. It is diagnostic coverage,
+not a full gate.
 **Main is unchanged; complete correctness and the full
 architecture/performance goal remain unfinished.**
 

@@ -48,12 +48,35 @@ raw library names/verdicts and four retained input hashes verified. The
 closes run36822371375 on exact `8d4fcd39`: **3,105 passes / two existing ignores**,
 native identity, every one of 3,004 raw library names/verdicts and four retained
 input hashes verified. The unchanged original census control passes; the earlier
-GNU reference variation's cause remains unresolved. Full terminal55869 and Linux
-frozen36822376061 remain active. Bounded Linux diagnosis36825694384 is dispatched
-on `3a35ad00` with the same 462 runtime inputs; no result is inferred yet.
-Root runtime matches source243 and main
-remains source174. Restore complete correctness
-before further architecture work; the full goal and performance criterion are open.
+GNU reference variation's cause remains unresolved. The
+[closed terminal and frozen-failure evidence](handover/2026-09-30-shared-reader-draft/source243-complete-terminal-and-frozen-failure-manifest.json)
+now verifies **226 terminal scenarios / 686 comparisons match**, but Linux
+frozen36822376061 **fails after 482 matching files / 6,911 outcomes**. Emaxx
+cannot load `test/src/comp-tests.el` because writing a native-compiler temporary
+file unexpectedly prompts for a coding system; 177 selected tests and another
+36 files never run. GNU passes those 177 tests. This is a regression from
+source238's full frozen match, reproduced with an unchanged ordinary compiler
+load. The file-writing repair activated GNU's safe-coding selector and exposed
+the helper's incomplete candidate list; the preceding Rust and selected gates
+did not cover this compiler-file load.
+
+The same archive audits bounded Linux diagnosis36825694384 on `3a35ad00`:
+18 GNU probes and the unchanged Rust single/group/single controls pass
+(1/651/1), with GNU executable/image identity retained. This does not resolve
+the cause of the earlier source238 GNU census variation.
+Root runtime now matches **source244**, whose
+[portable selected validation](handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
+repairs that candidate list while retaining GNU's Lisp-owned selection policy.
+All464 inputs/modes replay from main and the task checkpoint. Zero-warning strict
+checks, **166 focused passes / two existing ignores**, **949 affected passes**,
+**nine ordinary comparisons** and **all177 original compiler tests in both editors**
+are audited. The new fixture preserves GNU's expected bytes and also covers
+custom coding bases, exclusions, actual characters and narrowed marker bounds.
+Complete macOS72034, release72035 and terminal72036 are active; Linux still
+requires dispatch on the source244 checkpoint. Broader coding behavior, including
+translation-table semantics, is not certified. Main remains source174. Restore
+complete correctness before further architecture work; the full goal and
+performance criterion remain open.
 
 The full objective remains [unchanged](runtime-representation-goal.md). Continue
 from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-cons-roots-draft.md)
