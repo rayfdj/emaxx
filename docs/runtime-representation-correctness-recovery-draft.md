@@ -695,3 +695,69 @@ accepting any observation. Python syntax and diff checks pass. This corrects
 the demonstrated tool setup mistake, follows the linked GDB manual, and still
 needs actual Linux execution; it changes no runtime input, fixture, oracle byte,
 workflow selector or failed gate verdict. The previous executed helper is preserved.
+
+## Source248 complete Rust/frozen passes; terminal startup failure
+
+The [complete result archive](handover/2026-09-30-shared-reader-draft/source248-complete-rust-frozen-and-terminal-failure-manifest.json)
+closes macOS4528 and initial terminal4530; both supervisors have exited. Source248
+has **3,098 complete macOS passes / two existing ignores** (2,999 library, 60
+binary, 39 integration) and **3,110 complete Linux passes / two existing ignores**
+(3,007 library, 61 binary, 42 integration) in
+[run36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338).
+All 3,001/3,009 raw library names/verdicts, native artifact identity and four
+retained inputs per platform are verified. All 472 runtime inputs match `fa7578ac`.
+The unchanged original GNU census assertions pass in this full run. Its actual
+GNU executable/dump/configuration/Makefile match the earlier failed source246
+run and are verified unchanged; their historical variation remains unexplained.
+
+The complete [Linux frozen run36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068)
+passes on exact `fa7578ac`: **519 files / 7,928 matching outcomes / 1,038 successful
+processes**. Each editor has 7,670 passes, 47 expected failures and 211 skips.
+All original compiler177 tests pass. Every raw execution hash, original inventory,
+paired outcome and captured GNU input is verified. All 5,204 downloaded artifact
+members are checked; all but the two GNU binary/dump files are portable, including
+all 1,038 load markers. Binary/dump bytes remain locally retained with hashes.
+The generic audit's provenance-only qualification is supplemented by the raw
+actual-GNU-input audit. No earlier failed run is converted to a pass.
+
+Initial terminal4530 remains failed: **161 fully matching scenarios / 295 matching
+comparisons**, zero observed divergences, then GNU startup readiness fails before
+scenario162 `recursive-minibuffer` begins comparing. Another 64 scenarios never
+start, and **391 comparisons never execute**. Every verdict and all eight execution
+inputs are verified. The stopped scenario's exact seven comparisons pass separately
+after local Rust finishes. Full unchanged terminal retry14540 is now running
+without a simultaneous local Rust gate. Its new helper/log/receipt names preserve
+the initial failure; source, executables/images, actions, timeouts, settle rules,
+inventory and comparison strictness are unchanged. No startup cause is established.
+
+## GNU GC observation and established conversion-table gap
+
+The [trace and ordinary-probe archive](handover/2026-09-30-shared-reader-draft/source248-gnu-trace-and-conversion-gap-manifest.json)
+closes corrected GNU diagnosis36850342459 on `163064c9`. Twenty ordinary processes
+match their original expectations. Two successful GDB processes receive exactly
+the original argument vectors and produce the expected Lisp values. Sixteen
+marked inventories independently sum to GNU's returned vector-slot counts, with
+no previous live object disappearing during those observations. This verifies
+the observer correction but does not reproduce or explain the earlier -7/-9
+variation or identify a retaining root. Four actual GNU inputs match the prior
+failed full run and are verified unchanged; all 55 downloaded members are checked.
+
+The separate `coding-live-conversion-translation.el` fixture demonstrates the
+already documented general conversion gap. GNU applies coding-owned encode/decode
+tables, observes their mutation, composes standard tables and honors the enable
+flag. Source248 leaves characters untranslated in all four cases; the disabled
+case happens to match. The ordinary processes exit successfully without stderr
+and all source/input hashes are unchanged. The same fixture in the recorded
+source174/main and source207 executable/image pairs produces source248's exact
+output. Both pairs are verified against their original immutable receipts and
+run from their original locations, preserving relative native-library paths.
+An earlier relocated source174 launch failed loading its dump before Lisp; that
+failure and helper are preserved separately, not counted as a baseline verdict.
+
+This specific gap predates the later architecture migrations and still needs
+repair. GNU `coding.c:encode_coding` obtains translation tables before calling
+`consume_chars`; `decode_coding` passes the tables to `produce_chars`. Read those
+complete C mechanisms, including non-scalar translations, before implementing
+the repair. The existing safety-character helper does not establish general
+encoding/decoding semantics. Runtime source248 is unchanged; the full goal,
+pinned Darwin, final audit and locked performance criterion remain open.

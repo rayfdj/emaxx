@@ -3,7 +3,10 @@
 The task runtime is **source248**, pushed as `fa7578ac`, an incomplete correctness-recovery checkpoint
 with **472 frozen inputs**. Its two property repairs follow GNU C, pass the selected
 checks and all 177 original compiler tests in both editors, and are applied to
-the root. Complete validation is running; further architecture changes are on hold.
+the root. Complete macOS/Linux Rust and pinned Linux frozen validation now pass.
+The original full terminal run stops at GNU startup; its unchanged full retry is
+running. A general conversion-table gap is now reproduced on source248 and both
+retained source174/main and source207 baselines. Architecture changes remain on hold.
 The preceding **source246**, pushed as `aaf31ce7`, has the closed results below.
 Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
@@ -58,10 +61,19 @@ root application of all 472 inputs. The [release and ordinary audit](handover/20
 closes4529: 170 focused passes/two existing ignores, 953 affected passes, and
 57 preceding ordinary matches, for 70 distinct ordinary comparisons with the
 thirteen selected fixtures. Release/gate inventories and retained artifacts are
-verified. Full macOS4528 and terminal4530 remain running. Linux
-[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) and
-[frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068) run
-on exact `fa7578ac`; no complete source248 platform result is claimed.
+verified. The [complete Rust/frozen audit](handover/2026-09-30-shared-reader-draft/source248-complete-rust-frozen-and-terminal-failure-manifest.json)
+closes macOS4528 with 3,098 passes/two existing ignores and Linux
+[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) with
+3,110 passes/two existing ignores. Native identity, raw names and retained inputs
+are verified. The original GNU census assertions pass in this full run without
+explaining their earlier variation. [Frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068)
+passes all 519 files/7,928 matching outcomes/1,038 successful processes on exact
+`fa7578ac`, with every execution hash and actual retained GNU input checked.
+Each editor has 7,670 passes, 47 expected failures and 211 skips; none are relabeled.
+Terminal4530 stops at GNU startup on scenario162: 161 complete matching scenarios,
+295 matching comparisons, zero observed divergences and 391 unexecuted comparisons.
+The unchanged stopped scenario passes all seven comparisons separately. Full retry14540
+runs after the local Rust gate has exited, with unchanged actions and timeouts.
 The [C-source review](handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
 maps each fix to unchanged GNU `get_translation_table`, `SYMBOLP`, `plist_get` and
 `Fget`; both negative fixtures and GNU expectations are unchanged.
@@ -70,8 +82,15 @@ synthetic decoder checks. Linux diagnosis36848112001 fails: ten ordinary first-f
 processes match, then incorrect GDB argument quoting causes GNU end-of-file before
 any GC observation. The second fixture and post-run input verification never run.
 The tool failure is preserved and does not resolve the original Linux Rust failure.
-The separate argument-quoting correction has static checks and verifies the actual
-inferior argv before accepting evidence; its Linux execution remains pending.
+The [closed corrected GNU trace](handover/2026-09-30-shared-reader-draft/source248-gnu-trace-and-conversion-gap-manifest.json)
+verifies twenty ordinary matches and two GDB executions with exact original argv.
+All sixteen marked inventories sum to GNU's returned census; no previous live
+object drops, so the earlier -7/-9 variation is not explained. All four GNU inputs
+match the failed full run and are verified unchanged afterward.
+The same archive captures current encode/decode operations ignoring live translation
+tables, mutations and standard-table composition. Retained source174/main and
+source207 pairs produce the identical wrong result; this specific gap is pre-existing
+but remains required work. The failed initial relocation probe is preserved separately.
 Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
 coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
 and the locked 16-workload/3% performance criterion are still open.

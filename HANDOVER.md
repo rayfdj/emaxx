@@ -20,8 +20,11 @@ The immediate priority is to restore complete correctness before further archite
 The task runtime is now **source248**, pushed as **`fa7578ac`**, with **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
 The two property repairs below follow the actual GNU C lookup paths; their
-strict, selected and complete original compiler comparisons pass. Full source248
-platform validation is pending. Further architectural changes remain on hold.
+strict, selected and complete original compiler comparisons pass. Complete
+macOS/Linux Rust and pinned Linux frozen comparisons now pass as detailed below.
+Full terminal retry **14540** is running; the original GNU startup failure and a
+pre-existing general conversion-table gap remain documented. Further architectural
+changes remain on hold.
 The preceding **source246**, pushed as **`aaf31ce7`**, has **468 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
 Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
@@ -89,12 +92,27 @@ close **4529** with **170 focused passes / two existing ignores**, **953 affecte
 passes**, and all 57 preceding ordinary comparisons: **70 distinct ordinary
 matches** including the thirteen selected fixtures. Release matches gate, with
 the same existing debug-only file-descriptor test accounting for their inventory
-difference. Full macOS **4528** and terminal **4530** are running. Full Linux
-[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) and
-[frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068) are
-running on exact `fa7578ac`.
-Do not edit the frozen candidate or executing helpers. These launches do not
-certify full source248 correctness; the complete source246 results are historical.
+difference. The [complete Rust/frozen and terminal-failure archive](docs/handover/2026-09-30-shared-reader-draft/source248-complete-rust-frozen-and-terminal-failure-manifest.json)
+closes macOS **4528** with **3,098 passes / two existing ignores** and
+[Linux Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338)
+with **3,110 passes / two existing ignores**, on exact source248. Native artifact
+identity, all 3,001/3,009 raw library names and four retained inputs per platform
+are verified. The original GNU census assertions pass in this full Linux run;
+their earlier failures remain preserved and unexplained.
+[Linux frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068)
+passes **all 519 files / 7,928 matching outcomes / 1,038 successful processes** on
+exact `fa7578ac`. Each editor has 7,670 passes, 47 expected failures and 211 skips.
+Every raw execution hash and paired outcome is audited, together with the actual
+retained GNU executable/dump/configuration/Makefile. The archive includes all
+1,038 load markers; only hashed binaries/images are excluded and retained locally.
+Terminal **4530** has exited after GNU startup fails on scenario162:
+**161 fully matching scenarios / 295 matching comparisons**, zero observed
+divergences, **391 unexecuted comparisons**. The unchanged `recursive-minibuffer`
+replay passes all seven comparisons after the local Rust gate finishes.
+The complete unchanged terminal retry **14540** is running without a simultaneous
+local Rust gate. This does not establish the startup failure's cause or erase it.
+Do not edit the frozen candidate or running retry helper; read its receipts before
+another launch. Pinned Darwin and complete correctness remain open.
 The [C-source review and diagnostic failure](docs/handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
 map the fixes to unchanged GNU `coding.c:get_translation_table`, `lisp.h:SYMBOLP`,
 and `fns.c:plist_get/Fget`. Both original failing probes retain their exact bytes
@@ -114,12 +132,26 @@ and the executed helper are preserved. No GC observation or root cause is claime
 post-run oracle verification was not reached. The full Linux Rust failure remains open.
 The separate observer correction restores GDB's default startup shell and checks
 the actual Linux inferior argument vector against the original GNU command.
-Its static checks pass; Linux execution is still required. The original failed
-observer and raw arguments remain in the failure archive. Runtime source248 is unchanged.
-The [retry launch receipt](docs/handover/2026-09-30-shared-reader-draft/source248-gnu-trace-retry-launch.json)
-records diagnostic [36850342459](https://github.com/rayfdj/emaxx/actions/runs/36850342459)
-on `163064c9`. Read its current status and retained evidence before any further retry;
-the original two full Linux source248 runs continue separately on `fa7578ac`.
+The [closed GNU trace and conversion-gap archive](docs/handover/2026-09-30-shared-reader-draft/source248-gnu-trace-and-conversion-gap-manifest.json)
+verifies diagnosis [36850342459](https://github.com/rayfdj/emaxx/actions/runs/36850342459)
+on `163064c9`: **twenty ordinary matches**, two successful GDB executions with
+exact original argument vectors, and **sixteen marked inventories** independently
+matching GNU's returned slot counts. No previously live object drops in those
+observations; the earlier -7/-9 variation is not reproduced or explained. All four
+GNU inputs match the prior failed full run and are verified unchanged afterward.
+The first failed observer and raw arguments remain preserved. Runtime source248 is unchanged.
+
+The same archive turns the documented general-translation limit into a concrete
+negative fixture: actual encoding/decoding ignores live translation tables,
+their mutation and composition with standard tables. GNU applies them. The
+recorded source174/main and source207 executable/image pairs, run from their
+original locations with hashes verified, produce source248's identical wrong
+output. This specific gap therefore predates the later migrations; it still needs
+repair. The initial relocated source174 launch failed before Lisp because of
+relative native-library paths and remains preserved, with no runtime verdict.
+Follow `coding.c:encode_coding/consume_chars` and `decode_coding/produce_chars`,
+including their use of `get_translation_table`; do not infer complete translation
+semantics from the current safety-only helper or the narrow negative fixture.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS

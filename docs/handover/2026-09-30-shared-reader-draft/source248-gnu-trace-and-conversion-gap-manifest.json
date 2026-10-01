@@ -1,0 +1,603 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "trace": {
+      "status": "diagnostic completed; mismatch not reproduced",
+      "run_id": 36850342459,
+      "commit": "163064c97cfb430b7b269ad15cb7db499b77879e",
+      "downloaded_files_verified": 55,
+      "ordinary_matches": 20,
+      "traces": [
+        {
+          "fixture": "vector-closure-rounded-census",
+          "collections_observed": 8,
+          "explicit_collections": 36,
+          "live_slots": [
+            6919,
+            6919,
+            6919,
+            6921,
+            6921,
+            6924,
+            6924,
+            6928
+          ],
+          "previous_live_objects_dropped": 0,
+          "actual_argument_vector": "matches ordinary GNU command",
+          "returned_census": "matches decoded inventories"
+        },
+        {
+          "fixture": "vector-pseudovector-word-census",
+          "collections_observed": 8,
+          "explicit_collections": 64,
+          "live_slots": [
+            6919,
+            6921,
+            6921,
+            6924,
+            6924,
+            6928,
+            6928,
+            6933
+          ],
+          "previous_live_objects_dropped": 0,
+          "actual_argument_vector": "matches ordinary GNU command",
+          "returned_census": "matches decoded inventories"
+        }
+      ],
+      "retained_gnu_inputs": [
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs",
+          "artifact": "emacs",
+          "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+          "bytes": 30924408
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs.pdmp",
+          "artifact": "emacs.pdmp",
+          "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae",
+          "bytes": 17723936
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/config.h",
+          "artifact": "config.h",
+          "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0",
+          "bytes": 115890
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/Makefile",
+          "artifact": "Makefile",
+          "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03",
+          "bytes": 36149
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "The corrected observer runs both unchanged fixtures with exact inferior argv. All twenty ordinary processes match; both GDB processes exit normally and return the expected Lisp output. All sixteen marked inventories independently sum to GNU returned slot counts. No previously live object drops within those observations, so the earlier -7/-9 results and their retaining root are not explained. Four retained GNU inputs match the earlier failed full run and are verified unchanged. This is diagnostic evidence, not full source248 or performance validation."
+    },
+    "conversion": {
+      "matches": false,
+      "records": {
+        "gnu": {
+          "exit_code": 0,
+          "elapsed_seconds": 0.193367291,
+          "stdout_sha256": "44f53c56438f256afd4727d748499d6e99ccc6029616ad7805cd696d67586500",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "source_unchanged": true,
+          "inputs_unchanged": true
+        },
+        "emaxx": {
+          "exit_code": 0,
+          "elapsed_seconds": 0.32130154199999994,
+          "stdout_sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "source_unchanged": true,
+          "inputs_unchanged": true
+        }
+      },
+      "fixture_sha256": "e5604e7582cc49ca65dbfd4b01e6404da00cd8884d78d2bb9d859dfe6b816464",
+      "qualification": "Same-input ordinary encode/decode translation-table comparison: coding-owned live symbol properties, enable-character-translation, table mutation, and standard translation tables. Frozen source248 remains unchanged. This is a diagnostic of the already documented general-translation gap, not a new implementation or completed coding claim."
+    },
+    "history": {
+      "records": [
+        {
+          "source": "source174",
+          "exit_code": 0,
+          "elapsed_seconds": 0.601973875,
+          "stdout_sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "matches_gnu": false,
+          "matches_source248": true,
+          "inputs_unchanged": true
+        },
+        {
+          "source": "source207",
+          "exit_code": 0,
+          "elapsed_seconds": 0.754558625,
+          "stdout_sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "matches_gnu": false,
+          "matches_source248": true,
+          "inputs_unchanged": true
+        }
+      ],
+      "fixture_sha256": "e5604e7582cc49ca65dbfd4b01e6404da00cd8884d78d2bb9d859dfe6b816464",
+      "qualification": "Same-input comparison against recorded source174/main and fully frozen-matching source207 executable/image pairs. Establishes the history only of this specific live conversion-table fixture; it does not excuse other regressions or certify general coding correctness."
+    },
+    "binaries_retained_locally": [
+      {
+        "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/emacs.pdmp",
+        "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae",
+        "bytes": 17723936
+      },
+      {
+        "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/emacs",
+        "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+        "bytes": 30924408
+      }
+    ],
+    "qualification": "Corrected GNU observer has20 ordinary matches, two successful GDB runs with exact argument vectors and16 decoded marked inventories equal to GNU slot returns. No live-object drop or original -7/-9 variation is reproduced; its cause remains open. A separate ordinary fixture proves current encode/decode operations ignore live translation tables, their mutation and standard-table composition. Original-location source174/main and source207 retained binary/image pairs produce the identical wrong output, so this specific gap predates the later migrations. The initial source174 relocation failure is retained and does not count as a runtime result. No runtime repair or full-goal completion is claimed."
+  },
+  "archive": {
+    "path": "source248-gnu-trace-and-conversion-gap.tar.gz",
+    "bytes": 477406,
+    "sha256": "9b5cf09734fbcd83357111cc3dc2f55a45c0789725300601dafdeca84c2e9037"
+  },
+  "files": [
+    {
+      "path": "audit-source248-gnu-trace.py",
+      "bytes": 6910,
+      "sha256": "f34f49793d255cfb538a3b77aafc77171862c480054765e309a94f0272fff699"
+    },
+    {
+      "path": "coding-live-conversion-translation.el",
+      "bytes": 1787,
+      "sha256": "e5604e7582cc49ca65dbfd4b01e6404da00cd8884d78d2bb9d859dfe6b816464"
+    },
+    {
+      "path": "coding-translation-history-original-location-audit.json",
+      "bytes": 1150,
+      "sha256": "0ed7af0087952e8e31087514168c19ccf885fe9a5b9812725821f537b71c07be"
+    },
+    {
+      "path": "dispatch-source248-gnu-trace.py",
+      "bytes": 2076,
+      "sha256": "97c22332e7c2b480489448c6e243fe2c2e1caf331d3187ed6d04194d864e5e90"
+    },
+    {
+      "path": "download-source248-linux-gnu-trace.py",
+      "bytes": 2264,
+      "sha256": "756f0e4034b42a9cd47d6aea1f22cddda0d56daadc5d827e20004286ac3cb4c3"
+    },
+    {
+      "path": "package-source248-complete-results.py",
+      "bytes": 6412,
+      "sha256": "145b17ab05b56e456c8d9a94e06fa658d95bc0ce015e51ee3a435f907ab1b785"
+    },
+    {
+      "path": "probe-coding-translation-history-original-location.py",
+      "bytes": 3507,
+      "sha256": "25ebea729351e3c256e6a3ef5a8645496a53c1d2c73fb3d12d45c3bebc32634e"
+    },
+    {
+      "path": "probe-coding-translation-history.py",
+      "bytes": 3228,
+      "sha256": "1f24eec17745f2e1d5e7318a9b3f245595c94a51fc9bf0b7693bee55ec7a1698"
+    },
+    {
+      "path": "probe-source248-general-translation.py",
+      "bytes": 2862,
+      "sha256": "5db46e5e85abf058186ccde5decfa89f8c105e748bfc33615f4bc29d4ccebead"
+    },
+    {
+      "path": "source174-general-translation-history-command.json",
+      "bytes": 3033,
+      "sha256": "0f9ac951f691b61d3c8f1c488590919d0abc7b7569a686e4cb198a052a4607c3"
+    },
+    {
+      "path": "source174-general-translation-history-result.json",
+      "bytes": 335,
+      "sha256": "1ca3becf143f717b2fd70588a8f0d527c031f0451b70b41eef0b5c73ea86e750"
+    },
+    {
+      "path": "source174-general-translation-history.stderr",
+      "bytes": 988,
+      "sha256": "fba95c4e3145631b82cd62d904428f112617dae4d8af4847d35408659ff3cee8"
+    },
+    {
+      "path": "source174-general-translation-history.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source174-general-translation-original-location-command.json",
+      "bytes": 3270,
+      "sha256": "e31536b6683c50516eb64bc95152e3002f06c3283942a58077ebf21a18360871"
+    },
+    {
+      "path": "source174-general-translation-original-location-result.json",
+      "bytes": 334,
+      "sha256": "ea7895e7eddab4143fb8c8b629ab0e387210b44b44963a1433482c4b9022ac85"
+    },
+    {
+      "path": "source174-general-translation-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source174-general-translation-original-location.stdout",
+      "bytes": 141,
+      "sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0"
+    },
+    {
+      "path": "source174-ordinary-artifacts.json",
+      "bytes": 736,
+      "sha256": "792c48f6f5dc1c66d901a8bfdc4412e88f421dd7230104dc9b347e00c8416d4a"
+    },
+    {
+      "path": "source207-general-translation-original-location-command.json",
+      "bytes": 3279,
+      "sha256": "2e90df0ec1c78ce145306c2d855e63783c7862c2f79ce3119ff6695ba3ffb849"
+    },
+    {
+      "path": "source207-general-translation-original-location-result.json",
+      "bytes": 334,
+      "sha256": "eeb79eac17ea4d8c5021d5199398c13420c999ec6c295a908e5c6bed0270ee39"
+    },
+    {
+      "path": "source207-general-translation-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-general-translation-original-location.stdout",
+      "bytes": 141,
+      "sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0"
+    },
+    {
+      "path": "source207-ordinary-artifacts.json",
+      "bytes": 742,
+      "sha256": "9d1faaf5f38a7740356a8cd6c70dab1e808f6c334ab467ce311be144893ce4d6"
+    },
+    {
+      "path": "source248-general-translation-emaxx-command.json",
+      "bytes": 3020,
+      "sha256": "0ece42b3ba11ec65511c51e871edf6ed22bc3d9006c488347db115c47cb51114"
+    },
+    {
+      "path": "source248-general-translation-emaxx-result.json",
+      "bytes": 292,
+      "sha256": "3ffc55cce318f5696f8e070c32c709f5b72417247a784566a667f97219f4402c"
+    },
+    {
+      "path": "source248-general-translation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-general-translation-emaxx.stdout",
+      "bytes": 141,
+      "sha256": "80f1a4061838f399bce1921dfaec6ee5f4236ce507cf347d23f8428cefd072c0"
+    },
+    {
+      "path": "source248-general-translation-gnu-command.json",
+      "bytes": 2870,
+      "sha256": "2deabefb3c0f1bb372b0fb262690c576b4f73801cbed2f4b73a2908c73ab1e67"
+    },
+    {
+      "path": "source248-general-translation-gnu-result.json",
+      "bytes": 284,
+      "sha256": "b96865ea57a598389d15ec6a3d3d37a26813ba15067b1cd649ff8ae62571ce29"
+    },
+    {
+      "path": "source248-general-translation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-general-translation-gnu.stdout",
+      "bytes": 117,
+      "sha256": "44f53c56438f256afd4727d748499d6e99ccc6029616ad7805cd696d67586500"
+    },
+    {
+      "path": "source248-general-translation-negative-audit.json",
+      "bytes": 1151,
+      "sha256": "dce3679e1b17c25b90365132d44804b7ae6dfe6c621a9ff800148cf85eb773da"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts.json",
+      "bytes": 931,
+      "sha256": "4924c36a0d1193f98e6a777246cc270878a273c81e4604e73890e4ddfc685671"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/Makefile",
+      "bytes": 36149,
+      "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/config.h",
+      "bytes": 115890,
+      "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/manifest.json",
+      "bytes": 1189,
+      "sha256": "9d701f9f847eea35d34fef0b774d18e07aac8936bfb370a18d9f67aff279c55f"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/gnu-inputs/verification.json",
+      "bytes": 254,
+      "sha256": "0506932035e0ca004a498d7577da86aa5b723adf0dca66ee9fc70460abdd01f8"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/summary.json",
+      "bytes": 46235,
+      "sha256": "b82602c5e60e2836fad900addfc7819409b7589632ef9e3208ee4705bce0aa7d"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-gdb.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-gdb.stdout",
+      "bytes": 1891070,
+      "sha256": "6f9902d6a044f39c8f043a973707b684855ab855c6ef53ba1cadcfe2d3410a28"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-0.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-0.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-1024.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-1024.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-128.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-128.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-16.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-16.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-256.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-256.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-32.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-32.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-4096.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-4096.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-64.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-64.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-8.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-8.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-None.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-ordinary-None.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-closure-rounded-census-trace-events.json",
+      "bytes": 3110529,
+      "sha256": "7170fbbd7d18d5108712f5bf28cefd065f810928d7afb8ed61977eb772bd4bc9"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-gdb.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-gdb.stdout",
+      "bytes": 1892849,
+      "sha256": "806c08905782554292609080f67e891b34d603b490c0dc242c03899fb5a41b13"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-0.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-0.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-1024.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-1024.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-128.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-128.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-16.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-16.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-256.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-256.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-32.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-32.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-4096.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-4096.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-64.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-64.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-8.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-8.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-None.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-ordinary-None.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/gnu-census-trace/vector-pseudovector-word-census-trace-events.json",
+      "bytes": 3112937,
+      "sha256": "a42108f8fa7992cfd79a5bf0f5d191f12ae3f4d53c8b8666a33386f42420f110"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "source248-linux-gnu-trace-artifacts/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "source248-linux-gnu-trace-audit.json",
+      "bytes": 2604,
+      "sha256": "1d457647707d545732f7a1839c05921be17dd61c2278b0350e77a293c6b5ffbb"
+    },
+    {
+      "path": "source248-linux-gnu-trace-dispatch.json",
+      "bytes": 363,
+      "sha256": "4de324f572d54e589c062d31b25efe20c6e5b6c59d49ac1c0237c0198d13170b"
+    },
+    {
+      "path": "source248-linux-gnu-trace-download.json",
+      "bytes": 8564,
+      "sha256": "7c35a38631c851c43d2131a95bdad0272c8ff0bfde2ac244b74be949f6a5bdbe"
+    },
+    {
+      "path": "source248-linux-gnu-trace-final-state.json",
+      "bytes": 5889,
+      "sha256": "6877b3a766d9ed852638a033f3d68cad43cb35d7da6c3812b2edf414ea653d2a"
+    },
+    {
+      "path": "source248-linux-gnu-trace-launch.json",
+      "bytes": 825,
+      "sha256": "f81c339b0dbb7b75fb827ecfa4229963981299f6be69045635a87bdcb10e38e6"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
