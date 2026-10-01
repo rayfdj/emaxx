@@ -39,13 +39,20 @@ numeric case-table lookup. GNU probes preserve 12 wrong range/error results, 134
 wrong character-comparison rows, seven wrong live-table observations and nine wrong
 numeric casing rows. Main reproduces the range/live/numeric results; its full
 character matrix exits255 before comparison and supplies no historical row verdicts.
-All 500 inputs replay exactly and strict checks pass with zero warnings. Queue64601
+All 500 inputs replay exactly and strict checks pass with zero warnings. Queue90568
 waits for supervisor31023, then runs all 199 focused selectors, 1,054 affected tests
 per profile and 28 ordinary comparisons. The
 [additional prefix-boundary baseline](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
-matches GNU/source261 on all 12,600 rows. Queue87187 waits for64601, owns the selected
+matches GNU/source261 on all 12,600 rows. Queue90569 waits for90568, owns the selected
 audit and repeats this exact ordinary fixture on source263. Both must finish before
 applying the draft. No source263 runtime pass or measured saving is claimed.
+
+The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
+preserves original queues64601/87187, withdrawn while waiting before runtime
+execution. It restores the original ordering fixture's path in the wrapper and
+verifies all 28 paths. Runtime inputs, expected output, selectors, timeouts and
+comparison rules are unchanged. Read `source263-fixture-validation-*` and
+`source263-boundary-fixtures-*` for current state.
 
 The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
@@ -413,8 +420,8 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 ## Full-goal requirements — current
 
 This map reflects runtime source261 (`eddfe782`, 488 inputs), including the applied
-common-string/comparison repair. Its running and queued full validation
-does not certify it. Historical
+common-string/comparison repair. Complete macOS/Linux Rust and frozen evidence is
+audited above; terminal validation remains running. Historical
 failures remain in the linked evidence above. A green checkpoint does not close
 the architectural or performance requirements. The [current source review](handover/2026-09-30-shared-reader-draft/source248-current-requirement-review.json)
 records the inspected Rust/GNU hashes and verifies the locked suite is unchanged
@@ -429,7 +436,7 @@ from main. It is source review, not new runtime or timing evidence.
 | 5. VM/function-call work | Direct bytecode fetch and actual shared closure fields remove decoded caches and duplicated mutable slots. The VM still reserves 256K value slots and keeps `BcFrame` storage separately; GNU reserves 512K words including frame headers. Its old comment still describes a two-word Value. Stack layout/capacity/accounting, remaining call bookkeeping and measured profiles after representation completion remain open. |
 | 6. Adversarial audit | Original evaluator, root and reporting controls remain. New repairs use identical-input GNU negatives and unchanged expected outputs; failed runs remain failed. The final audit must examine the actual final code, caches, startup/images, native loading, selection, comparison and reporting, including deliberate evidence corruption. Historical or selected audits do not satisfy that final review. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. No current GNU-parity result exists. The requested Darwin rebuild and explicit replacement pin are recorded; actual counters, calibration, interleaved same-host samples, distributions and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source261 has zero-warning strict checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, and 22 ordinary GNU matches. Exact-source full macOS Rust/frozen/terminal and Linux Rust/frozen are active/queued. The preceding source249 has complete macOS/Linux Rust (3,100/3,112 passes, two ignores each), Linux frozen 519/7,928 matches and terminal 226/686 matches. Its macOS frozen completes 519/7,921 outcomes with six existing strict skip-diagnostic failures. Those historical results do not certify source261. Final-source platform/release/frozen/terminal validation is still required. |
+| 8. Complete validation | Source261 has zero-warning strict checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, and 22 ordinary GNU matches. Complete macOS/Linux Rust passes 3,107/3,119 tests with two existing ignores each. Linux frozen matches all 519 files/7,928 outcomes. macOS frozen completes all 519 files/7,921 outcomes with 7,915 matches and six existing strict skip-diagnostic failures. Full terminal validation remains running. Source263 is separately queued and unapplied. Final-source platform/release/frozen/terminal validation is still required. |
 | 9. Independently checkable delivery | Portable patches, manifests, commands, raw results, failures and reproduction helpers are retained. Applied source261 is a validated selected checkpoint, with the full goal explicitly unfinished. Final source, final evidence-chain review and satisfaction of every architectural/performance requirement remain outstanding. |
 
 The next architectural work validates the common-string migration and must remove

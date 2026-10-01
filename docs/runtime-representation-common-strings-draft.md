@@ -227,7 +227,7 @@ The separate checkout is `target/runtime-goal/recovered-2026-09-30/string-ranges
 All **500 inputs and modes** replay exactly from `dbf1fbb2` and main. Formatting,
 all-target/all-feature checking, strict Clippy and diff checks pass with zero
 warnings. The four tests use unchanged ordinary GNU output; all source262 code
-and tests remain. Queue **64601** waits for full macOS supervisor31023, then runs
+and tests remain. Queue **90568** waits for full macOS supervisor31023, then runs
 **199 focused selectors**, **1,054 affected tests in each profile**, and **28 ordinary
 comparisons**, including the original modifier-casing control. No runtime stage has
 run, and the candidate remains unapplied. Keep its source and executing helpers
@@ -238,11 +238,19 @@ matches GNU/source261 byte for byte on **12,600 comparisons**: 14 prefix lengths
 around word boundaries and 30 character/storage cases, including non-Unicode,
 surrogate, byte8, private-use and mixed storage. This specifically challenges the
 new shared-byte-prefix loop rather than certifying it from single-character cases.
-Queue **87187** waits for source263 selected queue64601 to exit successfully, then
-runs `audit-source263-selected.py` and this unchanged fixture on the retained release
+Queue **90569** waits for source263 selected queue90568 to exit successfully, then
+runs `audit-source263-selected-fixtures.py` and this unchanged fixture on the retained release
 executable/image. It owns that selected-audit receipt; do not run the auditor twice.
 Wait for both queues before applying source263. Neither this passing source261
 baseline nor the prepared follow-up is a source263 runtime or performance pass.
+
+The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
+retains original supervisors64601/87187, withdrawn while waiting before any runtime
+stage. Their wrapper misspelled the original ordering fixture as a nonexistent
+`string-ranges-symbol-storage`. The replacement restores `string-ordering-symbol-storage`
+and verifies every one of the 28 paths. No runtime, test, expectation, selector,
+timeout or comparison rule changes. Read `source263-fixture-validation-*` and
+`source263-boundary-fixtures-*`; the old helpers and queued state remain preserved.
 
 ## Remaining requirements
 

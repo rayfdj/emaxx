@@ -991,9 +991,17 @@ comparison at an unsupported extended-character constructor, which stays recorde
 The repair follows actual GNU validation order, canonical byte cursors, octet
 promotion before casing, and direct numeric case-table keys. All source262 code
 and controls remain. Its 500 inputs replay exactly and strict checks have zero
-warnings. Queue64601 waits for supervisor31023 before 199 focused selectors, 1,054
+warnings. Queue90568 waits for supervisor31023 before 199 focused selectors, 1,054
 affected tests per profile and 28 ordinary comparisons. The
 [additional prefix-boundary control](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
-matches all 12,600 GNU/source261 baseline rows. Queue87187 then owns the selected
+matches all 12,600 GNU/source261 baseline rows. Queue90569 then owns the selected
 source263 audit and this same ordinary comparison. Wait for both before applying
 the draft. No source263 runtime pass is claimed.
+
+The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
+records withdrawal of original queues64601/87187 while waiting, before runtime
+execution. Their ordinary wrapper named a nonexistent fixture. The replacement
+uses the original `string-ordering-symbol-storage`; all 28 fixture paths are checked.
+Source, tests, expected bytes, selectors, timeouts and comparison rules are unchanged.
+Current receipts are `source263-fixture-validation-*` and
+`source263-boundary-fixtures-*`; all original helpers and waiting state remain.

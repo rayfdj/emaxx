@@ -1,0 +1,363 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "withdrawal": {
+      "status": "withdrawn while waiting before runtime execution",
+      "withdrawn_at_unix": 1790883550.014485,
+      "processes": [
+        {
+          "pid": 87187,
+          "process": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python -B /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source263-boundary-control.py",
+          "helper": "queue-source263-boundary-control.py",
+          "helper_sha256": "d1375670e91c933394584a6d6aa8c930125419642be095ce9f9ac491060a6300",
+          "state_before": {
+            "status": "waiting for source263 selected validation",
+            "prior_pid": 64601,
+            "fixed_inputs": {
+              "queue-source263-boundary-control.py": "d1375670e91c933394584a6d6aa8c930125419642be095ce9f9ac491060a6300",
+              "audit-source263-selected.py": "8c12d1dd5f828db6552ab0e9d06b9bb5286a2bfa951ab85d4cf108040322589c",
+              "compare-string-ranges-fixtures.py": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd",
+              "source263-manifest.json": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f",
+              "string-ordering-prefix-boundaries.el": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2",
+              "string-ordering-prefix-boundaries.expected": "d5b883ee5a21f3334c9ae923ae32d8cf90eb5a24a77afbf84abeab1727d575fa",
+              "source261-string-prefix-audit.json": "0b74f4a4726368e188699d07a6b17dddc5afd33e5c7eebb1fb51d13335fbd81d"
+            },
+            "results": [],
+            "goal_complete": false
+          },
+          "state_sha256": "0ef5f4d607ce890f1520342f99039e61f2e3141ca0e69e13502ce15928bf6517",
+          "exited": true
+        },
+        {
+          "pid": 64601,
+          "process": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python -B /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ranges263-validation.py",
+          "helper": "queue-string-ranges263-validation.py",
+          "helper_sha256": "b03c5b55dc39ecbe2fa5347c5692bb8475f94b0afeb1877637d1e177c5b24b57",
+          "state_before": {
+            "status": "waiting for source261 full macOS supervisor to exit",
+            "prior_pid": 31023,
+            "source_manifest": "source263-manifest.json",
+            "helper_sha256": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ranges-focused.py": "c0626e03759714f6ac026f547e7b784aa164b52b4897ebaa97f2d5b47a9d3b9d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ranges-focused.py": "350b4897082d7c35d4254f551fe07c2ffe39d48d6a0fe3e191869a6ab43bbd6d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-string-ranges-broad.py": "969580f117a6557f013547b0838f137d384967765d2aa16c321beebb6303632f",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ranges-release.py": "f74f9977371762c6850937de0eb8718de2f210543bc038f28f86ba0e07e3cf8c",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ranges-release.py": "6ac9eceeb872927565c26b92a28e3efb1f3dfeaa59451b0521e651a1e89ff92b",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/build-string-ranges-ordinary.py": "ffdeb24bb90e381682043ff65b3cb97f22f4fea971cb2fd31d74f2b55f529d6e",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/compare-string-ranges-fixtures.py": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd"
+            },
+            "stages": [
+              [
+                "run-string-ranges-focused.py",
+                "263"
+              ],
+              [
+                "audit-string-ranges-focused.py",
+                "263"
+              ],
+              [
+                "test-string-ranges-broad.py",
+                "263",
+                "gate"
+              ],
+              [
+                "run-string-ranges-release.py",
+                "263"
+              ],
+              [
+                "audit-string-ranges-release.py",
+                "263"
+              ],
+              [
+                "test-string-ranges-broad.py",
+                "263",
+                "release"
+              ],
+              [
+                "build-string-ranges-ordinary.py",
+                "263"
+              ],
+              [
+                "compare-string-ranges-fixtures.py",
+                "source263",
+                "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-ranges/emaxx",
+                "coding-post-read-character-count",
+                "coding-post-read-fast-path",
+                "overriding-property-identity",
+                "coding-candidate-symbol-properties",
+                "coding-candidate-translation",
+                "coding-candidate-character-identities",
+                "coding-candidate-inventory",
+                "file-write-coding-selection",
+                "new-file-coding-lifecycle",
+                "file-write-order",
+                "canonical-coding-character-storage",
+                "canonical-coding-identity-storage",
+                "canonical-coding-conversion-storage",
+                "copied-canonical-string-storage",
+                "coding-error-object-storage",
+                "host-string-mutation",
+                "host-string-vector-mutation",
+                "string-equality-storage",
+                "string-equality-symbol-names-positioned",
+                "string-equality-property-values",
+                "string-equality-property-hashes",
+                "native-bytecode-unibyte-constructor",
+                "string-ranges-symbol-storage",
+                "string-version-ordering",
+                "compare-strings-ranges",
+                "compare-strings-character-storage",
+                "compare-strings-live-case-table",
+                "string-case-character-identities"
+              ]
+            ],
+            "goal_complete": false
+          },
+          "state_sha256": "affd317f366d9eff1dbfbeaccc419e60759079bb08eaf6c0c778dca8923b2247",
+          "exited": true
+        }
+      ],
+      "source_manifest_sha256": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f",
+      "preflight_sha256": "f74e978363a6ae01ab70ec1a9524079aeece52e695b33e426acc4f1204a9e796",
+      "reason": "The selected wrapper names nonexistent string-ranges-symbol-storage instead of the original string-ordering-symbol-storage. Replace both waiting wrappers without changing runtime source, tests, expected output, selectors or timeouts. Original helpers and states remain preserved.",
+      "goal_complete": false
+    },
+    "launches": {
+      "source263-fixture-validation": {
+        "pid": 90568,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ranges263-fixtures.py"
+        ],
+        "helper_sha256": "e2087757ca6fcb09496c2f3039b1b59099e2288cc3d44f7426e3fbc3eef1378f",
+        "started_at_unix": 1790883550.016896,
+        "source_manifest": "source263-manifest.json",
+        "qualification": "Corrected queue after both original supervisors were withdrawn before runtime execution. Original helpers, states and withdrawal evidence are preserved. Await actual runtime results; no pass inferred."
+      },
+      "source263-boundary-fixtures": {
+        "pid": 90569,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source263-boundary-fixtures.py"
+        ],
+        "helper_sha256": "52c3cc71d72e91349ef3f7a8138f49404592fd277304eef6757f3a0ded6d3e88",
+        "started_at_unix": 1790883550.018429,
+        "source_manifest": "source263-manifest.json",
+        "qualification": "Corrected queue after both original supervisors were withdrawn before runtime execution. Original helpers, states and withdrawal evidence are preserved. Await actual runtime results; no pass inferred."
+      }
+    },
+    "states": {
+      "source263-fixture-validation": {
+        "status": "waiting for source261 full macOS supervisor to exit",
+        "prior_pid": 31023,
+        "source_manifest": "source263-manifest.json",
+        "helper_sha256": {
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ranges-focused.py": "c0626e03759714f6ac026f547e7b784aa164b52b4897ebaa97f2d5b47a9d3b9d",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ranges-focused.py": "350b4897082d7c35d4254f551fe07c2ffe39d48d6a0fe3e191869a6ab43bbd6d",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-string-ranges-broad.py": "969580f117a6557f013547b0838f137d384967765d2aa16c321beebb6303632f",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-ranges-release.py": "f74f9977371762c6850937de0eb8718de2f210543bc038f28f86ba0e07e3cf8c",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-ranges-release.py": "6ac9eceeb872927565c26b92a28e3efb1f3dfeaa59451b0521e651a1e89ff92b",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/build-string-ranges-ordinary.py": "ffdeb24bb90e381682043ff65b3cb97f22f4fea971cb2fd31d74f2b55f529d6e",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/compare-string-ranges-fixtures.py": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd"
+        },
+        "stages": [
+          [
+            "run-string-ranges-focused.py",
+            "263"
+          ],
+          [
+            "audit-string-ranges-focused.py",
+            "263"
+          ],
+          [
+            "test-string-ranges-broad.py",
+            "263",
+            "gate"
+          ],
+          [
+            "run-string-ranges-release.py",
+            "263"
+          ],
+          [
+            "audit-string-ranges-release.py",
+            "263"
+          ],
+          [
+            "test-string-ranges-broad.py",
+            "263",
+            "release"
+          ],
+          [
+            "build-string-ranges-ordinary.py",
+            "263"
+          ],
+          [
+            "compare-string-ranges-fixtures.py",
+            "source263",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-ranges/emaxx",
+            "coding-post-read-character-count",
+            "coding-post-read-fast-path",
+            "overriding-property-identity",
+            "coding-candidate-symbol-properties",
+            "coding-candidate-translation",
+            "coding-candidate-character-identities",
+            "coding-candidate-inventory",
+            "file-write-coding-selection",
+            "new-file-coding-lifecycle",
+            "file-write-order",
+            "canonical-coding-character-storage",
+            "canonical-coding-identity-storage",
+            "canonical-coding-conversion-storage",
+            "copied-canonical-string-storage",
+            "coding-error-object-storage",
+            "host-string-mutation",
+            "host-string-vector-mutation",
+            "string-equality-storage",
+            "string-equality-symbol-names-positioned",
+            "string-equality-property-values",
+            "string-equality-property-hashes",
+            "native-bytecode-unibyte-constructor",
+            "string-ordering-symbol-storage",
+            "string-version-ordering",
+            "compare-strings-ranges",
+            "compare-strings-character-storage",
+            "compare-strings-live-case-table",
+            "string-case-character-identities"
+          ]
+        ],
+        "goal_complete": false
+      },
+      "source263-boundary-fixtures": {
+        "status": "waiting for source263 selected validation",
+        "prior_pid": 90568,
+        "fixed_inputs": {
+          "queue-source263-boundary-fixtures.py": "52c3cc71d72e91349ef3f7a8138f49404592fd277304eef6757f3a0ded6d3e88",
+          "audit-source263-selected-fixtures.py": "6e5ae3d5ca8ae54f8d11f4ba441a586035b1a595f1ec9d20b4b7566a17650646",
+          "compare-string-ranges-fixtures.py": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd",
+          "source263-manifest.json": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f",
+          "string-ordering-prefix-boundaries.el": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2",
+          "string-ordering-prefix-boundaries.expected": "d5b883ee5a21f3334c9ae923ae32d8cf90eb5a24a77afbf84abeab1727d575fa",
+          "source261-string-prefix-audit.json": "0b74f4a4726368e188699d07a6b17dddc5afd33e5c7eebb1fb51d13335fbd81d"
+        },
+        "results": [],
+        "goal_complete": false
+      }
+    },
+    "qualification": "Before runtime execution, review found the queued ordinary wrapper named a nonexistent fixture. Both original waiting supervisors were withdrawn, preserving their helpers and waiting states. Corrected queues90568/90569 restore the actual original string-ordering-symbol-storage fixture and all28 fixture paths are verified. Runtime source, tests, expectations, selectors, timeouts and comparison rules stay unchanged. No source263 runtime pass or goal completion is claimed."
+  },
+  "archive": {
+    "path": "source263-fixture-queue-repair.tar.gz",
+    "bytes": 42458,
+    "sha256": "0dd5d48035763a4861602e6b5d13f54033e9d234199d5cadd7cf20fe74acae0e"
+  },
+  "files": [
+    {
+      "path": "audit-source263-selected-fixtures.py",
+      "bytes": 8598,
+      "sha256": "6e5ae3d5ca8ae54f8d11f4ba441a586035b1a595f1ec9d20b4b7566a17650646"
+    },
+    {
+      "path": "audit-source263-selected.py",
+      "bytes": 8590,
+      "sha256": "8c12d1dd5f828db6552ab0e9d06b9bb5286a2bfa951ab85d4cf108040322589c"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source263-fixture-queue-repair.py",
+      "bytes": 3044,
+      "sha256": "0aa0757a77a4cfa3ba01722d10947b51b2bbf5141d30b281f50f519e4df24e6e"
+    },
+    {
+      "path": "prepare-source263-fixture-queue-repair.py",
+      "bytes": 4864,
+      "sha256": "bd057b381057cfa81a207a766d82dbb412c4d802f40c6d62079a4c122ae0a690"
+    },
+    {
+      "path": "queue-source263-boundary-control.py",
+      "bytes": 5455,
+      "sha256": "d1375670e91c933394584a6d6aa8c930125419642be095ce9f9ac491060a6300"
+    },
+    {
+      "path": "queue-source263-boundary-fixtures.py",
+      "bytes": 5566,
+      "sha256": "52c3cc71d72e91349ef3f7a8138f49404592fd277304eef6757f3a0ded6d3e88"
+    },
+    {
+      "path": "queue-string-ranges263-fixtures.py",
+      "bytes": 6035,
+      "sha256": "e2087757ca6fcb09496c2f3039b1b59099e2288cc3d44f7426e3fbc3eef1378f"
+    },
+    {
+      "path": "queue-string-ranges263-validation.py",
+      "bytes": 5712,
+      "sha256": "b03c5b55dc39ecbe2fa5347c5692bb8475f94b0afeb1877637d1e177c5b24b57"
+    },
+    {
+      "path": "replace-source263-waiting-fixture-queues.py",
+      "bytes": 4044,
+      "sha256": "86e1d3ce91413bf0139562247e2441ae433a1e9bc8133fd7436f61dbd898efe7"
+    },
+    {
+      "path": "source263-boundary-fixtures-at-packaging.json",
+      "bytes": 920,
+      "sha256": "6b2416e49f6376c53abd176f8147247e1e7ffe095cede1a222ce74b6f9ace2b5"
+    },
+    {
+      "path": "source263-boundary-fixtures-launch.json",
+      "bytes": 618,
+      "sha256": "ec63011ca8614c44e4329843f97b5873a338cfd99c294359fd2dd24acf310a45"
+    },
+    {
+      "path": "source263-boundary-launch.json",
+      "bytes": 625,
+      "sha256": "6f7fefdf46b85073d5855d60708f0e8ad51b9e4b79490047ead459cd965ddc4a"
+    },
+    {
+      "path": "source263-boundary-queue-state.json",
+      "bytes": 911,
+      "sha256": "0ef5f4d607ce890f1520342f99039e61f2e3141ca0e69e13502ce15928bf6517"
+    },
+    {
+      "path": "source263-fixture-queue-preflight.json",
+      "bytes": 20731,
+      "sha256": "f74e978363a6ae01ab70ec1a9524079aeece52e695b33e426acc4f1204a9e796"
+    },
+    {
+      "path": "source263-fixture-queue-withdrawal.json",
+      "bytes": 6434,
+      "sha256": "15a14e9d7cc0837d7b4bc02fa8ebd830bfea47e02e289e590f6384ec26d551d6"
+    },
+    {
+      "path": "source263-fixture-validation-at-packaging.json",
+      "bytes": 3186,
+      "sha256": "99885ea11246d20055c2bdc0d4130262d46f90e110f1052b953d3d843085bd31"
+    },
+    {
+      "path": "source263-fixture-validation-launch.json",
+      "bytes": 616,
+      "sha256": "090adc8cbd69e88247b53c7e9ee815105db293f9344c058b63ce87efcba42de8"
+    },
+    {
+      "path": "source263-manifest.json",
+      "bytes": 57559,
+      "sha256": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f"
+    },
+    {
+      "path": "source263-validation-launch.json",
+      "bytes": 648,
+      "sha256": "f12ed9a6476d7bfcc01ad1d148824c3643301c0eb1bf58fe12f71fc3a3f3401f"
+    },
+    {
+      "path": "source263-validation-queue-state.json",
+      "bytes": 3185,
+      "sha256": "affd317f366d9eff1dbfbeaccc419e60759079bb08eaf6c0c778dca8923b2247"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

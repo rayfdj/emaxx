@@ -69,14 +69,23 @@ main exactly; main's character matrix exits255 at its unsupported extended-chara
 constructor, which is retained as a failure. The repair reads canonical bytes,
 promotes octets before casing, follows live tables with actual keys and preserves
 GNU's type/range validation order. All **500 inputs** replay exactly and strict
-checks pass with zero warnings. Queue **64601** waits for supervisor31023, then runs
+checks pass with zero warnings. Queue **90568** waits for supervisor31023, then runs
 199 focused selectors and 1,054 affected tests per profile plus 28 ordinary comparisons.
 No source263 runtime stage has run; keep the unapplied checkout and helpers unchanged.
 The [additional boundary control](docs/handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
 matches GNU/source261 on **12,600 comparisons**, covering 14 prefix lengths around
-machine-word boundaries and 30 character/storage cases. Queue **87187** waits for
-64601, then owns the complete selected audit and runs that same fixture on source263.
+machine-word boundaries and 30 character/storage cases. Queue **90569** waits for
+90568, then owns the complete selected audit and runs that same fixture on source263.
 Wait for both queues before applying the draft; no source263 pass is inferred yet.
+
+The [queue correction](docs/handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
+preserves original waiting supervisors64601/87187, withdrawn before runtime execution.
+Their wrapper named a nonexistent fixture; the corrected queue uses the unchanged
+`string-ordering-symbol-storage` fixture. All 28 fixture paths are verified. Source,
+tests, expected bytes, selectors, timeouts and comparison rules are unchanged.
+Read `source263-fixture-validation-*` and `source263-boundary-fixtures-*` for live
+state; the latter owns `audit-source263-selected-fixtures.py`. Original helpers
+and waiting states remain historical evidence.
 
 ## Preceding source249 validation
 
