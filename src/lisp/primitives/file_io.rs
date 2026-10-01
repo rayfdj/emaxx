@@ -555,45 +555,158 @@ pub(crate) fn coding_tag_from_bytes(bytes: &[u8]) -> Option<String> {
     coding_tag_from_buffer_text(&prefix)
 }
 
-pub(crate) fn current_write_coding(
+// coding.c:coding_inherit_eol_type preserves an already specified alias;
+// otherwise it selects the actual subsidiary, with Unix as the host default.
+fn inherit_write_coding_eol(
     interp: &Interpreter,
-    env: &Env,
-    text: &str,
-    for_write_file: bool,
-) -> Result<String, LispError> {
-    if for_write_file && let Some(tag) = coding_tag_from_buffer_text(text) {
-        let canonical = interp
-            .coding_system_canonical_name(&tag)
-            .ok_or_else(|| coding_system_error(tag.clone()))?;
-        let base = interp
-            .coding_system_base_name(&canonical)
-            .unwrap_or(canonical.clone());
-        let eol = interp.coding_system_eol_type_value(&canonical).or(Some(0));
-        return Ok(coding_variant_name(interp, &base, eol));
-    }
-    if let Some(value) = interp.lookup_var("coding-system-for-write", env)
-        && !value.is_nil()
-    {
-        return checked_coding_symbol(interp, &value);
-    }
-    if let Some(value) = interp.lookup_var("buffer-file-coding-system", env)
-        && !value.is_nil()
-    {
-        let current = checked_coding_symbol(interp, &value)?;
-        let base = interp
-            .coding_system_base_name(&current)
-            .unwrap_or(current.clone());
-        let eol = interp.coding_system_eol_type_value(&current).or(Some(0));
-        if for_write_file && base == "prefer-utf-8" && !ascii_only_text(text) {
-            return Ok(coding_variant_name(interp, "utf-8", eol));
-        }
-        return Ok(coding_variant_name(interp, &base, eol));
-    }
-    if ascii_only_text(text) {
-        Ok(coding_variant_name(interp, "prefer-utf-8", Some(0)))
+    coding: Value,
+    parent: Value,
+) -> Result<Value, LispError> {
+    let coding = if coding.is_nil() {
+        Value::symbol("raw-text")
     } else {
-        Ok(coding_variant_name(interp, "utf-8", Some(0)))
+        checked_coding_symbol(interp, &coding)?;
+        coding
+    };
+    let name = coding.as_symbol()?;
+    if interp.coding_system_eol_type_value(name).is_some() {
+        return Ok(coding);
     }
+    let eol = if parent.is_nil() {
+        0
+    } else {
+        let parent = checked_coding_symbol(interp, &parent)?;
+        interp.coding_system_eol_type_value(&parent).unwrap_or(0)
+    };
+    let base = interp
+        .coding_system_base_name(name)
+        .unwrap_or_else(|| name.to_string());
+    Ok(Value::symbol(&coding_variant_name(
+        interp,
+        &base,
+        Some(eol),
+    )))
+}
+
+/// fileio.c:choose_write_coding_system leaves file rules and safe-coding
+/// policy in their GNU Lisp owners, then completes the external EOL choice.
+fn choose_write_coding(
+    interp: &mut Interpreter,
+    args: &[Value; 7],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut coding = interp
+        .lookup_var("coding-system-for-write", env)
+        .unwrap_or(Value::Nil);
+    if !coding.is_nil() {
+        let selector = interp
+            .lookup_var("select-safe-coding-system-function", env)
+            .unwrap_or(Value::Nil);
+        if interp
+            .lookup_var("coding-system-require-warning", env)
+            .is_some_and(|value| value.is_truthy())
+            && call(interp, "fboundp", &[selector], env)?.is_truthy()
+        {
+            coding = interp.call_function_value(
+                selector,
+                None,
+                &[
+                    args[0],
+                    args[1],
+                    Value::list([Value::T, coding]),
+                    Value::Nil,
+                    args[2],
+                ],
+                env,
+            )?;
+        }
+        return inherit_write_coding_eol(interp, coding, Value::Nil);
+    }
+
+    coding = interp
+        .lookup_var("buffer-file-coding-system", env)
+        .unwrap_or(Value::Nil);
+    let local =
+        interp.has_buffer_local_binding(interp.current_buffer_id(), "buffer-file-coding-system");
+    let mut force_raw = false;
+    if coding.is_nil() || !local {
+        coding = Value::Nil;
+        force_raw = !interp.buffer.borrow().is_multibyte();
+    }
+    if coding.is_nil() {
+        let selected = interp.call_function_value(
+            Value::symbol("find-operation-coding-system"),
+            Some("find-operation-coding-system"),
+            &[
+                Value::symbol("write-region"),
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                args[4],
+                args[5],
+            ],
+            env,
+        )?;
+        if let Some((_, selected)) = selected.cons_values()
+            && !selected.is_nil()
+        {
+            coding = selected;
+        }
+    }
+    let using_default = coding.is_nil();
+    if using_default {
+        coding = interp
+            .lookup_var("buffer-file-coding-system", env)
+            .unwrap_or(Value::Nil);
+    }
+    if !coding.is_nil() && !force_raw {
+        let name = checked_coding_symbol(interp, &coding)?;
+        force_raw = matches!(
+            interp.coding_system_kind_name(&name).as_deref(),
+            Some("raw-text" | "no-conversion")
+        );
+    }
+    let selector = interp
+        .lookup_var("select-safe-coding-system-function", env)
+        .unwrap_or(Value::Nil);
+    if !force_raw && call(interp, "fboundp", &[selector], env)?.is_truthy() {
+        coding = interp.call_function_value(
+            selector,
+            None,
+            &[args[0], args[1], coding, Value::Nil, args[2]],
+            env,
+        )?;
+        if !coding.is_nil() {
+            checked_coding_symbol(interp, &coding)?;
+        }
+    }
+    if !using_default {
+        let default = interp
+            .default_value("buffer-file-coding-system")
+            .unwrap_or(Value::Nil);
+        if !default.is_nil() {
+            coding = inherit_write_coding_eol(interp, coding, default)?;
+        }
+    }
+    if force_raw {
+        let raw = coding.as_symbol().ok().is_some_and(|name| {
+            matches!(
+                interp.coding_system_kind_name(name).as_deref(),
+                Some("raw-text" | "no-conversion")
+            )
+        });
+        if !raw {
+            let eol = if coding.is_nil() {
+                None
+            } else {
+                let name = checked_coding_symbol(interp, &coding)?;
+                interp.coding_system_eol_type_value(&name)
+            };
+            coding = Value::symbol(&coding_variant_name(interp, "raw-text", eol));
+        }
+    }
+    inherit_write_coding_eol(interp, coding, Value::Nil)
 }
 
 pub(crate) fn write_region_value(
@@ -601,6 +714,7 @@ pub(crate) fn write_region_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    need_arg_range("write-region", args, 3, 7)?;
     let logical_path = string_text(&args[2])?;
     write_region_value_with_logical_path(interp, args, &logical_path, None, env)
 }
@@ -612,75 +726,114 @@ pub(crate) fn write_region_value_with_logical_path(
     logical_lock_path: Option<&str>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    need_arg_range("write-region", args, 3, 7)?;
+    let mut normalized = [Value::Nil; 7];
+    normalized[..args.len()].copy_from_slice(args);
+    if !args[0].is_nil() && !matches!(args[0].kind(), Kind::String(_) | Kind::StringObject(_)) {
+        let start = position_from_value(interp, &args[0])?;
+        let end = position_from_value(interp, &args[1])?;
+        if start.min(end) < interp.buffer.borrow().point_min()
+            || start.max(end) > interp.buffer.borrow().point_max()
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::Buffer(interp.buffer),
+                args[0],
+                args[1],
+            ])));
+        }
+        normalized[0] = Value::Integer(start.min(end) as i64);
+        normalized[1] = Value::Integer(start.max(end) as i64);
+    }
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     validate_file_name(&path)?;
     let existed_before_write = fs::symlink_metadata(&path).is_ok();
-    let (text, source_multibyte) = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
-        (
-            interp.buffer.borrow().buffer_string(),
-            interp.buffer.borrow().is_multibyte(),
-        )
-    } else if string_like(&args[0]).is_some() {
-        let string = string_like(&args[0]).expect("checked string-like value");
-        (string.text, string.multibyte)
+    if normalized[6].is_truthy()
+        && normalized[6].as_symbol().ok() != Some("excl")
+        && existed_before_write
+        && !call_named_function(
+            interp,
+            "y-or-n-p",
+            &[Value::String(
+                format!("File {logical_path} already exists; overwrite anyway? ").into(),
+            )],
+            env,
+        )?
+        .is_truthy()
+    {
+        return Err(file_operation_error(
+            "Opening output file",
+            &std::io::Error::from(ErrorKind::AlreadyExists),
+            logical_path,
+        ));
+    }
+    // write_region saves restriction state even for explicit/string input;
+    // nil START temporarily exposes the entire buffer to coding callbacks.
+    let saved = interp.save_restriction_state();
+    interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
+    if args[0].is_nil() {
+        interp.buffer.borrow_mut().widen();
+    }
+    let result = write_region_with_coding(
+        interp,
+        &normalized,
+        &path,
+        existed_before_write,
+        logical_path,
+        logical_lock_path,
+        env,
+    );
+    interp.restore_restriction_state(saved);
+    result
+}
+
+fn write_region_with_coding(
+    interp: &mut Interpreter,
+    args: &[Value; 7],
+    path: &str,
+    existed_before_write: bool,
+    logical_path: &str,
+    logical_lock_path: Option<&str>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut selected_args = *args;
+    selected_args[2] = Value::string(path);
+    if args[0].is_nil() {
+        selected_args[0] = Value::Integer(interp.buffer.borrow().point_min() as i64);
+        selected_args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
+    }
+    if selected_args[5].is_nil() {
+        selected_args[5] = if string_like(&selected_args[4]).is_some() {
+            selected_args[4]
+        } else {
+            selected_args[2]
+        };
+    }
+    let coding = choose_write_coding(interp, &selected_args, env)?;
+    let coding_name = coding.as_symbol()?;
+    set_last_coding_system_used(interp, coding_name, env);
+    // Selection calls Lisp, which may mutate the supplied string or buffer.
+    // Read its actual current contents after the callback has returned.
+    let source = if let Some(string) = string_like(&selected_args[0]) {
+        string
     } else {
-        let start = position_from_value(interp, &args[0])?;
-        let end = position_from_value(interp, &args[1])?;
-        (
-            interp
-                .buffer
-                .borrow()
+        let start = position_from_value(interp, &selected_args[0])?;
+        let end = position_from_value(interp, &selected_args[1])?;
+        let buffer = interp.buffer.borrow();
+        StringLike {
+            text: buffer
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?,
-            interp.buffer.borrow().is_multibyte(),
-        )
+            props: Vec::new(),
+            multibyte: buffer.is_multibyte(),
+            extended_chars: buffer.substring_extended_chars(start, end),
+        }
     };
-    let visiting = args
-        .get(4)
-        .is_some_and(|visit| matches!(visit.kind(), Kind::T) || string_like(visit).is_some());
-    let coding = current_write_coding(interp, env, &text, visiting)?;
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    let no_conversion = interp
-        .coding_system_base_name(&coding)
-        .is_some_and(|base| base == "no-conversion");
-    let bytes = if no_conversion && source_multibyte {
-        encode_internal_multibyte_bytes(&text)?
-    } else {
-        encode_text_bytes(
-            interp,
-            &text,
-            &coding,
-            inhibit_eol_conversion,
-            source_multibyte,
-        )?
-    };
-    if let Some(mustbenew) = args.get(6).filter(|value| value.is_truthy())
-        && fs::symlink_metadata(&path).is_ok()
-    {
-        let overwrite = if mustbenew.as_symbol().ok() == Some("excl") {
-            false
-        } else {
-            call_named_function(
-                interp,
-                "yes-or-no-p",
-                &[Value::String(
-                    format!("File {logical_path} already exists; overwrite anyway? ").into(),
-                )],
-                env,
-            )?
-            .is_truthy()
-        };
-        if !overwrite {
-            return Err(file_operation_error(
-                "Opening output file",
-                &std::io::Error::from(ErrorKind::AlreadyExists),
-                logical_path,
-            ));
-        }
-    }
+    let bytes = encode_text_bytes(interp, &source, coding_name, inhibit_eol_conversion)?;
     let lock_path = logical_lock_path
         .map(str::to_string)
         .or_else(|| args.get(5).and_then(string_like).map(|string| string.text))
@@ -699,32 +852,35 @@ pub(crate) fn write_region_value_with_logical_path(
         env,
     )?;
     let write_result = (|| {
-        if let Some(offset) = args
+        let exclusive = args[6].as_symbol().ok() == Some("excl");
+        if args[3].is_nil() && !exclusive {
+            return fs::write(path, &bytes).map_err(|error| file_output_error(path, &error));
+        }
+        let offset = args
             .get(3)
             .filter(|value| value.is_truthy())
-            .and_then(|value| value.as_integer().ok())
-        {
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&path)
-                .map_err(|error| file_output_error(&path, &error))?;
+            .and_then(|value| value.as_integer().ok());
+        let append = args[3].is_truthy() && offset.is_none();
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .create_new(exclusive)
+            .truncate(args[3].is_nil())
+            .append(append)
+            .write(true)
+            .open(path)
+            .map_err(|error| {
+                if exclusive && error.kind() == ErrorKind::AlreadyExists {
+                    file_operation_error("Opening output file", &error, logical_path)
+                } else {
+                    file_output_error(path, &error)
+                }
+            })?;
+        if let Some(offset) = offset {
             file.seek(SeekFrom::Start(offset.max(0) as u64))
-                .map_err(|error| file_output_error(&path, &error))?;
-            file.write_all(&bytes)
-                .map_err(|error| file_output_error(&path, &error))
-        } else if args.get(3).is_some_and(Value::is_truthy) {
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|error| file_output_error(&path, &error))?;
-            file.write_all(&bytes)
-                .map_err(|error| file_output_error(&path, &error))
-        } else {
-            fs::write(&path, &bytes).map_err(|error| file_output_error(&path, &error))
+                .map_err(|error| file_output_error(path, &error))?;
         }
+        file.write_all(&bytes)
+            .map_err(|error| file_output_error(path, &error))
     })();
     let unlock_result = if lock_enabled {
         call_named_function(
@@ -741,21 +897,20 @@ pub(crate) fn write_region_value_with_logical_path(
         (Err(error), _) | (Ok(()), Err(error)) => return Err(error),
         (Ok(()), Ok(())) => {}
     }
-    set_last_coding_system_used(interp, &coding, env);
     if !existed_before_write {
-        dispatch_file_notification(interp, env, &path, "created")?;
+        dispatch_file_notification(interp, env, path, "created")?;
     }
     // Creating an empty file changes the directory but writes no file data;
     // kqueue therefore exposes CREATE without WRITE for that transition.
     if existed_before_write || !bytes.is_empty() {
-        dispatch_file_notification(interp, env, &path, "changed")?;
+        dispatch_file_notification(interp, env, path, "changed")?;
     }
     // Darwin kqueue reports the metadata transition caused by replacing the
     // file contents separately from the write readiness flag.  Watches that
     // did not request attribute changes filter this event at the backend.
     #[cfg(target_os = "macos")]
     if existed_before_write || !bytes.is_empty() {
-        dispatch_file_notification(interp, env, &path, "attribute-changed")?;
+        dispatch_file_notification(interp, env, path, "attribute-changed")?;
     }
     if let Some(visit) = args.get(4)
         && (matches!(visit.kind(), Kind::T) || string_like(visit).is_some())
@@ -770,7 +925,7 @@ pub(crate) fn write_region_value_with_logical_path(
         interp
             .buffer
             .borrow_mut()
-            .set_visited_file_modtime(file_modtime(&path)?);
+            .set_visited_file_modtime(file_modtime(path)?);
         interp.buffer.borrow_mut().set_unmodified();
         unlock_current_buffer(interp, env)?;
     }

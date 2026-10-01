@@ -1030,18 +1030,18 @@ define_dispatch!(
                 if args.is_empty() || args.len().is_multiple_of(2) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                let len = match args[0].kind() {
+                    Kind::StringObject(state) => state.borrow().len(),
+                    Kind::String(text) => text.chars().count(),
+                    _ => return Err(LispError::WrongTypeArgument("stringp".into(), args[0])),
+                };
+                // editfns.c:Fpropertize starts with Fcopy_sequence, sharing
+                // property values while copying the string's real bytes.
+                let value = shared_string_copy(&args[0])?;
                 let props = args[1..]
                     .chunks(2)
                     .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1])))
                     .collect::<Result<Vec<_>, LispError>>()?;
-                let len = string.text.chars().count();
-                let value = make_shared_string_value_with_multibyte(
-                    string.text,
-                    string.props,
-                    string.multibyte,
-                );
                 modify_shared_string_properties(&value, 0, len, |mut current| {
                     for (name, value) in &props {
                         if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)

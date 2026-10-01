@@ -166,7 +166,8 @@ The 454-input incremental patch replays from `6ee4bd1b`, and a complete patch
 from main is also retained. Git checkout modes and every input byte are verified.
 The first replay audit extracted archive modes verbatim and stopped on 0664
 versus 0644; the replacement helper corrects extraction setup, not source or
-executable bits. Root task-branch runtime remains source238.
+executable bits. This draft was kept separate while being validated; the later
+source243 task checkpoint includes it, as described below.
 
 Four negative source238 ordinary probes expose character loss or incorrect
 encoding/identity behavior. UTF-8/raw-text encoders now use actual Lisp character
@@ -199,8 +200,12 @@ now verifies **160 focused release passes / two existing ignores**, all **944
 affected release passes**, and all **57 preceding ordinary comparisons**. Combined
 with the four new coding/copy fixtures, that is 61 audited ordinary comparisons.
 Every raw name, verdict, artifact identity and process result is checked.
-Release/ordinary supervisor **43217** has exited. Full macOS **43216** remains
-active; read its receipt before acting and do not modify the executing candidate.
+Release/ordinary supervisor **43217** has exited. The
+[complete macOS audit](handover/2026-09-30-shared-reader-draft/source240-complete-macos-manifest.json)
+now closes supervisor **43216**: **3,089 passes / two existing ignores**,
+including 2,990 library, 60 binary and 39 integration passes. All 2,992 raw
+library names/verdicts, native artifact identity and four retained executable/image
+hashes are verified. The candidate remains frozen as its tested baseline.
 
 A separately added ordinary save/revisit probe still fails on source240. Both
 editors begin with `undecided-unix` for the source file and nil for the new file;
@@ -217,3 +222,71 @@ Source240 has no complete Linux, frozen or terminal certification. The new-file
 coding selection, unresolved GNU census variation, further display review,
 remaining architecture/accounting/ownership work and locked 16-workload 3%
 performance requirement remain open. No current performance-parity claim exists.
+
+## File-coding repair after source240
+
+The separate candidate in
+`target/runtime-goal/recovered-2026-09-30/file-coding/emaxx` starts from task
+commit `3060be47` and includes the source240 coding/copy changes. It follows
+`fileio.c:choose_write_coding_system` and `coding.c:coding_inherit_eol_type`:
+explicit coding and its warning callback, local buffer policy, file-name rules,
+the unchanged GNU Lisp safe-coding selector, EOL inheritance and unibyte/raw
+selection. It reads the payload after the callback, so callback mutations are
+visible, and restores the original marker-backed restriction state on return.
+No mode-line expectation or terminal scenario is changed.
+
+GNU's overwrite check calls `y-or-n-p`, and the exclusive-file check happens
+when opening the file after coding selection. The candidate follows that order,
+including a file created by a coding callback. The old Rust prompt test expected
+all of `no RET` to be consumed. An actual ordinary PTY reproduction establishes
+GNU consumes `n` and leaves `o RET`; source240 consumed everything. The corrected
+test preserves the declining error and original file-byte assertions, and checks
+the remaining two events. Earlier batch prompt attempts did not exercise that
+interactive route; their failed results remain preserved.
+
+Three new same-input GNU fixtures cover 24 selection/restriction cases, eight
+overwrite/append/exclusive-open cases and the original save/revisit lifecycle.
+Source241's 460-input draft compiles with three unused-helper warnings and fails
+strict Clippy; no runtime tests execute. Source242 reuses the existing ordinary
+nonexclusive write helper and passes strict checks with zero warnings. Its
+focused run has **163 passes, one failure and two existing ignores**. Every raw
+verdict and its exact failed executable/image are retained. The new selection
+fixture fails only on two invalid-coding payloads: Emaxx returns an error string,
+GNU the offending symbol. Ordinary and affected-module stages never run.
+
+The [portable source243 checkpoint and selected validation](handover/2026-09-30-shared-reader-draft/source243-file-coding-recovery-manifest.json)
+change the shared coding-error constructor to retain the actual Lisp
+object, following `coding.c:Fcheck_coding_system`. An additional ordinary probe
+shows source240 also loses an uninterned invalid symbol's identity in both encode
+and decode errors; GNU retains it. The new identity control adds that coverage
+without changing any preceding fixture or expected output. All **462 inputs and
+Git checkout modes** replay from both task commit `3060be47` and main `21d20f0e`.
+Strict checks have zero warnings. **165 focused tests pass with two existing
+ignores**, all **948 affected-module tests pass**, and all **eight ordinary
+GNU comparisons** pass through each editor's normal executable and image.
+Every raw verdict, expected output and input hash is verified. Both the original
+selection fixture and the new error-object identity control pass unchanged.
+
+All **11 original file-lifecycle scenarios / 41 terminal comparisons** match.
+This includes the original new-file coding-indicator divergence and the three
+filesystem/revisit comparisons that source238 never executed. No action, timeout,
+selector or comparison rule changes. A fresh actual PTY prompt probe produces
+`(file-already-exists (111 13) "old")` in both editors, closing the separately
+captured prompt discrepancy. This is selected terminal validation; GNU's source
+and native ABI match, but its executable is not the pinned Darwin oracle.
+
+The first affected-module audit mistakenly required 562 source inputs and stopped
+before checking results. That failed helper and its launch traceback remain in
+the archive. A separately named correction verifies the frozen 462 inputs, all
+2,996 inventory names and all 948 selected verdicts without rerunning or changing
+runtime tests. No failed audit is relabeled as passed.
+
+Selected supervisors **53531** and **54143** have exited. Complete macOS **55867**,
+release plus 57 preceding ordinary comparisons **55868**, and the full unchanged
+226-scenario terminal run **55869** have started. Their active logs are excluded
+from this archive. Linux validation must be dispatched on the pushed checkpoint;
+consult the `source243-*` receipts for current job IDs and results. Root task
+runtime matches all 462 source243 inputs; main remains source174. Source238's
+complete frozen result does not certify these later changes. The full Linux GNU
+census failure and all architecture, accounting, ownership and performance
+requirements remain open.

@@ -333,7 +333,7 @@ pub(crate) fn encode_text(
     Ok(bytes)
 }
 
-fn encode_character(code: u32) -> Result<([u8; 5], usize), LispError> {
+pub(crate) fn encode_character(code: u32) -> Result<([u8; 5], usize), LispError> {
     let mut bytes = [0; 5];
     let width = match code {
         0..=0x7f => {

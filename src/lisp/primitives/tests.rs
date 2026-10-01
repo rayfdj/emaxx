@@ -22557,7 +22557,11 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
 }
 
 #[test]
-fn write_region_mustbenew_consumes_a_full_negative_answer() {
+fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events() {
+    // fileio.c:barf_or_query_if_file_exists is called with QUICK=true.
+    // An ordinary GNU PTY with unread-command-events = n o RET consumes
+    // only n and leaves (111 13); the preceding full-answer assertion was
+    // invalid. Preserve both the declining error and unchanged file bytes.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
@@ -22599,9 +22603,10 @@ fn write_region_mustbenew_consumes_a_full_negative_answer() {
     set_tty_event_reader(None);
 
     assert!(result.is_err(), "declining overwrite must signal");
-    assert!(
-        script.borrow().is_empty(),
-        "the overwrite prompt must consume the full `no RET` answer"
+    assert_eq!(
+        script.borrow().iter().rev().copied().collect::<Vec<_>>(),
+        vec![Value::Integer(111), Value::Integer(13)],
+        "GNU's short-answer overwrite prompt leaves unrelated input queued"
     );
     assert_eq!(
         std::fs::read(&path).expect("read declined-overwrite fixture"),
@@ -27109,5 +27114,80 @@ fn interactive_closures_use_the_gnu_metadata_environment() {
         include_str!("../../../tests/fixtures/interactive-closure-environments.expected")
             .trim_end(),
         "interactive closure environments",
+    );
+}
+
+#[test]
+fn coding_errors_preserve_the_offending_symbol_object() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-error-object-storage.el"),
+        include_str!("../../../tests/fixtures/coding-error-object-storage.expected").trim(),
+        "coding errors retain the actual uninterned symbol instead of its printed name",
+    );
+}
+
+#[test]
+fn coding_encoders_preserve_full_character_codes_and_file_bytes() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-character-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-character-storage.expected")
+            .trim_end(),
+        "canonical-coding-character-storage",
+    );
+}
+
+#[test]
+fn coding_encoders_preserve_gnu_identity_properties_and_byte_results() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-identity-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-identity-storage.expected")
+            .trim_end(),
+        "canonical-coding-identity-storage",
+    );
+}
+
+#[test]
+fn coding_conversions_preserve_extended_characters_regions_and_eol() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-conversion-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-conversion-storage.expected")
+            .trim_end(),
+        "canonical-coding-conversion-storage",
+    );
+}
+
+#[test]
+fn copied_and_propertized_strings_preserve_canonical_bytes_and_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/copied-canonical-string-storage.el"),
+        include_str!("../../../tests/fixtures/copied-canonical-string-storage.expected").trim_end(),
+        "canonical string copies and propertize",
+    );
+}
+
+#[test]
+fn file_write_coding_selection_preserves_lisp_policy_callbacks_and_restrictions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/file-write-coding-selection.el"),
+        include_str!("../../../tests/fixtures/file-write-coding-selection.expected").trim_end(),
+        "file coding selection and callback mutation",
+    );
+}
+
+#[test]
+fn new_file_coding_lifecycle_matches_gnu_after_save_and_revisit() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/new-file-coding-lifecycle.el"),
+        include_str!("../../../tests/fixtures/new-file-coding-lifecycle.expected").trim_end(),
+        "new file coding lifecycle",
+    );
+}
+
+#[test]
+fn file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/file-write-order.el"),
+        include_str!("../../../tests/fixtures/file-write-order.expected").trim_end(),
+        "file coding overwrite and exclusive creation order",
     );
 }

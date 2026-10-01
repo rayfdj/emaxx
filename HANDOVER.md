@@ -11,13 +11,14 @@ Read the [current cons continuation](docs/runtime-representation-cons-roots-draf
 [bytecode draft](docs/runtime-representation-bytecode-draft.md) and
 [string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
 [accounting continuation](docs/runtime-representation-accounting-draft.md).
-Read the latest [correctness recovery and separate source240 draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
+Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The published **source238**, `a7e12de8`, has recovered the complete pinned Linux
+The task runtime is now **source243**, with its selected validation below.
+The preceding **source238**, `a7e12de8`, recovered the complete pinned Linux
 frozen match: **519 files / 7,928 outcomes / 1,038 successful processes** in
 [run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904).
 The [raw audit](docs/handover/2026-09-30-shared-reader-draft/source238-complete-frozen-and-terminal-failure-manifest.json)
@@ -53,10 +54,36 @@ repairs source238's reproduced U+F8FF failure-report error while preserving the
 known pass, failure, expected-failure and skip outcomes. The failed source239
 draft remains preserved. The separately added save/revisit probe still fails:
 GNU records `utf-8-unix` after save, Emaxx `prefer-utf-8-unix`; file bytes match.
-Full macOS supervisor **43216** is active; release/ordinary **43217** has exited.
-Read their receipts before acting. Do not edit
-executing candidates or helpers. Root runtime is still source238; the draft is
-packaged separately. **Main is unchanged; complete correctness and the full
+The [complete macOS audit](docs/handover/2026-09-30-shared-reader-draft/source240-complete-macos-manifest.json)
+now verifies **3,089 passes / two existing ignores**, native artifact identity,
+all 2,992 raw library names/verdicts and four retained executable/image hashes.
+Both supervisors **43216** and **43217** have exited.
+
+The [source243 file-coding checkpoint](docs/handover/2026-09-30-shared-reader-draft/source243-file-coding-recovery-manifest.json)
+follows GNU's Lisp-owned selection policy, preserves
+narrowing across callbacks, uses the short overwrite prompt and checks exclusive
+creation when opening the file. Source241's strict failure is preserved.
+Source242 passes 163 focused tests with two existing ignores and one failed
+selection fixture: its two invalid-coding errors contain a string instead of
+GNU's offending symbol. The save/revisit, overwrite-order and prompt controls
+pass. Source243 also retains the actual error object and adds a GNU-confirmed
+uninterned-symbol identity control; its 462 inputs are frozen in
+`target/runtime-goal/recovered-2026-09-30/file-coding/emaxx`.
+Strict checks have zero warnings; **165 focused passes / two existing ignores**,
+all **948 affected-module tests**, and eight ordinary GNU comparisons pass.
+All **11 original file-lifecycle scenarios / 41 comparisons** match, including
+the original indicator failure and all three previously unexecuted comparisons.
+The actual interactive prompt probe also matches GNU. Every raw verdict and
+artifact identity is audited. The first broad-audit helper stopped on an incorrect
+562-input assertion; its separate corrected helper checks all 462 inputs without
+rerunning or changing tests. The failed audit remains preserved.
+
+Selected supervisors **53531** and **54143** have exited. Complete macOS
+**55867**, release/57 preceding ordinary comparisons **55868**, and full terminal
+**55869** are active. Existing Linux validation must run on the pushed checkpoint;
+read the current `source243-*` receipts before acting. Do not edit executing
+candidates or helpers. Root runtime exactly matches all 462 candidate inputs.
+**Main is unchanged; complete correctness and the full
 architecture/performance goal remain unfinished.**
 
 ## Source234 checkpoint and preceding history

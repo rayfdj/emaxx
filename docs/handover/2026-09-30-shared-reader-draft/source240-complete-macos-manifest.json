@@ -1,0 +1,277 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "macos": {
+      "status": "passed",
+      "source_commit": null,
+      "draft_base_commit": "6ee4bd1b9e79cef790c6dc88a64ef1896a2679f2",
+      "source_manifest": "source240-manifest.json",
+      "complete_patch_sha256": "54dd59c77ac945759ab1657dfbf5eec4cb08bc07261682f14b0b7a2ba3c38a61",
+      "validation_checkout": {
+        "dirty": true,
+        "head": "6ee4bd1b9e79cef790c6dc88a64ef1896a2679f2"
+      },
+      "verified_source_equivalent_inputs": 454,
+      "library_passed": 2990,
+      "library_ignored": 2,
+      "cargo_passed": {
+        "bins": 60,
+        "integration": 39
+      },
+      "total_passed": 3089,
+      "native_artifact_identity": "passed",
+      "native_identity_raw_lines": [
+        "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+      ],
+      "retained_files_verified": 4,
+      "test_binary_sha256": "8f8db5c22ec6f842ea40ed78065cb79e0743c611a2d1852a72b14ae6457b10e7",
+      "summary_sha256": "f6b7aee14bb3abf4f5efaf9152814c0d94b68522b4dcc154561b01f206e1f4fc",
+      "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+    },
+    "raw_names": {
+      "status": "passed",
+      "raw_names_verified": 2992,
+      "inventory_sha256": "c16d9bc0e601b19271b20ab4d19f5d025bc50b70897d2022439d850d5d0c9008",
+      "qualification": "Every raw library test name and final libtest verdict matches the complete inventory, including the two existing ignores. Native test output before the final verdict is preserved. Complements the count, native identity and retained-artifact audit."
+    },
+    "qualification": "Source240 complete macOS Rust validation is closed: 3,089 passes, two existing ignores, native artifact identity and four retained executable/image hashes verified. Supervisor43216 has exited. Source240 still fails the separately preserved new-file coding and prompt probes. The file-coding repair is a separate draft. Root runtime is source238; no Linux, frozen, terminal or performance certification for source240 is inferred."
+  },
+  "archive": {
+    "path": "source240-complete-macos.tar.gz",
+    "bytes": 381448,
+    "sha256": "4e35640fcebd69ed96500b120e7761363d960e9fe258b3e0b02a25ff7d4e9714"
+  },
+  "files": [
+    {
+      "path": "audit-source240-macos-names.py",
+      "bytes": 1679,
+      "sha256": "3ea095c7dd16949f69da2d929a80302b6e46d112e6ef8b0c543e6e5c9d0f3284"
+    },
+    {
+      "path": "full-gate-source240/bins.log",
+      "bytes": 5548,
+      "sha256": "8627afd9dbdd15e1f161bdd7089d8365804418be88056b0c6a57b75cff95e671"
+    },
+    {
+      "path": "full-gate-source240/build.log",
+      "bytes": 214720,
+      "sha256": "dc3caf7616fdc9745e0fe08c4fb8b7c2e16501e84ef5a0754a050d44d1f48f53"
+    },
+    {
+      "path": "full-gate-source240/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source240/integration.log",
+      "bytes": 4919,
+      "sha256": "d27ddf92f38eb78f8b93eef782f0fa014c6e127538b1970ce2cb4055d157fe1e"
+    },
+    {
+      "path": "full-gate-source240/inventory.txt",
+      "bytes": 263982,
+      "sha256": "c16d9bc0e601b19271b20ab4d19f5d025bc50b70897d2022439d850d5d0c9008"
+    },
+    {
+      "path": "full-gate-source240/metadata.log",
+      "bytes": 15052,
+      "sha256": "87f85c16ba6a3b623265478c982294f960d4ee06ac1134e47dfc1316ffa91cda"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-batch.json",
+      "bytes": 546,
+      "sha256": "e5534fe58f8d2ad829af0c97eb614b1597b4ee70dc0828342395d5a5be548076"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "5047adc24a37d4ba4108f20f7b2092458ebff7ac5949e5e4413f73c7bae13c69"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-compat_runtime.json",
+      "bytes": 589,
+      "sha256": "d2a320d2635784d2555b75a864010c8e177a2230d7c946ade5210327388ef155"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-compat_runtime.log",
+      "bytes": 10202,
+      "sha256": "af82685c599cbd9fd12fe59d562fefd7c31c93379eea544affb4d35a8f00a7d9"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_01.json",
+      "bytes": 557,
+      "sha256": "3dc4e6da34e5d8e2cf5a8e82901b5a40f0c33978f2e9785754224a116f715180"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "2b90f351624e3802dde859e025ea97cb14f45fc3212a39f4d8e4d65e65c602f9"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_02.json",
+      "bytes": 564,
+      "sha256": "795eb72e02378020c440a3befc0248987fcc37aa8e87e78adb1345d8ffea6af7"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_02.log",
+      "bytes": 69468,
+      "sha256": "10fbb0ceb8488f3dbc681e2e8366e1f9c98d4e33e700b96628e214cde21fb323"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_03.json",
+      "bytes": 559,
+      "sha256": "6def3816b7f95e7b42924c4c4fe93eff1bd2ae991bba797e4d70a53f182720bc"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "4375b643a94bc1e40e31fc71e2c977e83163c9efc545b47ccb192cf9de2c4b54"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_04.json",
+      "bytes": 559,
+      "sha256": "5e38d331adc118f4e8a3216a8fec82bfb79885089ebfb6d4f91990aa60286361"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "98b8d301df794916f850bf568d959b9b20f8fb4d4897fd3e44c47e020de107cc"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_05.json",
+      "bytes": 563,
+      "sha256": "5890083847d0b9cbdf2880c4401d66a5a134e7502cea3503989f1eda2afb41bf"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-eval_05.log",
+      "bytes": 79395,
+      "sha256": "79f959190ee051c51353fe139f7de7dacaa9e33c480afacc263ade91e108f326"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-lightweight.json",
+      "bytes": 957,
+      "sha256": "a45b2c1c572bb8c1a69443f9669f5e1cf61ed3e292604d8b9d34743debe7ecb0"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-lightweight.log",
+      "bytes": 51059,
+      "sha256": "57f87fa64f89e0e80a075db4b30c2e4a5653163118de9c3d4a4e4e9acb27ae5a"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-primitives.json",
+      "bytes": 562,
+      "sha256": "09338b29b631d60a97df87cf8f6cf85c90ad692ce8cd5287f09421617e14d5c8"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-primitives.log",
+      "bytes": 62262,
+      "sha256": "0edf0f926dde6063ee9d811fecc4703cf5a67433d6c54a58eb9942bfc5c2238d"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-tty.json",
+      "bytes": 531,
+      "sha256": "d41f3fd7b421360b82e7bd9ac7b93988a1b81e14f121fdadeaeb0543803a8cd0"
+    },
+    {
+      "path": "full-gate-source240/repeat-01-tty.log",
+      "bytes": 5167,
+      "sha256": "bf3f9a985ef91b0d1b81898b5f123645bf20e9162a9e634209f8e96173266f9b"
+    },
+    {
+      "path": "full-gate-source240/retained-inputs/manifest.json",
+      "bytes": 1668,
+      "sha256": "7717e8387414d4274c75b39e1b7a3706121f4708aeec4c515ce70dd2a972a930"
+    },
+    {
+      "path": "full-gate-source240/summary.json",
+      "bytes": 15609,
+      "sha256": "f6b7aee14bb3abf4f5efaf9152814c0d94b68522b4dcc154561b01f206e1f4fc"
+    },
+    {
+      "path": "launch-source240-complete.py",
+      "bytes": 1471,
+      "sha256": "df25f9e168af17c638ea9931d1fa49f0b0f87bf552c917c9f6ed47f845acc138"
+    },
+    {
+      "path": "package-source240-complete-macos.py",
+      "bytes": 2183,
+      "sha256": "d3a4c94edd347ecb4f23b0f3421a7d14991c84e08392b0406293b935e7e6ebbe"
+    },
+    {
+      "path": "run-source240-full-gate.py",
+      "bytes": 3377,
+      "sha256": "f05c139900272b732e38a1ad74fa20c2acf266f7693ae10cb50055633984f197"
+    },
+    {
+      "path": "source240-complete.patch",
+      "bytes": 639421,
+      "sha256": "54dd59c77ac945759ab1657dfbf5eec4cb08bc07261682f14b0b7a2ba3c38a61"
+    },
+    {
+      "path": "source240-full-gate-command.json",
+      "bytes": 1496,
+      "sha256": "28624cf0d5ce2d3a71bef7ed52678aedc47a9ca29aa66fc9bc51f685ee6ee2a7"
+    },
+    {
+      "path": "source240-full-gate-driver.log",
+      "bytes": 287,
+      "sha256": "5a95e6824fa125ce2c20fbb963205ff2dc3361a14b28a173a8d848a8782fb881"
+    },
+    {
+      "path": "source240-full-gate-launch.json",
+      "bytes": 495,
+      "sha256": "2135696ea21f7ce040e36c58e1a5bd6aadcf237e7096cc6ed3f6e997eceab71e"
+    },
+    {
+      "path": "source240-full-gate-result.json",
+      "bytes": 16985,
+      "sha256": "82df8e201481d819503a926ec77e93c7217ee9ea2c8e0e98332724a5a924e693"
+    },
+    {
+      "path": "source240-full-gate.log",
+      "bytes": 867,
+      "sha256": "131775c388b00110ffd29fd8e47cd6152380a68e9b67e59d9cffaa4708175a60"
+    },
+    {
+      "path": "source240-gate-inventory.txt",
+      "bytes": 263982,
+      "sha256": "c16d9bc0e601b19271b20ab4d19f5d025bc50b70897d2022439d850d5d0c9008"
+    },
+    {
+      "path": "source240-incremental.patch",
+      "bytes": 36809,
+      "sha256": "26d4c617eb48a197dd6b325424ef1cf89043d1d9a76490768e796fc577bd05a6"
+    },
+    {
+      "path": "source240-macos-retention-command.json",
+      "bytes": 412,
+      "sha256": "f31c5685bfde175c5e1669cdb7cef6ade991acd812a335b2a04fb50490495775"
+    },
+    {
+      "path": "source240-macos-retention-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source240-macos-rust-complete-audit.json",
+      "bytes": 1155,
+      "sha256": "2a45e79d877f25b61215b7265a1c66bf1f96af4782925d76b4de819a62a9d0df"
+    },
+    {
+      "path": "source240-macos-rust-name-audit.json",
+      "bytes": 414,
+      "sha256": "d3e394afa4d1e3ef9571c4b568b4748fc02c5bf12e83e569b325ff4598ea82ad"
+    },
+    {
+      "path": "source240-manifest.json",
+      "bytes": 51893,
+      "sha256": "95f1c82a5dc6476e04450ecbe3d2868c6b2d400b25a01a6a022624e2e51f7b98"
+    },
+    {
+      "path": "verify-source240-macos-rust.py",
+      "bytes": 4001,
+      "sha256": "df3e5b20c0503a2d61c40820ff4c7f78fe0031ef7c32f2ec481d0a17252be99d"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

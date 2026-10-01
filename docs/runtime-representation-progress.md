@@ -23,9 +23,21 @@ pass. The [release and open-failure audit](handover/2026-09-30-shared-reader-dra
 also verifies 160 focused release passes (two existing ignores), 944 affected
 release passes and all 57 preceding ordinary comparisons: 61 total ordinary
 comparisons. A separate save/revisit probe reproduces the remaining coding-system
-selection mismatch; its file bytes match. Full macOS supervisor43216 is active;
-release/ordinary43217 has exited. Root
-runtime remains source238 and main remains source174. Restore complete correctness
+selection mismatch; its file bytes match. The
+[complete macOS audit](handover/2026-09-30-shared-reader-draft/source240-complete-macos-manifest.json)
+verifies 3,089 passes, two existing ignores, native identity, all 2,992 raw library
+names/verdicts and four retained artifacts. Both supervisors have exited.
+The separate file-coding repair preserves source241's strict failure and
+source242's 163 passes / one invalid-coding payload failure / two existing
+ignores. The [462-input source243 checkpoint](handover/2026-09-30-shared-reader-draft/source243-file-coding-recovery-manifest.json)
+corrects the shared error object and passes zero-warning strict checks,
+165 focused tests (two existing ignores), all 948 affected tests, eight ordinary
+GNU comparisons and all 11 original file-lifecycle scenarios / 41 comparisons.
+The original terminal divergence and its three previously unexecuted comparisons
+now match. The actual PTY prompt probe matches too. Full macOS55867,
+release/preceding-ordinary55868 and full-terminal55869 are active; Linux must
+validate the pushed checkpoint. Root runtime now matches source243 and main
+remains source174. Restore complete correctness
 before further architecture work; the full goal and performance criterion are open.
 
 The full objective remains [unchanged](runtime-representation-goal.md). Continue
@@ -33,6 +45,8 @@ from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-con
 and the [allocation accounting review](runtime-representation-accounting-draft.md).
 The older 27 September record below is historical; its then-current sizes and
 failures are not statements about today's source.
+
+## Earlier checkpoints — historical evidence
 
 The source234 checkpoint advances source231 in draft PR #79. Its [portable repair](handover/2026-09-30-shared-reader-draft/source234-interactive-metadata-draft-manifest.json)
 and [focused evidence](handover/2026-09-30-shared-reader-draft/source234-focused-validation-manifest.json)
@@ -122,16 +136,18 @@ performance remain required.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
+## Full-goal requirements — current
+
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately; final measurement provenance remains required. |
 | 2. GNU architectural reference | Current cons and vector changes trace to GNU's allocation, field access and conservative-root rules. Per-change handovers preserve other references and deviations; final complete-path review remains open. |
-| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. The isolated bytecode draft reduces the four-field closure from 88 detached bytes to 40 inline bytes, with native writes and tracing verified. Broader closure validation, authoritative allocated symbols/strings and remaining adapter removal stay open. |
-| 4. Allocation, GC and ownership | Source207's original census and suspended-root controls pass on complete macOS/Linux Rust. Source215 repairs its separate vector-copy census omission, with its new twenty-case control passing. Real category counters, honest physical totals, remaining ownership/retention review and collection-cost explanations stay open. |
-| 5. VM/function-call work | Source225 passes 20 focused/932 affected tests in both profiles, including live mutation, suspended callers and actual control-flow destinations. Its full runs fail in completion; source229 passes 26 focused/934 affected tests per profile and fifty ordinary comparisons, then fails an old host-record assertion in full Rust. Source230 repairs canonical substring errors and passes 937 affected tests/54 ordinary comparisons. Source231 corrects the added fixture startup and passes 31 focused controls per profile, 937 affected release tests and 54 ordinary comparisons; complete macOS library validation retains 2,974 passes/five failures/two existing ignores, with later Cargo stages unexecuted. Linux aborts in Edebug; source234 follows GNU interactive environment selection and passes 37 focused gate controls, with full validation still pending. An ordinary source207 probe confirms the 256K-versus-512K stack-capacity gap. Frame layout/accounting, plain-string adapter removal, complete validation, profiles and equivalent-work timing remain required. |
+| 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. Four-field closures use 40 inline bytes, with actual shared fields, canonical string bytes and live bytecode dispatch in source238. Full pinned Linux frozen comparison passes. Allocated-symbol authority, remaining string adapters, compact headers and complete representation review remain open. |
+| 4. Allocation, GC and ownership | Source207's original census and suspended-root controls passed complete macOS/Linux Rust. Source215 repaired vector-copy census accounting. Source238 Linux Rust now fails a GNU reference census before Emaxx evaluation; the unchanged group reproduces it and the cause remains open. Real category counters, honest physical totals, ownership/retention review and collection-cost explanations remain required. |
+| 5. VM/function-call work | Source238 includes direct live-bytecode dispatch and dependent closure/string/reader/interactive-command repairs; complete pinned Linux frozen compatibility matches. All intervening failed checkpoints remain recorded above. Source240 separately closes full-range encoding/copy and complete macOS Rust; source243 closes selected file-writing/error-object failures, with 165 focused passes, 948 affected passes and 11 matching terminal scenarios; its complete runs are active. The 256K-versus-512K stack-capacity gap, frame layout/accounting, remaining adapters, measured profiles and equivalent-work timing remain open. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Published source207 passes complete macOS/Linux Rust, all 226 terminal scenarios and all 519 Linux frozen files. Source225 full macOS/terminal failures are preserved; source229 selected/ordinary passes and full-Rust failure are preserved; its terminal run has seven divergences and a later GNU startup-readiness failure. Source230 passes 937 affected tests/54 ordinary comparisons, retaining one focused setup failure. Source231 passes strict checks, 31 focused controls per profile, 937 affected release tests and 54 ordinary comparisons. Complete macOS library validation has five failures and the later Cargo stages never run. Linux is pending; the seven terminal quote-display failures remain open. Final-source Linux/macOS, pinned Darwin compatibility, release and zero-warning requirements remain open. |
+| 8. Complete validation | Source238 passes full pinned Linux frozen comparison (519 files / 7,928 outcomes), complete macOS Rust (3,085 passes / two existing ignores), selected release and ordinary checks. Full terminal still has one new-file indicator divergence and three unexecuted comparisons; Linux Rust retains its GNU reference census failure and unstarted stages. Separate source240 passes complete macOS Rust (3,089 passes / two ignores), selected release and 61 ordinary comparisons. Source243 repairs the original terminal divergence plus the three unexecuted comparisons among all 11 unchanged file-lifecycle scenarios; complete macOS/release/terminal runs are active and Linux must validate this checkpoint. Final-source Linux/macOS, pinned Darwin compatibility, full terminal, release and zero-warning requirements remain open. |
 | 9. Independently checkable delivery | Portable patches, source hashes, commands and raw evidence are committed. Checkpoint validation does not establish final architectural completion, final audit or performance acceptance. |
 
 # Historical record — 27 September 2026

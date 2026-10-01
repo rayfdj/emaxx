@@ -84,17 +84,17 @@ pub(crate) struct StringLike {
 
 impl StringLike {
     pub(crate) fn character_codes(&self) -> Vec<i64> {
-        self.text
-            .chars()
-            .enumerate()
-            .map(|(index, ch)| {
-                self.extended_chars
-                    .binary_search_by_key(&index, |(position, _)| *position)
-                    .ok()
-                    .map(|position| i64::from(self.extended_chars[position].1))
-                    .unwrap_or_else(|| string_character_code(self.multibyte, ch))
-            })
-            .collect()
+        self.character_codes_iter().collect()
+    }
+
+    pub(crate) fn character_codes_iter(&self) -> impl Iterator<Item = i64> + '_ {
+        self.text.chars().enumerate().map(|(index, ch)| {
+            self.extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| i64::from(self.extended_chars[position].1))
+                .unwrap_or_else(|| string_character_code(self.multibyte, ch))
+        })
     }
 
     pub(crate) fn byte_len(&self) -> Result<usize, LispError> {
