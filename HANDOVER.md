@@ -17,7 +17,7 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source244**, matching all **464 inputs** in the frozen
+The task runtime is now **source244**, published as **`578955b3`**, matching all **464 inputs** in the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-selection/emaxx` checkout.
 Its [portable repair and selected validation](docs/handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
 close the reproduced compiler-file load failure below: **all 177 original
@@ -31,8 +31,12 @@ GNU's Lisp-owned file-writing policy or change any upstream selector/assertion.
 
 Complete macOS **72034**, release plus 57 preceding ordinary comparisons
 **72035**, and full terminal **72036** are active. Read `source244-*` receipts
-before acting; do not modify executing candidates or helpers. Linux validation
-still requires dispatch on the source244 checkpoint. The source243 full frozen
+before acting; do not modify executing candidates or helpers. The
+[closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding ordinary comparisons too: **66 distinct comparisons**
+match on source244. Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+are dispatched on exact `578955b3`; no completed result is inferred. The source243 full frozen
 failure remains failed, and its full terminal pass does not certify source244.
 Translation-table semantics, internal candidate ordering and broader coding
 behavior are not certified by this targeted repair. Main remains source174;

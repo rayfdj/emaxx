@@ -72,8 +72,12 @@ checks, **166 focused passes / two existing ignores**, **949 affected passes**,
 **nine ordinary comparisons** and **all177 original compiler tests in both editors**
 are audited. The new fixture preserves GNU's expected bytes and also covers
 custom coding bases, exclusions, actual characters and narrowed marker bounds.
-Complete macOS72034, release72035 and terminal72036 are active; Linux still
-requires dispatch on the source244 checkpoint. Broader coding behavior, including
+The [closed ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding comparisons too, for **66 distinct ordinary matches**.
+Source244 is pushed as `578955b3`; complete macOS72034, release72035 and
+terminal72036 are active. Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+target that exact commit; results are pending. Broader coding behavior, including
 translation-table semantics, is not certified. Main remains source174. Restore
 complete correctness before further architecture work; the full goal and
 performance criterion remain open.

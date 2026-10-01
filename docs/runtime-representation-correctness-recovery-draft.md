@@ -412,7 +412,12 @@ matched GNU evidence, not pinned Darwin or complete Linux certification.
 Full macOS supervisor72034, release/57 preceding ordinary comparisons72035 and
 the unchanged full terminal inventory72036 are active. Their active logs are
 excluded from the archive; immutable launch helpers/receipts are included.
-Linux still requires dispatch after the source244 commit. Read actual receipts
+The [closed ordinary audit and Linux dispatch receipts](handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding ordinary comparisons as well: **66 distinct ordinary
+comparisons** match on source244. The runtime is now pushed as **`578955b3`**.
+Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+are dispatched on that exact source. Launch is not a pass. Read actual receipts
 before resuming or restarting any job.
 
 This repair does not establish every safe-coding primitive contract. In
