@@ -324,3 +324,20 @@ process keeps its failure status and yields a nonzero diagnostic exit.
 Its nine GNU-only smoke probes also match on macOS; the Rust branch and Linux
 diagnosis have not yet executed in this record. Both macOS probe sets are in the
 archive. They cannot clear the Linux failure or establish its retaining root.
+
+The [complete source243 Linux Rust audit](handover/2026-09-30-shared-reader-draft/source243-linux-complete-rust-manifest.json)
+closes [run 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
+on exact `8d4fcd39`: **3,105 passes / two existing ignores**, comprising 3,002
+library, 61 binary and 42 integration passes. Native artifact identity, all
+3,004 raw library names/verdicts, four retained executable/image hashes and the
+CI build/formatting/strict-Clippy output are checked. There are no compiler warnings.
+The original census control and both original suspended/thread-root controls pass.
+The census fixture, expectation and helper bodies are byte-identical to source238;
+this pass does not identify why the preceding GNU reference produced -9. Those
+earlier failed results remain failed. GNU executable/image hashes were not retained
+in this complete Rust job, so no cross-job GNU artifact identity is inferred.
+
+The bounded [Linux diagnosis 36825694384](https://github.com/rayfdj/emaxx/actions/runs/36825694384)
+is now dispatched on `3a35ad00` with the same 462 runtime inputs. It explicitly
+retains GNU executable/image identity and preserves failed controls. Its result,
+the complete frozen comparison and full terminal comparison remain pending.

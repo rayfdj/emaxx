@@ -90,18 +90,24 @@ hashes verified. The frozen checkout matches all 462 published runtime inputs.
 Full terminal **55869** remains active. The
 [closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
-on source243. Linux [Rust 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
-and [full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
-are dispatched on exact `8d4fcd39`. No complete result is inferred from launch;
-read the current `source243-*` receipts before acting. Do not edit executing
+on source243. The [complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source243-linux-complete-rust-manifest.json)
+closes [run 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
+on exact `8d4fcd39`: **3,105 passes / two existing ignores**, native identity,
+all 3,004 raw library names/verdicts and four retained input hashes verified.
+The original GNU census fixture, expectation and helper bodies are unchanged and
+pass in this full run; this does not explain the earlier source238 variation.
+[Full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
+remains active on exact `8d4fcd39`. Read the current `source243-*` receipts before acting. Do not edit executing
 candidates or helpers. Root runtime exactly matches all 462 candidate inputs.
 The same macOS archive preserves nine GNU-only workflow-environment probes and
 nine GNU-only smoke probes of `tools/diagnose_gnu_census.py`; all match locally.
 They do not resolve the Linux GNU reference failure. The new optional
 `gnu-census` workflow mode holds the Rust controls' selector environment constant
 and runs the original single test, complete primitives group and single test
-again, retaining failures and GNU executable/image identities. Its Linux execution
-is still pending in this record; it is diagnostic coverage, not a full gate.
+again, retaining failures and GNU executable/image identities. Linux
+[diagnosis 36825694384](https://github.com/rayfdj/emaxx/actions/runs/36825694384)
+is dispatched on `3a35ad00`, which preserves all 462 runtime inputs. Its result
+is pending; this is diagnostic coverage, not a full gate.
 **Main is unchanged; complete correctness and the full
 architecture/performance goal remain unfinished.**
 
