@@ -1,5 +1,14 @@
 # Current goal status — 1 October 2026
 
+The latest [correctness recovery](runtime-representation-correctness-recovery-draft.md)
+records complete source234 Rust passes (3,079 macOS / 3,091 Linux, two existing
+ignores each), 37/938 release passes, and 55 ordinary comparisons. Frozen Linux
+now matches Edebug but fails later at rx; 407 files remain unstarted. Source237
+repairs all seven original terminal divergences in the unchanged selected replay.
+The combined source238 checkpoint passes strict checks and 101 focused tests
+(two existing ignores); its complete and ordinary validation remain active. Restore complete correctness before further architecture
+changes; the full goal and performance criterion remain open.
+
 The full objective remains [unchanged](runtime-representation-goal.md). Continue
 from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-cons-roots-draft.md)
 and the [allocation accounting review](runtime-representation-accounting-draft.md).

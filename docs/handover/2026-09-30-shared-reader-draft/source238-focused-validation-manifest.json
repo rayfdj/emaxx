@@ -1,0 +1,319 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "focused": {
+      "status": "strict and combined focused gate pass",
+      "inputs": 446,
+      "passed": 101,
+      "ignored": [
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "names": [
+        "lisp::bytecode::vm::canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_argument_prologue_preserves_string_identity",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_direct_string_arguments_are_mutable_lisp_objects",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_primitive_executes_program",
+        "lisp::bytecode::vm::native_surface_tests::make_byte_code_object_is_callable",
+        "lisp::bytecode::vm::taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame",
+        "lisp::eval::tests::eval_01::file_remote_p_parses_tramp_style_names",
+        "lisp::eval::tests::eval_02::quoted_bytecode_reader_forms_are_materialized_as_records",
+        "lisp::eval::tests::eval_03::call_interactively_preserves_interactive_form_closure_mutations",
+        "lisp::eval::tests::eval_05::edebug_global_break_condition_preserves_the_complete_minibuffer_expression",
+        "lisp::eval::tests::eval_05::edebug_instrumented_cl_macrolet_preserves_expander_arguments",
+        "lisp::eval::tests::eval_05::edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent",
+        "lisp::eval::tests::eval_05::edebug_step_into_generic_method_uses_the_correct_source_stop_points",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_copy_counts_both_actual_allocations",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload",
+        "lisp::primitives::tests::all_completions_preserves_propertized_string_candidate_identity",
+        "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots",
+        "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu",
+        "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing",
+        "lisp::primitives::tests::bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers",
+        "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear",
+        "lisp::primitives::tests::case_folded_try_completion_preserves_unextended_input_spelling",
+        "lisp::primitives::tests::completion_predicates_preserve_string_list_membership",
+        "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity",
+        "lisp::primitives::tests::concat_preserves_canonical_bytes_properties_and_sequence_characters",
+        "lisp::primitives::tests::interactive_closures_use_the_gnu_metadata_environment",
+        "lisp::primitives::tests::make_string_and_aset_share_the_internal_character_encoding",
+        "lisp::primitives::tests::make_string_follows_alloc_c_for_the_multibyte_flag",
+        "lisp::primitives::tests::mapconcat_preserves_canonical_bytes_and_character_sequences",
+        "lisp::primitives::tests::reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count",
+        "lisp::primitives::tests::shared_string_bytes_are_the_authoritative_unibyte_payload",
+        "lisp::primitives::tests::string_constructors_preserve_gnu_full_character_range_and_errors",
+        "lisp::primitives::tests::substring_copies_canonical_bytes_properties_and_vector_fields",
+        "lisp::primitives::tests::substring_of_completion_result_accepts_text_properties",
+        "lisp::primitives::tests::substring_reversed_bounds_signal_without_host_panics",
+        "lisp::primitives::tests::substring_validates_gnu_array_types_and_index_error_order",
+        "lisp::primitives::tests::unused_bytecode_destinations_follow_actual_control_flow",
+        "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected",
+        "tty::tests::align_to_display_specs_lay_out_as_blank_columns",
+        "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions",
+        "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer",
+        "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters",
+        "tty::tests::control_characters_use_ascii_codes",
+        "tty::tests::display_columns_match_tab_expansion",
+        "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits",
+        "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell",
+        "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table",
+        "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point",
+        "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation",
+        "tty::tests::embedded_display_newlines_are_hard_row_boundaries",
+        "tty::tests::function_keys_encode_as_symbols",
+        "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules",
+        "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu",
+        "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph",
+        "tty::tests::hscroll_marker_precedes_the_requested_source_column",
+        "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell",
+        "tty::tests::interactive_execution_inserts_through_lisp",
+        "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers",
+        "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells",
+        "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input",
+        "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys",
+        "tty::tests::key_descriptions_follow_gnu_spellings",
+        "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined",
+        "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty",
+        "tty::tests::margin_default_foreground_preserves_an_extending_background",
+        "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent",
+        "tty::tests::meta_becomes_the_escape_prefix",
+        "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face",
+        "tty::tests::minibuffer_cursor_follows_echo_wrapping",
+        "tty::tests::non_selected_windows_render_from_their_start_without_recentering",
+        "tty::tests::overlay_display_string_replaces_its_covered_buffer_range",
+        "tty::tests::paint_rows_compare_by_text_and_attribute",
+        "tty::tests::plain_characters_encode_as_their_codes",
+        "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis",
+        "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows",
+        "tty::tests::point_precedes_a_point_max_overlay_after_string",
+        "tty::tests::prefix_echo_accumulates_like_gnu",
+        "tty::tests::propertized_string_display_specs_replace_the_covered_text",
+        "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops",
+        "tty::tests::segment_counts_follow_the_wrap_geometry",
+        "tty::tests::selected_windows_recenter_around_an_off_window_point",
+        "tty::tests::sgr_sequences_reset_then_select_each_attribute",
+        "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators",
+        "tty::tests::terminal_editing_keys_use_gnu_codes",
+        "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns",
+        "tty::tests::text_only_blits_preserve_an_extending_base_face",
+        "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer",
+        "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column",
+        "tty::tests::truncating_windows_keep_one_row_per_logical_line",
+        "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order",
+        "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows",
+        "tty::tests::universal_argument_prefixes_dispatch_through_simple_el",
+        "tty::tests::visual_row_positions_follow_wrap_geometry",
+        "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs",
+        "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail",
+        "tty::tests::window_margin_display_strings_do_not_enter_the_text_body",
+        "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces",
+        "tty::tests::wrapped_echo_preserves_a_faced_trailing_space",
+        "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row",
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "gate_binary_sha256": "8ff5f7b4659451c0e651e031884bfc5afb3032448d7e79eec27bcbbd08f2ef63",
+      "qualification": "All 37 source234 controls plus the complete original TTY inventory, four display-table controls and two new GNU reader/mapconcat fixtures pass: 101 passed, zero failed, two existing TTY end-to-end ignores. Every raw verdict and strict-check log is verified. Complete macOS/Linux, release, ordinary rx and terminal validation remain separate."
+    },
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source238-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source238-focused-retained-inputs/source238-gate-libtest",
+        "sha256": "8ff5f7b4659451c0e651e031884bfc5afb3032448d7e79eec27bcbbd08f2ef63",
+        "bytes": 29267344
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source238/loadup-8ff5f7b4-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source238-focused-retained-inputs/loadup-8ff5f7b4-44409a21.pdmp",
+        "sha256": "22ef87fbf2644ffdbea6ba5687381708f5da93f247a2890def75a2e223e396f6",
+        "bytes": 22354408
+      }
+    ],
+    "qualification": "Combined 446-input correctness candidate passes strict checks and all 101 selected tests with two existing ignores. Full macOS supervisor30236 is active. Ordinary executable build and unchanged upstream rx comparisons remain pending in supervisor27314. No complete source238 platform, frozen, terminal, release or performance pass claimed."
+  },
+  "archive": {
+    "path": "source238-focused-validation.tar.gz",
+    "bytes": 257348,
+    "sha256": "d3111fff91a1653f9a27a7c1bdcecd9d478c659d9a9b7c4f7d6a055ce74919bc"
+  },
+  "files": [
+    {
+      "path": "audit-source238-focused.py",
+      "bytes": 2300,
+      "sha256": "6503ea65ddf918362e417233b0cfbe0814f38f4119e80f4ae73d33ca09509556"
+    },
+    {
+      "path": "build-source238.py",
+      "bytes": 2436,
+      "sha256": "d05b3cbe824dd4b871f3181ac4801e49f8e54695ed7dda288ac6c6f02a4bf73d"
+    },
+    {
+      "path": "check-source238.py",
+      "bytes": 2018,
+      "sha256": "e9bfeb29d76d62fef05ff1c0d56c61b0c46a81cd7042e26d3d47610ba8a4738a"
+    },
+    {
+      "path": "package-source238-focused.py",
+      "bytes": 2437,
+      "sha256": "d576d132e6b9075cf0cd6a70206068b9859337889379c6fc837fabdb7ec797ee"
+    },
+    {
+      "path": "run-source238-full-gate.py",
+      "bytes": 3782,
+      "sha256": "1eb2b8326698a033e3ce17553aab00f15f9cfded28a19bce8b5414a721f60a47"
+    },
+    {
+      "path": "run-source238-validation.py",
+      "bytes": 780,
+      "sha256": "4a21f41cdf543c35491ca8192111c2247ed4d153bb33e2690ab0f0e864bd3b4c"
+    },
+    {
+      "path": "source238-check-command.json",
+      "bytes": 471,
+      "sha256": "4ecaadc9f33c8382986fe364d3863fc99353bfe3fbf67646e60e2fa8a8ba23fc"
+    },
+    {
+      "path": "source238-check-result.json",
+      "bytes": 84,
+      "sha256": "46ea6da0aff92d9d61b3ad7fe1abb3efb7bf28830e16bd17f45981e9c3b305e4"
+    },
+    {
+      "path": "source238-check.log",
+      "bytes": 5117,
+      "sha256": "965a4efa8482bce15dc320918b433406455e6e362fd5ca240f055a3c84edce72"
+    },
+    {
+      "path": "source238-clippy-command.json",
+      "bytes": 459,
+      "sha256": "e4014c5ffc53c6896a3730bc418f2d2170898a2de02e72798daed10341564479"
+    },
+    {
+      "path": "source238-clippy-result.json",
+      "bytes": 80,
+      "sha256": "774c347b7fb21901ec38085ad36e0242c4d62e19d8d6dd58cc362f3b827746ae"
+    },
+    {
+      "path": "source238-clippy.log",
+      "bytes": 191,
+      "sha256": "fbebac6d667ebaff4639d027a5b2ab3a8915be599eb48410a08299dd7504337a"
+    },
+    {
+      "path": "source238-complete.patch",
+      "bytes": 604183,
+      "sha256": "6d2083b04d8afdd8f25548da389e76c2b3251c46585883b48514c400c663c90a"
+    },
+    {
+      "path": "source238-diff-command.json",
+      "bytes": 375,
+      "sha256": "92cd5ae38a661985808948cb630cad8a957a18de12725bca1a8649816732f0ee"
+    },
+    {
+      "path": "source238-diff-result.json",
+      "bytes": 89,
+      "sha256": "3460fc31514bbe3974640c6cb195da587b60d58e778fa49a6da6dd2e506f6a54"
+    },
+    {
+      "path": "source238-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-fmt-command.json",
+      "bytes": 399,
+      "sha256": "edfdc5d586dc001811a239d24235432ef06eaf454569c64f656adcdd3c283b46"
+    },
+    {
+      "path": "source238-fmt-result.json",
+      "bytes": 89,
+      "sha256": "7f31b7cba7ca8ee486b9e6c465e3a6fb76d8529c5ecb9f8350b22fc1e211ef45"
+    },
+    {
+      "path": "source238-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-focused-audit.json",
+      "bytes": 8969,
+      "sha256": "c9dc5c2972420f1c7cc178a5937ccd2a6fe8961f83a7ab0fb4512bcd3c4cfb5d"
+    },
+    {
+      "path": "source238-focused-retained-inputs.json",
+      "bytes": 909,
+      "sha256": "ab8843778c7c21de9c3e8bd0d2b9834fd5b41f066ee81230f33c33db6c556c07"
+    },
+    {
+      "path": "source238-full-gate-launch.json",
+      "bytes": 60,
+      "sha256": "1ad13e9ce343b1e3bbe6cf02113b88174c7f6827a58ab0b36d8e7861819726bf"
+    },
+    {
+      "path": "source238-gate-build-command.json",
+      "bytes": 1146,
+      "sha256": "116d338d1805bf441e98246bd71d8edee62a0c71f183ddfce92bc372b33937be"
+    },
+    {
+      "path": "source238-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "473cf5f73cfa84f4bb19ca71d9f5412af51ec9f2275d44207a860ed5573df290"
+    },
+    {
+      "path": "source238-gate-build.log",
+      "bytes": 218233,
+      "sha256": "05c17ca974d80fb8f9d652b6f0cd4bdd7187b071008d99141d21ea4a9f6fcad8"
+    },
+    {
+      "path": "source238-gate-controls-command.json",
+      "bytes": 17882,
+      "sha256": "993a79841d52908e46a050c3cd7ddc5a791b08a22afe0f98de8653fe3810ad25"
+    },
+    {
+      "path": "source238-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "63724cf5eced6978225cf02efa2f8920adaa87ed86f195aa19e8c06ae97c6e9e"
+    },
+    {
+      "path": "source238-gate-controls.log",
+      "bytes": 10323,
+      "sha256": "f88d6146113b46fce5b03a707e0c125852f2645198dde8f3d85e8b70821b0038"
+    },
+    {
+      "path": "source238-gate-inventory.txt",
+      "bytes": 263596,
+      "sha256": "3069a9054ca0f7fe27fecfc207e74f28651ea7693657a319f0e16a407aecc49e"
+    },
+    {
+      "path": "source238-incremental.patch",
+      "bytes": 58583,
+      "sha256": "57c0595bed2252b686bd8eaee67bc01952253d135f540bcb1515bf94db1be43b"
+    },
+    {
+      "path": "source238-manifest.json",
+      "bytes": 50868,
+      "sha256": "3b8baf1193a1cad6c628a867da383810ac958ed88084fce1d57e9fe60564fd4b"
+    },
+    {
+      "path": "source238-validation-launch.json",
+      "bytes": 131,
+      "sha256": "f9542ef57ebc1d7970d9e22ed11437b7f4d6e38f522fadfaebefcbce4ab2d9c8"
+    },
+    {
+      "path": "static-source238.py",
+      "bytes": 1543,
+      "sha256": "afd15164b9a63fdbfc50b7b589427a4243846b1c3c3031277e63fb9e0ada9829"
+    },
+    {
+      "path": "test-source238-controls.py",
+      "bytes": 5977,
+      "sha256": "4d812ea89ed1b568320cb8e302b52d109565dbc9802d8043f9a8db5b2fed2d94"
+    },
+    {
+      "path": "validate-source238-rx.py",
+      "bytes": 2297,
+      "sha256": "5133d34b524cbca2b361bdf3eb229eda176d1c3675239a3513233e69c9e0a77c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

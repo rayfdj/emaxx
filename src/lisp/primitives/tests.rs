@@ -18288,6 +18288,24 @@ fn substring_reversed_bounds_signal_without_host_panics() {
 }
 
 #[test]
+fn mapconcat_preserves_canonical_bytes_and_character_sequences() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-mapconcat-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-mapconcat-storage.expected").trim(),
+        "canonical mapconcat sequences, properties and callback mutation",
+    );
+}
+
+#[test]
+fn reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-hex-byte-boundary.el"),
+        include_str!("../../../tests/fixtures/reader-hex-byte-boundary.expected").trim(),
+        "reader hexadecimal byte boundary",
+    );
+}
+
+#[test]
 fn concat_preserves_canonical_bytes_properties_and_sequence_characters() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/canonical-concat-storage.el"),

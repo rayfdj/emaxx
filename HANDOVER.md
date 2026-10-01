@@ -11,9 +11,35 @@ Read the [current cons continuation](docs/runtime-representation-cons-roots-draf
 [bytecode draft](docs/runtime-representation-bytecode-draft.md) and
 [string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
 [accounting continuation](docs/runtime-representation-accounting-draft.md).
+Read the latest [correctness recovery and active source238 draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current production and candidate
+## Current correctness recovery
+
+The immediate priority is to restore complete correctness before further architecture work.
+The source238 task checkpoint combines the source237 display repair with the
+reader/mapconcat repairs in **446 runtime/test inputs**. Zero-warning strict
+checks and **101 focused gate tests** pass, with two existing TTY end-to-end
+ignores. The display-only source237 also passes all **11 selected terminal
+scenarios / 39 comparisons**, including all seven original failures. This is
+component evidence, not a complete source238 terminal pass.
+
+Full macOS supervisor **30236** is active in the isolated rx-repair checkout.
+Supervisor **27314** is building the ordinary executable and then running the
+unchanged upstream rx tests; read their live receipts before acting. The
+[recovery handover](docs/runtime-representation-correctness-recovery-draft.md)
+links the exact portable patches, failures and remaining display review.
+
+The published source234 runtime now passes complete macOS/Linux Rust with
+**3,079 / 3,091 passes**, two existing ignores per platform, native identity and
+all raw library names verified. Release passes 37 focused / 938 affected tests;
+55 ordinary GNU comparisons match. Its Linux frozen run now passes Edebug's
+46 outcomes, but stops later at `rx-tests.el`: 111 files / 2,578 matching outcomes,
+36 missing Emaxx outcomes and 407 unstarted files. Local ordinary ERT reproduces
+two real rx failures, plus the structured runner's report-writing error.
+**The full frozen suite is not green; main is unchanged and the goal incomplete.**
+
+## Source234 checkpoint and preceding history
 
 The latest validated main checkpoint is **source174**, merge `21d20f0e` in
 [PR #78](https://github.com/rayfdj/emaxx/pull/78). Its

@@ -641,16 +641,18 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'x') => {
                             // Emacs reads as many contiguous hex digits as it can here.
+                            let start = self.position();
                             let hex = self.read_hex_digits(usize::MAX)?;
+                            let digits = self.position() - start;
                             if hex <= 0x7F {
                                 s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
-                            } else if hex <= 0xFF {
+                            } else if hex <= 0xFF && digits < 3 {
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte(hex as u8));
-                            } else if (0x3F_FF00..=0x3F_FFFF).contains(&hex) {
+                            } else if (0x3F_FF80..=0x3F_FFFF).contains(&hex) {
                                 // Emacs eight-bit (raw byte) codepoints
-                                // #x3FFF00..#x3FFFFF map to the internal
-                                // raw-byte marker.
+                                // start at #x3FFF80. The preceding values
+                                // are ordinary five-byte characters.
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte((hex - 0x3F_FF00) as u8));
                             } else if valid_unicode_scalar(hex) {

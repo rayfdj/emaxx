@@ -1009,47 +1009,19 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let list = super::call(interp, "mapcar", &args[..2], env)?.to_vec()?;
-                // GNU: a nil SEPARATOR stands for the empty string (subr-x's
-                // string-join passes nil when no separator is given).
-                let sep = if args.len() == 3 && !args[2].is_nil() {
-                    let text = string_text(&args[2])?;
-                    let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
-                    string_like(&args[2]).unwrap_or(StringLike {
-                        text,
-                        props: Vec::new(),
-                        multibyte,
-                        extended_chars: Vec::new(),
-                    })
-                } else {
-                    StringLike {
-                        text: String::new(),
-                        props: Vec::new(),
-                        multibyte: false,
-                        extended_chars: Vec::new(),
-                    }
-                };
-                let mut result = String::new();
-                let mut props = Vec::new();
-                for (index, item) in list.iter().enumerate() {
+                // fns.c:Fmapconcat collects all mapped values before
+                // Fconcat validates them. Keep the actual Lisp sequences:
+                // projecting strings through Rust text loses extended
+                // characters, encoding and shared property values.
+                let separator = args.get(2).copied().unwrap_or(Value::Nil);
+                let mut parts = Vec::with_capacity(list.len().saturating_mul(2).saturating_sub(1));
+                for (index, item) in list.into_iter().enumerate() {
                     if index > 0 {
-                        let offset = result.chars().count();
-                        result.push_str(&sep.text);
-                        props.extend(copied_string_props(&sep.props, offset));
+                        parts.push(separator);
                     }
-                    if let Some(string) = string_like(item) {
-                        let offset = result.chars().count();
-                        result.push_str(&string.text);
-                        props.extend(copied_string_props(&string.props, offset));
-                    } else if item.is_nil() {
-                    } else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("wrong-type-argument".into()),
-                            Value::Symbol("sequencep".into()),
-                            *item,
-                        ])));
-                    }
+                    parts.push(item);
                 }
-                Ok(string_like_value(result, merge_string_props(props)))
+                super::call(interp, "concat", &parts, env)
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
