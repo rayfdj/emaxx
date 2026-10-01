@@ -952,8 +952,8 @@ verify both complete selected profiles and every original fixture/artifact. Sour
 is now applied and pushed as `eddfe782`, with 488 exact inputs. Its
 [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
-artifact identity, four retained inputs and unchanged source. Supervisor31023 now
-runs terminal validation after the completed frozen comparison. Exact-head Linux
+artifact identity, four retained inputs and unchanged source. Supervisor31023 has
+completed terminal validation after the frozen comparison. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete.
 The [closed Linux audit](handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
@@ -966,9 +966,13 @@ retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 succe
 processes. Both editors report 7,623 passes, 46 expected failures and 252 skips; all
 177 compiler tests pass. The same six build-feature skip-diagnostic differences as
 source249 remain failures, with unchanged comparison/capability rules. Raw outcomes,
-hashes and actual GNU/Emaxx inputs are verified; terminal validation remains pending.
+hashes and actual GNU/Emaxx inputs are verified. The
+[complete terminal audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
+verifies 226 scenarios / 686 matches (658 screen and 28 filesystem comparisons), all
+original labels, 488 source inputs and ten execution inputs. Its executable/image
+is the exact frozen-run pair. No source261 supervisor remains running.
 Source255's failed executable/image, all compiler/lint/helper failures
-and original negatives remain retained. Remaining full validation is pending; no physical-memory,
+and original negatives remain retained. Final-source validation remains required; no physical-memory,
 ownership, performance or full-goal completion is claimed.
 
 The [source262 ordering negatives and repair draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
@@ -991,12 +995,15 @@ comparison at an unsupported extended-character constructor, which stays recorde
 The repair follows actual GNU validation order, canonical byte cursors, octet
 promotion before casing, and direct numeric case-table keys. All source262 code
 and controls remain. Its 500 inputs replay exactly and strict checks have zero
-warnings. Queue90568 waits for supervisor31023 before 199 focused selectors, 1,054
-affected tests per profile and 28 ordinary comparisons. The
+warnings. Queue90568 has exited with 197 focused passes / two existing ignores,
+then 1,053 affected passes / one failure. The Unicode comparison used bare ASCII
+tables while expecting dumped GNU Unicode mappings. The actual C/loadup initialization
+and an ordinary probe constrain the successor's corrected fixture. Release and
+ordinary stages did not run. The
 [additional prefix-boundary control](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
-matches all 12,600 GNU/source261 baseline rows. Queue90569 then owns the selected
-source263 audit and this same ordinary comparison. Wait for both before applying
-the draft. No source263 runtime pass is claimed.
+matches all 12,600 GNU/source261 baseline rows. Queue90569 stopped before its first
+stage because90568 failed. Source263 remains an unchanged failed candidate; no
+complete selected pass is claimed.
 
 The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
 records withdrawal of original queues64601/87187 while waiting, before runtime
@@ -1017,3 +1024,37 @@ source174/main and207 outputs match exactly. Original syntax/scope-invalid probe
 are preserved and excluded, as are any claims from their outcomes. Raw and explicit
 value pure fixtures overlap. Source263 is unchanged and does not repair these gaps;
 they must be addressed before claiming full correctness or advancing to main.
+
+
+The [source264–268 storage preparation](handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
+packages the closed source263 failure and the initial compact-header/pure-storage
+repair. Dedicated string cells contain a direct 32-byte GNU-layout header and 16
+bytes of checked-borrow/allocator metadata. Normal empty forms are canonical;
+pure copies allocate distinct permanent objects and obey write/no-op ordering.
+Dump/template restoration preserves the relevant identities and ordinary mutability.
+Packed property spans replace the nested vector allocation; actual intervals and
+sblocks remain unfinished. A 144-row property baseline retains 106 wrong source261
+whole rows, including 84 operation/poststate differences; counts overlap prior probes.
+An ordinary case-table fixture gives GNU `((t t) (2 1))`, source261 `((t t) (t t))`.
+Three bare-GNU startup failures are retained and excluded. Compiler failures264/265,
+Clippy failure266 and the corrected source263 raw-verdict parser remain recorded.
+
+The [source269 caller correction](handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
+retains source268's 199 focused passes / four failures / two existing ignores. All
+four failures occurred at a GNU precondition because the new callers kept the
+expected file's trailing newline. Source269 changes those four callers to the
+existing `trim_end` convention; GNU files and shared comparison rules are unchanged.
+It then has 201 focused passes / two failures / two existing ignores. Empty identities
+and 144 property rows pass; 94 of 96 pure-storage rows match. Copying an empty pure
+string retained its read-only header instead of using GNU's ordinary constructor.
+The other failure occurs before an independent fixture assertion because the test
+still owns a prior native image. All raw verdicts and failed artifacts are retained.
+
+The [current source270 draft](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+uses ordinary constructors for every string copy, removes the unreachable host-text
+fallback and releases the test-owned interpreters before independent image loading.
+All 510 inputs replay exactly and strict checks have zero warnings. Queue98240 runs
+205 focused selectors, 1,059 affected tests per profile and 33 ordinary comparisons,
+including all previous expectations and 12,600 prefix rows. Keep that candidate and
+its running helpers unchanged. Source261 remains the applied runtime. No storage
+draft pass, memory saving, performance parity or full-goal completion is inferred.

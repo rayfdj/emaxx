@@ -6,8 +6,8 @@ verify zero-warning strict checks, **189 focused passes / two existing ignores**
 and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
 The [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
-artifact identity, four retained inputs and unchanged source. Supervisor31023 now
-runs terminal validation in the clean checkout at that same commit, after frozen.
+artifact identity, four retained inputs and unchanged source. Supervisor31023 has
+completed terminal validation in the clean checkout at that same commit, after frozen.
 Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete
@@ -21,7 +21,10 @@ retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 succe
 processes. Both editors have 7,623 passes, 46 expected failures and 252 skips, and
 all 177 compiler tests pass. The six build-feature skip diagnostics match the
 preceding source249 differences; they remain failures. All raw evidence and actual
-GNU/Emaxx inputs are verified. Terminal is pending; main and the full goal are unchanged.
+GNU/Emaxx inputs are verified. The [complete terminal audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
+verifies **226 scenarios / 686 matching comparisons**, all original labels, 488 source
+inputs and ten execution inputs, using the exact frozen-run executable/image.
+No source261 supervisor remains running; main and the full goal are unchanged.
 
 The [unapplied source262 ordering draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
 preserves new ordinary negatives: source261 has 154 wrong symbol/storage ordering
@@ -40,19 +43,21 @@ wrong character-comparison rows, seven wrong live-table observations and nine wr
 numeric casing rows. Main reproduces the range/live/numeric results; its full
 character matrix exits255 before comparison and supplies no historical row verdicts.
 All 500 inputs replay exactly and strict checks pass with zero warnings. Queue90568
-waits for supervisor31023, then runs all 199 focused selectors, 1,054 affected tests
-per profile and 28 ordinary comparisons. The
+has exited with **197 focused passes / two existing ignores**, then **1,053 affected
+passes / one failure**. The original Unicode comparison used bare ASCII case tables
+while expecting dumped Unicode tables; actual GNU C/loadup and an ordinary probe
+constrain the successor's fixture correction. Release and ordinary stages did not run. The
 [additional prefix-boundary baseline](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
-matches GNU/source261 on all 12,600 rows. Queue90569 waits for90568, owns the selected
-audit and repeats this exact ordinary fixture on source263. Both must finish before
-applying the draft. No source263 runtime pass or measured saving is claimed.
+matches GNU/source261 on all 12,600 rows. Queue90569 stopped before its first stage
+because90568 failed. Source263 remains an unapplied failed candidate; no complete
+selected pass or measured saving is claimed.
 
 The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
 preserves original queues64601/87187, withdrawn while waiting before runtime
 execution. It restores the original ordering fixture's path in the wrapper and
 verifies all 28 paths. Runtime inputs, expected output, selectors, timeouts and
 comparison rules are unchanged. Read `source263-fixture-validation-*` and
-`source263-boundary-fixtures-*` for current state.
+`source263-boundary-fixtures-*` for their closed failed state.
 
 The [empty/pure string baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
 records six wrong source261 empty-identity rows among12 and57 wrong pure-storage
@@ -64,6 +69,28 @@ write-protection failures remain, and source263 does not address these storage g
 Both failed probe setups remain excluded; raw and explicit-value fixtures overlap.
 The next storage work must follow GNU's distinct normal/pure allocation, empty
 multibyte singleton, empty clear behavior and pure-write/GC/dump contracts.
+
+The [source264–268 storage preparation](handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
+and [source269 caller correction](handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
+retain all failures and exact portable patches. The current **510-input** isolated
+draft uses a direct **32-byte string header plus 16 bytes of borrow/allocator metadata**,
+dedicated cells, canonical empty forms, distinct permanent pure allocation and GNU
+write/no-op ordering. Property spans use one packed allocation; dump/template
+identity controls are included. Sblocks and actual interval trees remain open.
+An additional 144-row property baseline has 106 wrong source261 whole rows, including
+84 operation/poststate differences; observations overlap the earlier identity probes.
+Source264/265 compiler and source266 Clippy failures remain. Source268 strict checks
+pass, followed by 199 focused passes/four failures/two existing ignores. The four
+failures are verified trailing-newline mismatches at the GNU precondition, before
+their Emaxx fixture executions. Source269 changes only those four expected-output
+callers, preserving every GNU fixture and the shared comparator. Strict checks pass
+with zero warnings, then 201 focused passes/two failures/two existing ignores.
+The [source270 successor](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+fixes the remaining empty pure-copy allocation (94/96 rows matched in source269) and
+releases test-owned interpreters before independent native-image initialization.
+It preserves every GNU expectation and assertion. Strict checks pass with zero
+warnings; queue98240 runs 205 focused selectors,1059 affected tests/profile and 33
+ordinary comparisons. Source261 remains applied; the draft is not certified.
 
 The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
@@ -432,7 +459,7 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 This map reflects runtime source261 (`eddfe782`, 488 inputs), including the applied
 common-string/comparison repair. Complete macOS/Linux Rust and frozen evidence is
-audited above; terminal validation remains running. Historical
+audited above; terminal validation is complete with 686 matches. Historical
 failures remain in the linked evidence above. A green checkpoint does not close
 the architectural or performance requirements. The [current source review](handover/2026-09-30-shared-reader-draft/source248-current-requirement-review.json)
 records the inspected Rust/GNU hashes and verifies the locked suite is unchanged
@@ -442,12 +469,12 @@ from main. It is source review, not new runtime or timing evidence.
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately. Final corrected-baseline measurement and complete provenance remain required. |
 | 2. GNU architectural reference | Cons fields, shared closure slots, live bytecode, canonical string bytes and correctness repairs have recorded C mappings. Source249 follows actual character-count/ASCII-return paths; source261 follows GNU string allocation, mutation, fill, actual-byte/name equality and ordinary interval-value equality/hashing. Invalid local bytecode storage is corrected against ordinary GNU construction. Final review of the complete implementation and every necessary deviation remains open. |
-| 3. Compact authoritative objects | Values are one word, ordinary cons payloads two words, and four-field closures use 40 inline bytes. Applied source261 removes the separate `TextRef` arena, binding copies and `CodeBytes::legacy`; all strings use canonical bytes, with selected gate/release and 22 ordinary GNU comparisons passing. Allocated-symbol authority, compact string headers, property storage and remaining adapters are unfinished. |
+| 3. Compact authoritative objects | Values are one word, ordinary cons payloads two words, and four-field closures use 40 inline bytes. Applied source261 removes the separate `TextRef` arena, binding copies and `CodeBytes::legacy`; all strings use canonical bytes, with selected gate/release and 22 ordinary GNU comparisons passing. Unapplied source270 supplies the 32-byte direct string header plus 16 bytes of metadata, dedicated cells and packed property spans, under selected validation. Sblocks, actual intervals, allocated-symbol authority and remaining adapters are unfinished. |
 | 4. Allocation, GC and ownership | Original census and suspended-root controls pass in complete source249 macOS/Linux Rust. Earlier GNU reference variations remain preserved and unexplained. Seven category variables still initialize to zero and `memory-use-counts` is unsupported. GNU-shaped charges do not establish physical Rust capacities or retained bytes. Source256 removes a host-key string cell but grows `SymbolCell`, with no measured net memory saving. Non-Send words/native activation locking do not establish ownership of every public entry or borrow lifetime. Real counters, physical accounting, ownership and collection-cost explanations remain required. |
 | 5. VM/function-call work | Direct bytecode fetch and actual shared closure fields remove decoded caches and duplicated mutable slots. The VM still reserves 256K value slots and keeps `BcFrame` storage separately; GNU reserves 512K words including frame headers. Its old comment still describes a two-word Value. Stack layout/capacity/accounting, remaining call bookkeeping and measured profiles after representation completion remain open. |
 | 6. Adversarial audit | Original evaluator, root and reporting controls remain. New repairs use identical-input GNU negatives and unchanged expected outputs; failed runs remain failed. The final audit must examine the actual final code, caches, startup/images, native loading, selection, comparison and reporting, including deliberate evidence corruption. Historical or selected audits do not satisfy that final review. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. No current GNU-parity result exists. The requested Darwin rebuild and explicit replacement pin are recorded; actual counters, calibration, interleaved same-host samples, distributions and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source261 has zero-warning strict checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, and 22 ordinary GNU matches. Complete macOS/Linux Rust passes 3,107/3,119 tests with two existing ignores each. Linux frozen matches all 519 files/7,928 outcomes. macOS frozen completes all 519 files/7,921 outcomes with 7,915 matches and six existing strict skip-diagnostic failures. Full terminal validation remains running. Source263 is separately queued and unapplied. Final-source platform/release/frozen/terminal validation is still required. |
+| 8. Complete validation | Source261 has zero-warning strict checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, and 22 ordinary GNU matches. Complete macOS/Linux Rust passes 3,107/3,119 tests with two existing ignores each. Linux frozen matches all 519 files/7,928 outcomes. macOS frozen completes all 519 files/7,921 outcomes with 7,915 matches and six existing strict skip-diagnostic failures. Terminal passes 226 scenarios/686 comparisons. Source263 failed broad validation and source268 failed four fixture preconditions; source269 failed two focused controls; source270 is an unapplied successor under selected validation. Final-source platform/release/frozen/terminal validation is still required. |
 | 9. Independently checkable delivery | Portable patches, manifests, commands, raw results, failures and reproduction helpers are retained. Applied source261 is a validated selected checkpoint, with the full goal explicitly unfinished. Final source, final evidence-chain review and satisfaction of every architectural/performance requirement remain outstanding. |
 
 The next architectural work validates the common-string migration and must remove

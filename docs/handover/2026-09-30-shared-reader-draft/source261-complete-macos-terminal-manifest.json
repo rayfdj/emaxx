@@ -1,0 +1,142 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "terminal": {
+      "status": "passed",
+      "goal_complete": false,
+      "inputs_verified": 488,
+      "execution_inputs_verified": 10,
+      "fully_matching_scenarios": 226,
+      "matching_comparisons": 686,
+      "matching_screen_comparisons": 658,
+      "matching_filesystem_comparisons": 28,
+      "divergent_labels": [],
+      "partial_scenarios": [],
+      "unstarted_scenarios": [],
+      "unexecuted_comparisons": 0,
+      "log_sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "gate_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx/target/compat-subject/gate/emaxx": {
+          "sha256": "aa99dd9745cf9b4c222b1076d2ad2f691a066fcd4437f81642bcc41d07bc336a",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source261-full-frozen-subject/emaxx",
+          "bytes": 18031840
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+          "sha256": "ca97eca7aab3d3d3aaa6b9a03524bf41d3d9024df4e747644b2d856e0827e50e",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source261-full-frozen-subject/emaxx.pdmp",
+          "bytes": 22349920
+        }
+      },
+      "qualification": "Complete source261 terminal run after local Rust exited, using the exact gate executable/image from its full rebuilt-GNU frozen comparison. Harness, actions, fixtures, timeouts and comparison rules match source248. Every raw comparison is checked against all original 226 scenarios/686 labels; ten execution inputs are unchanged. Source261 release selected validation remains separate. The six known macOS frozen skip-diagnostic failures and all earlier failed runs remain preserved. No performance or full-goal completion claim."
+    },
+    "qualification": "Complete rebuilt-GNU source261 terminal validation: 226 scenarios, 658 screen and 28 filesystem comparisons all match, ten execution inputs and 488 source inputs unchanged. Supervisor31023 has exited and final GNU retention verification reports allfour inputs unchanged. The exact gate executable/image also produced the separately retained macOS frozen result with six skip-diagnostic mismatches; those remain failures. This archive does not certify the later comparison/storage drafts or full-goal/performance completion."
+  },
+  "archive": {
+    "path": "source261-complete-macos-terminal.tar.gz",
+    "bytes": 121593,
+    "sha256": "e376400381c0819e417675cce99e82e00e537b47c267e0f1a2f794f6aaff041a"
+  },
+  "files": [
+    {
+      "path": "audit-source261-macos-terminal.py",
+      "bytes": 5929,
+      "sha256": "36bf0af04e931e5a98cba5dc600dc4437d2a87af17d32f48873eb5f306748d1b"
+    },
+    {
+      "path": "execution-source/tools/fixtures/fake_lsp_server.py",
+      "bytes": 8468,
+      "sha256": "a434019f518c8928911be60801c5813a005e83cec43220a8323ce47309362251"
+    },
+    {
+      "path": "execution-source/tools/fixtures/fieldnotes.org",
+      "bytes": 24328,
+      "sha256": "d53f935cbe8595f666e79a98af84d2d18c5aa75c24df2f4dfeb4f6ba40d3c45b"
+    },
+    {
+      "path": "execution-source/tools/ttydiff.py",
+      "bytes": 195505,
+      "sha256": "5a99cb326aa7d4b658d0a78a177eed4342cfa03bd92c374da69649050eb76aaa"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source261-complete-macos-terminal.py",
+      "bytes": 2689,
+      "sha256": "897d8a9b7817750fd320e6dd1ab50e36633f883a3c235eede9640a7794acfe69"
+    },
+    {
+      "path": "queue-source261-full-macos.py",
+      "bytes": 10465,
+      "sha256": "4bd52eccf2121b87596228dae4300677c9b02c49e5346e2b4969f3ccbc00debb"
+    },
+    {
+      "path": "retained-gnu/manifest.json",
+      "bytes": 1393,
+      "sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54"
+    },
+    {
+      "path": "retained-gnu/verification.json",
+      "bytes": 254,
+      "sha256": "dac552d599e19c622c38a92c6cf904bc98017bb1765a2f06257d1c4337994f8b"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-command.json",
+      "bytes": 9201,
+      "sha256": "247ff4780a46dec41b0bf2e5d6e4762efc2ea734282c4cde0a8522bd50c82ccd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source261-full-queue-result.json",
+      "bytes": 4468,
+      "sha256": "968599adffd1b4e9651668532d24057ca95ff2889536e4b0a2c35cdd2d656abc"
+    },
+    {
+      "path": "source261-full-queue-state.json",
+      "bytes": 4469,
+      "sha256": "d229ad0fc798ed98591c76d79e9618071d9afc5ea6a010b5f4536b1f133ce04d"
+    },
+    {
+      "path": "source261-full-tty-command.json",
+      "bytes": 9119,
+      "sha256": "d3a094b87eede48416c80d4817b5f1c8b1cc8cc0e3ad6be785b6b8c6fa31ba9e"
+    },
+    {
+      "path": "source261-full-tty-inventory.json",
+      "bytes": 225,
+      "sha256": "64efb0862d41ba80005b5da5f67f4debaa7b1779de26fec19bcb2910532b9669"
+    },
+    {
+      "path": "source261-full-tty-result.json",
+      "bytes": 200,
+      "sha256": "3fdf839732dc4bb74e8050c4ce60f7f08b7c1765c212309b48b681f0e4a8b679"
+    },
+    {
+      "path": "source261-full-tty.log",
+      "bytes": 62615,
+      "sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c"
+    },
+    {
+      "path": "source261-macos-frozen-audit.json",
+      "bytes": 7750,
+      "sha256": "d835a21870c5a299b35855bad818fc57278ecaec4f1ea5a5fd45eeff208bbe90"
+    },
+    {
+      "path": "source261-macos-terminal-audit.json",
+      "bytes": 1807,
+      "sha256": "7ccf7b934a9e9406f69b4b9e01a4c926ec2b8c2d1fae2912b7cdb7a46113ec88"
+    },
+    {
+      "path": "source261-manifest.json",
+      "bytes": 56077,
+      "sha256": "784c94f223f69f48250a2439c0981c2e8f38b667dfc7609f2058087f0f80eda1"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

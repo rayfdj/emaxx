@@ -142,7 +142,7 @@ integration passes. All 3,010 raw library names, native artifact identity and fo
 retained executable/image files are checked. The original and retained GNU
 executable/dump/configuration/Makefile also match. An initial bounded-input audit
 used the wrong metadata key and wrote no passing receipt; its correction is recorded.
-Supervisor **31023** now runs the unchanged full terminal comparison after frozen.
+Supervisor **31023** has completed the unchanged full terminal comparison after frozen.
 The clean full-validation checkout is
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, commit `eddfe782`,
 with the same 488 inputs. Exact-head Linux
@@ -163,8 +163,11 @@ diagnostics contain different `system-configuration-features` text, as in source
 They remain strict failures. Every raw inventory, outcome, execution hash and actual
 GNU/Emaxx input is checked. No capability string or comparison rule changed.
 The retained gate executable is `aa99dd97…`, its image `ca97eca7…`; terminal validation
-uses that exact pair. Keep both source261 checkouts unchanged. Terminal is still
-running. No measured saving or full-goal completion is implied.
+uses that exact pair. The [complete terminal audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
+verifies **226 scenarios / 686 matches**, including 658 screen and 28 filesystem
+comparisons. All original labels, 488 source inputs and ten execution inputs match;
+final verification of the four retained GNU files also passes. Keep both source261
+checkouts unchanged. No measured saving or full-goal completion is implied.
 
 ## Subsequent ordering repair: source262
 
@@ -227,22 +230,23 @@ The separate checkout is `target/runtime-goal/recovered-2026-09-30/string-ranges
 All **500 inputs and modes** replay exactly from `dbf1fbb2` and main. Formatting,
 all-target/all-feature checking, strict Clippy and diff checks pass with zero
 warnings. The four tests use unchanged ordinary GNU output; all source262 code
-and tests remain. Queue **90568** waits for full macOS supervisor31023, then runs
-**199 focused selectors**, **1,054 affected tests in each profile**, and **28 ordinary
-comparisons**, including the original modifier-casing control. No runtime stage has
-run, and the candidate remains unapplied. Keep its source and executing helpers
-unchanged. The full architecture/performance requirements below still apply.
+and tests remain. Queue **90568** has exited with **197 focused passes / two existing
+ignores**, then **1,053 affected passes / one failure**. All raw selected names and
+retained executable/image hashes are audited. Release and ordinary stages did not
+run. The candidate remains unapplied and unchanged. Its original Unicode casing
+test used a bare interpreter while expecting dumped GNU case tables. GNU
+`casetab.c:init_casetab_once` installs ASCII; loadup's `international/characters.el`
+supplies Unicode. The successor preserves the original assertions in an initialized
+interpreter and adds the actual bare-state result plus an ordinary live-table fixture.
 
 An [additional ordinary prefix-boundary control](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
 matches GNU/source261 byte for byte on **12,600 comparisons**: 14 prefix lengths
 around word boundaries and 30 character/storage cases, including non-Unicode,
 surrogate, byte8, private-use and mixed storage. This specifically challenges the
 new shared-byte-prefix loop rather than certifying it from single-character cases.
-Queue **90569** waits for source263 selected queue90568 to exit successfully, then
-runs `audit-source263-selected-fixtures.py` and this unchanged fixture on the retained release
-executable/image. It owns that selected-audit receipt; do not run the auditor twice.
-Wait for both queues before applying source263. Neither this passing source261
-baseline nor the prepared follow-up is a source263 runtime or performance pass.
+Queue **90569** stopped before any stage because90568 failed. It did not run the
+selected auditor or prefix fixture. Neither the passing source261 baseline nor the
+prepared follow-up is a source263 runtime or performance pass.
 
 The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
 retains original supervisors64601/87187, withdrawn while waiting before any runtime
@@ -251,6 +255,75 @@ stage. Their wrapper misspelled the original ordering fixture as a nonexistent
 and verifies every one of the 28 paths. No runtime, test, expectation, selector,
 timeout or comparison rule changes. Read `source263-fixture-validation-*` and
 `source263-boundary-fixtures-*`; the old helpers and queued state remain preserved.
+
+## Compact header and pure storage continuation: source270
+
+The [source264–268 preparation archive](handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
+includes the closed source263 failure, ordinary GNU negatives, failed startup
+diagnostics, compiler/lint failures and exact portable patches. The
+[source269 correction archive](handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
+adds the closed source268 focused failure. The
+[source270 correction archive](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+retains source269's two failed controls and the current **510-input** successor.
+Its checkout is `target/runtime-goal/recovered-2026-09-30/string-storage/emaxx`, based
+on `e6120bce`; both incremental and complete-main patches reproduce every byte and mode.
+
+The shared string payload is now exactly GNU's four-field, 32-byte layout:
+character count, byte count (`-1` for unibyte), property pointer and data pointer.
+Native object words point directly at that header. Another 16 bytes per cell hold
+checked-borrow and allocator metadata. Dedicated string blocks replace the vector
+wrapper; native decoding, conservative roots and GC dispatch recognize string cells.
+NUL-terminated bytes remain separately boxed, with a shared zero byte for empty data.
+Property spans occupy a single packed allocation behind the header pointer; they
+are still spans, not GNU interval trees. No total memory saving has been measured.
+
+Normal empty unibyte/multibyte constructors return their two permanent singletons.
+Pure allocation is distinct even at zero length; already-pure copies preserve
+identity and survive collection outside the ordinary census. Mutation checks follow
+GNU's pure-write and no-op/error ordering. Property mutation reads before borrowing
+mutably, avoiding an unnecessary write for a no-op. Dump restoration preserves
+distinct empty headers and makes restored pure strings ordinary, while explicit
+empty-root metadata preserves the two singleton identities. Template cloning keeps
+the same distinction. This wire metadata substitutes for GNU's static-root relocation;
+the runtime still has one string representation.
+
+New controls read native header fields/data/NUL directly and check pure GC/census,
+dump restoration, template identity and ordinary empty/pure behavior. The additional
+144-row property fixture finds **106 wrong whole rows / 84 operation or poststate
+differences** on source261; identity observations overlap the previous fixtures and
+must not be added. An ordinary initialization fixture gives GNU `((t t) (2 1))`
+versus source261 `((t t) (t t))` for default and empty case tables. Three attempted
+bare GNU startups failed before their fixture and remain excluded. The original
+source263 broad-log auditor rejected a prompt sharing a line with its verdict;
+a corrected parser verifies complete named blocks without changing test outcomes.
+
+Source264 failed on five stale RefCell callers; source265 on one unchanged reader
+assertion's container type. Source266 compiled but Clippy rejected `Box<Vec<Span>>`;
+source267 replaces it with the single packed allocation and passes all strict checks.
+Source267 did not run. Source268 also fixes image-template handling, passes strict
+checks, and has **199 focused passes / four failures / two existing ignores**.
+The native header, pure GC and dump/template controls passed. Each of the four
+failures is at the GNU precondition: expected output has one extra trailing newline.
+No Emaxx pass for those four fixture assertions can be inferred.
+
+Source269 changes only those four expected-output callers to the existing
+`trim_end` convention. All GNU fixture bytes and the shared comparator are unchanged;
+strict checks have zero warnings. Its focused run has **201 passes / two failures /
+two existing ignores**. Empty identity and all 144 property rows pass; the 96-row
+pure fixture matches 94 rows. Its two wrong rows copy an empty pure string before
+mutation: the old zero-length early return preserves purity instead of invoking
+GNU's ordinary constructor. Source270 removes that return and the unreachable
+host-text fallback. Its other failure occurs when the test loads a second native
+image while still owning its first initialized interpreter. Source270 drops the
+test-owned interpreters before the independent assertion, preserving every original
+comparison. Source269's raw failure and artifacts remain; no later stage ran.
+
+Source270 passes strict checks with zero warnings. Queue **98240** runs **205 focused selectors**,
+**1,059 affected tests per profile** and **33 ordinary comparisons**, preserving
+all original selectors, expected values and the full 12,600-row prefix fixture.
+Read `source270-validation-*`; keep the candidate and executing helpers unchanged.
+The published source261 and failed source263 remain unchanged. Preparation archives
+do not establish a runtime, full-platform or performance pass.
 
 ## Remaining requirements
 
@@ -266,7 +339,7 @@ source between249 and261 is not established; main and207 outputs agree exactly.
 
 GNU `make_clear_string`/`make_clear_multibyte_string` use two shared empty strings.
 `make_pure_string` allocates a distinct header even for zero bytes, while `purecopy`
-returns an already-pure object unchanged. The current pure-copy path incorrectly
+returns an already-pure object unchanged. The source261 pure-copy path incorrectly
 uses the normal constructor's empty unibyte singleton. `STRING_SET_UNIBYTE` replaces
 a zero-length local string value rather than changing the shared header; consequently
 ordinary `clear-string` leaves an empty multibyte object's flag unchanged. These
@@ -281,15 +354,16 @@ their counts overlap. The first fixture's three syntax failures and the repaired
 fixture's three scope-invalid runs are retained and excluded. No storage repair is
 implemented by this baseline, and the frozen source263 candidate is unchanged.
 
-This unifies authority but does not yet supply GNU's 32-byte string header or
-sblock allocation. `RefCell`, `Vec` capacities, property vectors and vector arena
-overhead remain. Moving host keys grows `SymbolCell`; removing a separate key cell
+Applied source261 unifies authority but does not supply GNU's 32-byte string header
+or sblock allocation. Source270 implements the header and removes the vector wrapper,
+but remains an unapplied draft under validation. Sblocks, real interval trees and
+remaining borrow/allocation overhead are unfinished. Moving host keys grows `SymbolCell`; removing a separate key cell
 does not establish a net memory reduction. Symbol value/function/plist authority
 still resides in per-interpreter tables and registries.
 
 The old host raw-byte/private-use text convention and many transient decoded
-Rust views remain. The empty unibyte string is canonical, but GNU's empty multibyte
-singleton and general pure-string write protection remain unfinished. Public
+Rust views remain. The empty multibyte singleton and pure-string write protection
+are implemented only in the unvalidated storage draft above. Public
 runtime ownership, actual cumulative allocation counters, physical accounting,
 VM stack layout, final platform validation and adversarial review remain open.
 No speedup, memory saving or GNU performance parity has been measured. All sixteen

@@ -29,8 +29,8 @@ The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/sou
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
 artifact identity and four retained executable/image files. The clean checkout
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx` remains at
-`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** now runs full
-terminal validation after the completed frozen comparison below. Linux
+`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** has completed
+full terminal validation after the frozen comparison below. Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
 complete on exact `eddfe782`. The [closed Linux audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
@@ -44,7 +44,11 @@ retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 succe
 processes. Both editors have 7,623 passes, 46 expected failures and 252 skips; all
 177 compiler tests pass. The same six build-feature skip diagnostics differ as in
 source249. Every raw outcome, execution hash and retained GNU/Emaxx input is checked.
-No comparison rule or reported feature changes. Terminal validation remains pending.
+No comparison rule or reported feature changes. The
+[complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
+verifies **226 scenarios / 686 matching comparisons**: 658 screen and 28 filesystem
+comparisons, all original labels, 488 source inputs and ten execution inputs. It uses
+the exact executable/image from the frozen run. No source261 supervisor remains running.
 Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
 
 The [separate source262 ordering draft and negatives](docs/handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
@@ -69,23 +73,27 @@ main exactly; main's character matrix exits255 at its unsupported extended-chara
 constructor, which is retained as a failure. The repair reads canonical bytes,
 promotes octets before casing, follows live tables with actual keys and preserves
 GNU's type/range validation order. All **500 inputs** replay exactly and strict
-checks pass with zero warnings. Queue **90568** waits for supervisor31023, then runs
-199 focused selectors and 1,054 affected tests per profile plus 28 ordinary comparisons.
-No source263 runtime stage has run; keep the unapplied checkout and helpers unchanged.
+checks pass with zero warnings. Queue **90568** has exited: **197 focused passes /
+two existing ignores**, then **1,053 affected passes / one failure**. The original
+Unicode comparison expected dumped GNU case tables in a bare interpreter. Actual
+GNU C initializes only ASCII there; loadup installs Unicode. The successor below
+preserves the original dumped assertions and adds bare/live-table coverage.
+Release and ordinary stages did not run. Keep failed source263 and its helpers unchanged.
 The [additional boundary control](docs/handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
 matches GNU/source261 on **12,600 comparisons**, covering 14 prefix lengths around
-machine-word boundaries and 30 character/storage cases. Queue **90569** waits for
-90568, then owns the complete selected audit and runs that same fixture on source263.
-Wait for both queues before applying the draft; no source263 pass is inferred yet.
+machine-word boundaries and 30 character/storage cases. Queue **90569** stopped
+before any stage because90568 failed. No source263 prefix comparison or complete
+selected pass is inferred. Its raw failure and executable/image identities are in the
+[storage preparation archive](docs/handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json).
 
 The [queue correction](docs/handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
 preserves original waiting supervisors64601/87187, withdrawn before runtime execution.
 Their wrapper named a nonexistent fixture; the corrected queue uses the unchanged
 `string-ordering-symbol-storage` fixture. All 28 fixture paths are verified. Source,
 tests, expected bytes, selectors, timeouts and comparison rules are unchanged.
-Read `source263-fixture-validation-*` and `source263-boundary-fixtures-*` for live
-state; the latter owns `audit-source263-selected-fixtures.py`. Original helpers
-and waiting states remain historical evidence.
+The closed receipts are `source263-fixture-validation-*` and
+`source263-boundary-fixtures-*`. Original helpers and waiting states remain
+historical evidence; do not restart these failed or withdrawn queues.
 
 The [current empty/pure string baseline](docs/handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
 finds **six wrong empty-identity rows among 12** and **57 wrong pure-storage rows
@@ -100,6 +108,37 @@ Source263 does not repair these additional gaps. Subsequent string-storage work 
 restore distinct pure allocation and write protection, supply the empty multibyte
 singleton, and preserve GNU's empty `clear-string`, GC and dump behavior. A complete
 frozen pass alone cannot certify those contracts or make this branch main-ready.
+
+The current unapplied storage successor is **source270**, in
+`target/runtime-goal/recovered-2026-09-30/string-storage/emaxx`. The
+[source264–268 preparation and failures](docs/handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
+and [source269 caller correction](docs/handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
+preserve the earlier drafts. The [current source270 patch and failures](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+retain exact incremental/main patches and all **510 inputs**. Strings now have a
+direct 32-byte GNU-layout header plus 16 bytes of checked-borrow/allocator metadata.
+The draft supplies two normal empty singletons, distinct permanent pure allocations,
+write protection and GNU no-op/error order, and preserves dump/template identities.
+Property spans use one packed allocation. Data still uses individual boxes, and
+real sblocks, interval trees, physical accounting and public ownership remain open.
+
+Source264/265 compiler failures and source266 Clippy failure are retained. Source267
+passed strict checks but did not run. Source268 passed strict checks, then had
+**199 focused passes / four failures / two existing ignores**. All four failures
+were at the GNU precondition: the new expected-output callers retained one trailing
+newline. Source269 changes only those four callers to the existing `trim_end`
+convention; GNU fixtures and the shared comparator are unchanged. Source269 then
+had **201 focused passes / two failures / two existing ignores**. Empty identity
+and all 144 property rows pass; the 96-row pure fixture matches 94 rows. Copying an
+empty pure string incorrectly retained its read-only header. A separate assertion
+could not load its native image while the test still owned the first image.
+Source270 follows GNU `Fcopy_sequence` through ordinary constructors for every
+string and releases the first test interpreter before the independent image load.
+All assertions remain. Its strict checks pass with zero warnings.
+Queue **98240** now runs **205 focused selectors**, **1,059
+affected tests per profile**, and **33 ordinary GNU comparisons**, including all
+original prefix rows. Read `source270-validation-*`; keep the candidate and running
+helpers unchanged. Runtime source261 is unchanged, and no source270 runtime pass,
+memory saving, speedup or full-goal completion is inferred from preparation.
 
 ## Preceding source249 validation
 
