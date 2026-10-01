@@ -1,0 +1,34 @@
+{
+  "launch": {
+    "run_id": 36850342459,
+    "state": {
+      "conclusion": "",
+      "headSha": "163064c97cfb430b7b269ad15cb7db499b77879e",
+      "status": "queued",
+      "url": "https://github.com/rayfdj/emaxx/actions/runs/36850342459"
+    },
+    "source_commit": "163064c97cfb430b7b269ad15cb7db499b77879e",
+    "runtime_source": "source248",
+    "qualification": "GNU-only diagnostic retry after restoring the startup shell required by GDB argument escaping and adding actual inferior argv equality verification. The previous observer failed before any GC snapshot. Original fixtures and expected outputs remain unchanged; static checks pass but actual Linux execution is pending. Full source248 Rust/frozen continue independently on fa7578ac, with identical 472 runtime inputs. No runtime correctness or GC root cause is inferred from this dispatch."
+  },
+  "dispatch": {
+    "command": [
+      "gh",
+      "workflow",
+      "run",
+      "frozen-run.yml",
+      "--repo",
+      "rayfdj/emaxx",
+      "--ref",
+      "runtime-char-tables",
+      "-f",
+      "validation=gnu-census-trace"
+    ],
+    "commit": "163064c97cfb430b7b269ad15cb7db499b77879e",
+    "exit_code": 0,
+    "stdout": "https://github.com/rayfdj/emaxx/actions/runs/36850342459\n",
+    "stderr": ""
+  },
+  "helper_sha256": "97c22332e7c2b480489448c6e243fe2c2e1caf331d3187ed6d04194d864e5e90",
+  "goal_complete": false
+}

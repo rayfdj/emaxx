@@ -116,6 +116,10 @@ The separate observer correction restores GDB's default startup shell and checks
 the actual Linux inferior argument vector against the original GNU command.
 Its static checks pass; Linux execution is still required. The original failed
 observer and raw arguments remain in the failure archive. Runtime source248 is unchanged.
+The [retry launch receipt](docs/handover/2026-09-30-shared-reader-draft/source248-gnu-trace-retry-launch.json)
+records diagnostic [36850342459](https://github.com/rayfdj/emaxx/actions/runs/36850342459)
+on `163064c9`. Read its current status and retained evidence before any further retry;
+the original two full Linux source248 runs continue separately on `fa7578ac`.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS
