@@ -1,0 +1,6 @@
+(let* ((form '(macro #[0 "\300\207" [nil] 1]))
+        (function (cadr form)))
+   (list (eq (car form) 'macro)
+         (byte-code-function-p function) (recordp function)
+         (length function) (append (aref function 1) nil)
+         (aref (aref function 2) 0) (funcall function)))

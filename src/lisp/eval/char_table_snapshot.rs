@@ -78,7 +78,7 @@ impl CharTableChainSignature {
                     Payload::LispRecord(capture_slots(record.slots(), &mut pending))
                 }
                 Kind::StringObject(string) if seen.insert(value.word()) => {
-                    Payload::StringObject(string.borrow().text.to_string())
+                    Payload::StringObject(string.borrow().text())
                 }
                 _ => continue,
             };
@@ -123,7 +123,7 @@ impl CharTableChainSignature {
                     same_slots(record.slots(), slots)
                 }
                 (Payload::StringObject(text), Kind::StringObject(string)) => {
-                    *text == string.borrow().text
+                    *text == string.borrow().text()
                 }
                 _ => false,
             }

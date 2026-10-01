@@ -1363,9 +1363,7 @@ fn tty_supports_face_attributes(
             let text_of = |value: &Value| -> Option<String> {
                 match value.kind() {
                     Kind::String(text) => Some(text.to_string()),
-                    Kind::StringObject(state) => {
-                        Some(std::cell::RefCell::borrow(&state).text.clone())
-                    }
+                    Kind::StringObject(state) => Some(std::cell::RefCell::borrow(&state).text()),
                     _ => None,
                 }
             };
@@ -5542,7 +5540,7 @@ fn render_mode_line_element(
             // the expansion.
             if let Kind::StringObject(state) = value.value().kind() {
                 let state = state.borrow();
-                let source_length = state.text.chars().count();
+                let source_length = state.len();
                 for property_span in &state.props {
                     let Some(face) = property_span
                         .props

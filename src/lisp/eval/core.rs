@@ -5,10 +5,6 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::SymbolName;
 
-fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
-    matches!(record.slots.get(2).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "dynamic-binding")
-}
-
 // eval_sub's CHECK_LIST signals through a separate error path. Keep the
 // owned predicate string and boxed error payload out of ordinary eval's
 // frame: inactive slots there otherwise become conservative GC roots.
@@ -433,7 +429,7 @@ impl Interpreter {
             }
 
             Kind::BuiltinFunc(_)
-            | Kind::Lambda(_)
+            | Kind::Closure(_)
             | Kind::Buffer(_)
             | Kind::Marker(_)
             | Kind::Overlay(_)
@@ -568,14 +564,12 @@ impl Interpreter {
             // the original callee, not the object found in that cell.
             match function.kind() {
                 Kind::BuiltinFunc(subr) => break FunctionResolution::DirectBuiltin(subr),
-                Kind::Lambda(_) => break resolution,
+                Kind::Closure(_) => break resolution,
                 Kind::Record(id)
                     if self.find_record(id).is_some_and(|record| {
                         matches!(
                             record.kind,
-                            RecordKind::Closure
-                                | RecordKind::NativeCompiledFunction
-                                | RecordKind::ModuleFunction
+                            RecordKind::NativeCompiledFunction | RecordKind::ModuleFunction
                         )
                     }) =>
                 {
@@ -927,12 +921,12 @@ impl Interpreter {
             return self.call_function_value(*func, None, args, env);
         }
         match func.kind() {
-            Kind::Record(id) if self.has_cached_bytecode_program(id.id) => {
+            Kind::Closure(closure) if closure.is_bytecode() => {
                 self.begin_funcall(env)?;
                 let result = if let Some(termination) = self.pending_termination().cloned() {
                     Err(LispError::Terminate(termination))
                 } else {
-                    self.execute_bytecode_record_named(id.id, None, args, env)
+                    self.execute_bytecode_closure_named(closure, None, args, env)
                 };
                 self.end_funcall();
                 result
@@ -951,13 +945,13 @@ impl Interpreter {
                             env,
                             true,
                         ),
-                        Ok(FunctionResolution::Resolved(value)) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
+                        Ok(FunctionResolution::Resolved(value)) if matches!(value.kind(), Kind::Closure(closure) if closure.is_bytecode()) =>
                         {
-                            let Kind::Record(id) = value.kind() else {
+                            let Kind::Closure(closure) = value.kind() else {
                                 unreachable!("matched above")
                             };
-                            self.execute_bytecode_record_named(
-                                id.id,
+                            self.execute_bytecode_closure_named(
+                                closure,
                                 Some(CallName::Symbol(&name)),
                                 args,
                                 env,
@@ -1249,25 +1243,28 @@ impl Interpreter {
     /// Execute one GNU byte-code closure with the activation-frame contract
     /// that eval.c exposes to backtrace-frame/backtrace-eval.
     #[inline]
-    fn execute_bytecode_record_named(
+    fn execute_bytecode_closure_named(
         &mut self,
-        record_id: u64,
+        closure: crate::lisp::types::ClosureRef,
         original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
             .map(CallName::original_symbol_value)
-            .unwrap_or(self.record_value(record_id));
+            .unwrap_or(Value::Closure(closure));
         self.with_backtrace_frame(backtrace_function, args, |interp| {
             interp.capture_current_backtrace_context(
                 original_name.map(CallName::as_str),
                 env,
                 None,
             );
-            // Ffuncall's maybe_gc, after record_in_backtrace.
-            crate::lisp::native_comp::maybe_gc(interp, env);
-            let result = interp.execute_bytecode_funcall_body(record_id, args, env);
+            // A collecting finalizer can redefine the named function. Keep
+            // the resolved closure itself live through that entry boundary.
+            let result = interp.with_lisp_stack_roots(&Value::Closure(closure), |interp| {
+                crate::lisp::native_comp::maybe_gc(interp, env);
+                interp.execute_bytecode_funcall_body(closure, args, env)
+            });
             interp.settle_frame_result(result, env)
         })
     }
@@ -1278,7 +1275,7 @@ impl Interpreter {
     #[inline(always)]
     pub(crate) fn execute_bytecode_funcall_body(
         &mut self,
-        record_id: u64,
+        closure: crate::lisp::types::ClosureRef,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
@@ -1287,57 +1284,32 @@ impl Interpreter {
         // the caller's lexical bindings out of the VM's reads.
         let depth = env.len();
         env.push(EnvFrame::dynamic());
-        let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
+        let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
         env.truncate(depth);
         result
     }
 
-    /// Only execute_record fills this cache, so a hit is a genuine
-    /// byte-code function whose slots have not been mutated since.
-    /// Bcall's fast path: FUNC as a lexbound byte-code function whose
-    /// program is cached (a bare symbol read through its function cell,
-    /// as `XBARE_SYMBOL (call_fun)->u.s.function'), or None for anything
-    /// Ffuncall must handle -- an alias, an autoload, a dynamic arglist,
-    /// or the profiler.
+    /// Bcall can enter packed byte-code closures without a host function
+    /// registry. Classification reads the shared closure's actual code slot.
     pub(crate) fn bytecode_callee(
         &self,
         func: &Value,
-    ) -> Option<(std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>, u64)> {
-        let id = match func.kind() {
-            Kind::Record(id) => id,
-            Kind::Symbol(name) => match self.globals.function(&name).map(|v| v.kind()) {
-                Some(Kind::Record(id)) => id,
-                _ => return None,
-            },
-            _ => return None,
-        };
+    ) -> Option<(crate::lisp::bytecode::vm::BytecodeActivation, Value)> {
         if profile_path().is_some() {
             return None;
         }
-        let program = self
-            .bytecode_program_cache
-            .get((id.id as usize).checked_sub(1)?)?
-            .as_ref()?;
-        matches!(
-            program.argspec,
-            crate::lisp::bytecode::ArgSpec::Packed { .. }
-        )
-        .then(|| (std::rc::Rc::clone(program), id.id))
-    }
-
-    fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
-        (record_id as usize)
-            .checked_sub(1)
-            .and_then(|index| self.bytecode_program_cache.get(index))
-            .is_some_and(|slot| slot.is_some())
-    }
-
-    pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
-        // data.c:Fbyte_code_function_p: classification neither executes nor
-        // validates the bytecode and does not inspect payload contents.
-        self.find_record(record_id).is_some_and(|record| {
-            record.kind == RecordKind::Closure && record.slots.get(1).is_some_and(Value::is_string)
-        })
+        let function = match func.kind() {
+            Kind::Symbol(name) => *self.globals.function(&name)?,
+            _ => *func,
+        };
+        let Kind::Closure(closure) = function.kind() else {
+            return None;
+        };
+        if !closure.is_bytecode() || !matches!(closure.parameters().kind(), Kind::Integer(_)) {
+            return None;
+        }
+        let program = crate::lisp::bytecode::vm::closure_program(closure).ok()?;
+        Some((program, function))
     }
 
     fn call_function_value_inner(
@@ -1358,13 +1330,10 @@ impl Interpreter {
                 .map(Value::Symbol)
                 .unwrap_or(func)
         };
-        // A record with a cached program is a genuine byte-code function
-        // (only execute_record populates the cache), so skip the
-        // lambda/autoload probes and the record-type guards below.
-        if let Kind::Record(id) = func.kind()
-            && self.has_cached_bytecode_program(id.id)
+        if let Kind::Closure(closure) = func.kind()
+            && closure.is_bytecode()
         {
-            return self.execute_bytecode_record_named(id.id, original_name, args, env);
+            return self.execute_bytecode_closure_named(closure, original_name, args, env);
         }
         let mut owned_name: Option<SymbolName> = None;
         let func = match func.kind() {
@@ -1391,14 +1360,14 @@ impl Interpreter {
                             .dispatch_named_builtin(&name, subr, call_name, args, env, funcall);
                     }
                     // funcall_general's COMPILEDP arm: the function cell
-                    // holds a byte-code object already decoded once.
-                    FunctionResolution::Resolved(value) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
+                    // holds a byte-code object's authoritative fields.
+                    FunctionResolution::Resolved(value) if matches!(value.kind(), Kind::Closure(closure) if closure.is_bytecode()) =>
                     {
-                        let Kind::Record(id) = value.kind() else {
+                        let Kind::Closure(closure) = value.kind() else {
                             unreachable!("matched above")
                         };
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
-                        return self.execute_bytecode_record_named(id.id, call_name, args, env);
+                        return self.execute_bytecode_closure_named(closure, call_name, args, env);
                     }
                     FunctionResolution::Resolved(value) => {
                         if original_name.is_none() {
@@ -1530,40 +1499,10 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Kind::Record(id)
-                if self
-                    .find_record(id)
-                    .is_some_and(|record| record.kind == RecordKind::Closure) =>
-            {
-                let (inner, uses_dynamic_binding) = {
-                    let Some(record) = self.find_record(id) else {
-                        unreachable!("checked record presence");
-                    };
-                    // A byte-code closure has a string code slot. Leave
-                    // instruction validation to the VM, not this type check.
-                    if record.slots.get(1).is_some_and(Value::is_string) {
-                        return self.execute_bytecode_record_named(id.id, original_name, args, env);
-                    }
-                    let Some(inner) = record.slots.first().cloned() else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("invalid-function".into()),
-                            Value::Record(id),
-                        ])));
-                    };
-                    (inner, byte_code_function_uses_dynamic_binding(record))
-                };
-                // Unwrapping the record is still the same Ffuncall entry.
-                if uses_dynamic_binding {
-                    self.push_lambda_capture_override(false);
-                    let result =
-                        self.call_function_value_named(inner, original_name, args, env, funcall);
-                    self.pop_lambda_capture_override();
-                    result
-                } else {
-                    self.call_function_value_named(inner, original_name, args, env, funcall)
-                }
+            Kind::Closure(closure) if closure.is_bytecode() => {
+                self.execute_bytecode_closure_named(closure, original_name, args, env)
             }
-            Kind::Lambda(_) => self.funcall_interpreted_lambda(func, original_name, args, env),
+            Kind::Closure(_) => self.funcall_interpreted_lambda(func, original_name, args, env),
             Kind::Cons(_) if is_lambda_form(self, &func, env) => {
                 self.funcall_interpreted_lambda(func, original_name, args, env)
             }
@@ -1593,7 +1532,7 @@ impl Interpreter {
             .unwrap_or(function);
         self.with_backtrace_frame(backtrace_function, args, |interp| {
             let (mut parameters, mut lexical_environment) = match function.kind() {
-                Kind::Lambda(lambda) => (lambda.parameters(), lambda.environment_value()),
+                Kind::Closure(lambda) => (lambda.parameters(), lambda.environment_value()),
                 Kind::Cons(cell) => match cell.cdr.get().kind() {
                     Kind::Cons(tail) => (tail.car.get(), Value::Nil),
                     _ => return interp.settle_frame_result(Err(invalid_function(function)), env),
@@ -1692,7 +1631,7 @@ impl Interpreter {
                 );
                 crate::lisp::native_comp::maybe_gc(interp, env);
                 let body = match function.kind() {
-                    Kind::Lambda(lambda) => lambda.body(),
+                    Kind::Closure(lambda) => lambda.body(),
                     _ => function.cdr()?.cdr()?,
                 };
                 interp.progn_list(&body, env)

@@ -1,12 +1,7 @@
 use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
-
-/// Map an Emacs character code to a Rust char, translating the raw-byte
-/// range (RAW_BYTE8_BASE #x3FFF00..) to the internal private-use marker.
-fn char_for_codepoint(n: i64) -> Result<char, LispError> {
-    char_from_integer(n).map_err(|_| LispError::Signal(format!("Invalid character: {n}")))
-}
+use crate::lisp::types::string_data::character_code;
 
 define_dispatch!(
     pub(super) fn call(
@@ -18,29 +13,19 @@ define_dispatch!(
         match name {
             // ── Allocation ──
             "make-string" => {
-                if args.is_empty() || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(
-                        "make-string".into(),
-                        args.len(),
-                    ));
-                }
-                let length = args[0].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::Signal("Wrong type argument: natnump".into()));
-                }
-                let init = args[1].as_integer()?;
-                let c = char_for_codepoint(init)?;
-                let s: String = std::iter::repeat_n(c, length as usize).collect();
-                // alloc.c Fmake_string: the result is unibyte only when INIT is
-                // an ASCII character and MULTIBYTE is nil.  Every other
-                // character, a raw-byte character included, makes a multibyte
-                // string, whatever the length.
-                let multibyte = !(u32::try_from(init).is_ok_and(|code| code < 0x80)
-                    && args.get(2).is_none_or(Value::is_nil));
-                Ok(make_shared_string_value_with_multibyte(
-                    s,
-                    Vec::new(),
-                    multibyte,
+                need_arg_range(name, args, 2, 3)?;
+                // GNU checks LENGTH before INIT, including at length zero.
+                let length = match args[0].kind() {
+                    Kind::Integer(length) if length >= 0 => length as usize,
+                    _ => return Err(wrong_type_argument("wholenump", args[0])),
+                };
+                let init = character_code(args[1])?;
+                Ok(crate::lisp::types::string_object_value(
+                    SharedStringState::repeated_character(
+                        init,
+                        length,
+                        args.get(2).is_some_and(Value::is_truthy),
+                    )?,
                 ))
             }
             "make-temp-name" => {
@@ -139,70 +124,12 @@ define_dispatch!(
 
             // ── String operations ──
             "concat" => {
-                let mut result = String::new();
-                let mut props = Vec::new();
-                let mut multibyte = false;
-                // Plain-string arguments only need one text copy; the generic
-                // StringLike route below clones each argument and re-derives
-                // property offsets, which made repeated accumulation
-                // (`(setq s (concat "x" s))') quadratic with a large constant.
-                // The final value can skip the result re-scan only when every
-                // argument's multibyte verdict came from an authoritative scan
-                // here, so track that.
-                let mut all_plain_scanned = true;
-                for a in args {
-                    match a.kind() {
-                        Kind::String(text) => {
-                            if !multibyte && !text.is_ascii() {
-                                multibyte |= text
-                                    .chars()
-                                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
-                            }
-                            result.push_str(&text);
-                            continue;
-                        }
-                        Kind::StringObject(state) if state.borrow().props.is_empty() => {
-                            let state = state.borrow();
-                            // Cached flags may be stale relative to the text, so
-                            // route the final value through the re-scanning
-                            // constructor below.
-                            all_plain_scanned = false;
-                            multibyte |= state.multibyte;
-                            result.push_str(&state.text);
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    all_plain_scanned = false;
-                    if let Some(string) = string_like(a) {
-                        let offset = result.chars().count();
-                        result.push_str(&string.text);
-                        props.extend(copied_string_props(&string.props, offset));
-                        multibyte |= string.multibyte;
-                    } else if a.is_nil() {
-                    } else if matches!(a.kind(), Kind::Cons(_))
-                        || is_vector_value(a)
-                        || is_bool_vector_value(interp, a)
-                    {
-                        let (text, text_multibyte) = concat_sequence_string(interp, a)?;
-                        result.push_str(&text);
-                        multibyte |= text_multibyte;
-                    } else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("wrong-type-argument".into()),
-                            Value::Symbol("sequencep".into()),
-                            *a,
-                        ])));
-                    }
+                let result = SharedStringState::concatenate(args)?;
+                if result.len() == 0 && !result.is_multibyte() {
+                    // alloc.c returns the existing empty unibyte string.
+                    return Ok(Value::String("".into()));
                 }
-                if all_plain_scanned && !multibyte {
-                    return Ok(Value::String(result.into()));
-                }
-                Ok(string_like_value_with_multibyte(
-                    result,
-                    merge_string_props(props),
-                    multibyte,
-                ))
+                Ok(crate::lisp::types::string_object_value(result))
             }
             "string-match" => regexp::string_match_impl(interp, args, env, true),
 
@@ -253,67 +180,17 @@ define_dispatch!(
                 };
                 Ok(Value::Integer(width as i64))
             }
-            "string" => {
-                let mut result = String::new();
-                let mut multibyte = false;
-                for arg in args {
-                    let code = arg.as_integer()?;
-                    result.push(char_for_codepoint(code)?);
-                    multibyte |= code > 0x7F;
-                }
-                Ok(string_like_value_with_multibyte(
-                    result,
-                    Vec::new(),
-                    multibyte,
-                ))
-            }
+            "string" => Ok(crate::lisp::types::string_object_value(
+                SharedStringState::from_characters(args)?,
+            )),
             "substring" | "substring-no-properties" => {
-                if args.is_empty() || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs("substring".into(), args.len()));
-                }
-                if is_vector_value(&args[0]) {
-                    let items = vector_items(&args[0])?;
-                    let len = items.len() as i64;
-                    let from = normalize_string_index(args.get(1), 0, len)? as usize;
-                    let to = normalize_string_index(args.get(2), len, len)? as usize;
-                    return Ok(Value::list(
-                        std::iter::once(Value::symbol("vector-literal"))
-                            .chain(items[from..to].iter().cloned()),
-                    ));
-                }
-                if is_bool_vector_value(interp, &args[0]) {
-                    let items = bool_vector_values(interp, &args[0])?;
-                    let len = items.len() as i64;
-                    let from = normalize_string_index(args.get(1), 0, len)? as usize;
-                    let to = normalize_string_index(args.get(2), len, len)? as usize;
-                    return Ok(make_bool_vector_value(
-                        interp,
-                        items[from..to].iter().map(Value::is_truthy),
-                    ));
-                }
-                // editfns.c Fsubstring's check is CHECK_ARRAY: `arrayp'.
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("arrayp".into(), args[0]))?;
-                let chars: Vec<char> = string.text.chars().collect();
-                let len = chars.len() as i64;
-                let from = normalize_string_index(args.get(1), 0, len)? as usize;
-                let to = normalize_string_index(args.get(2), len, len)? as usize;
-                let props = if name == "substring-no-properties" {
-                    Vec::new()
-                } else {
-                    // Fsubstring copies through copy_text_properties.
-                    copied_string_props(&slice_string_props(&string.props, from, to), 0)
-                };
-                let text = chars[from..to].iter().collect();
-                if matches!(args[0].kind(), Kind::StringObject(_)) {
-                    Ok(make_shared_string_value_with_multibyte(
-                        text,
-                        props,
-                        string.multibyte,
-                    ))
-                } else {
-                    Ok(string_like_value(text, props))
-                }
+                need_arg_range(name, args, 1, 3)?;
+                substring_value(
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    name == "substring",
+                )
             }
             "string-to-unibyte" => {
                 need_args(name, args, 1)?;
@@ -429,6 +306,13 @@ define_dispatch!(
                 // and signalled beyond, which is `string-make-unibyte's
                 // business, not this primitive's.
                 need_args(name, args, 1)?;
+                if let Kind::StringObject(state) = args[0].kind() {
+                    let state = state.borrow();
+                    if !state.is_multibyte() {
+                        return Ok(args[0]);
+                    }
+                    return Ok(bytes_to_unibyte_value(&state.as_unibyte_bytes()));
+                }
                 let string = string_like(&args[0])
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
                 if !string.multibyte {
@@ -791,12 +675,8 @@ define_dispatch!(
             }
             "char-to-string" => {
                 need_args(name, args, 1)?;
-                let n = args[0].as_integer()?;
-                let c = char_for_codepoint(n)?;
-                Ok(string_like_value_with_multibyte(
-                    c.to_string(),
-                    Vec::new(),
-                    n > 0x7F,
+                Ok(crate::lisp::types::string_object_value(
+                    SharedStringState::from_characters(args)?,
                 ))
             }
             "base64-encode-region" => {

@@ -3916,7 +3916,7 @@ fn process_identity_supports_desktop_lock_checks() {
     assert_eq!(items[1], Value::T);
     assert!(
         matches!(items[2].kind(), Kind::String(name) if !name.is_empty())
-            || matches!(items[2].kind(), Kind::StringObject(state) if !state.borrow().text.is_empty())
+            || matches!(items[2].kind(), Kind::StringObject(state) if !state.borrow().text().is_empty())
     );
     assert_eq!(items[3], Value::Nil);
     assert!(items[4].is_truthy());
@@ -7696,8 +7696,20 @@ fn quoted_bytecode_reader_forms_are_materialized_as_records() {
     assert_eq!(items.first(), Some(&Value::Symbol("macro".into())));
     assert!(matches!(
         items.get(1).map(|v| v.kind()),
-        Some(Kind::Record(_))
+        Some(Kind::Closure(_))
     ));
+    // The old test name predates the shared PVEC_CLOSURE representation.
+    // GNU identifies the same quoted object as bytecode, not a record; its
+    // actual fields and execution must survive quoted-list materialization.
+    let mut batch = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut batch,
+            include_str!("../../../../tests/fixtures/quoted-bytecode-reader-closure.el"),
+        )
+        .to_string(),
+        include_str!("../../../../tests/fixtures/quoted-bytecode-reader-closure.expected").trim(),
+    );
 }
 
 #[test]

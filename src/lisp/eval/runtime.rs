@@ -1791,39 +1791,32 @@ impl Interpreter {
         prototype: &Value,
         closure_vars: &[Value],
     ) -> Result<Value, LispError> {
-        let Kind::Record(id) = prototype.kind() else {
+        let Kind::Closure(closure) = prototype.kind() else {
             return Err(LispError::WrongTypeArgument(
                 "byte-code-function-p".into(),
                 *prototype,
             ));
         };
-        let Some(record) = self.find_record(id) else {
-            return Err(LispError::WrongTypeArgument(
-                "byte-code-function-p".into(),
-                *prototype,
-            ));
+        let constants = closure.get(2).ok_or_else(|| {
+            LispError::Signal("make-closure prototype has no constants vector".into())
+        })?;
+        let Kind::Vector(constants) = constants.kind() else {
+            return Err(LispError::WrongTypeArgument("vectorp".into(), constants));
         };
-        if record.kind != RecordKind::Closure {
-            return Err(LispError::WrongTypeArgument(
-                "byte-code-function-p".into(),
-                *prototype,
-            ));
-        }
-        let mut slots = record.slots.clone();
-        let mut constants = slots
-            .get(2)
-            .and_then(|slot| crate::lisp::primitives::vector_items(slot).ok())
-            .ok_or_else(|| {
-                LispError::Signal("make-closure prototype has no constants vector".into())
-            })?;
         if closure_vars.len() > constants.len() {
             return Err(LispError::Signal(
                 "Closure vars do not fit in constvec".into(),
             ));
         }
-        constants[..closure_vars.len()].clone_from_slice(closure_vars);
-        slots[2] = Value::vector(constants);
-        Ok(self.create_pseudovector(RecordKind::Closure, "byte-code-function", slots))
+        // alloc.c:Fmake_closure copies the actual constant vector and closure
+        // slots. No host record, registry entry or detached slot array exists.
+        let copied_constants = constants.shallow_copy();
+        for (index, value) in closure_vars.iter().enumerate() {
+            copied_constants.set(index, *value);
+        }
+        let copied = closure.shallow_copy();
+        copied.initialize_slot(2, Value::Vector(copied_constants));
+        Ok(Value::Closure(copied))
     }
 
     fn create_record_with_kind(
@@ -1873,15 +1866,6 @@ impl Interpreter {
 
     pub fn find_record_mut(&mut self, key: impl RecordKey) -> Option<&mut RecordState> {
         let record = key.record_ref(self)?;
-        let id = record.id;
-        // The caller may rewrite the slots, so a decoded byte-code program
-        // for this record can no longer be trusted (see bytecode::vm).
-        if let Some(slot) = (id as usize)
-            .checked_sub(1)
-            .and_then(|index| self.bytecode_program_cache.get_mut(index))
-        {
-            *slot = None;
-        }
         // SAFETY: as `find_record'; the exclusive borrow of `self' keeps
         // any other path to the record's state out for its duration, as
         // the registry's `&mut' did.

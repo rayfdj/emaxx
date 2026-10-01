@@ -1162,7 +1162,7 @@ pub(crate) fn printer_stream_at_line_start(
             let empty = buffer.point_min() == buffer.point_max();
             Ok(!empty && buffer_position_at_line_start(&buffer, buffer.point()))
         }
-        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Lambda(_)) => Ok(false),
+        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Closure(_)) => Ok(false),
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
             other.value().type_name(),

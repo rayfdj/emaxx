@@ -137,7 +137,7 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
             .map(|character| character.to_string().into_bytes())
             .unwrap_or_else(|| format!("<{code}>").into_bytes()),
         Kind::String(text) => text.as_bytes().to_vec(),
-        Kind::StringObject(state) => state.borrow().text.as_bytes().to_vec(),
+        Kind::StringObject(state) => state.borrow().text().as_bytes().to_vec(),
         Kind::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
         other => format!("<{other}>").into_bytes(),
     }
@@ -211,17 +211,11 @@ pub(crate) fn function_documentation(
     }
     if let Kind::Record(id) = value.kind()
         && let Some(record) = interp.find_record(id)
-        && record.kind == crate::lisp::eval::RecordKind::Closure
-    {
-        return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
-    }
-    if let Kind::Record(id) = value.kind()
-        && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
     {
         return record.slots.first().cloned();
     }
-    let Kind::Lambda(lambda) = value.kind() else {
+    let Kind::Closure(lambda) = value.kind() else {
         return None;
     };
     lambda.documentation().filter(|documentation| {
@@ -411,7 +405,7 @@ pub(crate) fn eval_callable_metadata_form(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Kind::Lambda(lambda) = func.kind() {
+    if let Kind::Closure(lambda) = func.kind() {
         // The form under the closure's own environment, as a call of the
         // closure would install it.
         let depth = env.len();
@@ -1564,7 +1558,7 @@ pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
             }
         }
         Kind::String(text) => text.chars().next(),
-        Kind::StringObject(state) => state.borrow().text.chars().next(),
+        Kind::StringObject(state) => state.borrow().text().chars().next(),
         _ => None,
     }
 }

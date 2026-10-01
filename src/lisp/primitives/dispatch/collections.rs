@@ -712,15 +712,14 @@ define_dispatch!(
                 let readable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Closure
-                        | crate::lisp::eval::RecordKind::BoolVector
+                    crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
                     && !matches!(
                         args[0].kind(),
-                        Kind::Lambda(_) | Kind::CharTable(_) | Kind::LispRecord(_)
+                        Kind::Closure(_) | Kind::CharTable(_) | Kind::LispRecord(_)
                     )
                     && !readable_record
                 {
@@ -748,7 +747,7 @@ define_dispatch!(
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }
                     }
-                    Kind::Lambda(lambda) => lambda
+                    Kind::Closure(lambda) => lambda
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::CharTable(id) => {
@@ -769,18 +768,7 @@ define_dispatch!(
                                 .cloned()
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
-                        if record.kind == crate::lisp::eval::RecordKind::Closure {
-                            // GNU data.c:Faref exposes every Lisp_Closure slot
-                            // verbatim.  In particular, CLOSURE_ARGLIST is
-                            // already either the packed bytecode descriptor or
-                            // the legacy dynamic-binding argument list.
-                            return record
-                                .slots
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
-                        }
-                        unreachable!("array check admitted only closure and bool-vector adapters")
+                        unreachable!("array check admitted only a bool-vector adapter")
                     }
                     _ => {
                         if is_vector_value(&args[0]) {
@@ -868,9 +856,9 @@ define_dispatch!(
                     }
                     Kind::StringObject(state) => {
                         let mut state = state.borrow_mut();
-                        let len = state.text.chars().count();
+                        let len = state.len();
                         let fill_code = args[1].as_integer()?;
-                        let fill_char = if state.multibyte {
+                        let fill_char = if state.is_multibyte() {
                             char::from_u32(fill_code as u32)
                                 .ok_or_else(|| LispError::Signal("Invalid character".into()))?
                         } else if !(0..=255).contains(&fill_code) {
@@ -880,7 +868,12 @@ define_dispatch!(
                         } else {
                             raw_byte_regex_char(fill_code as u8)
                         };
-                        state.text = std::iter::repeat_n(fill_char, len).collect();
+                        let multibyte = state.is_multibyte();
+                        state.replace_text(
+                            std::iter::repeat_n(fill_char, len).collect(),
+                            multibyte,
+                            Vec::new(),
+                        );
                         state.props.clear();
                         Ok(args[0])
                     }
@@ -1022,10 +1015,7 @@ define_dispatch!(
                 match args[0].kind() {
                     Kind::StringObject(state) => {
                         let mut state = state.borrow_mut();
-                        let len = state.text.len();
-                        state.text = "\0".repeat(len);
-                        state.props.clear();
-                        state.multibyte = false;
+                        state.clear();
                         Ok(Value::Nil)
                     }
                     Kind::String(_) => Ok(Value::Nil),

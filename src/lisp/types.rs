@@ -1033,10 +1033,10 @@ pub type SharedFloat = crate::lisp::alloc::FloatRef;
 pub type SharedCons = crate::lisp::alloc::ConsRef;
 pub use crate::lisp::alloc::WeakConsRef;
 pub type ConsCells = (ConsSlot, ConsSlot);
-/// Interpreted closures keep their GNU slots in the vector allocation.
-pub type LambdaValue = crate::lisp::alloc::ClosureRef;
+/// Interpreted and byte-code closures share their inline GNU fields.
+pub use crate::lisp::alloc::ClosureRef;
 
-impl LambdaValue {
+impl ClosureRef {
     #[inline]
     pub(crate) fn parameters(&self) -> Value {
         self.get(0).expect("a closure has an argument slot")
@@ -1258,7 +1258,6 @@ impl BufferRef {
 /// in a vector block (or on its own when large), named by its address.
 pub use crate::lisp::alloc::VectorRef;
 /// The pseudovector kinds' handles (alloc.c's `allocate_pseudovector').
-pub type LambdaRef = crate::lisp::alloc::ClosureRef;
 pub type BufferRef = crate::lisp::alloc::VectorlikeRef<BufferValue>;
 mod marker;
 pub use crate::overlay::{OverlayRef, OverlayValue};
@@ -1519,29 +1518,8 @@ pub struct StringPropertySpan {
     pub props: Vec<(String, Value)>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct SharedStringState {
-    pub text: String,
-    pub props: Vec<StringPropertySpan>,
-    pub multibyte: bool,
-    /// Sparse character-indexed values for Emacs characters outside
-    /// Unicode's scalar range.  `text` contains one placeholder scalar at
-    /// each recorded index, so ordinary Unicode strings retain Rust's fast
-    /// native representation while the full GNU character range remains
-    /// lossless and one entry still counts as one Lisp character.
-    pub extended_chars: Vec<(usize, u32)>,
-}
-
-impl SharedStringState {
-    /// `size_byte' as the census reads it.
-    pub(crate) fn storage_bytes(&self) -> usize {
-        crate::lisp::primitives::lisp_string_storage_byte_len(
-            &self.text,
-            self.multibyte,
-            &self.extended_chars,
-        )
-    }
-}
+pub(crate) mod string_data;
+pub use string_data::SharedStringState;
 
 /// Detects circular lists during traversal with Brent's algorithm, the same
 /// scheme GNU's FOR_EACH_TAIL uses: constant memory and no hashing.
@@ -1681,8 +1659,8 @@ pub enum Kind {
     Vector(VectorRef),
     /// A static GNU-layout subr containing its arity and native entry point.
     BuiltinFunc(BuiltinRef),
-    /// A lambda or closure: params, immutable shared body, captured env.
-    Lambda(LambdaRef),
+    /// GNU PVEC_CLOSURE: argument descriptor, code/body, constants/environment.
+    Closure(ClosureRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(BufferRef),
     /// The canonical GNU-layout marker allocation.
@@ -1782,7 +1760,7 @@ impl Value {
         Value::from_bits(subr.identity_ptr() | TAG_VECTORLIKE)
     }
     #[inline]
-    pub fn Lambda(lambda: LambdaRef) -> Value {
+    pub fn Closure(lambda: ClosureRef) -> Value {
         Value::from_bits(lambda.identity() | TAG_VECTORLIKE)
     }
     #[inline]
@@ -1949,7 +1927,7 @@ impl Value {
                             Kind::HashTable(HashTableRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Closure => {
-                            Kind::Lambda(crate::lisp::alloc::ClosureRef::from_raw(header))
+                            Kind::Closure(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::StringObject => {
                             impossible_tag("a string object uses the string tag")
@@ -2036,7 +2014,7 @@ impl Kind {
             Kind::Cons(v) => Value::Cons(v),
             Kind::Vector(v) => Value::Vector(v),
             Kind::BuiltinFunc(v) => Value::BuiltinFunc(v),
-            Kind::Lambda(v) => Value::Lambda(v),
+            Kind::Closure(v) => Value::Closure(v),
             Kind::Buffer(v) => Value::Buffer(v),
             Kind::Marker(v) => Value::Marker(v),
             Kind::Overlay(v) => Value::Overlay(v),
@@ -2440,11 +2418,11 @@ impl Value {
         } else {
             Value::list(body)
         };
-        Self::allocated_lambda(&[parameters, body, env])
+        Self::allocated_closure(&[parameters, body, env])
     }
 
-    pub(crate) fn allocated_lambda(slots: &[Value]) -> Self {
-        Value::Lambda(crate::lisp::alloc::ClosureRef::allocate(slots))
+    pub(crate) fn allocated_closure(slots: &[Value]) -> Self {
+        Value::Closure(crate::lisp::alloc::ClosureRef::allocate(slots))
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
@@ -2635,6 +2613,19 @@ impl Value {
     /// Source evaluation and other callers share this path so cycle and
     /// improper-list handling cannot drift between independent list walkers.
     pub(crate) fn extend_list_elements(&self, result: &mut Vec<Value>) -> Result<(), LispError> {
+        self.visit_list_elements(|value| {
+            result.push(value);
+            Ok(())
+        })
+    }
+
+    /// Visit the actual list fields without allocating an argument copy.
+    /// Retains the same cycle and improper-tail checks as `to_vec`.
+    #[inline]
+    pub(crate) fn visit_list_elements(
+        &self,
+        mut visit: impl FnMut(Value) -> Result<(), LispError>,
+    ) -> Result<(), LispError> {
         let mut current = *self;
         let mut seen = CycleGuard::new();
         loop {
@@ -2644,7 +2635,7 @@ impl Value {
                     if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
                     }
-                    result.push(cell.car.get());
+                    visit(cell.car.get())?;
                     current = cell.cdr.get();
                 }
                 _ => {
@@ -2667,7 +2658,12 @@ impl Value {
             Kind::Cons(_) => "cons".into(),
             Kind::Vector(_) => "vector".into(),
             Kind::BuiltinFunc(name) => format!("builtin<{}>", name),
-            Kind::Lambda(_) => "lambda".into(),
+            Kind::Closure(closure) => if closure.is_bytecode() {
+                "byte-code-function"
+            } else {
+                "lambda"
+            }
+            .into(),
             Kind::Buffer(buffer) => format!("buffer<{}>", buffer.borrow().name),
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
@@ -2730,15 +2726,21 @@ fn values_equal_recursive(
         (Kind::StringObject(a), Kind::StringObject(b)) => {
             let a = RefCell::borrow(a.as_ref());
             let b = RefCell::borrow(b.as_ref());
-            a.text == b.text && a.extended_chars == b.extended_chars
+            a.text_parts() == b.text_parts()
         }
         (Kind::String(a), Kind::StringObject(b)) => {
             let b = RefCell::borrow(b.as_ref());
-            b.extended_chars.is_empty() && a.as_str() == b.text
+            {
+                let (text, extended) = b.text_parts();
+                extended.is_empty() && a.as_str() == text
+            }
         }
         (Kind::StringObject(a), Kind::String(b)) => {
             let a = RefCell::borrow(a.as_ref());
-            a.extended_chars.is_empty() && a.text == b.as_str()
+            {
+                let (text, extended) = a.text_parts();
+                extended.is_empty() && text == b.as_str()
+            }
         }
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::Cons(a), Kind::Cons(b)) => {
@@ -2765,7 +2767,7 @@ fn values_equal_recursive(
             a.len() == b.len() && a.zip(b).all(|(a, b)| values_equal_recursive(&a, &b, seen))
         }
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::Lambda(a), Kind::Lambda(b)) => {
+        (Kind::Closure(a), Kind::Closure(b)) => {
             if a.ptr_eq(&b)
                 || !seen
                     .get_or_insert_with(HashSet::new)
@@ -2834,7 +2836,7 @@ fn format_value(
         Kind::Float(v) => write!(f, "{}", format_float(v.get())),
         Kind::String(s) => write!(f, "\"{}\"", s),
         Kind::StringObject(state) => {
-            write!(f, "\"{}\"", state.as_ref().borrow().text)
+            write!(f, "\"{}\"", state.as_ref().borrow().text())
         }
         Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(&s)),
         Kind::Vector(vector) => {
@@ -2911,7 +2913,7 @@ fn format_value(
             write!(f, ")")
         }
         Kind::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
-        Kind::Lambda(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
+        Kind::Closure(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
@@ -3048,7 +3050,11 @@ impl fmt::Display for LispErrorKind {
                     match items[1].kind() {
                         Kind::String(text) => write!(f, "{text:?}"),
                         Kind::StringObject(object) => {
-                            write!(f, "{:?}", std::cell::RefCell::borrow(object.as_ref()).text)
+                            write!(
+                                f,
+                                "{:?}",
+                                std::cell::RefCell::borrow(object.as_ref()).text()
+                            )
                         }
                         value => write!(f, "{value}"),
                     }
@@ -3074,7 +3080,7 @@ impl fmt::Display for LispErrorKind {
                 Ok(items) if items.len() >= 2 => match items[1].kind() {
                     Kind::String(text) => write!(f, "{text}"),
                     Kind::StringObject(object) => {
-                        write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text)
+                        write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text())
                     }
                     value => write!(f, "{value}"),
                 },
@@ -3266,7 +3272,7 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
                 out.push(')');
             }
             Kind::StringObject(state) => {
-                let text: String = std::cell::RefCell::borrow(&state).text.clone();
+                let text: String = std::cell::RefCell::borrow(&state).text();
                 let mut brief: String = text.chars().take(48).collect();
                 if brief.len() < text.len() {
                     brief.push('…');
@@ -3692,7 +3698,7 @@ mod tests {
         let lambda = Value::lambda(vec!["value".into()], Vec::new(), Value::Nil);
         let clone = lambda;
 
-        let (Kind::Lambda(lambda), Kind::Lambda(cloned_lambda)) = (lambda.kind(), clone.kind())
+        let (Kind::Closure(lambda), Kind::Closure(cloned_lambda)) = (lambda.kind(), clone.kind())
         else {
             unreachable!("constructed lambda values")
         };

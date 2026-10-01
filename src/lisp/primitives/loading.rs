@@ -71,7 +71,7 @@ pub(crate) fn collect_interactive_args(
     // records, not interpreted lambdas, so ask the real `oclosure-type'
     // owner when the native lambda-shape probe misses.
     let is_oclosure = crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
-        || (matches!(func.kind(), Kind::Record(_) | Kind::Lambda(_))
+        || (matches!(func.kind(), Kind::Record(_) | Kind::Closure(_))
             && interp.has_lisp_function("oclosure-type")
             && interp
                 .call_function_value(
@@ -104,7 +104,7 @@ pub(crate) fn collect_interactive_args(
     };
     match spec.kind() {
         Kind::String(spec) => parse_interactive_string(&spec, interp, env),
-        Kind::StringObject(state) => parse_interactive_string(&state.borrow().text, interp, env),
+        Kind::StringObject(state) => parse_interactive_string(&state.borrow().text(), interp, env),
         _ => {
             if let Some(items) = interactive_list_form_items(&spec) {
                 let mut values = Vec::with_capacity(items.len());

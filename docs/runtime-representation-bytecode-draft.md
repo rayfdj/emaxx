@@ -2,12 +2,12 @@
 
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
-This is an unfinished draft, **not a published task-branch repair**. The local
-worktree now carries uncommitted source229; published runtime207 is unchanged.
+The full goal remains unfinished. The source231 task checkpoint now carries the
+later closure/string work beyond runtime207; PR #79 is draft and main is unchanged.
 The next [canonical string-byte draft](runtime-representation-string-bytes-draft.md)
 continues from source216 in a separate checkout.
 
-That continuation now has frozen **source229** and separate **source230**: canonical byte storage and full-character
+That continuation now has frozen **source229** and separate **source231**: canonical byte storage and full-character
 constructors are implemented, and the VM fetches current bytes with byte-offset
 cursors rather than decoded-program caches. Source224 passes eighteen focused
 controls in both profiles after a GNU-backed fixture correction; source223's
@@ -24,8 +24,17 @@ ordinary GNU/source229 confirm the shared closure's fields and execution. The
 terminal run has a quote-rendering divergence. Separate source230 repairs three
 substring failures and that internal assertion; strict checks and all three
 substring controls pass. Its 31 focused controls retain one added-fixture setup
-failure (bare interpreter lacks GNU `cadr`); the unexecuted source231 proposal
-loads GNU only for that additional contract. Broader and ordinary validation run.
+failure (bare interpreter lacks GNU `cadr`), while all 937 affected tests and
+54 ordinary comparisons pass. Source231 loads GNU only for that additional
+contract and passes strict checks plus all 31 focused controls. The task worktree
+matches its 440 inputs. Fresh release validation passes all 31 focused controls
+and 937 affected tests; all 54 ordinary GNU comparisons pass. Complete macOS
+library validation records 2,974 passes, five failures and two existing ignores;
+both later Cargo stages never run. The linked string handover names the root
+metadata, closure assertion and bitmap coverage failures. Linux is pending.
+Source229's closed terminal
+run retains seven quote-display divergences and a later GNU startup-readiness
+failure; 54 scenarios never start. No complete terminal or performance pass exists.
 The linked
 string-byte handover is authoritative for that job and the remaining
 plain-string/header/stack-capacity/accounting limitations. The

@@ -248,7 +248,7 @@ fn graph_matches(
         (Kind::BuiltinFunc(x), Kind::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
         // Identity-bearing kinds compared by the tests through the
         // interpreters that own them.
-        (Kind::Lambda(left), Kind::Lambda(right)) => {
+        (Kind::Closure(left), Kind::Closure(right)) => {
             if left.public_len() != right.public_len() {
                 return Err("closure length differs".into());
             }
@@ -749,7 +749,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     // Two closures over one environment: the frame is shared, and calling
     // them in the restored interpreter mutates the shared binding.
     let closures = slots[0].to_vec().expect("closure list");
-    let (Kind::Lambda(first), Kind::Lambda(second)) = (closures[0].kind(), closures[1].kind())
+    let (Kind::Closure(first), Kind::Closure(second)) = (closures[0].kind(), closures[1].kind())
     else {
         panic!("closures")
     };

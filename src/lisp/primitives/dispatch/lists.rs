@@ -817,20 +817,9 @@ define_dispatch!(
                     // fns.c concat_to_list: CLOSUREP args flatten to their
                     // slots (edebug-unwrap* rebuilds compiled closures with
                     // `(nthcdr 3 (append fn ()))').
-                    match a.kind() {
-                        Kind::Lambda(lambda) => {
-                            items.extend(interp.interpreted_closure_slots(&lambda));
-                            continue;
-                        }
-                        Kind::Record(id) => {
-                            if let Some(record) = interp.find_record(id)
-                                && record.kind == crate::lisp::eval::RecordKind::Closure
-                            {
-                                items.extend(record.slots.iter().cloned());
-                                continue;
-                            }
-                        }
-                        _ => {}
+                    if let Kind::Closure(lambda) = a.kind() {
+                        items.extend(lambda.slots());
+                        continue;
                     }
                     items.extend(a.to_vec()?);
                 }

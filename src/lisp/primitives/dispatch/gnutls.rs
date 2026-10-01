@@ -755,9 +755,7 @@ fn clear_crypto_key(value: &Value) {
     };
     if let Kind::StringObject(state) = source.kind() {
         let mut state = state.borrow_mut();
-        state.text = "\0".repeat(state.text.len());
-        state.props.clear();
-        state.multibyte = false;
+        state.clear();
     }
 }
 

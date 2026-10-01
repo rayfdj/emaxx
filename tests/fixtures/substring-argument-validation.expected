@@ -1,0 +1,1 @@
+((wrong-type-argument arrayp bad) (wrong-type-argument arrayp #&2"") (wrong-type-argument stringp [1 2]) (wrong-type-argument integerp bad) (wrong-type-argument integerp bad) (wrong-type-argument integerp bad) (wrong-type-argument integerp 1.5) (wrong-type-argument integerp 2305843009213693952) (args-out-of-range "abc" -4 nil) (args-out-of-range "abc" nil 4))

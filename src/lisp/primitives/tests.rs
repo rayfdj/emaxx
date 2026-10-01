@@ -601,14 +601,19 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
     else {
         panic!("character-table syntax must produce a typed table");
     };
-    let Some(Kind::Record(decoder_id)) =
-        interp.char_table_extra_slot(table_id, 1).map(|v| v.kind())
+    let Some(Kind::Closure(decoder)) = interp.char_table_extra_slot(table_id, 1).map(|v| v.kind())
     else {
         panic!("the nested decoder must be a typed byte-code-function object");
     };
-    assert_eq!(
-        interp.find_record(decoder_id).map(|record| record.kind),
-        Some(crate::lisp::eval::RecordKind::Closure)
+    assert!(decoder.is_bytecode());
+}
+
+#[test]
+fn bytecode_constructor_preserves_gnu_field_validation_and_sharing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-constructor-gnu-fields.el"),
+        include_str!("../../../tests/fixtures/bytecode-constructor-gnu-fields.expected").trim(),
+        "bytecode constructor field errors, shared slots, descriptors and extras",
     );
 }
 
@@ -670,11 +675,12 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
 
     let optional = positioned(&mut interp, "&optional", 2, &mut env);
     let argument = positioned(&mut interp, "argument", 3, &mut env);
-    let closure = interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::Closure,
-        "byte-code-function",
-        vec![Value::list([optional, argument])],
-    );
+    let closure = Value::allocated_closure(&[
+        Value::list([optional, argument]),
+        Value::string("unexecuted argument descriptor probe"),
+        Value::vector([]),
+        Value::Integer(1),
+    ]);
     assert_eq!(
         call(&mut interp, "func-arity", &[closure], &mut env)
             .expect("read positioned byte-code argument descriptors"),
@@ -704,10 +710,10 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
         &mut env,
     )
     .expect("construct an interpreted closure with positioned parameters");
-    let Kind::Lambda(lambda) = interpreted.kind() else {
+    let Kind::Closure(lambda) = interpreted.kind() else {
         panic!("make-interpreted-closure must return a lambda")
     };
-    let visible_parameters = interp.interpreted_closure_slots(&lambda)[0];
+    let visible_parameters = lambda.parameters();
     assert_eq!(
         call(
             &mut interp,
@@ -18255,6 +18261,51 @@ fn completion_predicates_preserve_string_list_membership() {
 }
 
 #[test]
+fn substring_copies_canonical_bytes_properties_and_vector_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-character-storage.el"),
+        include_str!("../../../tests/fixtures/substring-character-storage.expected").trim(),
+        "substring character storage",
+    );
+}
+
+#[test]
+fn substring_validates_gnu_array_types_and_index_error_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-argument-validation.el"),
+        include_str!("../../../tests/fixtures/substring-argument-validation.expected").trim(),
+        "substring argument validation",
+    );
+}
+
+#[test]
+fn substring_reversed_bounds_signal_without_host_panics() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-reversed-bounds.el"),
+        include_str!("../../../tests/fixtures/substring-reversed-bounds.expected").trim(),
+        "substring reversed bounds",
+    );
+}
+
+#[test]
+fn concat_preserves_canonical_bytes_properties_and_sequence_characters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-concat-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-concat-storage.expected").trim(),
+        "canonical concatenation and Unicode buffer completion",
+    );
+}
+
+#[test]
+fn completion_results_preserve_gnu_encoding_properties_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/completion-result-storage.el"),
+        include_str!("../../../tests/fixtures/completion-result-storage.expected").trim(),
+        "completion result storage and candidate selection",
+    );
+}
+
+#[test]
 fn case_folded_try_completion_preserves_unextended_input_spelling() {
     let program = r#"(let ((completion-ignore-case t))
                        (list
@@ -19358,6 +19409,34 @@ fn native_vector_and_closure_census_matches_gnu_word_layout() {
         include_str!("../../../tests/fixtures/vector-closure-rounded-census.el"),
         include_str!("../../../tests/fixtures/vector-closure-rounded-census.expected").trim(),
         "vector and closure word counts across allocation boundaries",
+    );
+}
+
+#[test]
+fn bytecode_code_mutation_between_calls_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.el"),
+        include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.expected").trim(),
+        "code-string mutation between calls reads current instructions",
+    );
+}
+
+#[test]
+fn bytecode_code_mutation_during_active_call_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-code-active-mutation-baseline.el"),
+        include_str!("../../../tests/fixtures/bytecode-code-active-mutation-baseline.expected")
+            .trim(),
+        "a callback can mutate the next bytecode instruction",
+    );
+}
+
+#[test]
+fn bytecode_closure_constants_and_clone_share_gnu_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-closure-shared-constants.el"),
+        include_str!("../../../tests/fixtures/bytecode-closure-shared-constants.expected").trim(),
+        "closure fields, shared constants, clone, collection and rejected aset",
     );
 }
 
@@ -26909,4 +26988,98 @@ fn input_decode_macro_roots_survive_callbacks_then_release_completed_arrays() {
         include_str!("../../../tests/fixtures/input-decode-macro-reclamation.expected").trim(),
         "the original macro survives replacement and collecting callbacks, then is reclaimed after completion and errors",
     );
+}
+
+#[test]
+fn canonical_string_bytes_preserve_gnu_characters_mutation_and_clear() {
+    let fixture = include_str!("../../../tests/fixtures/canonical-string-bytes.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/canonical-string-bytes.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "canonical string bytes");
+}
+
+#[test]
+fn string_constructors_preserve_gnu_full_character_range_and_errors() {
+    let fixture = include_str!("../../../tests/fixtures/canonical-string-constructors.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/canonical-string-constructors.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "canonical string constructors");
+}
+
+#[test]
+fn shared_string_bytes_are_the_authoritative_unibyte_payload() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for len in [1, 17, 257, 4097] {
+        let mut bytes: Vec<u8> = (0..len).map(|index| (index * 73 + 19) as u8).collect();
+        let value = bytes_to_shared_unibyte_value(&bytes);
+        let Kind::StringObject(object) = value.kind() else {
+            panic!("mutable string object");
+        };
+        let address = object.borrow().bytes().as_ptr() as usize;
+        assert_eq!(object.borrow().bytes(), bytes);
+        assert_eq!(object.borrow().len(), len);
+        for index in [0, len / 2, len - 1] {
+            let byte = bytes[index].wrapping_add(91);
+            call(
+                &mut interp,
+                "aset",
+                &[
+                    value,
+                    Value::Integer(index as i64),
+                    Value::Integer(byte as i64),
+                ],
+                &mut env,
+            )
+            .expect("Faset stores one byte in the original string");
+            bytes[index] = byte;
+            let state = object.borrow();
+            assert_eq!(state.bytes(), bytes);
+            assert_eq!(
+                state.bytes().as_ptr() as usize,
+                address,
+                "unibyte Faset stores in existing data"
+            );
+            assert_eq!(state.storage_bytes(), len);
+        }
+    }
+}
+
+#[test]
+fn bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers() {
+    let fixture = include_str!("../../../tests/fixtures/bytecode-live-fetch.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected = include_str!("../../../tests/fixtures/bytecode-live-fetch.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "live bytecode byte cursor");
+}
+
+#[test]
+fn unused_bytecode_destinations_follow_actual_control_flow() {
+    let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/bytecode-unused-destinations.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "unused bytecode destinations");
 }

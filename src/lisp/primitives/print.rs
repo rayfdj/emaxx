@@ -272,7 +272,7 @@ pub(crate) fn print_ref_key(
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
         Kind::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
-        Kind::Lambda(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
+        Kind::Closure(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
         Kind::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
         Kind::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(&symbol) =>
@@ -476,8 +476,8 @@ fn walk_print_graph(
             Kind::LispRecord(record) => pending.extend(record.slots().rev()),
             Kind::CharTable(table) => pending.extend(table.slots().rev()),
             Kind::SubCharTable(table) => pending.extend(table.slots().rev()),
-            Kind::Lambda(lambda) => {
-                pending.extend(interp.interpreted_closure_slots(&lambda).into_iter().rev());
+            Kind::Closure(lambda) => {
+                pending.extend(lambda.slots().rev());
             }
             _ => {}
         }
@@ -1128,8 +1128,8 @@ pub(crate) fn render_prin1_body(
             let state = state.borrow();
             Ok(render_princ_string(
                 interp,
-                &state.text,
-                state.multibyte,
+                &state.text(),
+                state.is_multibyte(),
                 env,
                 context.options.output_is_function,
             ))
@@ -1137,7 +1137,7 @@ pub(crate) fn render_prin1_body(
         Kind::StringObject(state) => {
             let (text, props, multibyte) = {
                 let state = state.borrow();
-                (state.text.clone(), state.props.clone(), state.multibyte)
+                (state.text(), state.props.clone(), state.is_multibyte())
             };
             if props.is_empty() {
                 return Ok(render_prin1_string(interp, &text, multibyte, env));
@@ -1204,22 +1204,22 @@ pub(crate) fn render_prin1_body(
             Ok(format!("[{}]", rendered_items.join(" ")))
         }
         Kind::Cons(_) => render_prin1_list(interp, value, env, context, depth),
-        Kind::Lambda(lambda_value) => {
+        Kind::Closure(lambda_value) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
             // GNU print.c prints every stored closure slot. Capture filtering
             // belongs to cconv.el at construction, never to the printer.
-            let slots = interp.interpreted_closure_slots(&lambda_value);
+            let slots = lambda_value.slots();
             let mut rendered_slots = Vec::new();
-            for (index, slot) in slots.iter().enumerate() {
+            for (index, slot) in slots.enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {
                     rendered_slots.push("...".into());
                     break;
                 }
                 rendered_slots.push(render_prin1_with_context(
                     interp,
-                    slot,
+                    &slot,
                     env,
                     context,
                     depth + 1,
@@ -1342,28 +1342,6 @@ pub(crate) fn render_prin1_body(
                     }
                     crate::lisp::eval::RecordKind::UserPointer => {
                         crate::lisp::modules::print_user_pointer(interp, id.id)
-                    }
-                    crate::lisp::eval::RecordKind::Closure => {
-                        // GNU print.c writes PVEC_CLOSURE with its dedicated
-                        // readable `#[...]' syntax.  `#s(...)' would read back
-                        // as an ordinary record and make a freshly emitted
-                        // .elc's byte-code functions non-callable.
-                        let slots = record.slots.clone();
-                        let mut rendered_slots = Vec::new();
-                        for (index, slot) in slots.iter().enumerate() {
-                            if context.options.length.is_some_and(|limit| index >= limit) {
-                                rendered_slots.push("...".into());
-                                break;
-                            }
-                            rendered_slots.push(render_prin1_with_context(
-                                interp,
-                                slot,
-                                env,
-                                context,
-                                depth + 1,
-                            )?);
-                        }
-                        format!("#[{}]", rendered_slots.join(" "))
                     }
                     // print.c:1930 prints a thread, mutex or condition
                     // variable by name, falling back to the object's

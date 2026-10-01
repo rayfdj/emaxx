@@ -361,7 +361,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
@@ -566,8 +566,7 @@ pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Va
     let current = item.get();
     match current.kind() {
         Kind::String(text) => {
-            let shared =
-                make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
+            let shared = string_like_value(text.to_string(), Vec::new());
             item.set(shared);
             Ok(shared)
         }
@@ -706,50 +705,6 @@ pub(crate) fn completion_regex_matches(
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
-pub(crate) fn completion_common_prefix(
-    matches: &[CompletionCandidate],
-    input: &str,
-    ignore_case: bool,
-) -> String {
-    let match_chars = matches
-        .iter()
-        .map(|candidate| candidate.name.chars().collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-    let input_chars = input.chars().collect::<Vec<_>>();
-    let mut prefix = String::new();
-    let max_len = match_chars.iter().map(Vec::len).min().unwrap_or(0);
-
-    for index in 0..max_len {
-        let first = match_chars[0][index];
-        let same_actual = match_chars.iter().all(|chars| chars[index] == first);
-        let same_folded = match_chars.iter().all(|chars| {
-            if ignore_case {
-                chars[index].eq_ignore_ascii_case(&first)
-            } else {
-                chars[index] == first
-            }
-        });
-        if !same_folded {
-            break;
-        }
-        if !ignore_case || same_actual {
-            prefix.push(first);
-            continue;
-        }
-        if let Some(input_char) = input_chars
-            .get(index)
-            .copied()
-            .filter(|input_char| input_char.eq_ignore_ascii_case(&first))
-        {
-            prefix.push(input_char);
-        } else {
-            prefix.push(first.to_ascii_lowercase());
-        }
-    }
-
-    prefix
-}
-
 pub(crate) fn filtered_completion_matches(
     interp: &mut Interpreter,
     input: &str,
@@ -876,56 +831,61 @@ pub(crate) fn try_completion(
         return Ok(Value::Nil);
     }
 
+    // minibuf.c:Ftry_completion keeps one actual best match, its common
+    // character count, and whether the matches are distinct. Case folding
+    // selects that whole candidate; it does not invent a spelling by mixing
+    // individual characters from different candidates.
     let ignore_case = completion_ignores_case(interp, env);
-    if ignore_case {
-        if let Some(candidate) = matches.iter().find(|candidate| candidate.name == input) {
-            if matches.len() == 1 {
-                return Ok(Value::T);
-            }
-            return Ok(make_shared_string_value_with_multibyte(
-                candidate.name.clone(),
-                Vec::new(),
-                false,
-            ));
-        }
-        if let Some(candidate) = matches
-            .iter()
-            .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
+    let mut best = &matches[0];
+    let mut size = best.name.chars().count();
+    let mut distinct = false;
+    let input_len = input.chars().count();
+    for candidate in &matches[1..] {
+        let candidate_len = candidate.name.chars().count();
+        let best_len = best.name.chars().count();
+        let compare = size.min(candidate_len);
+        let matched = best
+            .name
+            .chars()
+            .zip(candidate.name.chars())
+            .take(compare)
+            .take_while(|(a, b)| a == b || (ignore_case && a.eq_ignore_ascii_case(b)))
+            .count();
+        let same_case = best
+            .name
+            .chars()
+            .take(compare)
+            .eq(candidate.name.chars().take(compare));
+        distinct |= size != candidate_len || size != matched || (ignore_case && !same_case);
+        if ignore_case
+            && ((matched == candidate_len && matched < best_len)
+                || ((matched == candidate_len) == (matched == best_len)
+                    && candidate.name.starts_with(&input)
+                    && !best.name.starts_with(&input)))
         {
-            return Ok(make_shared_string_value_with_multibyte(
-                candidate.name.clone(),
-                Vec::new(),
-                false,
-            ));
+            best = candidate;
         }
-    } else if matches.iter().all(|candidate| candidate.name == input) {
+        size = matched;
+        if size <= input_len && !ignore_case && distinct {
+            break;
+        }
+    }
+
+    if ignore_case && size == input_len && best.name.chars().count() > size {
+        return Ok(args[0]);
+    }
+    if !distinct && best.name == input {
         return Ok(Value::T);
     }
 
-    // GNU's Ftry_completion returns a fresh string (not `eq' to any
-    // candidate; probed 2026-08-21), and callers mutate it in place --
-    // completion-preview.el sets a `face' on it and reads the result back
-    // through compiled locals.  A plain immutable string here made
-    // `set-text-properties' silently rewrite only the caller's environment
-    // binding, which bytecode stack slots never see; a shared string gives
-    // every holder the same mutable object, like `all-completions' above.
-    let common = completion_common_prefix(&matches, &input, ignore_case);
-    // When case folding finds no extension, GNU preserves the user's exact
-    // spelling ("A" stays "A").  Once completion extends the input it uses
-    // the candidates' canonical case ("AL" becomes "alp").
-    let completed = if ignore_case
-        && common.chars().count() == input.chars().count()
-        && common.eq_ignore_ascii_case(&input)
-    {
-        input
-    } else {
-        common
-    };
-    Ok(make_shared_string_value_with_multibyte(
-        completed,
-        Vec::new(),
-        false,
-    ))
+    // GNU returns Fsubstring of the selected candidate, preserving its bytes,
+    // encoding and copied properties without materializing another text view.
+    substring_value(
+        best.result,
+        Value::Integer(0),
+        Value::Integer(size as i64),
+        true,
+    )
 }
 
 pub(crate) fn all_completions(
@@ -1025,7 +985,7 @@ pub(crate) fn internal_complete_buffer(
             .iter()
             .map(|(id, name)| {
                 Value::cons(
-                    make_shared_string_value_with_multibyte(name.clone(), Vec::new(), false),
+                    string_like_value(name.clone(), Vec::new()),
                     interp.buffer_value(*id).expect("live buffer object"),
                 )
             })
@@ -1555,7 +1515,7 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     {
         return items.get(2..).and_then(interactive_form_in_body);
     }
-    let Kind::Lambda(lambda) = func.kind() else {
+    let Kind::Closure(lambda) = func.kind() else {
         return None;
     };
     lambda
@@ -1590,35 +1550,6 @@ pub(crate) fn callable_interactive_form_items(
                 .cloned()
                 .and_then(|form| form.to_vec().ok());
         }
-        if record.kind != crate::lisp::eval::RecordKind::Closure {
-            return interactive_form_items(func);
-        }
-        let Some(object) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
-            .ok()
-            .flatten()
-        else {
-            return interactive_form_items(func);
-        };
-        let Some(spec) = object.interactive else {
-            return interactive_form_items(func);
-        };
-        // GNU keys interactivity on the slot's presence (PVSIZE >
-        // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
-        // and the function is still a command.  callint.c
-        // Finteractive_form: a vector in the slot is the byte-compiler's
-        // (SPEC MODES) encoding -- the form is element 0 alone; the mode
-        // list is `command-modes' data and never reaches the caller of
-        // the interactive form.
-        let spec = match spec.to_vec() {
-            Ok(items)
-                if matches!(items.first().map(|v| v.kind()),
-                    Some(Kind::Symbol(tag)) if tag == "vector-literal") =>
-            {
-                items.get(1).cloned().unwrap_or(Value::Nil)
-            }
-            _ => spec,
-        };
-        return Some(vec![Value::symbol("interactive"), spec]);
     }
     // callint.c's cons-lambda branch: a spec without MODES entries is
     // answered verbatim (`(interactive)' stays bare, `(interactive "p")'
@@ -1679,7 +1610,7 @@ pub(crate) fn completion_table_is_function(
     env: &Env,
 ) -> bool {
     match collection.kind() {
-        Kind::Symbol(_) | Kind::Lambda(_) | Kind::BuiltinFunc(_) => true,
+        Kind::Symbol(_) | Kind::Closure(_) | Kind::BuiltinFunc(_) => true,
         Kind::Record(_) => callable_value_p(interp, collection, env),
         Kind::Cons(_) => matches!(
             collection.car().map(|v| v.kind()),

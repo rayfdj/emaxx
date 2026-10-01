@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, LispErrorKind,
-    ReaderClosureKind, ReaderForm, SymbolName, Value,
+    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm,
+    SymbolName, Value,
 };
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
@@ -1186,7 +1186,6 @@ pub(crate) struct SyntaxSegmentCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
     BoolVector,
-    Closure,
     Font,
     Process,
     Obarray,
@@ -1208,9 +1207,6 @@ pub(crate) enum RecordKind {
 impl RecordKind {
     fn gnu_vector_slots(self, logical_slots: usize) -> usize {
         match self {
-            // Both interpreted and byte-code closures are ordinary vectors
-            // retagged PVEC_CLOSURE.
-            Self::Closure => logical_slots.saturating_add(1),
             // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
@@ -2940,14 +2936,8 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.strings.get(&key) {
                     return *copied;
                 }
-                let mut inner = state.borrow().clone();
                 let copied = crate::lisp::types::string_object_value(
-                    crate::lisp::types::SharedStringState {
-                        text: std::mem::take(&mut inner.text),
-                        props: Vec::new(),
-                        multibyte: inner.multibyte,
-                        extended_chars: std::mem::take(&mut inner.extended_chars),
-                    },
+                    state.borrow().clone_without_properties(),
                 );
                 self.strings.insert(key, copied);
                 let props = state.borrow().props.clone();
@@ -3007,16 +2997,19 @@ impl ImageGraphCopier {
                 state.slots = slots;
                 copied
             }
-            Kind::Lambda(lambda) => {
+            Kind::Closure(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
                     return *copied;
                 }
                 // Publish identity before copying any slot: every slot
                 // can reach this closure through the stored Lisp graph.
-                let copied = Value::allocated_lambda(&vec![Value::Nil; lambda.public_len()]);
+                let copied = Value::Closure(crate::lisp::alloc::ClosureRef::filled(
+                    lambda.public_len(),
+                    Value::Nil,
+                ));
                 self.lambdas.insert(key, copied);
-                let Kind::Lambda(destination) = copied.kind() else {
+                let Kind::Closure(destination) = copied.kind() else {
                     unreachable!()
                 };
                 for (index, value) in lambda.slots().enumerate() {
@@ -3238,7 +3231,7 @@ impl LispReachability {
             }
             Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
@@ -3324,7 +3317,7 @@ impl LispReachability {
             Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
-            Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
+            Kind::Closure(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
@@ -3377,7 +3370,7 @@ impl LispReachability {
                     self.enqueue(&child);
                 }
             }
-            Kind::Lambda(lambda) => {
+            Kind::Closure(lambda) => {
                 for value in lambda.slots() {
                     self.enqueue(&value);
                 }
@@ -3677,9 +3670,6 @@ impl Interpreter {
             self.mutex_states.retain(|mutex| mutex.record_id != id);
             self.condition_variables
                 .retain(|condvar| condvar.record_id != id);
-            if let Some(slot) = self.bytecode_program_cache.get_mut(index) {
-                *slot = None;
-            }
         }
     }
 
@@ -3921,8 +3911,8 @@ impl Interpreter {
         for entry in &self.bc_unwinds {
             roots::mark_source(self, &mut marked, entry);
         }
-        for constants in &self.bc_live_programs {
-            marked.mark(self, &Value::Vector(*constants));
+        for function in &self.bc_functions {
+            marked.mark(self, function);
         }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
@@ -4702,12 +4692,11 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         crate::lisp::primitives::forget_buffer_views();
-        clone.bytecode_program_cache.clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
-        clone.bc_live_programs.clear();
+        clone.bc_functions.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash copied standard tables only after the complete graph is
@@ -5105,11 +5094,6 @@ pub struct InterpreterState {
     /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
     /// variable is recomputed from after every collection.
     gc_elapsed_total: f64,
-    /// Decoded byte-code programs indexed by record ID minus one — ids are
-    /// dense and never freed, so the slot vector doubles as the cache map
-    /// (see bytecode::vm).
-    pub(crate) bytecode_program_cache:
-        Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     /// bytecode.c's per-thread bytecode stack, its activations' specpdl
@@ -5117,7 +5101,7 @@ pub struct InterpreterState {
     /// roots for as long as the activations run (alloc.c:mark_threads).
     pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
     pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
-    pub(crate) bc_live_programs: Vec<crate::lisp::types::VectorRef>,
+    pub(crate) bc_functions: Vec<Value>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -5866,10 +5850,9 @@ impl Interpreter {
             .collect(),
             gc_elapsed_total: 0.0,
             sqlite_handles: Vec::new(),
-            bytecode_program_cache: Vec::new(),
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_unwinds: Vec::new(),
-            bc_live_programs: Vec::new(),
+            bc_functions: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
@@ -7341,10 +7324,6 @@ impl Interpreter {
             .collect()
     }
 
-    pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
-        self.lambda_capture_overrides.push(capture);
-    }
-
     pub(crate) fn push_lambda_eval_context(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
     }
@@ -7366,12 +7345,6 @@ impl Interpreter {
 
     pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
         self.lambda_capture_overrides.last().copied()
-    }
-
-    /// Snapshot stored slots for consumers that need an owned sequence.
-    /// Ordinary closure access reads the inline slot directly.
-    pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        lambda.slots().collect()
     }
 
     /// Register TAG as an active `catch' target for the extent of a native

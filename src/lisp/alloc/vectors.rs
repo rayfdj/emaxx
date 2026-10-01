@@ -569,6 +569,31 @@ impl VectorRef {
         Self(unsafe { NonNull::new_unchecked(header) })
     }
 
+    pub(crate) fn shallow_copy(&self) -> Self {
+        let len = self.len();
+        if len == 0 {
+            return *self;
+        }
+        let nbytes = HEADER_SIZE + len * WORD_SIZE;
+        crate::lisp::native_comp::note_lisp_allocation(nbytes);
+        let header = allocate_vectorlike(nbytes);
+        // SAFETY: fresh word-aligned storage for this header and LEN cells.
+        // Read each source Cell without exposing a shared Value reference.
+        unsafe {
+            (*header).size = len;
+            (*header)
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
+            let target = payload(header).cast::<Cell<Value>>();
+            for (index, field) in self.cells().iter().enumerate() {
+                target.add(index).write(Cell::new(field.get()));
+            }
+            raise(&LIVE_VECTORS, 1);
+            raise(&LIVE_VECTOR_SLOTS, len + 1);
+            Self(NonNull::new_unchecked(header))
+        }
+    }
+
     /// # Safety
     /// HEADER is an allocated ordinary vector's header.
     pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
@@ -638,16 +663,28 @@ impl std::fmt::Debug for VectorRef {
     }
 }
 
-/// An interpreted PVEC_CLOSURE: its header followed by the actual Lisp
-/// slots. No copied parameter/body representation accompanies the object.
+/// GNU PVEC_CLOSURE: its header followed by the authoritative Lisp slots.
+/// Interpreted and byte-code functions use this same allocation.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ClosureRef(NonNull<VectorHeader>);
 
 impl ClosureRef {
     pub(crate) fn allocate(slots: &[Value]) -> Self {
-        assert!((3..=6).contains(&slots.len()));
-        let nbytes = vroundup(HEADER_SIZE + slots.len() * WORD_SIZE);
+        Self::from_fields(slots.len(), |index| slots[index])
+    }
+
+    pub(crate) fn filled(len: usize, value: Value) -> Self {
+        Self::from_fields(len, |_| value)
+    }
+
+    pub(crate) fn shallow_copy(&self) -> Self {
+        Self::from_fields(self.public_len(), |index| self.cells()[index].get())
+    }
+
+    fn from_fields(len: usize, mut field: impl FnMut(usize) -> Value) -> Self {
+        assert!(len <= PSEUDOVECTOR_SIZE_MASK);
+        let nbytes = vroundup(HEADER_SIZE + len * WORD_SIZE);
         // GNU allocate_vectorlike charges the header and actual Lisp words.
         // Word alignment adds no payload padding; block metadata is separate.
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
@@ -655,14 +692,13 @@ impl ClosureRef {
         // SAFETY: freshly allocated NBYTES, aligned for the header and slots.
         // Every traced slot is initialized before the object is published.
         unsafe {
-            (*header).size =
-                VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, slots.len());
+            (*header).size = VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, len);
             (*header)
                 .mark_bit()
                 .mark(super::super::types::current_mark_epoch());
             let target = payload(header).cast::<Cell<Value>>();
-            for (index, value) in slots.iter().enumerate() {
-                target.add(index).write(Cell::new(*value));
+            for index in 0..len {
+                target.add(index).write(Cell::new(field(index)));
             }
             census_on_allocate(header);
             Self(NonNull::new_unchecked(header))
@@ -670,7 +706,7 @@ impl ClosureRef {
     }
 
     /// # Safety
-    /// HEADER names a live interpreted closure allocated by this allocator.
+    /// HEADER names a live PVEC_CLOSURE allocated by this allocator.
     pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
         Self(unsafe { NonNull::new_unchecked(header) })
     }
@@ -705,6 +741,12 @@ impl ClosureRef {
 
     pub(crate) fn slots(&self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator + '_ {
         self.cells().iter().map(Cell::get)
+    }
+
+    #[inline]
+    pub(crate) fn is_bytecode(&self) -> bool {
+        // data.c:Fbyte_code_function_p checks the actual code field only.
+        self.get(1).is_some_and(|code| code.is_string())
     }
 
     /// Fill a slot while reconstructing an object graph. Lisp cannot aset
@@ -1318,7 +1360,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::SymbolWithPos => Value::SymbolWithPos(SymbolWithPosRef::from_raw(header)),
-            VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
+            VectorTag::Closure => Value::Closure(ClosureRef::from_raw(header)),
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),

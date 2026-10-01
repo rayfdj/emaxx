@@ -1626,7 +1626,13 @@ define_dispatch!(
                     Kind::Cons(_) => "cons",
                     Kind::BuiltinFunc(_) => "subr",
                     // data.c:Ftype_of's PVEC_CLOSURE with a cons code slot.
-                    Kind::Lambda(_) => "interpreted-function",
+                    Kind::Closure(closure) => {
+                        if closure.is_bytecode() {
+                            "byte-code-function"
+                        } else {
+                            "interpreted-function"
+                        }
+                    }
                     Kind::Buffer(_) => "buffer",
                     Kind::Marker(_) => "marker",
                     Kind::Overlay(_) => "overlay",
@@ -1682,7 +1688,7 @@ pub(crate) fn value_is_oclosure(
     if oclosure_type_of(value).is_some() {
         return true;
     }
-    matches!(value.kind(), Kind::Record(_) | Kind::Lambda(_))
+    matches!(value.kind(), Kind::Record(_) | Kind::Closure(_))
         && interp.has_lisp_function("oclosure-type")
         && interp
             .call_function_value(
@@ -1696,7 +1702,7 @@ pub(crate) fn value_is_oclosure(
 }
 
 pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
-    let Kind::Lambda(lambda) = value.kind() else {
+    let Kind::Closure(lambda) = value.kind() else {
         return None;
     };
     // GNU oclosure-type recognizes a closure whose public slot four is a

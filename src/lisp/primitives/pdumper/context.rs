@@ -78,7 +78,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
-        Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
+        Kind::Closure(lambda) => ObjectKey::Lambda(lambda.identity()),
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
@@ -113,7 +113,6 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
         RecordKind::BoolVector => 2,
-        RecordKind::Closure => 3,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
@@ -138,7 +137,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
         // Former generic record code 1 used a detached host payload.
         2 => RecordKind::BoolVector,
-        3 => RecordKind::Closure,
+        // Former detached byte-code record code 3 is unsupported.
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
@@ -546,7 +545,7 @@ impl DumpContext {
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
-            Kind::Lambda(_) => DumpType::Closure,
+            Kind::Closure(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
             Kind::HashTable(_) => DumpType::HashTable,
             Kind::SubCharTable(_) => DumpType::SubCharTable,
@@ -1047,7 +1046,7 @@ impl DumpContext {
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
-            Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
+            Kind::Closure(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
             Kind::HashTable(table) => (self.dump_hash_table(table, object)?, DumpType::HashTable),
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
@@ -1304,7 +1303,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Closure | RecordKind::Font => {
+            RecordKind::Font => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }
@@ -1517,7 +1516,7 @@ impl DumpContext {
     /// carry their exact Lisp objects; the parameter and body vectors and
     /// the environment are shared objects dumped through raw-pointer
     /// fixups, as intervals are.
-    fn dump_closure(&mut self, lambda: &crate::lisp::types::LambdaRef) -> Result<u32, DumpError> {
+    fn dump_closure(&mut self, lambda: &crate::lisp::types::ClosureRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = vec![0; lambda.public_len() + 1];
         words[0] = lambda.public_len() as u64;
@@ -2352,6 +2351,10 @@ pub(crate) fn record_state_for_load(
 /// The string's bytes as GNU stores them: the internal multibyte form for
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
+    if let Kind::StringObject(state) = object.kind() {
+        return Ok(state.borrow().bytes().to_vec());
+    }
+
     let string = string_like(object).expect("a string");
     internal_codes_bytes(string.character_codes(), string.multibyte, &string.text)
 }

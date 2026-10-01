@@ -3,12 +3,12 @@
 Read the [complete goal](runtime-representation-goal.md),
 [current handover](../HANDOVER.md) and
 [shared-closure continuation](runtime-representation-bytecode-draft.md).
-This is an unfinished draft. The published task branch still contains validated
-source207; the local worktree now contains uncommitted source229, matching the
-isolated checkout. No string/bytecode draft runtime has been published.
+The full goal remains unfinished. The source231 task checkpoint advances the
+runtime beyond source207 and matches the isolated string-ops checkout. PR #79 is
+draft pending complete validation and the known terminal repairs; main is unchanged.
 
 The frozen **source229** checkout is
-`target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`. The next **source230**
+`target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`. The current **source231**
 repair is isolated in `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx`.
 The string-byte work starts from
 source216, whose ten focused controls have nine passes/one failure and whose
@@ -144,7 +144,8 @@ source strings retain their contents and identity across copying and collection.
 The old Rust-text concat builders are removed. Unicode buffer completion now
 also infers its encoding instead of forcing unibyte storage.
 
-All **432 inputs and modes** replay exactly and match the uncommitted worktree.
+All **432 source229 inputs and modes** replay exactly. They matched the task
+worktree before the later source231 update below.
 Its [closed evidence](handover/2026-09-30-shared-reader-draft/source229-selected-and-rust-failure-manifest.json)
 verifies strict checks, **26 focused and 934 affected-module passes per profile**,
 fifty ordinary GNU comparisons and exact inputs/artifacts. Five corrupt-log
@@ -155,12 +156,16 @@ predicate, non-record predicate, four-slot length, actual opcodes and execution.
 The remaining 2,297 library tests and both Cargo stages never run. These full
 results remain failed. Supervisors 84949/86489/86490/87395 have exited.
 
-Full terminal supervisor **89147 remains active**. Org startup and its following
-scenarios now match; the disabled-command help screen has a quote-rendering
-divergence. A separate interactive probe observes identical quote policy,
+Full terminal supervisor **89147 has exited**. Its
+[audited partial failure](handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
+contains 164 fully matching scenarios, 353 matching comparisons and seven
+quote-display divergences. Scenario 172 stops in GNU startup readiness; 54 later
+scenarios never start and 326 scheduled comparisons remain unexecuted. This is
+not a complete pass or evidence of an Emaxx startup crash. A separate interactive
+probe observes identical quote policy,
 substituted character codes and display-table vectors in both editors, pointing
-to display handling. Keep source229 and its helpers frozen until its terminal
-children exit. There is no complete, Linux, pinned Darwin or performance pass.
+to display handling. Source229 and its exact artifacts remain preserved.
+There is no complete, Linux, pinned Darwin or performance pass for this candidate.
 
 Three additional same-input substring probes all fail on source229. Surrogates
 become U+F8FF; bool-vector and no-properties vector checks differ from GNU;
@@ -183,9 +188,38 @@ kind assertions. The added fixture then fails because its bare interpreter lacks
 GNU's Lisp `cadr`; normal GNU/source229 already pass those unchanged inputs.
 Proposed source231 uses the normal GNU batch preload for that added contract,
 leaving the original bare-reader assertions and all fixture/expected bytes intact.
-It is not applied or executed. Supervisors **90596/93555** run the 937 affected
-module tests and a fresh ordinary executable/image with 54 GNU comparisons.
-Keep inputs frozen until both exit. Source230 is not applied to the task worktree.
+Source230's [closed results](handover/2026-09-30-shared-reader-draft/source230-closed-validation-manifest.json)
+verify **937 affected-module passes and 54 ordinary GNU comparisons**, with all
+raw names/verdicts, artifact and source hashes checked. Supervisors **90596/93555
+have exited**. Its 30-pass/one-failure focused run stays failed.
+
+The [source231 setup repair](handover/2026-09-30-shared-reader-draft/source231-bytecode-fixture-startup-draft-manifest.json)
+is now applied in the string-ops checkout and source231 task checkpoint;
+frozen string-bytes/source229 is unchanged. All **440 inputs and modes** replay
+exactly. The [focused audit and complete launches](handover/2026-09-30-shared-reader-draft/source231-focused-and-complete-launch-manifest.json)
+verify strict zero-warning checks and **31/31 focused gate passes**. Every
+production input remains source230's. Supervisors **96184/96185 have exited**.
+Their [closed release and ordinary audit](handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
+verifies **31 focused / 937 affected release passes and 54 exact ordinary GNU
+comparisons**, zero ignores, all raw verdicts, 440 source hashes and retained
+artifact identities. Five corrupt-log variants are rejected. Supervisor **96183
+has exited**. Its [full-Rust failure audit](handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
+checks all 2,981 library names: **2,974 passes / five failures / two existing
+ignores**. Three failures concern stale bytecode-root inventory metadata; the
+reader's no-slot-evaluation test still expects a host record; and the vector
+bitmap control covers only three of four words. Both later Cargo stages never
+run. The failed executable/image and all original assertions remain preserved.
+Linux and complete terminal validation remain pending. The full gate supplies the
+complete gate-profile inventory after this test-only change; the passing
+source230 selected gate is not redundantly repeated. No complete pass is claimed.
+
+The source229 terminal diagnosis reads the same curve-quote policy, U+2019 text
+and display vectors `[92274784]`/`[92274727]` in both ordinary interactive editors.
+GNU `xdisp.c:get_next_display_element` applies its display table before glyphless
+fallback. Current `GlyphlessDisplayContext` reads glyphless rules but no standard,
+buffer or window character display table. A general table translation repair,
+including glyph face IDs and layout mappings, remains to be implemented and
+checked; no quote-specific workaround or terminal pass is claimed.
 Empty multibyte-string identity, other text adapters and the complete property/
 header representation remain open.
 
@@ -269,7 +303,7 @@ reference command/output is retained.
 The direct byte cursor and source225's flow repair pass selected tests in both
 profiles; its full runs fail in completion. Source229 passes selected gate/release
 and ordinary controls but fails full Rust and has a live terminal divergence.
-Source230 is under validation. Instruction and call
+Source231 passes focused validation with complete/release runs active. Instruction and call
 costs need measured profiles; removing a cache is not a timing result. Complete
 error, callback, rooting, suspended-frame and execution-mode coverage is required.
 

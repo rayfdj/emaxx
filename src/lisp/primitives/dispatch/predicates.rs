@@ -170,8 +170,7 @@ define_dispatch!(
                 // data.c:Fbyte_code_function_p checks CLOSUREP and the
                 // code slot's STRINGP tag, never names or parameter lists.
                 Ok(
-                    if matches!(args[0].kind(), Kind::Record(id) if interp.is_genuine_bytecode_function(id.id))
-                    {
+                    if matches!(args[0].kind(), Kind::Closure(closure) if closure.is_bytecode()) {
                         Value::T
                     } else {
                         Value::Nil
@@ -198,26 +197,42 @@ define_dispatch!(
                 // closure's elements verbatim (arglist, code, constants,
                 // depth, docstring, interactive-spec, extras).
                 need_args(name, args, 4)?;
-                Ok(interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::Closure,
-                    "byte-code-function",
-                    args.to_vec(),
-                ))
+                // alloc.c checks these four field types before allocating.
+                // It does not validate the arglist spine, packed descriptor,
+                // opcodes, or optional/extra slots until their later uses.
+                if !(matches!(args[0].kind(), Kind::Integer(_) | Kind::Cons(_) | Kind::Nil)
+                    && args[1].is_string()
+                    && !string_argument_multibyte(&args[1])
+                    && matches!(args[2].kind(), Kind::Vector(_))
+                    && matches!(args[3].kind(), Kind::Integer(depth) if depth >= 0))
+                {
+                    return Err(LispError::Signal("Invalid byte-code object".into()));
+                }
+                Ok(Value::allocated_closure(args))
             }
             "byte-code" => {
                 // GNU Fbyte_code (bytecode.c): execute BYTESTR against VECTOR
                 // with MAXDEPTH as an argumentless program.
                 need_args(name, args, 3)?;
-                let slots = [Value::Integer(0), args[0], args[1], args[2]];
-                let object = crate::lisp::bytecode::ByteCodeObject::from_slots(&slots)
-                    .map_err(|error| LispError::Signal(error.to_string()))?
-                    .ok_or_else(|| {
-                        LispError::SignalValue(Value::list([
-                            Value::Symbol("error".into()),
-                            Value::String("Invalid byte-code".into()),
-                        ]))
-                    })?;
-                crate::lisp::bytecode::vm::execute(interp, &object, &[], env)
+                if !(args[0].is_string()
+                    && matches!(args[1].kind(), Kind::Vector(_))
+                    && matches!(args[2].kind(), Kind::Integer(depth) if depth >= 0))
+                {
+                    return Err(LispError::Signal("Invalid byte-code".into()));
+                }
+                // bytecode.c:Fbyte_code accepts old multibyte code strings,
+                // converts them with string-as-unibyte, then constructs an
+                // ordinary closure which roots both code and constants.
+                let code = if string_argument_multibyte(&args[0]) {
+                    super::super::call(interp, "string-as-unibyte", &args[..1], env)?
+                } else {
+                    args[0]
+                };
+                let function = Value::allocated_closure(&[Value::Nil, code, args[1], args[2]]);
+                let Kind::Closure(closure) = function.kind() else {
+                    unreachable!("allocated bytecode closure")
+                };
+                crate::lisp::bytecode::vm::execute_closure(interp, closure, &[], env)
             }
             "internal-stack-stats" => {
                 // GNU logs bytecode-stack telemetry to stderr and returns nil;
@@ -238,23 +253,21 @@ define_dispatch!(
             }
             "closurep" => {
                 need_args(name, args, 1)?;
+                Ok(if matches!(args[0].kind(), Kind::Closure(_)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "interpreted-function-p" => {
+                need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0].kind(), Kind::Lambda(_))
-                        || record_type_name(interp, &args[0]) == Some("byte-code-function")
-                    {
+                    if matches!(args[0].kind(), Kind::Closure(closure) if !closure.is_bytecode()) {
                         Value::T
                     } else {
                         Value::Nil
                     },
                 )
-            }
-            "interpreted-function-p" => {
-                need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::Lambda(_)) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
             }
             "subrp" => {
                 need_args(name, args, 1)?;
@@ -351,7 +364,7 @@ define_dispatch!(
                             });
                         }
                     }
-                    Kind::Lambda(_) | Kind::Record(_) => {
+                    Kind::Closure(_) | Kind::Record(_) => {
                         if callable_interactive_form_items(interp, &function).is_some() {
                             return Ok(Value::T);
                         }

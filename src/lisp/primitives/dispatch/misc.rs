@@ -1429,12 +1429,7 @@ define_dispatch!(
                 // profiler.c:Ffunction_equal first compares the objects,
                 // then CLOSURE_CODE by identity for either closure kind.
                 let code = |function: Value| match function.kind() {
-                    Kind::Lambda(lambda) => Some(lambda.body()),
-                    Kind::Record(record)
-                        if record.kind == crate::lisp::eval::RecordKind::Closure =>
-                    {
-                        record.slots.get(1).copied()
-                    }
+                    Kind::Closure(lambda) => Some(lambda.body()),
                     _ => None,
                 };
                 let same = values_eq_in_env(interp, &args[0], &args[1], env)

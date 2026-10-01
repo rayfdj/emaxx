@@ -221,7 +221,7 @@ pub(crate) enum DumpType {
     Obarray = 9,
     /// A string's text-property spans (GNU: the interval tree).
     TextProperties = 10,
-    /// An interpreted closure (`Value::Lambda').
+    /// An interpreted or byte-code closure (`Value::Closure').
     Closure = 11,
     CharTable = 16,
     SubCharTable = 28,

@@ -1,6 +1,79 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// fns.c:validate_subarray checks both index types before their joint range.
+fn validate_subarray(
+    array: Value,
+    from: Value,
+    to: Value,
+    length: usize,
+) -> Result<(usize, usize), LispError> {
+    let index = |value: Value, default: i64| match value.kind() {
+        Kind::Nil => Ok(default),
+        Kind::Integer(index) => Ok(if index < 0 {
+            length as i64 + index
+        } else {
+            index
+        }),
+        _ => Err(LispError::WrongTypeArgument("integerp".into(), value)),
+    };
+    let start = index(from, 0)?;
+    let end = index(to, length as i64)?;
+    if !(0 <= start && start <= end && end <= length as i64) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            array,
+            from,
+            to,
+        ])));
+    }
+    Ok((start as usize, end as usize))
+}
+
+pub(crate) fn substring_value(
+    array: Value,
+    from: Value,
+    to: Value,
+    properties: bool,
+) -> Result<Value, LispError> {
+    match array.kind() {
+        Kind::Vector(vector) if properties => {
+            let (from, to) = validate_subarray(array, from, to, vector.len())?;
+            Ok(Value::vector(vector.slots().skip(from).take(to - from)))
+        }
+        Kind::StringObject(state) => {
+            let result = {
+                let state = state.borrow();
+                let (from, to) = validate_subarray(array, from, to, state.len())?;
+                state.substring(from, to, properties)
+            };
+            if result.len() == 0 && !result.is_multibyte() {
+                Ok(Value::String("".into()))
+            } else {
+                Ok(crate::lisp::types::string_object_value(result))
+            }
+        }
+        Kind::String(_) => {
+            // The remaining host-text API has no intervals. Keep its inferred
+            // encoding even when the selected range contains only ASCII.
+            let string = string_like(&array).expect("plain string kind");
+            let (from, to) = validate_subarray(array, from, to, string.text.chars().count())?;
+            if from == to && !string.multibyte {
+                return Ok(Value::String("".into()));
+            }
+            Ok(make_shared_string_value_with_multibyte(
+                string.text.chars().skip(from).take(to - from).collect(),
+                Vec::new(),
+                string.multibyte,
+            ))
+        }
+        _ => Err(LispError::WrongTypeArgument(
+            if properties { "arrayp" } else { "stringp" }.into(),
+            array,
+        )),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct StringLike {
     pub(crate) text: String,
@@ -145,7 +218,7 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
 pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
     match value.kind() {
         Kind::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
-        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text.clone())),
+        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text())),
         _ => None,
     }
 }
@@ -165,8 +238,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
         }),
         Kind::StringObject(state) => {
             let state = state.borrow();
+            let (text, extended_chars) = state.text_parts();
             Some(StringLike {
-                text: state.text.clone(),
+                text,
                 props: state
                     .props
                     .iter()
@@ -176,8 +250,8 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                         props: span.props.clone(),
                     })
                     .collect(),
-                multibyte: state.multibyte,
-                extended_chars: state.extended_chars.clone(),
+                multibyte: state.is_multibyte(),
+                extended_chars,
             })
         }
         // lisp.h:CHECK_STRING rejects every other object class. The reader
@@ -215,10 +289,7 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
                 .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
             code_in(text, multibyte, &[], index)
         }
-        Kind::StringObject(state) => {
-            let state = state.borrow();
-            code_in(&state.text, state.multibyte, &state.extended_chars, index)
-        }
+        Kind::StringObject(state) => state.borrow().character_at(index),
         _ => None,
     }
 }
@@ -229,6 +300,12 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
 /// other multibyte and any character is not ASCII (a raw byte is one
 /// byte unibyte and two multibyte).  `None' when either is not a string.
 pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
+    if let (Kind::StringObject(left), Kind::StringObject(right)) = (left.kind(), right.kind()) {
+        let left = left.borrow();
+        let right = right.borrow();
+        return Some(left.len() == right.len() && left.bytes() == right.bytes());
+    }
+
     fn with_parts<R>(
         value: &Value,
         f: impl FnOnce(&str, &[(usize, u32)], Option<bool>) -> R,
@@ -237,7 +314,8 @@ pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option
             Kind::String(text) => Some(f(text.as_str(), &[], None)),
             Kind::StringObject(state) => {
                 let state = state.borrow();
-                Some(f(&state.text, &state.extended_chars, Some(state.multibyte)))
+                let (text, extended) = state.text_parts();
+                Some(f(&text, &extended, Some(state.is_multibyte())))
             }
             _ => None,
         }
@@ -281,7 +359,7 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
 /// non-ASCII characters have different bytes in the two representations.
 pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
     match value.kind() {
-        Kind::StringObject(state) => state.borrow().multibyte,
+        Kind::StringObject(state) => state.borrow().is_multibyte(),
         Kind::String(text) => text
             .chars()
             .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
@@ -665,25 +743,36 @@ pub(crate) fn aset_string_value(
     if !matches!(target.kind(), Kind::String(_) | Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *target));
     }
-    let code = new_value.as_integer()?;
-    // data.c's Faset stores an ASCII character into an ASCII string in
-    // place, one byte; the general case below rebuilds the text.
-    // hex-util.el's `encode-hex-string' sets every byte of its result.
-    if (0..=0x7F).contains(&code)
-        && let Kind::StringObject(state) = target.kind()
-    {
+    if let Kind::StringObject(state) = target.kind() {
         let mut state = state.borrow_mut();
-        if state.extended_chars.is_empty() && state.text.is_ascii() {
-            if index >= state.text.len() {
-                drop(state);
-                return Err(args_out_of_range_for_aset(target, index));
-            }
-            // SAFETY: the text is ASCII and the stored byte is ASCII, so
-            // the result remains valid UTF-8.
-            unsafe { state.text.as_bytes_mut()[index] = code as u8 };
-            return Ok(*target);
+        // data.c:Faset checks the existing character index before NEWELT.
+        if index >= state.len() {
+            drop(state);
+            return Err(args_out_of_range_for_aset(target, index));
         }
+        let Kind::Integer(code) = new_value.kind() else {
+            return Err(LispError::WrongTypeArgument(
+                "characterp".into(),
+                *new_value,
+            ));
+        };
+        if !(0..=0x3f_ffff).contains(&code) {
+            return Err(LispError::WrongTypeArgument(
+                "characterp".into(),
+                *new_value,
+            ));
+        }
+        if !state.store_character(index, code as u32) {
+            drop(state);
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *target,
+                *new_value,
+            ])));
+        }
+        return Ok(*target);
     }
+    let code = new_value.as_integer()?;
     let mut string = string_like(target)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *target))?;
     let mut chars: Vec<char> = string.text.chars().collect();
@@ -716,13 +805,6 @@ pub(crate) fn aset_string_value(
     };
     chars[index] = ch;
     string.text = chars.into_iter().collect();
-    if let Kind::StringObject(state) = target.kind() {
-        let mut state = state.borrow_mut();
-        state.text = string.text;
-        state.props = shared_string_props(&string.props);
-        state.multibyte = string.multibyte;
-        return Ok(*target);
-    }
     Ok(make_shared_string_value_with_multibyte(
         string.text,
         string.props,
@@ -755,30 +837,12 @@ pub(crate) fn make_shared_string_value_with_extended_chars(
     multibyte: bool,
     extended_chars: Vec<(usize, u32)>,
 ) -> Value {
-    crate::lisp::types::string_object_value(SharedStringState {
+    crate::lisp::types::string_object_value(SharedStringState::new(
         text,
-        props: shared_string_props(&props),
+        shared_string_props(&props),
         multibyte,
         extended_chars,
-    })
-}
-
-/// A string object from the image, whose storage size the image records.
-pub(crate) fn make_loaded_string_object_value(
-    text: String,
-    multibyte: bool,
-    extended_chars: Vec<(usize, u32)>,
-    storage_bytes: usize,
-) -> Value {
-    crate::lisp::types::string_object_value_with_storage_bytes(
-        SharedStringState {
-            text,
-            props: shared_string_props(&[]),
-            multibyte,
-            extended_chars,
-        },
-        storage_bytes,
-    )
+    ))
 }
 
 pub(crate) fn string_like_value_with_extended_chars(
@@ -1356,7 +1420,7 @@ where
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
     let mut state = state.borrow_mut();
-    let len = state.text.chars().count();
+    let len = state.len();
     let start = start.min(len);
     let end = end.min(len);
     if start >= end {

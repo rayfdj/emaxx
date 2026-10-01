@@ -1929,7 +1929,7 @@ enum DirectFuncallTarget {
         function: super::loader::DirectNativeFunction,
     },
     ByteCode {
-        record_id: u64,
+        closure: crate::lisp::types::ClosureRef,
     },
 }
 
@@ -1981,7 +1981,7 @@ impl DirectFuncallTarget {
         active: &mut ActiveCall,
         arguments: &[NativeWord],
     ) -> Result<NativeWord, LispError> {
-        if let Self::ByteCode { record_id } = self {
+        if let Self::ByteCode { closure } = self {
             let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
             for word in arguments {
                 decoded.push(
@@ -1992,7 +1992,7 @@ impl DirectFuncallTarget {
                 );
             }
             let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
-                record_id,
+                closure,
                 &decoded,
                 unsafe { &mut *active.environment },
             );
@@ -2074,18 +2074,17 @@ fn direct_funcall_target(
     };
     match resolved.kind() {
         Kind::BuiltinFunc(subr) => Some(DirectFuncallTarget::Builtin(subr)),
-        Kind::Record(record_id) => super::loader::active_direct_function(record_id.id)
-            .map(|function| DirectFuncallTarget::Native {
-                record_id: record_id.id,
-                function,
+        Kind::Record(record_id) => {
+            super::loader::active_direct_function(record_id.id).map(|function| {
+                DirectFuncallTarget::Native {
+                    record_id: record_id.id,
+                    function,
+                }
             })
-            .or_else(|| {
-                interpreter
-                    .is_genuine_bytecode_function(record_id.id)
-                    .then_some(DirectFuncallTarget::ByteCode {
-                        record_id: record_id.id,
-                    })
-            }),
+        }
+        Kind::Closure(closure) if closure.is_bytecode() => {
+            Some(DirectFuncallTarget::ByteCode { closure })
+        }
         _ => None,
     }
 }
@@ -5176,11 +5175,7 @@ mod tests {
             Value::Nil,
         ];
         let ordinary = interpreter.create_record("byte-code-function", slots.clone());
-        let closure = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "closure",
-            slots,
-        );
+        let closure = Value::allocated_closure(&slots);
         classify(
             &mut interpreter,
             &mut runtime,
@@ -5195,18 +5190,17 @@ mod tests {
             closure,
             Value::T,
         );
-        let Kind::Record(id) = closure.kind() else {
+        let Kind::Closure(fields) = closure.kind() else {
             panic!("closure is a pseudovector")
         };
-        assert!(interpreter.is_genuine_bytecode_function(id.id));
-        interpreter.find_record_mut(id).expect("closure").slots[1] =
-            Value::list([Value::Integer(42)]);
-        assert!(!interpreter.is_genuine_bytecode_function(id.id));
+        assert!(fields.is_bytecode());
+        fields.initialize_slot(1, Value::list([Value::Integer(42)]));
+        assert!(!fields.is_bytecode());
         classify(
             &mut interpreter,
             &mut runtime,
             &mut environment,
-            Value::Record(id),
+            closure,
             Value::Nil,
         );
     }
@@ -5557,16 +5551,12 @@ mod tests {
             Value::symbol("placeholder"),
             retained,
         ]);
-        let prototype = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "byte-code-function",
-            vec![
-                Value::Nil,
-                Value::string("bytecode"),
-                prototype_constants,
-                Value::Integer(2),
-            ],
-        );
+        let prototype = Value::allocated_closure(&[
+            Value::Nil,
+            Value::string("bytecode"),
+            prototype_constants,
+            Value::Integer(2),
+        ]);
         let captured = Value::cons(Value::symbol("captured"), Value::Nil);
         let closure = runtime
             .invoke(
@@ -5579,18 +5569,16 @@ mod tests {
             .expect("copy closure");
 
         assert_ne!(closure, prototype);
-        let Kind::Record(closure_id) = closure.kind() else {
-            panic!("make-closure returns a closure record")
+        let Kind::Closure(closure) = closure.kind() else {
+            panic!("make-closure returns an inline closure")
         };
-        let closure = interpreter
-            .find_record(closure_id)
-            .expect("returned closure record");
-        assert_eq!(closure.kind, crate::lisp::eval::RecordKind::Closure);
-        let constants = crate::lisp::primitives::vector_items(&closure.slots[2])
+        assert!(closure.is_bytecode());
+        let constants_value = closure.get(2).expect("constant field");
+        let constants = crate::lisp::primitives::vector_items(&constants_value)
             .expect("fresh constants vector");
         assert_eq!(constants, vec![captured, retained]);
         let (Kind::Vector(closure_constants), Kind::Vector(prototype_constants_identity)) =
-            (closure.slots[2].kind(), prototype_constants.kind())
+            (constants_value.kind(), prototype_constants.kind())
         else {
             panic!("make-closure constants remain ordinary vectors")
         };
@@ -7257,16 +7245,12 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         // GNU byte code for one mandatory argument: dup, add1, return.
-        let function = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "byte-code-function",
-            vec![
-                Value::Integer(257),
-                Value::String("\u{89}\u{54}\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
-                Value::Integer(3),
-            ],
-        );
+        let function = Value::allocated_closure(&[
+            Value::Integer(257),
+            Value::String("\u{89}\u{54}\u{87}".into()),
+            Value::list([Value::symbol("vector-literal")]),
+            Value::Integer(3),
+        ]);
         assert!(matches!(
             direct_funcall_target(&interpreter, &environment, &function),
             Some(DirectFuncallTarget::ByteCode { .. })
@@ -10805,7 +10789,7 @@ mod tests {
         assert_ne!(copied, object);
         assert_eq!(source.finalizer_objects(), vec![object]);
         assert_eq!(cloned.finalizer_objects(), vec![copied]);
-        let Kind::Lambda(function) = copied.function().kind() else {
+        let Kind::Closure(function) = copied.function().kind() else {
             panic!("copied callback")
         };
         assert_eq!(
@@ -11163,7 +11147,7 @@ mod tests {
             };
             assert!(vector.get(0).expect("closure slot").eq_value(closure));
             assert!(vector.get(1).expect("cycle slot").eq_value(value));
-            let Kind::Lambda(function) = closure.kind() else {
+            let Kind::Closure(function) = closure.kind() else {
                 panic!("retained interpreted closure")
             };
             assert!(

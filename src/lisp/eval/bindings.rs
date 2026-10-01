@@ -1125,7 +1125,7 @@ impl Interpreter {
             let file = match value.kind() {
                 Kind::Nil => None,
                 Kind::String(path) => Some(path.to_string()),
-                Kind::StringObject(state) => Some(state.borrow().text.clone()),
+                Kind::StringObject(state) => Some(state.borrow().text()),
                 other => Some(other.to_string()),
             };
             self.set_current_buffer_file_name(file);
@@ -1135,7 +1135,7 @@ impl Interpreter {
             self.buffer.borrow_mut().file_truename = match value.kind() {
                 Kind::Nil => None,
                 Kind::String(path) => Some(path.to_string()),
-                Kind::StringObject(state) => Some(state.borrow().text.clone()),
+                Kind::StringObject(state) => Some(state.borrow().text()),
                 other => Some(other.to_string()),
             };
             return;

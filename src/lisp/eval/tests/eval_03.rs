@@ -1102,13 +1102,13 @@ fn a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in() {
     let mut env = crate::lisp::types::Env::new();
     Interpreter::push_bindings(&mut env, vec![("cell".into(), Value::Integer(1))]);
     let captured = crate::lisp::types::current_environment_value(&env);
-    let Kind::Lambda(lambda) = Value::lambda(Vec::new(), vec![Value::Nil], captured).kind() else {
+    let Kind::Closure(lambda) = Value::lambda(Vec::new(), vec![Value::Nil], captured).kind() else {
         unreachable!("Value::lambda constructs a lambda");
     };
 
     interp.set_variable("cell", Value::Integer(23), &mut env);
     assert_eq!(interp.lookup_var("cell", &env), Some(Value::Integer(23)));
-    let environment = interp.interpreted_closure_slots(&lambda)[2];
+    let environment = lambda.environment_value();
     assert!(Interpreter::same_environment(&environment, &captured));
     assert_eq!(
         environment
@@ -7321,7 +7321,7 @@ fn named_lisp_calls_share_the_stored_function_body() {
     let second = interp
         .lookup_function("emaxx-test-shared-function-code", &env)
         .expect("second function lookup");
-    let (Kind::Lambda(first_lambda), Kind::Lambda(second_lambda)) = (first.kind(), second.kind())
+    let (Kind::Closure(first_lambda), Kind::Closure(second_lambda)) = (first.kind(), second.kind())
     else {
         panic!("named definition should remain a Lisp lambda");
     };

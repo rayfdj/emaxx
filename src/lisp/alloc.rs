@@ -467,8 +467,7 @@ pub(crate) const UNTRACKED_TEXT: usize = usize::MAX;
 /// alloc.c's `struct Lisp_String': the text (its bytes on the Rust heap,
 /// as a large string's are malloc'd in C; there is no sblock and no
 /// compaction), `size_byte' as the storage size the census reads, the
-/// mark word, and a serial for a holder that keeps the address without
-/// keeping the string.
+/// and mark word. No decoded-code identity cache retains these addresses.
 #[repr(C)]
 pub struct StringCell {
     // This existing size word also distinguishes plain text storage from
@@ -477,7 +476,6 @@ pub struct StringCell {
     storage_bytes: usize,
     text: String,
     mark: MarkBit,
-    serial: u64,
 }
 
 /// `Lisp_Object' for a string: the cell's address, copied freely, valid
@@ -536,10 +534,6 @@ impl TextRef {
         &self.cell().mark
     }
 
-    pub(crate) fn serial(&self) -> u64 {
-        self.cell().serial
-    }
-
     /// The text copied out (the cell keeps its own until the sweep).
     pub fn into_string(self) -> String {
         self.cell().text.clone()
@@ -561,7 +555,6 @@ pub(crate) fn empty_text() -> TextRef {
             text: String::new(),
             storage_bytes: UNTRACKED_TEXT,
             mark: MarkBit::default(),
-            serial: 0,
         })) as *mut StringCell as usize
     });
     // SAFETY: a leaked cell: always allocated.
@@ -589,8 +582,6 @@ pub(crate) fn allocate_string(text: String, storage_bytes: usize) -> TextRef {
         );
         head
     };
-    let serial = SERIAL.load(Ordering::Relaxed) + 1;
-    SERIAL.store(serial, Ordering::Relaxed);
     if storage_bytes != UNTRACKED_TEXT {
         LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         LIVE_STRING_BYTES.store(
@@ -607,7 +598,6 @@ pub(crate) fn allocate_string(text: String, storage_bytes: usize) -> TextRef {
                 text,
                 storage_bytes,
                 mark: MarkBit::default(),
-                serial,
             },
         );
         (*slot).mark.set_raw(super::types::current_mark_epoch());
@@ -1864,7 +1854,7 @@ fn verify_marking(epoch: u32) {
 fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool> {
     match value.kind() {
         Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
-        Kind::Lambda(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
+        Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
         Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
         Kind::Marker(marker) => Some(marker.mark_bit().is_marked(epoch)),
         Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked(epoch)),

@@ -418,15 +418,17 @@ impl Loader<'_> {
                 }
                 DumpType::Closure => {
                     let size = self.reader.word(offset)? as usize;
-                    if !(3..=6).contains(&size) {
+                    if !(3..=0xfff).contains(&size) {
                         return Err(LoadError::Error(format!(
                             "invalid closure size at {offset}"
                         )));
                     }
                     // Publish every identity before relocating any field.
                     // Any closure slot can participate in an object cycle.
-                    self.objects
-                        .insert(offset, Value::allocated_lambda(&[Value::Nil; 6][..size]));
+                    self.objects.insert(
+                        offset,
+                        Value::Closure(crate::lisp::types::ClosureRef::filled(size, Value::Nil)),
+                    );
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
@@ -619,16 +621,16 @@ impl Loader<'_> {
                     cell.cdr.set(cdr);
                 }
                 DumpType::Closure => {
-                    let Kind::Lambda(closure) = self.objects[&offset].kind() else {
+                    let Kind::Closure(closure) = self.objects[&offset].kind() else {
                         unreachable!()
                     };
                     for index in 0..closure.public_len() {
                         let value = self.value_at(offset + 8 * (index as u32 + 1))?;
                         closure.initialize_slot(index, value);
                     }
-                    if !matches!(closure.body().kind(), Kind::Cons(_)) {
+                    if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
                         return Err(LoadError::Error(format!(
-                            "invalid interpreted closure body at {offset}"
+                            "invalid closure code at {offset}"
                         )));
                     }
                 }
@@ -1062,17 +1064,14 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let (text, extended_chars) = decode_internal_bytes(bytes, multibyte)?;
-        // The record's `size' and `size_byte' are the string's character
-        // count and storage size; pdumper.c takes them as they are, so
-        // the loader counts nothing (a unibyte string stores one byte a
-        // character).
         let value = match kind {
-            DumpType::String => Value::String(SharedText::with_storage_bytes(text, nbytes)),
-            _ => crate::lisp::primitives::strings::make_loaded_string_object_value(
-                text,
-                multibyte,
-                extended_chars,
+            DumpType::String => {
+                let (text, _) = decode_internal_bytes(bytes, multibyte)?;
+                Value::String(SharedText::with_storage_bytes(text, nbytes))
+            }
+            _ => crate::lisp::types::string_object_value_with_storage_bytes(
+                SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
+                    .map_err(|error| LoadError::Error(error.to_string()))?,
                 nbytes,
             ),
         };

@@ -114,7 +114,7 @@ fn normalize_face_attribute_value(
         ":height" => match value.kind() {
             Kind::Integer(height) if height > 0 => *value,
             Kind::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
-            Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
+            Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
         ":weight" => {
@@ -276,7 +276,7 @@ fn merge_face_height(
             Kind::Symbol(symbol) if symbol == "unspecified" => Ok(*from),
             _ => Ok(*from),
         },
-        Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => {
+        Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => {
             interp.call_function_value(*from, None, std::slice::from_ref(to), env)
         }
         _ => Ok(*from),

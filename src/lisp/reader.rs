@@ -561,12 +561,12 @@ impl<'a> Reader<'a> {
                     // GNU's reader allocates the object once, so repeated
                     // evaluation of the same literal returns that object.
                     return Ok(Some(crate::lisp::types::string_object_value(
-                        SharedStringState {
-                            text: s,
-                            props: Vec::new(),
-                            multibyte: has_explicit_multibyte || has_invalid_unicode,
+                        SharedStringState::new(
+                            s,
+                            Vec::new(),
+                            has_explicit_multibyte || has_invalid_unicode,
                             extended_chars,
-                        },
+                        ),
                     )));
                 }
                 Some(b'\\') => {
@@ -1414,7 +1414,7 @@ impl<'a> Reader<'a> {
                 }
                 let bytes = match (self.read()?.ok_or(LispError::EndOfInput())?).kind() {
                     Kind::String(text) => text,
-                    Kind::StringObject(state) => state.borrow().text.clone().into(),
+                    Kind::StringObject(state) => state.borrow().text().into(),
                     other => {
                         return Err(LispError::ReadError(format!(
                             "invalid bool vector literal bytes: expected string, got {}",
@@ -1653,10 +1653,10 @@ impl<'a> Reader<'a> {
             Kind::StringObject(state) => {
                 let state = state.borrow();
                 (
-                    state.text.clone(),
+                    state.text(),
                     state.props.clone(),
-                    state.multibyte,
-                    state.extended_chars.clone(),
+                    state.is_multibyte(),
+                    state.text_parts().1,
                 )
             }
             _ => return Ok(None),
@@ -1683,12 +1683,7 @@ impl<'a> Reader<'a> {
             index += 3;
         }
         Ok(Some(crate::lisp::types::string_object_value(
-            SharedStringState {
-                text,
-                props,
-                multibyte,
-                extended_chars,
-            },
+            SharedStringState::new(text, props, multibyte, extended_chars),
         )))
     }
 
@@ -2269,8 +2264,8 @@ mod tests {
             panic!("expected a string object");
         };
         let state = state.borrow();
-        assert_eq!(state.text, "❄");
-        assert!(state.multibyte);
+        assert_eq!(state.text(), "❄");
+        assert!(state.is_multibyte());
     }
 
     #[test]
@@ -2385,7 +2380,7 @@ mod tests {
             panic!("expected a string object");
         };
         let state = state.borrow();
-        assert_eq!(state.text, "abc");
+        assert_eq!(state.text(), "abc");
         assert_eq!(
             state.props,
             vec![StringPropertySpan {
@@ -2637,7 +2632,7 @@ mod tests {
         let Kind::StringObject(state) = read_one(r#""\x110000""#).kind() else {
             panic!("expected a string object");
         };
-        assert_eq!(state.borrow().text, INVALID_UNICODE_SENTINEL.to_string());
+        assert_eq!(state.borrow().text(), INVALID_UNICODE_SENTINEL.to_string());
     }
 
     #[test]

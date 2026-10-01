@@ -279,18 +279,7 @@ pub(crate) fn function_arity_value(
 
     match function.kind() {
         Kind::BuiltinFunc(subr) => Ok(subr.arity_value()),
-        Kind::Lambda(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
-        Kind::Record(id)
-            if interp
-                .find_record(id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure) =>
-        {
-            let argument_spec = interp
-                .find_record(id)
-                .and_then(|record| record.slots.first())
-                .ok_or_else(|| invalid_function_arity(function))?;
-            closure_arity_value(interp, argument_spec, function, env)
-        }
+        Kind::Closure(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
         Kind::Record(id)
             if interp.find_record(id).is_some_and(|record| {
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction

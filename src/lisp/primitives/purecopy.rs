@@ -119,31 +119,12 @@ fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<V
         .find_record(id)
         .cloned()
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-    if record.kind != crate::lisp::eval::RecordKind::Closure {
-        return Err(LispError::Signal(format!(
-            "Don't know how to purify: {} ({:?}, {:?})",
-            source.type_name(),
-            record.kind,
-            record.type_tag,
-        )));
-    }
-
-    let mut slots = Vec::with_capacity(record.slots.len());
-    for slot in &record.slots {
-        let copied = interp.with_lisp_stack_roots(&(&record.slots, &slots), |interp| {
-            purecopy_inner(interp, slot, env)
-        })?;
-        slots.push(copied);
-    }
-    let copied = interp.copy_record(id)?;
-    let Kind::Record(copied_id) = copied.kind() else {
-        unreachable!("copy_record preserves the record representation")
-    };
-    interp
-        .find_record_mut(copied_id)
-        .expect("copied record remains live")
-        .slots = slots;
-    Ok(hash_cons_insert(interp, Value::Record(copied_id), env))
+    Err(LispError::Signal(format!(
+        "Don't know how to purify: {} ({:?}, {:?})",
+        source.type_name(),
+        record.kind,
+        record.type_tag,
+    )))
 }
 
 fn purecopy_inner(
@@ -212,16 +193,15 @@ fn purecopy_inner(
             return purecopy_vector(interp, value, env);
         }
         Kind::Cons(_) => return purecopy_cons_chain(interp, value, env),
-        Kind::Lambda(lambda) => {
-            let slots = interp.interpreted_closure_slots(&lambda);
-            let mut copied_slots = Vec::with_capacity(slots.len());
-            for slot in &slots {
-                let copied = interp.with_lisp_stack_roots(&(&slots, &copied_slots), |interp| {
-                    purecopy_inner(interp, slot, env)
-                })?;
-                copied_slots.push(copied);
-            }
-            interp.make_interpreted_closure_value(&copied_slots)?
+        Kind::Closure(closure) => {
+            let copy = closure.shallow_copy();
+            let copied = Value::Closure(copy);
+            interp.with_lisp_stack_roots(&copied, |interp| {
+                for (index, field) in copy.slots().enumerate() {
+                    copy.initialize_slot(index, purecopy_inner(interp, &field, env)?);
+                }
+                Ok::<Value, LispError>(copied)
+            })?
         }
         Kind::LispRecord(record) => {
             let copy = record.shallow_copy();

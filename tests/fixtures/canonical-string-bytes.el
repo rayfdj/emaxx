@@ -1,0 +1,32 @@
+(prin1
+ (list
+  (let* ((text (unibyte-string 0 128 255)) (alias text))
+    (put-text-property 1 2 'sample 'retained text)
+    (aset alias 1 194)
+    (garbage-collect)
+    (list (eq text alias) (length text) (string-bytes text)
+          (append text nil) (get-text-property 1 'sample text)))
+  (let ((text (string 256)))
+    (mapcar
+     (lambda (code)
+       (aset text 0 code)
+       (list (aref text 0) (length text) (string-bytes text)
+             (append (string-as-unibyte text) nil)))
+     '(0 127 128 2047 2048 55295 55296 57343 57344 65535
+       65536 1114111 1114112 2097151 2097152 4194175 4194176 4194303)))
+  (let ((text (unibyte-string 255)))
+    (mapcar
+     (lambda (arguments)
+       (condition-case err (apply #'aset text arguments)
+         (error (list (car err)
+                      (if (eq (cadr err) text) 'original (cadr err))
+                      (caddr err)))))
+     '((1 bad-character) (0 bad-character) (0 256) (0 4194304) (0 -1))))
+  (let* ((text (string 256 55296 1114112 2097152 4194176))
+         (bytes (string-bytes text))
+         (alias text))
+    (put-text-property 0 1 'sample 'retained text)
+    (clear-string text)
+    (list bytes (length text) (string-bytes text) (eq text alias)
+          (multibyte-string-p text) (append text nil)
+          (get-text-property 0 'sample text)))))

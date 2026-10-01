@@ -2899,7 +2899,7 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right)) => left == right,
         (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),

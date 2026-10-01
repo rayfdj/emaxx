@@ -21,17 +21,24 @@ The latest validated main checkpoint is **source174**, merge `21d20f0e` in
 remains separate from the unfinished task branch.
 
 The task branch is **runtime-char-tables**, [PR #79](https://github.com/rayfdj/emaxx/pull/79),
-now **ready for review** after the complete source207 checkpoint audits.
-The **published runtime remains source207**. The local task worktree and isolated
-string checkout contain **uncommitted source229**. Both selected profiles and
-fifty ordinary comparisons pass, but full Rust fails at an old host-record
-assertion and the full terminal comparison has a help-text divergence. A separate
-**source230** in `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx` repairs
-three GNU-confirmed substring failures and that assertion; strict checks pass and
-runtime validation is running. No new runtime has been pushed or Linux run
-dispatched for sources225–230.
+now **draft** while the next runtime checkpoint receives complete validation.
+This checkpoint advances the runtime from source207 to **source231**, matching all
+440 inputs in the isolated `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx`
+checkout. Strict checks and all 31 focused gate controls pass. Its
+[fresh release and ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
+verifies **31 focused / 937 affected release tests and 54 exact GNU comparisons**.
+Its [complete macOS library inventory](docs/handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
+records **2,974 passes / five failures / two existing ignores**. Both later Cargo
+stages never run. Three failures concern stale bytecode-root metadata, one an old
+closure-kind assertion, and one insufficient vector bitmap-word coverage. Linux
+validation is pending. The
+[closed source229 terminal failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
+contains **353 matching comparisons / seven quote-display divergences**, followed
+by a GNU startup-readiness failure. Another 54 scenarios never start. Source231
+has no renderer repair or complete terminal pass. Main remains the checkpoint
+above. Earlier source207 certification remains historical evidence below.
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
-The current **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
+The preceding **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
 adds direct evaluator words and a separate cold error
 constructor after the exact Linux diagnosis below. Its **410 runtime and test
 inputs** match the isolated candidate; only `src/lisp/eval/core.rs` changes from
@@ -162,9 +169,10 @@ one failure** in the unchanged 848-test broader inventory, with zero ignores.
 Only active-call code mutation fails. The executable and post-run image are
 retained. These are gate-profile results, not complete or release validation.
 Earlier failures and every intermediate patch remain preserved.
-No bytecode repair is applied to the task branch.
+This source216 closure-only candidate remained isolated; source231 above now
+carries the later closure, canonical-string and direct-execution work.
 
-The [current source229 string-byte and direct-VM draft](docs/runtime-representation-string-bytes-draft.md)
+The [source229 string-byte and direct-VM history](docs/runtime-representation-string-bytes-draft.md)
 continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`.
 Shared strings hold actual GNU bytes. Source221 repairs full-range `string`,
 `make-string` and `char-to-string` construction without Rust-char conversion.
@@ -236,8 +244,12 @@ one failure**: an internal assertion still requires `Kind::Record` for quoted
 bytecode, while unchanged ordinary GNU/source229 both show a callable four-slot
 closure. The remaining 2,297 library tests and both Cargo stages never run.
 Supervisors **84949, 86489, 86490 and 87395 have exited**. Terminal supervisor
-**89147 remains active**: Org startup now matches; `hscroll-disabled` differs in
-quote rendering. No complete terminal pass is claimed.
+**89147 has exited**. Its [audited partial failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
+has 164 fully matching scenarios, 353 matching comparisons and seven quote-display
+divergences, including echo text and wrap/cursor consequences. Scenario 172 stops
+at GNU startup readiness; 54 scenarios never start and 326 scheduled comparisons
+never execute. Every observed verdict is checked against the unchanged inventory.
+No complete terminal pass or Emaxx startup crash is inferred from that traceback.
 
 The same archive retains three additional ordinary substring failures: extended
 character loss, incorrect array/index error contracts, and a host abort for
@@ -250,18 +262,38 @@ exactly. Strict checks pass. The [focused result and proposed setup correction](
 retain **30 passes / one failure**: the added normal-GNU fixture calls `cadr` in
 an intentionally bare interpreter. All three substring controls pass; the
 original quoted-reader and closure-kind assertions pass before that setup error.
-Proposed source231 supplies the normal GNU batch preload only for the additional
-fixture, preserving its inputs and expected output; it is not applied or tested.
-Supervisors **90596** and **93555** run all 937 affected-module tests and a fresh
-ordinary executable/image with 54 GNU comparisons. Keep both isolated checkouts
-frozen while their associated children run. Root runtime inputs remain source229. Sources226/227 are
+Source230's [closed validation](docs/handover/2026-09-30-shared-reader-draft/source230-closed-validation-manifest.json)
+verifies all **937 affected-module passes and 54 ordinary GNU comparisons**;
+supervisors **90596/93555 have exited**. Its focused failure remains failed.
+
+[Source231](docs/handover/2026-09-30-shared-reader-draft/source231-bytecode-fixture-startup-draft-manifest.json)
+changes only the added fixture's startup, preserving the original bare-reader
+assertions, every fixture/expected byte and all production source230 inputs.
+All **440 inputs and modes** replay exactly. Its
+[focused audit and complete launches](docs/handover/2026-09-30-shared-reader-draft/source231-focused-and-complete-launch-manifest.json)
+verify strict zero-warning checks and **31 focused gate passes**. The task
+checkpoint matches all 440 inputs. Supervisors **96184/96185 have exited**;
+their [audited results](docs/handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
+pass all 31 focused release controls, all 937 affected release tests and 54 fresh
+ordinary GNU comparisons. Exact executables/images and raw verdicts are retained.
+Supervisor **96183 has exited**. Its
+[audited full-Rust failure](docs/handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
+verifies every one of 2,981 library names: **2,974 pass, five fail, two retain their
+existing ignore**. The binary and integration Cargo stages never run. The failures
+are stale `bc_functions`/`bc_live_programs` root metadata (three controls), an old
+host-record assertion in the no-slot-evaluation reader test, and a vector
+allocation control that reaches only three of four bitmap words. Keep every
+original semantic assertion while repairing those causes. Source231's
+complete gate covers the full inventory instead of repeating the already passing
+source230 affected-module gate after a test-only setup change. Its exact failed
+executable/image and complete logs are retained before further changes. Sources226/227 are
 unexecuted intermediate drafts; their patch history remains preserved.
 The bundle also preserves an ordinary source207 capacity mismatch: GNU accepts
 262144/393216 declared slots, but Emaxx overflows. Rust still reserves 256K words
 with separate frames versus GNU's 512K words including frames. This remains open.
 Plain-string migration, compact headers, stack layout/accounting, complete
-validation and performance remain open. Draft228 is present locally but no
-draft runtime is committed or published.
+validation and performance remain open. Source231 is a development checkpoint,
+not completion of those requirements.
 
 The preserved **source208** carries evaluator207
 and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
@@ -270,7 +302,8 @@ retain twelve ordinary negative constructor cases. Strict checks pass; six gate
 controls yield **two passes / four failures**. Constructor validation and shared
 constants pass; both layout and both live-code mutation controls still fail.
 The result archive also preserves the wrapper's later log-print filename error.
-Supervisor **53789 has exited**. No bytecode repair is applied to the task branch.
+Supervisor **53789 has exited**. This is the historical source208 failure;
+the later source231 task checkpoint is described above.
 
 The preserved **source206** baseline adds only tests/fixtures to runtime204. Its
 [portable patch and negative controls](docs/handover/2026-09-30-shared-reader-draft/source206-bytecode-negative-controls-manifest.json)

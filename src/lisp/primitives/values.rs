@@ -238,15 +238,21 @@ fn values_equal_recursive_with_env(
         (Kind::StringObject(a), Kind::StringObject(b)) => {
             let a = a.borrow();
             let b = b.borrow();
-            a.text == b.text && a.extended_chars == b.extended_chars
+            a.text_parts() == b.text_parts()
         }
         (Kind::String(a), Kind::StringObject(b)) => {
             let b = b.borrow();
-            b.extended_chars.is_empty() && a.as_str() == b.text
+            {
+                let (text, extended) = b.text_parts();
+                extended.is_empty() && a.as_str() == text
+            }
         }
         (Kind::StringObject(a), Kind::String(b)) => {
             let a = a.borrow();
-            a.extended_chars.is_empty() && a.text == b.as_str()
+            {
+                let (text, extended) = a.text_parts();
+                extended.is_empty() && text == b.as_str()
+            }
         }
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
@@ -368,7 +374,7 @@ fn values_equal_recursive_with_env(
             values_equal_recursive_with_env(interp, &a_car, &b_car, seen, env)
                 && values_equal_recursive_with_env(interp, &a_cdr, &b_cdr, seen, env)
         }
-        (Kind::Lambda(left), Kind::Lambda(right)) => {
+        (Kind::Closure(left), Kind::Closure(right)) => {
             let left_ptr = left.identity();
             let right_ptr = right.identity();
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
@@ -402,7 +408,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
@@ -478,7 +484,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
@@ -587,7 +593,7 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         // fns.c:Flength reads SCHARS: the character count in place, no
         // copy of the text.
         Kind::String(text) => Ok(text.as_str().chars().count() as i64),
-        Kind::StringObject(state) => Ok(state.borrow().text.chars().count() as i64),
+        Kind::StringObject(state) => Ok(state.borrow().len() as i64),
         Kind::Nil => Ok(0),
         // fns.c:Flength reads ASIZE directly; taking the size must not
         // clone or traverse the vector's elements.
@@ -598,24 +604,9 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         item if is_bool_vector_value(interp, &item.value()) => {
             Ok(bool_vector_values(interp, &item.value())?.len() as i64)
         }
-        Kind::Lambda(lambda) => Ok(lambda.public_len() as i64),
+        Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
         Kind::Cons(_) => Ok(value.to_vec()?.len() as i64),
-        Kind::Record(id) => {
-            let record = interp.find_record(id).ok_or_else(|| {
-                LispError::TypeError("record".into(), format!("record<{}>", id.id))
-            })?;
-            match record.kind {
-                // GNU Lisp_Closure slots already start at CLOSURE_ARGLIST and
-                // have no public type-tag slot (lisp.h, enum Lisp_Closure).
-                crate::lisp::eval::RecordKind::Closure => Ok(record.slots.len() as i64),
-                // Other RecordKind variants are host storage for distinct GNU
-                // pseudovectors.  Flength accepts none of them here; bool
-                // vectors and keymaps were projected through their GNU public
-                // sequence representations above.
-                _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
-            }
-        }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
@@ -1064,8 +1055,7 @@ pub(crate) fn compare_record_values(
                 _ => ValueOrder::Unordered,
             },
         )),
-        crate::lisp::eval::RecordKind::Closure
-        | crate::lisp::eval::RecordKind::Font
+        crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Obarray
         | crate::lisp::eval::RecordKind::Window
         | crate::lisp::eval::RecordKind::WindowConfiguration
@@ -1533,7 +1523,7 @@ pub(crate) fn equal_hash_table_key_hash_in_env(
             | Kind::Marker(_)
             | Kind::Overlay(_)
             | Kind::CharTable(_)
-            | Kind::Lambda(_)
+            | Kind::Closure(_)
             | Kind::ReaderForm(_) => false,
             Kind::Cons(_) => {
                 let mut tail = *value;
@@ -1726,7 +1716,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 6);
             hash_str(state, &name);
         }
-        Kind::Lambda(lambda_value) => {
+        Kind::Closure(lambda_value) => {
             hash_mix(state, 7);
             hash_mix(state, lambda_value.identity() as u64);
         }
@@ -1871,8 +1861,9 @@ pub(crate) fn hash_value_equal_at(
         Kind::StringObject(shared) => {
             hash_mix(state, 35);
             let shared = shared.borrow();
-            hash_str(state, &shared.text);
-            for (index, code) in &shared.extended_chars {
+            let (text, extended) = shared.text_parts();
+            hash_str(state, &text);
+            for (index, code) in &extended {
                 hash_mix(state, *index as u64);
                 hash_mix(state, u64::from(*code));
             }
@@ -1935,7 +1926,7 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, 39);
             hash_str(state, &name);
         }
-        Kind::Lambda(lambda_value) => {
+        Kind::Closure(lambda_value) => {
             hash_mix(state, 40);
             // `sxhash_vector' (fns.c:5447) bounds a closure the same way.
             for slot in lambda_value.slots().take(SXHASH_MAX_LEN) {
@@ -2122,7 +2113,7 @@ pub(crate) fn hash_record_equal(
             );
             hash_mix(state, id);
         }
-        crate::lisp::eval::RecordKind::Closure | crate::lisp::eval::RecordKind::Font => {
+        crate::lisp::eval::RecordKind::Font => {
             hash_value_equal_at(
                 interp,
                 state,
@@ -2222,15 +2213,14 @@ pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &En
 }
 
 pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    matches!(value.kind(), Kind::BuiltinFunc(_) | Kind::Lambda(_))
+    matches!(value.kind(), Kind::BuiltinFunc(_) | Kind::Closure(_))
         || is_lambda_expression(interp, value, env)
         || matches!(
             value.kind(),
             Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Closure
-                        | crate::lisp::eval::RecordKind::NativeCompiledFunction
+                    crate::lisp::eval::RecordKind::NativeCompiledFunction
                     | crate::lisp::eval::RecordKind::ModuleFunction
                 ))
         )
@@ -4348,7 +4338,7 @@ fn preferred_modifier_name(interp: &Interpreter, env: &Env) -> Option<String> {
     match (interp.lookup_var("where-is-preferred-modifier", env)?).kind() {
         Kind::Symbol(symbol) => Some(symbol.to_string()),
         Kind::String(text) => Some(text.to_string()),
-        Kind::StringObject(state) => Some(state.borrow().text.clone()),
+        Kind::StringObject(state) => Some(state.borrow().text()),
         _ => None,
     }
 }

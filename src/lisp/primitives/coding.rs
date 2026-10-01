@@ -762,33 +762,14 @@ fn unibyte_char_for_byte(byte: u8) -> char {
 }
 
 pub(crate) fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
-    let mut text = String::new();
-    let mut has_raw_bytes = false;
-    for &byte in bytes {
-        if byte <= 0x7F {
-            text.push(byte as char);
-        } else {
-            has_raw_bytes = true;
-            text.push(raw_byte_regex_char(byte));
-        }
+    if bytes.is_empty() {
+        return Value::String("".into());
     }
-    if has_raw_bytes {
-        make_shared_string_value_with_multibyte(text, Vec::new(), false)
-    } else {
-        Value::String(text.into())
-    }
+    bytes_to_shared_unibyte_value(bytes)
 }
 
 pub(crate) fn bytes_to_shared_unibyte_value(bytes: &[u8]) -> Value {
-    let mut text = String::new();
-    for &byte in bytes {
-        if byte <= 0x7F {
-            text.push(byte as char);
-        } else {
-            text.push(raw_byte_regex_char(byte));
-        }
-    }
-    make_shared_string_value_with_multibyte(text, Vec::new(), false)
+    crate::lisp::types::string_object_value(SharedStringState::from_unibyte(bytes.to_vec()))
 }
 
 /// gen_tempname's random segment: exactly six characters from

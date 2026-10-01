@@ -1,4 +1,4 @@
-//! Execution of decoded GNU 30.2 bytecode (exec_byte_code port).
+//! Execution of GNU 30.2 bytecode from its authoritative string bytes (exec_byte_code port).
 //!
 //! Runs a validated [`ByteCodeObject`] against the interpreter: operand
 //! stack, argument prologue, dynamic binds with a specpdl-style unwind
@@ -14,7 +14,6 @@ use super::super::types::{Env, LispError, Value, VectorRef};
 use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
-use std::rc::Rc;
 
 /// bytecode.c's per-thread bytecode stack (`bc_thread_state'): one
 /// contiguous operand stack for every live activation, allocated once
@@ -156,7 +155,7 @@ fn packed_arity_error(mandatory: usize, nonrest: usize, nargs: usize) -> LispErr
 /// itself and NARGS (the old spelling when the object is not a record).
 fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
     match function.kind() {
-        Kind::Record(_) => LispError::SignalValue(Value::list([
+        Kind::Closure(_) => LispError::SignalValue(Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             *function,
             Value::Integer(nargs as i64),
@@ -169,7 +168,7 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
 struct BcFrame {
-    program: Rc<CachedProgram>,
+    program: BytecodeActivation,
     pc: usize,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
@@ -420,7 +419,8 @@ fn prim(
 /// signals), the function returned, or 256 backward jumps have passed
 /// (exec_byte_code's `quitcounter': maybe_gc and maybe_quit are due).
 enum FastExit {
-    Slow,
+    Slow(super::Instr),
+    Error(super::ByteCodeError),
     Return(Value),
     QuitCheck,
 }
@@ -435,22 +435,23 @@ enum FastExit {
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(never)]
 fn run_fast(
-    object: &CachedProgram,
+    object: &BytecodeActivation,
+    code: &[u8],
     ops: &mut BcStack,
     pc: &mut usize,
     quitcounter: &mut u8,
 ) -> FastExit {
-    let instrs = &object.decoded.instrs;
     let mut at = *pc;
+    let mut instruction: super::Instr;
     macro_rules! slow {
         () => {{
-            *pc = at - 1;
-            return FastExit::Slow;
+            *pc = instruction.offset;
+            return FastExit::Slow(instruction);
         }};
     }
     macro_rules! jump {
         ($target:expr) => {{
-            let destination = object.instr_at($target as usize);
+            let destination = $target as usize;
             if destination < at {
                 *quitcounter = quitcounter.wrapping_add(1);
                 if *quitcounter == 0 {
@@ -468,12 +469,15 @@ fn run_fast(
         };
     }
     loop {
-        let Some(instr) = instrs.get(at) else {
-            *pc = at;
-            return FastExit::Slow;
+        instruction = match super::fetch_instruction(code, at, object.constants.len()) {
+            Ok(instr) => instr,
+            Err(error) => {
+                *pc = at;
+                return FastExit::Error(error);
+            }
         };
-        let op = instr.op;
-        at += 1;
+        let op = instruction.op;
+        at += instruction.len;
         match op {
             Op::StackRef(n) => {
                 let index = ops.len() - 1 - n as usize;
@@ -694,20 +698,19 @@ fn run_fast(
     }
 }
 
-/// A byte-code function decoded and validated once:
-/// instructions, an O(1) byte-offset -> instruction-index table for
-/// jumps, and live constants.  Cached per record so repeated calls skip
-/// instruction decoding (GNU decodes inside its dispatch loop). Constants
-/// remain the original live vector supplied by the reader or make-byte-code.
-pub struct CachedProgram {
+/// Entry fields read from the shared closure; no decoded program or heap
+/// activation. Suspended frames retain these handles and a byte-offset PC.
+#[derive(Clone)]
+pub struct BytecodeActivation {
     pub argspec: ArgSpec,
-    pub decoded: Rc<super::DecodedCode>,
+    pub code: super::CodeBytes,
     pub constants: VectorRef,
     pub stack_depth: usize,
 }
 
-impl TraceLispRoots for CachedProgram {
+impl TraceLispRoots for BytecodeActivation {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        marker.value(&self.code.original());
         marker.value(&Value::Vector(self.constants));
         if let ArgSpec::Legacy(arguments) = &self.argspec {
             marker.value(arguments);
@@ -715,12 +718,7 @@ impl TraceLispRoots for CachedProgram {
     }
 }
 
-impl CachedProgram {
-    #[inline]
-    fn instr_at(&self, byte_offset: usize) -> usize {
-        self.decoded.offset_index[byte_offset] as usize
-    }
-
+impl BytecodeActivation {
     #[inline]
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
@@ -731,65 +729,50 @@ impl CachedProgram {
     }
 }
 
-fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
-    // lread.c constructs reader objects before execution. The existing
-    // reader boundary owns that work; the VM neither rebuilds its graph nor
-    // copies CLOSURE_CONSTANTS into another vector, and the decoded code
-    // is the prototype's.
-    Ok(CachedProgram {
-        argspec: object.argspec.clone(),
-        decoded: Rc::clone(&object.decoded),
+fn build_activation(object: &ByteCodeObject) -> Result<BytecodeActivation, LispError> {
+    Ok(BytecodeActivation {
+        argspec: object.argspec,
+        code: object.code.clone(),
         constants: object.constants,
         stack_depth: object.stack_depth,
     })
 }
 
-/// Execute the genuine byte-code function stored in RECORD_ID, decoding
-/// its instructions once and reusing the decoded program afterwards.
-#[inline(always)]
-pub fn execute_record(
-    interp: &mut Interpreter,
-    record_id: u64,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    // Mutation of a record's slots goes through find_record_mut, which
-    // drops the cached program, so a cache hit is always current.  Ids are
-    // dense from 1, so id-1 indexes the slot vector directly.
-    let index = (record_id as usize).saturating_sub(1);
-    if let Some(Some(program)) = interp.bytecode_program_cache.get(index) {
-        let program = std::rc::Rc::clone(program);
-        return run(interp, program, interp.record_value(record_id), args, env);
-    }
-    let record = interp
-        .find_record(record_id)
-        .ok_or_else(|| LispError::Signal("byte-code record vanished".into()))?;
-    // GNU reads the closure fields directly. Decoding retains its own
-    // handles and needs no mutable interpreter or copied outer slot array.
-    let object = super::ByteCodeObject::from_slots(&record.slots)
+pub(crate) fn closure_program(
+    closure: crate::lisp::types::ClosureRef,
+) -> Result<BytecodeActivation, LispError> {
+    let object = ByteCodeObject::from_closure(closure)
         .map_err(|error| LispError::Signal(error.to_string()))?
         .ok_or_else(|| {
             LispError::SignalValue(Value::list([
-                Value::Symbol("invalid-function".into()),
-                interp.record_value(record_id),
+                Value::symbol("invalid-function"),
+                Value::Closure(closure),
             ]))
         })?;
-    let program = std::rc::Rc::new(build_cached(&object)?);
-    if interp.bytecode_program_cache.len() <= index {
-        interp.bytecode_program_cache.resize(index + 1, None);
-    }
-    interp.bytecode_program_cache[index] = Some(std::rc::Rc::clone(&program));
-    run(interp, program, interp.record_value(record_id), args, env)
+    build_activation(&object)
+}
+
+/// Read the actual PVEC_CLOSURE fields and dispatch from its code bytes.
+#[inline(always)]
+pub fn execute_closure(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let program = closure_program(closure)?;
+    run(interp, program, Value::Closure(closure), args, env)
 }
 
 /// Execute OBJECT with ARGS, returning the value of Breturn.
+#[cfg(test)]
 pub fn execute(
     interp: &mut Interpreter,
     object: &ByteCodeObject,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let program = Rc::new(build_cached(object)?);
+    let program = build_activation(object)?;
     run(interp, program, Value::Nil, args, env)
 }
 
@@ -799,7 +782,7 @@ pub fn execute(
 /// and the stack cut back to the entry mark on the way out.
 fn run(
     interp: &mut Interpreter,
-    program: Rc<CachedProgram>,
+    program: BytecodeActivation,
     function: Value,
     args: &[Value],
     env: &mut Env,
@@ -810,9 +793,22 @@ fn run(
     let frames_at_entry = interp.backtrace_frames_len();
     // The activation's program is a root while it runs (alloc.c marks the
     // thread's bytecode stack, whose frames hold their functions).
-    interp.bc_live_programs.push(program.constants);
-    let result = run_frames(interp, program, function, args, env);
-    interp.bc_live_programs.pop();
+    let functions_at_entry = interp.bc_functions.len();
+    interp.bc_functions.push(if function.is_nil() {
+        // The raw byte-code primitive has no closure object.
+        Value::Vector(program.constants)
+    } else {
+        function
+    });
+    let result = if function.is_nil() {
+        // Direct Rust execution also roots the code and legacy arglist; a
+        // constants-only root cannot keep them alive across a callback.
+        interp.with_lisp_stack_roots(&program, |interp| {
+            run_frames(interp, program.clone(), function, args, env)
+        })
+    } else {
+        run_frames(interp, program, function, args, env)
+    };
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
@@ -843,6 +839,7 @@ fn run(
         result
     };
     interp.bc_stack.truncate(base);
+    interp.bc_functions.truncate(functions_at_entry);
     result
 }
 
@@ -852,7 +849,7 @@ fn run(
 /// loop (`goto setup_frame'), its return pops it.
 fn run_frames(
     interp: &mut Interpreter,
-    mut program: Rc<CachedProgram>,
+    mut program: BytecodeActivation,
     function: Value,
     args: &[Value],
     env: &mut Env,
@@ -950,6 +947,7 @@ fn run_frames(
     let mut handlers: Vec<Handler> = Vec::new();
     let mut frames: Vec<BcFrame> = Vec::new();
     let mut pc = 0usize;
+    let mut last_instruction = None;
     let trace_errors = trace_load_errors();
     // Frames pushed by signaling byte ops (record_in_backtrace); an
     // in-frame condition-case that catches must unwind them, and the
@@ -981,7 +979,7 @@ fn run_frames(
     // it with the value.
     macro_rules! branch {
         ($target:expr) => {{
-            let destination = program.instr_at($target as usize);
+            let destination = $target as usize;
             if destination < pc {
                 quitcounter = quitcounter.wrapping_add(1);
                 if quitcounter == 0 {
@@ -1008,6 +1006,7 @@ fn run_frames(
                     }
                     interp.bc_stack.truncate(frame.base);
                     push!(value);
+                    interp.bc_functions.pop();
                     program = frame.program;
                     pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
@@ -1023,24 +1022,35 @@ fn run_frames(
         let step: Result<Value, LispError> = (|| loop {
             // The hot loop first; it leaves PC at the instruction it could
             // not run, which the full dispatch below runs once.
-            let exit = run_fast(&program, &mut interp.bc_stack, &mut pc, &mut quitcounter);
-            match exit {
+            // No Lisp callback, collection, or string store occurs in the
+            // fast loop. Release its byte borrow before the full dispatch.
+            let exit = program.code.with_bytes(|code| {
+                run_fast(
+                    &program,
+                    code,
+                    &mut interp.bc_stack,
+                    &mut pc,
+                    &mut quitcounter,
+                )
+            });
+            last_instruction = None;
+            // Carry the already fetched instruction into the slow dispatch.
+            // No callback runs between these loops, so fetching it again
+            // would add work without observing another Lisp mutation.
+            let instr = match exit {
                 FastExit::Return(value) => breturn!(value),
                 FastExit::QuitCheck => {
                     crate::lisp::native_comp::maybe_gc(interp, env);
                     interp.maybe_quit(env)?;
                     continue;
                 }
-                FastExit::Slow => {}
-            }
-            let Some(instr) = program.decoded.instrs.get(pc) else {
-                return Err(LispError::Signal(
-                    "byte code ran off the end of its program".into(),
-                ));
+                FastExit::Slow(instr) => instr,
+                FastExit::Error(error) => return Err(LispError::Signal(error.to_string())),
             };
+            last_instruction = Some(instr);
             let op = instr.op;
             let offset = instr.offset;
-            pc += 1;
+            pc += instr.len;
 
             // Hot pre-dispatch: the ops below either cannot fail or only take
             // this path when their operands make failure impossible, so they
@@ -1659,11 +1669,10 @@ fn run_frames(
                     // stay on the stack until the call returns (GNU keeps
                     // them rooted the same way).
                     let func = interp.bc_stack[args_start - 1];
-                    // The fast path for a lexbound byte-code function whose
-                    // program is cached: its frame is laid out above the
+                    // A packed byte-code function's frame lies above the
                     // arguments and the loop continues in it (bytecode.c's
                     // `goto setup_frame').  Anything else takes Ffuncall.
-                    if let Some((callee, callee_id)) = interp.bytecode_callee(&func) {
+                    if let Some((callee, callee_function)) = interp.bytecode_callee(&func) {
                         interp.begin_funcall(env)?;
                         if let Some(termination) = interp.pending_termination().cloned() {
                             interp.end_funcall();
@@ -1678,7 +1687,7 @@ fn run_frames(
                         interp.push_backtrace_frame_borrowed(
                             match func.kind() {
                                 Kind::Symbol(_) => func,
-                                _ => interp.record_value(callee_id),
+                                _ => callee_function,
                             },
                             call_args,
                         );
@@ -1690,9 +1699,10 @@ fn run_frames(
                             env,
                             None,
                         );
+                        interp.bc_functions.push(callee_function);
                         crate::lisp::native_comp::maybe_gc(interp, env);
                         frames.push(BcFrame {
-                            program: Rc::clone(&program),
+                            program: program.clone(),
                             pc,
                             base: args_start - 1,
                             handlers_len: handlers.len(),
@@ -1846,7 +1856,7 @@ fn run_frames(
                     let value = pop!();
                     let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
                     if let Kind::Integer(dest) = dest.kind() {
-                        pc = program.instr_at(dest as usize);
+                        pc = dest as usize;
                     }
                 }
                 Op::ListN(n) => {
@@ -2231,7 +2241,7 @@ fn run_frames(
                             }
                             interp.bc_stack.truncate(handler.stack_len);
                             push!(value);
-                            pc = program.instr_at(handler.dest);
+                            pc = handler.dest;
                             handled = true;
                             break 'frames;
                         }
@@ -2254,6 +2264,7 @@ fn run_frames(
                             }
                             interp.bc_stack.truncate(frame.base);
                             push!(value);
+                            interp.bc_functions.pop();
                             program = frame.program;
                             pc = frame.pc;
                             op_error_frames = frame.op_error_frames;
@@ -2268,6 +2279,7 @@ fn run_frames(
                         error = unwind_error;
                     }
                     interp.bc_stack.truncate(frame.base);
+                    interp.bc_functions.pop();
                     program = frame.program;
                     pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
@@ -2289,7 +2301,7 @@ fn run_frames(
                     if trace_errors
                         && !matches!(error.kind(), LispErrorKind::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
-                        && let Some(instr) = program.decoded.instrs.get(pc.wrapping_sub(1))
+                        && let Some(instr) = last_instruction
                     {
                         eprintln!(
                             "bytecode operation {:?} failed at byte offset {}: {}",
@@ -2390,7 +2402,7 @@ mod tests {
             interp
                 .call_function_value(closure, None, &[], &mut env)
                 .map(|v| v.kind()),
-            Ok(Kind::Record(_))
+            Ok(Kind::Closure(_))
         ));
     }
 
@@ -2410,7 +2422,7 @@ mod tests {
 
         assert!(matches!(
             items.get(1).map(|v| v.kind()),
-            Some(Kind::Record(_))
+            Some(Kind::Closure(_))
         ));
     }
 
@@ -2752,7 +2764,7 @@ mod native_surface_tests {
         let object = ByteCodeObject::from_slots(&slots)
             .expect("valid bytecode")
             .expect("bytecode slots");
-        let program = build_cached(&object).expect("decoded program");
+        let program = build_activation(&object).expect("decoded program");
         let Kind::Vector(vector) = constants.kind() else {
             panic!("constants vector")
         };
@@ -2778,13 +2790,20 @@ mod native_surface_tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         // argspec 257: one mandatory arg; code: dup; add1; return.
+        // alloc.c:Fmake_byte_code requires an unibyte string and a real
+        // constants vector, including when called through the Rust API.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{89}\u{54}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{89}\u{54}\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                code,
+                Value::vector([]),
                 Value::Integer(3),
             ],
             &mut env,
@@ -2800,12 +2819,17 @@ mod native_surface_tests {
     fn byte_code_argument_prologue_preserves_string_identity() {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{87}".into()),
+                code,
                 Value::vector([]),
                 Value::Integer(1),
             ],
@@ -2833,13 +2857,18 @@ mod native_surface_tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         // argspec 257: one mandatory arg; code: return that argument.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                code,
+                Value::vector([]),
                 Value::Integer(1),
             ],
             &mut env,
@@ -2934,17 +2963,16 @@ mod native_surface_tests {
     fn byte_code_primitive_executes_program() {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        // constant0; constant1; plus; return  with constants [40 2].
+        // constant0; constant1; plus; return with constants [40 2].
+        // bytecode.c:Fbyte_code converts multibyte input with
+        // string-as-unibyte. Actual Unicode U+00C0/U+00C1 encode as
+        // C3 80/C3 81, not the C0/C1 constant opcodes required here.
         let value = prim(
             &mut interp,
             "byte-code",
             &[
-                Value::String("\u{c0}\u{c1}\u{5c}\u{87}".into()),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Integer(40),
-                    Value::Integer(2),
-                ]),
+                primitives::bytes_to_shared_unibyte_value(&[192, 193, 92, 135]),
+                Value::vector([Value::Integer(40), Value::Integer(2)]),
                 Value::Integer(4),
             ],
             &mut env,
@@ -2956,4 +2984,58 @@ mod native_surface_tests {
             Value::Nil
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding() {
+    let _interp = Interpreter::new();
+    let code = primitives::bytes_to_shared_unibyte_value(&[192, 135, 0]);
+    let Kind::StringObject(state) = code.kind() else {
+        panic!("canonical code string");
+    };
+    let function = Value::allocated_closure(&[
+        Value::Integer(0),
+        code,
+        Value::vector([Value::Integer(73)]),
+        Value::Integer(1),
+    ]);
+    let Kind::Closure(closure) = function.kind() else {
+        panic!("actual closure");
+    };
+    // The invalid dead byte must not be decoded when an ordinary activation
+    // starts. The separate diagnostic parser still rejects corrupt streams.
+    let program = closure_program(closure).expect("entry reads fields, not dead instructions");
+    assert_eq!(program.code.original().word(), code.word());
+    assert!(program.code.legacy.is_none());
+    program.code.with_bytes(|bytes| {
+        let state = state.borrow();
+        assert_eq!(bytes.as_ptr(), state.bytes().as_ptr());
+        assert_eq!(bytes, &[192, 135, 0]);
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let code = primitives::bytes_to_shared_unibyte_value(&[130, 255, 255]);
+    let function = Value::allocated_closure(&[
+        Value::Integer(0),
+        code,
+        Value::vector([]),
+        Value::Integer(0),
+    ]);
+    let Kind::Closure(closure) = function.kind() else {
+        panic!("actual closure");
+    };
+    let stack_before = interp.bc_stack.len();
+    let roots_before = interp.bc_functions.len();
+    let error = execute_closure(&mut interp, closure, &[], &mut env)
+        .expect_err("the actual next fetch must check the string boundary");
+    assert!(matches!(error.kind(), LispErrorKind::Signal(message)
+        if message == "byte code ran off the end of its program"));
+    assert_eq!(interp.bc_stack.len(), stack_before);
+    assert_eq!(interp.bc_functions.len(), roots_before);
 }
