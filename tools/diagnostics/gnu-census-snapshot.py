@@ -7,6 +7,7 @@ Debugger runs are diagnostic evidence, never ordinary validation.
 
 import bisect
 import json
+from pathlib import Path
 import struct
 
 import gdb
@@ -169,12 +170,20 @@ class Explicit(gdb.Breakpoint):
 gdb.execute('set pagination off')
 gdb.execute('set confirm off')
 gdb.execute('set print thread-events off')
-gdb.execute('set startup-with-shell off')
+# --args escapes the argument vector for GDB's default startup shell.
+# Disabling that shell afterward leaves literal escapes and splits --eval.
+# https://sourceware.org/gdb/current/onlinedocs/gdb.html/Mode-Options.html
+gdb.execute('set startup-with-shell on')
 # Keep ordinary ASLR; the breakpoint itself still makes this a diagnostic run.
 gdb.execute('set disable-randomization off')
 gdb.execute('handle SIGPIPE nostop noprint pass')
 gdb.execute('handle SIGALRM nostop noprint pass')
 gdb.execute('starti')
+# Check the actual Linux argument vector before accepting any GC observation.
+argument_bytes = Path(f'/proc/{gdb.selected_inferior().pid}/cmdline').read_bytes()
+if not argument_bytes.endswith(b'\0'):
+    raise ValueError('incomplete inferior argument vector')
+emit('inferior argument vector', argv=[part.decode('utf-8') for part in argument_bytes[:-1].split(b'\0')])
 for expression, expected in [('sizeof (Lisp_Object)', 8), ('sizeof (bits_word)', 8), ('header_size', 8),
                              ('bool_header_size', 16), ('roundup_size', 8),
                              ('VECTOR_BLOCK_BYTES', 4088), ('large_vector_offset', 8),

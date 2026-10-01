@@ -120,6 +120,9 @@ def main():
             row['trace_events'] = len(events)
             with (output / (fixture + '-trace-events.json')).open('x') as stream:
                 json.dump(events, stream, indent=2)
+            arguments = [event['argv'] for event in events if event['event'] == 'inferior argument vector']
+            if arguments != [command]:
+                raise ValueError('GDB changed the original GNU argument vector')
             if (row['exit_code'] or row['timed_out'] or len(completed) != 1
                     or completed[0]['errors'] or completed[0]['captured_sweeps'] != 8
                     or [event['collection'] for event in sweeps] != list(range(1, 9))

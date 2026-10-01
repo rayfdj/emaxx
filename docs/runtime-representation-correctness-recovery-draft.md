@@ -670,3 +670,28 @@ members are verified, the exact executed tools are retained, and the two GNU
 executable/dump files are retained locally with hashes in the portable evidence.
 This is an observer setup failure, not an explanation or repair of the original
 GNU census failures. Main, pinned Darwin and the full goal remain unchanged.
+
+## Source248 pushed; release and preceding ordinary comparisons close
+
+Source248 is pushed as `fa7578ac04a697d45acb59bb296a8365541b29c9`, and draft PR79
+records its current evidence and open failures. The [release and Linux-launch archive](handover/2026-09-30-shared-reader-draft/source248-release-and-linux-launch-manifest.json)
+closes supervisor4529, now exited: **170 focused passes / two existing ignores**
+and **953 affected passes**, matching gate. All raw test names/verdicts and the
+retained executable/image are checked. The one existing debug-only descriptor
+ownership control is the sole gate/release inventory difference.
+
+The same archive verifies all **57 preceding ordinary comparisons**, in addition
+to the thirteen selected fixtures: **70 distinct matches**. Original fixture modes,
+expected bytes, C locale and normal `-Q` entry points remain unchanged. Full Linux
+[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) and
+[frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068) run
+on exact `fa7578ac`. Full macOS4528 and terminal4530 remain active; these launches
+do not establish a complete platform result.
+
+The observer setup correction restores the startup shell expected by GDB's
+`--args` escaping and reads `/proc/PID/cmdline` at startup. The driver now requires
+that actual argument vector to equal the original ordinary GNU command before
+accepting any observation. Python syntax and diff checks pass. This corrects
+the demonstrated tool setup mistake, follows the linked GDB manual, and still
+needs actual Linux execution; it changes no runtime input, fixture, oracle byte,
+workflow selector or failed gate verdict. The previous executed helper is preserved.

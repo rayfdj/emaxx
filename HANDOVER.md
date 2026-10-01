@@ -17,7 +17,7 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source248**, with **472 inputs** matching the frozen
+The task runtime is now **source248**, pushed as **`fa7578ac`**, with **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
 The two property repairs below follow the actual GNU C lookup paths; their
 strict, selected and complete original compiler comparisons pass. Full source248
@@ -84,8 +84,15 @@ fixtures now match GNU without changed expectations. Queue **94807** has exited.
 The [compiler audit and complete launches](docs/handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
 close **1840**: all **177 original compiler tests pass in both editors**, with
 the unchanged full inventory, raw process hashes and 472 source inputs checked.
-Source248 is now applied to the root runtime. Full macOS **4528**, release plus
-57 preceding ordinary comparisons **4529**, and terminal **4530** are running.
+Source248 is now applied to the root runtime. The [release audit and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source248-release-and-linux-launch-manifest.json)
+close **4529** with **170 focused passes / two existing ignores**, **953 affected
+passes**, and all 57 preceding ordinary comparisons: **70 distinct ordinary
+matches** including the thirteen selected fixtures. Release matches gate, with
+the same existing debug-only file-descriptor test accounting for their inventory
+difference. Full macOS **4528** and terminal **4530** are running. Full Linux
+[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) and
+[frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068) are
+running on exact `fa7578ac`.
 Do not edit the frozen candidate or executing helpers. These launches do not
 certify full source248 correctness; the complete source246 results are historical.
 The [C-source review and diagnostic failure](docs/handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
@@ -105,6 +112,10 @@ with `startup-with-shell off` splits the Lisp argument. GNU stops with end-of-fi
 before any explicit collection; the second fixture never starts. Raw evidence
 and the executed helper are preserved. No GC observation or root cause is claimed;
 post-run oracle verification was not reached. The full Linux Rust failure remains open.
+The separate observer correction restores GDB's default startup shell and checks
+the actual Linux inferior argument vector against the original GNU command.
+Its static checks pass; Linux execution is still required. The original failed
+observer and raw arguments remain in the failure archive. Runtime source248 is unchanged.
 
 The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
 records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS
