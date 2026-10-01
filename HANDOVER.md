@@ -25,6 +25,14 @@ macOS/Linux Rust and pinned Linux frozen comparisons now pass as detailed below.
 Full terminal retry **14540** is running; the original GNU startup failure and a
 pre-existing general conversion-table gap remain documented. Further architectural
 changes remain on hold.
+The [separate source249 post-read draft](docs/handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
+has **476 frozen inputs**, with both patches replayed exactly. Its two ordinary
+negative fixtures expose byte-count hook arguments and a missing ASCII early
+return; both also fail identically on retained source174/main and source207.
+The repair follows `coding.c:decode_coding_object/code_convert_string`, preserves
+the exact GNU outputs and remains unapplied. Queue **15814** waits for terminal
+**14540** before building and validating it. Read `source249-*` receipts before
+acting; the packaged queue snapshot and prepared auditors are not runtime passes.
 The preceding **source246**, pushed as **`aaf31ce7`**, has **468 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
 Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)

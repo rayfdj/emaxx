@@ -761,3 +761,36 @@ complete C mechanisms, including non-scalar translations, before implementing
 the repair. The existing safety-character helper does not establish general
 encoding/decoding semantics. Runtime source248 is unchanged; the full goal,
 pinned Darwin, final audit and locked performance criterion remain open.
+
+## Isolated source249 post-read repair
+
+The [portable draft](handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
+preserves two exact negative fixtures and their GNU outputs. Source248 passes
+Rust projection byte counts to post-read conversion: one four-character decoded
+input produces a hook argument of ten. It also invokes the hook for an ASCII
+string result, incorrectly copying the original properties and losing NOCOPY
+identity. GNU returns from that ASCII path before conversion. Both recorded
+source174/main and source207 executable/image pairs produce the same wrong
+outputs as source248, with unchanged artifact hashes. These particular defects
+predate the migrations; the real regressions documented above remain regressions.
+
+The separate `coding-post-read/emaxx` candidate uses the decoded temporary buffer's
+existing character count, following `coding.c:decode_coding_object`. Its ASCII
+return follows `code_convert_string`: preserve the original object with NOCOPY,
+otherwise make a fresh unpropertized multibyte string. Source regions and buffer
+destinations still execute conversion hooks. No representation, cache or registry
+is added. The fixtures retain the exact GNU output bytes, including raw bytes,
+non-ASCII characters, EOL conversion, properties, identity and hook invocation.
+
+All **476 inputs and Git checkout modes** replay from `97385010` and main.
+Queue **15814** waits for source248 terminal **14540** to exit before cloning its
+completed cache and running strict checks, selected gate/release controls and
+fifteen ordinary comparisons. The archived snapshot precedes all build/runtime
+validation; its prepared auditors are not passing results. Read actual receipts
+before starting another job. Root runtime remains source248 and main is unchanged.
+
+The C review also confirms that the ASCII string shortcut intentionally bypasses
+translation tables. The general translation repair must respect that behavior,
+table sequences, EOL ordering and raw-character handling; it is not implemented
+here. Broader hook/destination contracts, adapters, ownership, accounting, complete
+platform validation, pinned Darwin and the full performance goal remain open.

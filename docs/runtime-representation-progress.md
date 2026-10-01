@@ -7,6 +7,11 @@ the root. Complete macOS/Linux Rust and pinned Linux frozen validation now pass.
 The original full terminal run stops at GNU startup; its unchanged full retry is
 running. A general conversion-table gap is now reproduced on source248 and both
 retained source174/main and source207 baselines. Architecture changes remain on hold.
+The [isolated source249 draft](handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
+adds a GNU C post-read hook repair, with 476 replayed inputs and unchanged negative
+fixtures also reproduced on both baselines. It is unapplied and unvalidated at
+the archived snapshot. Queue15814 waits for terminal14540 before strict checks,
+selected gate/release validation and ordinary comparisons; consult current receipts.
 The preceding **source246**, pushed as `aaf31ce7`, has the closed results below.
 Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
