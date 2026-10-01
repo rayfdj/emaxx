@@ -1050,11 +1050,29 @@ string retained its read-only header instead of using GNU's ordinary constructor
 The other failure occurs before an independent fixture assertion because the test
 still owns a prior native image. All raw verdicts and failed artifacts are retained.
 
-The [current source270 draft](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+The [source270 repair](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
 uses ordinary constructors for every string copy, removes the unreachable host-text
 fallback and releases the test-owned interpreters before independent image loading.
-All 510 inputs replay exactly and strict checks have zero warnings. Queue98240 runs
-205 focused selectors, 1,059 affected tests per profile and 33 ordinary comparisons,
-including all previous expectations and 12,600 prefix rows. Keep that candidate and
-its running helpers unchanged. Source261 remains the applied runtime. No storage
-draft pass, memory saving, performance parity or full-goal completion is inferred.
+All 510 inputs replay exactly and strict checks have zero warnings. Queue 98240 has
+completed. Its [closed selected audit and full-validation launches](handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
+verify 203 focused passes/two existing ignores and 1059 affected passes in each profile,
+plus 33 ordinary exact GNU comparisons, preserving every previous expectation and
+all 12,600 prefix rows. Every raw verdict, inventory and artifact identity is checked.
+The result parser rejects eight deliberately corrupted reports without modifying
+any actual log. This is bounded evidence-parser coverage, not the final audit.
+
+Source270 is now applied and pushed as **`0ecf6e11`**. The eight ordinary matrices
+have zero wrong rows, closing 154 ordering,56 version,12 range/error,134 character
+comparison,9 numeric casing,6 empty-identity,57 pure-value and 106 pure-property
+whole-row differences from source261. These observations overlap and must not be
+summed. Live-table and initialization fixtures also match unchanged GNU output.
+All earlier failures and original source261 negatives remain retained.
+
+Full macOS supervisor 3079 runs from the clean exact-commit
+`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`, after selected
+re-audit, idle-cache cloning and GNU capture. Linux
+[Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
+[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are launched
+on exact 0ecf6e11. Keep both source270 checkouts unchanged and read the full-run
+receipts for live state. No complete platform pass, memory saving, performance
+parity or full-goal completion is inferred; main remains 21d20f0e and PR79 stays draft.

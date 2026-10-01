@@ -256,7 +256,7 @@ and verifies every one of the 28 paths. No runtime, test, expectation, selector,
 timeout or comparison rule changes. Read `source263-fixture-validation-*` and
 `source263-boundary-fixtures-*`; the old helpers and queued state remain preserved.
 
-## Compact header and pure storage continuation: source270
+## Applied compact header and pure storage checkpoint: source270
 
 The [source264–268 preparation archive](handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
 includes the closed source263 failure, ordinary GNU negatives, failed startup
@@ -318,16 +318,46 @@ image while still owning its first initialized interpreter. Source270 drops the
 test-owned interpreters before the independent assertion, preserving every original
 comparison. Source269's raw failure and artifacts remain; no later stage ran.
 
-Source270 passes strict checks with zero warnings. Queue **98240** runs **205 focused selectors**,
-**1,059 affected tests per profile** and **33 ordinary comparisons**, preserving
-all original selectors, expected values and the full 12,600-row prefix fixture.
-Read `source270-validation-*`; keep the candidate and executing helpers unchanged.
-The published source261 and failed source263 remain unchanged. Preparation archives
-do not establish a runtime, full-platform or performance pass.
+Source270 is now applied and pushed as **`0ecf6e11`**. The
+[closed selected audit and full-validation launches](handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
+verify zero-warning strict checks, **203 focused passes / two existing ignores**
+and **1,059 affected passes in each profile**, and **33 ordinary exact GNU matches**.
+All original selectors, expected bytes and the full 12,600-row prefix fixture remain.
+Every named verdict, complete inventory, executable/image hash and all 510 source
+inputs are checked. Queue 98240 has exited. The report parser also rejects eight
+in-memory corruptions of named results, inventories and summaries; this bounded
+check does not replace the final adversarial review.
+
+The ordinary comparisons close these recorded source261 negatives:
+
+| Fixture | Rows | Source261 wrong rows | Source270 wrong rows |
+| --- | ---: | ---: | ---: |
+| Symbol/storage ordering | 1,024 | 154 | 0 |
+| Version ordering | 400 | 56 | 0 |
+| Range/error order | 22 | 12 | 0 |
+| Character/storage comparison | 1,024 | 134 | 0 |
+| Numeric casing | 30 | 9 | 0 |
+| Empty identities | 12 | 6 | 0 |
+| Pure-string values and operations | 96 | 57 | 0 |
+| Pure-string properties | 144 | 106 | 0 |
+
+The live-case-table and initialization fixtures also match GNU exactly. These
+observations overlap and must not be added into a universal correctness score.
+All original failed drafts and negative outputs remain archived. The previous
+source261 and failed source263 checkouts remain unchanged.
+
+Full macOS supervisor **3079** runs in the clean exact-commit checkout
+`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`, after selected
+re-audit, idle-cache cloning and retained GNU capture. It runs full Rust, then
+frozen and terminal validation. Linux [Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705)
+and [frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are
+launched on exact 0ecf6e11. Read `source270-full-*` and those runs for live state.
+Keep both source270 checkouts unchanged. No full platform, memory or performance
+result is inferred from the selected pass.
 
 ## Remaining requirements
 
-The [current empty/pure storage baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+The [preceding empty/pure storage baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
 compares GNU and retained source174/main,207,249,261 executables. Source261 has six
 wrong rows among 12 empty-identity cases; all three earlier Rust checkpoints have
 twelve. It has 57 wrong rows among 96 pure-storage cases, including 28 operation and
@@ -339,11 +369,11 @@ source between249 and261 is not established; main and207 outputs agree exactly.
 
 GNU `make_clear_string`/`make_clear_multibyte_string` use two shared empty strings.
 `make_pure_string` allocates a distinct header even for zero bytes, while `purecopy`
-returns an already-pure object unchanged. The source261 pure-copy path incorrectly
-uses the normal constructor's empty unibyte singleton. `STRING_SET_UNIBYTE` replaces
+returns an already-pure object unchanged. The former source261 pure-copy path
+incorrectly used the normal constructor's empty unibyte singleton; source270 repairs it. `STRING_SET_UNIBYTE` replaces
 a zero-length local string value rather than changing the shared header; consequently
 ordinary `clear-string` leaves an empty multibyte object's flag unchanged. These
-actual C paths constrain the next storage change. Pure-write error ordering, both
+actual C paths constrain source270 and further allocation work. Pure-write error ordering, both
 empty identities, GC survival/accounting and image restoration must remain explicit.
 
 The archive retains all 15 valid ordinary processes, including both raw output and
@@ -355,15 +385,15 @@ fixture's three scope-invalid runs are retained and excluded. No storage repair 
 implemented by this baseline, and the frozen source263 candidate is unchanged.
 
 Applied source261 unifies authority but does not supply GNU's 32-byte string header
-or sblock allocation. Source270 implements the header and removes the vector wrapper,
-but remains an unapplied draft under validation. Sblocks, real interval trees and
+or sblock allocation. Applied source270 implements the header and removes the vector
+wrapper, with closed selected validation; complete platform validation is running. Sblocks, real interval trees and
 remaining borrow/allocation overhead are unfinished. Moving host keys grows `SymbolCell`; removing a separate key cell
 does not establish a net memory reduction. Symbol value/function/plist authority
 still resides in per-interpreter tables and registries.
 
 The old host raw-byte/private-use text convention and many transient decoded
 Rust views remain. The empty multibyte singleton and pure-string write protection
-are implemented only in the unvalidated storage draft above. Public
+are implemented and pass the selected source270 validation above. Public
 runtime ownership, actual cumulative allocation counters, physical accounting,
 VM stack layout, final platform validation and adversarial review remain open.
 No speedup, memory saving or GNU performance parity has been measured. All sixteen

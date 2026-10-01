@@ -18,7 +18,36 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The task runtime is now **source261**, pushed as **`eddfe782`**, with **488 verified
+The task runtime is **source270**, pushed as **`0ecf6e11`**, with **510 verified
+inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
+verify zero-warning strict checks, **203 focused passes / two existing ignores**
+and **1,059 affected passes in each profile**, plus **33 ordinary exact GNU matches**.
+All original controls and expected bytes remain, including all 12,600 prefix rows.
+The archived ordering, version, range/casing, empty identity and pure-storage
+negatives now match unchanged GNU output. Counts overlap and are not summed;
+this does not establish universal correctness or a full-platform pass.
+
+Strings now use a direct 32-byte GNU-layout header plus 16 bytes of checked-borrow
+and allocator metadata, dedicated cells and packed property spans. Both normal
+empty forms are canonical; pure copies are distinct permanent objects with GNU
+write protection, copy/no-op/error order and dump/template identity behavior.
+Comparison and casing follow actual GNU C paths and live tables. Data still uses
+individual boxes; sblocks, real intervals, symbol authority, physical accounting,
+public ownership, VM stack/profiling and the locked performance criteria remain open.
+
+Full macOS supervisor **3079** runs in the clean exact-commit checkout
+`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`. It has completed
+selected re-audit, idle-cache cloning and GNU artifact capture, and now runs the
+full Rust gate before frozen and terminal validation. Linux
+[Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
+[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are dispatched
+on exact `0ecf6e11`. Read `source270-full-*` and the exact Linux runs for live state.
+Keep both source270 checkouts unchanged. No full-run result, memory saving, speedup
+or GNU performance parity is inferred. Main remains `21d20f0e`; PR79 stays draft.
+
+## Preceding source261 checkpoint and storage development
+
+The preceding runtime **source261** was pushed as **`eddfe782`**, with **488 verified
 inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
 verify zero-warning strict checks, **189 focused passes / two existing ignores**
 and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
@@ -109,14 +138,14 @@ restore distinct pure allocation and write protection, supply the empty multibyt
 singleton, and preserve GNU's empty `clear-string`, GC and dump behavior. A complete
 frozen pass alone cannot certify those contracts or make this branch main-ready.
 
-The current unapplied storage successor is **source270**, in
+The storage successor **source270** was developed separately in
 `target/runtime-goal/recovered-2026-09-30/string-storage/emaxx`. The
 [source264–268 preparation and failures](docs/handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
 and [source269 caller correction](docs/handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
 preserve the earlier drafts. The [current source270 patch and failures](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
 retain exact incremental/main patches and all **510 inputs**. Strings now have a
 direct 32-byte GNU-layout header plus 16 bytes of checked-borrow/allocator metadata.
-The draft supplies two normal empty singletons, distinct permanent pure allocations,
+The implementation supplies two normal empty singletons, distinct permanent pure allocations,
 write protection and GNU no-op/error order, and preserves dump/template identities.
 Property spans use one packed allocation. Data still uses individual boxes, and
 real sblocks, interval trees, physical accounting and public ownership remain open.
@@ -134,11 +163,12 @@ could not load its native image while the test still owned the first image.
 Source270 follows GNU `Fcopy_sequence` through ordinary constructors for every
 string and releases the first test interpreter before the independent image load.
 All assertions remain. Its strict checks pass with zero warnings.
-Queue **98240** now runs **205 focused selectors**, **1,059
-affected tests per profile**, and **33 ordinary GNU comparisons**, including all
-original prefix rows. Read `source270-validation-*`; keep the candidate and running
-helpers unchanged. Runtime source261 is unchanged, and no source270 runtime pass,
-memory saving, speedup or full-goal completion is inferred from preparation.
+Queue **98240** has completed all selected stages: **203 focused passes / two
+existing ignores and 1,059 affected passes in each profile**, plus **33 ordinary
+GNU matches**. All source270 raw verdicts, complete inventories, retained artifacts
+and source bytes are audited. The source261 and failed draft checkouts remain
+unchanged. Source270 is now applied as described above; its earlier preparation
+archives retain their original pending state and do not substitute for the closed audit.
 
 ## Preceding source249 validation
 
