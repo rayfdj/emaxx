@@ -10,6 +10,53 @@ The source256/source261 development record below preserves its original failures
 and bounded results. Use HANDOVER.md for current execution/publication state.
 Main remains `21d20f0e`.
 
+## Current isolated storage continuation: source276
+
+The [source276 package](handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
+contains exact 511-input incremental/main patches, GNU C mappings, immutable helpers,
+original source273 compiler and source274/275 Clippy failures, and the seven passing
+gate controls. The draft is in `target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`.
+It passes strict zero-warning checks but remains unapplied. Root remains source272.
+
+`alloc.c:allocate_string_data`, `resize_string_data`, `sweep_strings`,
+`free_large_strings` and `compact_small_strings` now guide the data allocator.
+Constructors allocate their final header before installing sdata's back-pointer;
+owned movable payload constructors and `Clone` are removed. The public mutable
+header guard becomes crate-only. Small entries share 8,184-byte blocks, strings
+above 1,024 bytes have separate blocks, and entries preserve alignment and NULs.
+Resizing reuses equal aligned extents or retires old data. Constructors for character
+arrays, repetition, copies, substring and concat initialize final data directly.
+The existing GNU logical GC trigger charges new resize allocations; complete
+physical accounting and real counters still remain open.
+
+During collection, dead entries retain their size, live entries update the stable
+owner's data pointer, and unused blocks are freed. A shared Rust reference cannot
+be relocated or have its header mutated: its whole block stays outside the moving
+chain until the borrow ends. This avoids new per-read lookups or pin allocations;
+extra collection scans and retained slack remain unmeasured. Pure string bytes use
+separate permanent immovable blocks, not a complete pure arena for other types.
+GNU `pin_string`/raw VM execution, real intervals and public serialization remain
+required work. The draft does not establish their completion or a performance gain.
+
+All seven controls verify actual storage behavior, including pooled reclamation,
+relocation, borrowed-pointer stability, 1,023/1,024/1,025-byte boundaries, NUL and
+back-pointer layout, aligned resize, properties/weak roots and pure survival.
+All 3,024 preceding library names remain in the new 3,026-name gate inventory.
+The original borrow-property and weak-table tests are byte-identical; the exclusive
+borrow test changes only its empty constructor call, preserving every assertion.
+The first freeze auditor correctly rejected an overbroad byte-identity claim;
+its failure and the exact checked constructor migration remain retained.
+
+Queue67370 waits for source270 terminal/full supervisor3079, then runs every prior
+selected test plus the two new controls: 210 focused and 1,064 affected tests per
+profile, with only the two existing ignores. Source272 macOS supervisor27731 was
+withdrawn before any stage to prioritize this successor; its original state and
+withdrawal are packaged. Read `source276-selected-*` and HANDOVER.md for live state.
+No broader/release, ordinary GNU, full-platform or performance result follows from
+the seven controls. Keep the frozen candidate and executed helpers unchanged.
+
+## Earlier common-string migration
+
 The [portable draft](handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)
 contains all 480 source/test input hashes, incremental and complete patches,
 GNU C references, original negative fixtures, exact GNU output bytes, failed

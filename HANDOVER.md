@@ -38,17 +38,56 @@ have not been timed; broader public ownership/serialization remains open.
 
 The selected checkout `target/runtime-goal/recovered-2026-09-30/string-borrow-roots/emaxx`
 is frozen. Receipts/helpers are under `target/runtime-goal/resume-2026-09-28`.
-The [full-validation launch receipts](docs/handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
-record macOS supervisor **27731** in the clean exact-commit checkout
-`target/runtime-goal/recovered-2026-09-30/string-borrow-full/emaxx`, waiting for
-source270 supervisor **3079** to finish before full Rust, frozen and terminal
-validation. Linux [Rust36937044662](https://github.com/rayfdj/emaxx/actions/runs/36937044662)
-and [frozen36937049816](https://github.com/rayfdj/emaxx/actions/runs/36937049816)
-are dispatched on exact `eb286e23`. Read `source272-full-*` and the exact CI runs
-for live state; keep both source272 checkouts unchanged.
-No full source272 result, standalone GNU comparison or performance claim follows
-from these selected checks. Main remains `21d20f0e`, PR79 remains draft, and the
-full architectural/performance goal is active and incomplete.
+The [full Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source272-complete-linux-rust-failure-manifest.json)
+retains **2,279 passes / two GNU reference-assertion failures**. The first empty-record
+and empty-vector GC samples are nine slots below their unchanged expectations;
+all later samples match. Neither failed control reaches its Emaxx comparison.
+The remaining 751 library tests and both Cargo stages never run. Actual GNU inputs
+match the prior passing and failing runs; the cause remains unresolved.
+
+The [full Linux frozen failure](docs/handover/2026-09-30-shared-reader-draft/source272-complete-linux-frozen-failure-manifest.json)
+verifies **519 files / 7,927 matches / one mismatch / 1,038 successful processes**.
+GNU reports an unexpected Eglot Rust-completion JSON-RPC timeout; Emaxx passes
+that test and has no unexpected outcome across all 7,928 results. This is the
+same failure signature seen in source244, without an established cause.
+Both complete runs remain failed. No expectation, timeout or comparison rule changes.
+
+MacOS supervisor **27731 was withdrawn while waiting, before any validation stage**,
+to prioritize the newer draft below. `source272-full-withdrawal.json` supersedes
+its retained original waiting-state receipt. Do not restart it implicitly.
+The two source272 checkouts remain unchanged. Full validation is still required
+on the final selected runtime; selected checks do not establish a full or
+performance result. Main remains `21d20f0e`, PR79 remains draft, and the full goal
+is active and incomplete.
+
+## Separate GNU string-block draft: source276
+
+The [portable source276 draft and original preparation failures](docs/handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
+replay all **511 inputs and file modes** from `b5a1558c` and main. It is isolated in
+`target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`; the task runtime
+remains source272. Strict formatting, all-target checking, Clippy and diff checks
+pass with zero warnings. **Seven gate controls pass**, including actual compaction,
+block reclamation, borrowed-pointer stability, aligned resizing, property roots,
+weak references, release and pure-string survival. These are bounded controls.
+
+Constructors now install a stable header before GNU-style sdata owner pointers.
+Small bytes share 8,184-byte blocks; large bytes have separate blocks. GC retires
+dead entries, compacts live unborrowed storage and frees unused blocks. Character
+construction, copies, concatenation and resizing fill final storage directly.
+A block containing a live Rust content borrow stays stationary until the guard
+ends. Pure string bytes occupy separate permanent, immovable blocks. This concrete
+Rust borrowing constraint and its unmeasured scan/retained-slack cost are recorded;
+there is no new per-read lookup or registry. Real intervals, unified pure storage,
+physical accounting, public ownership, symbol authority and VM work remain open.
+
+**Queue67370** waits for source270 full/terminal supervisor3079 to exit, then runs
+all **210 focused selectors / 1,064 affected controls in each profile**. Every
+preceding selector and expected byte remains; the two existing ignores remain.
+Read `source276-selected-*` for live state. No broader, release, ordinary GNU,
+full-platform or performance result is inferred yet. Keep source276 and its
+executed helpers unchanged. Source273's two test argument-type errors and
+source274/275's strict Clippy failures remain in their original checkouts and
+portable patches; no runtime tests ran on those failed predecessors.
 
 ## Preceding storage checkpoint: source270
 
@@ -73,13 +112,17 @@ The [complete Rust audits on both platforms](docs/handover/2026-09-30-shared-rea
 verify **3,118 macOS / 3,130 Linux passes**, with **two existing ignores each**,
 all 3,021/3,029 library names, native artifact identity and retained Rust/GNU inputs.
 Linux [Rust36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705)
-is complete on exact `0ecf6e11`. Full macOS supervisor **3079** continues frozen
-then terminal validation in the clean checkout
-`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`; Linux
-[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) remains
-separate. Read `source270-full-*` and the exact run for live state. Keep both
-source270 checkouts unchanged. Rust passes do not close the separately exposed
-borrow-root defect or certify source272, frozen/terminal, memory or performance.
+is complete on exact `0ecf6e11`. The [complete frozen audits](docs/handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
+verify all 519 files and 1,038 successful processes per platform. Linux has
+**7,928 matching outcomes**. Pinned macOS has **7,915 matches / six strict
+build-feature skip-diagnostic differences**, which remain failures. Raw inventories,
+paired outcomes, execution hashes and actual GNU inputs are checked; all 177
+compiler tests pass in both editors. Expected failures and skips are not passes.
+Supervisor **3079** continues complete terminal validation in the unchanged clean
+checkout `target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`.
+Read `source270-full-*` for live state. Its results do not certify source272 or
+source276, memory or performance. The source271 borrow-root negative remains
+preserved and is repaired separately in source272.
 
 ## Preceding source261 checkpoint and storage development
 

@@ -9,17 +9,32 @@ guard losing its property child. Source272 roots shared guards before the
 weak-table fixed point and rejects exclusive guards before any mark/sweep work.
 Survival and reclamation controls pass; the original negative is retained.
 The GC scan's cost remains unmeasured, and broader public ownership is unfinished.
-The [full-validation launches](handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
-target exact `eb286e23`: macOS supervisor27731 waits for the existing source270
-full run; Linux Rust36937044662/frozen36937049816 are dispatched. No full
-source272 outcome is inferred. Read HANDOVER.md and the retained live receipts.
+The [full Linux Rust failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-rust-failure-manifest.json)
+retains 2,279 passes / two GNU first-GC census assertion failures; 751 library tests
+and both Cargo stages never run. The [full Linux frozen failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-frozen-failure-manifest.json)
+retains 7,927 matches / one GNU Eglot completion timeout, all 519 files and 1,038
+successful processes. Emaxx has no unexpected frozen outcome. Both runs remain
+failed; their GNU variations remain unexplained. MacOS queue27731 was withdrawn
+before any stage, preserving its state, to prioritize the newer draft below.
+
+The [isolated source276 string-block draft](handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
+replays all 511 inputs, passes zero-warning strict checks and seven allocator/borrow
+controls. Stable headers own pooled GNU-style sdata; GC compacts unborrowed data,
+reclaims blocks and preserves live Rust references. Main construction/copy/concat
+and resize paths fill final storage directly. Pure bytes are separate and permanent.
+The necessary borrowed-block retention/scan cost is unmeasured. Queue67370 waits for
+source270 terminal validation, then runs all 210 focused / 1,064 affected controls
+in both profiles. No selected, full-platform or performance result is claimed.
+The original compiler/Clippy preparation failures remain retained.
 
 The [closed source270 full Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
-verify 3,118 macOS / 3,130 Linux passes, two existing ignores each, all raw library
-names and retained inputs. Frozen/terminal are separate. Main remains 21d20f0e,
-PR79 is draft, and the full goal—including sblocks, actual intervals, symbol
-authority, physical accounting, VM profiling and the locked 16-workload 3% ceiling—
-remains active. [HANDOVER.md](../HANDOVER.md) contains the current continuation.
+verify 3,118 macOS / 3,130 Linux passes and two existing ignores each. Its
+[closed frozen audits](handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
+verify 7,928 Linux matches and 7,915 macOS matches / six strict feature-diagnostic
+differences. Terminal validation continues. Main remains 21d20f0e, PR79 is draft,
+and the full goal—including final sblock validation, real intervals, symbol authority,
+physical accounting, ownership, VM profiling and the locked 16-workload 3% ceiling—
+remains active. [HANDOVER.md](../HANDOVER.md) has live continuation details.
 
 ## Historical storage checkpoint: source270
 
@@ -41,7 +56,7 @@ re-audit, idle-cache cloning and GNU capture. Linux
 [Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
 [frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are launched
 on exact 0ecf6e11. Its complete Rust results are now closed: **3,118 macOS / 3,130 Linux passes**,
-with two existing ignores each; frozen/terminal outcomes remain separate. Main remains 21d20f0e, PR79 stays draft,
+with two existing ignores each. The frozen audits above are now closed; terminal validation remains separate. Main remains 21d20f0e, PR79 stays draft,
 and every architectural/performance completion criterion remains in force.
 
 The preceding runtime **source261** was pushed as `eddfe782`, with **488 verified inputs**.

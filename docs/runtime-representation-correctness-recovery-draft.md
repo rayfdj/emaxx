@@ -1,8 +1,8 @@
 # Correctness recovery — 1 October 2026
 
 The [full goal](runtime-representation-goal.md) is active and incomplete. The
-user's latest question challenges the correctness regression. The immediate
-work is to restore correctness before further architectural changes. The task branch did regress after the fully matching source207 Linux
+user's latest question challenges the correctness regression. Current work follows GNU C and keeps new architectural drafts isolated until their
+required correctness checks close. The task branch did regress after the fully matching source207 Linux
 frozen checkpoint; those historical results do not certify later shared-closure,
 canonical-string and direct-bytecode changes. Main remains source174 at
 `21d20f0e`. Do not merge the unfinished branch or declare the performance goal met.
@@ -18,14 +18,36 @@ exclusive guards before starting an epoch. New controls verify survival and
 reclamation. This host-ownership case was outside the earlier frozen fixtures;
 passing those fixtures did not establish it. Broader public ownership remains open.
 
+The [full source272 Linux Rust failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-rust-failure-manifest.json)
+retains 2,279 passes / two GNU reference-assertion failures. The first empty-record
+and empty-vector GC samples are nine slots below their unchanged expectations;
+all later samples agree. Neither control reaches its Emaxx comparison. The remaining
+751 library tests and both Cargo stages never run. Actual GNU inputs match earlier
+passing and failing runs; the cause remains unresolved.
+
+The [full source272 Linux frozen failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-frozen-failure-manifest.json)
+verifies 519 files / 7,927 matches / one mismatch / 1,038 successful processes.
+GNU's `eglot-test-rust-completion-exit-function` reports a JSON-RPC completion timeout;
+Emaxx passes that test and has no unexpected result across all 7,928 outcomes.
+The same failure signature appeared in source244. Both full runs remain failed,
+with original expectations, selectors and timeouts unchanged. MacOS supervisor27731
+was withdrawn while waiting, before any validation stage, to prioritize source276.
+
+The [source276 storage draft](handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
+remains isolated and unapplied. GNU-style sdata blocks use stable headers, compact
+unborrowed storage and retain blocks with live Rust content references. Zero-warning
+strict checks and seven allocator/borrow controls pass; every previous test and
+expected byte remains. Broader gate/release controls are queued after source270
+terminal validation. Earlier draft compiler and Clippy failures remain recorded.
+No current full-platform or performance result is inferred from this draft.
+
 The preceding source270 [complete Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
-close 3,118 macOS / 3,130 Linux passes with two existing ignores each, all raw names,
-native identity and retained inputs. Its frozen/terminal runs remain separate.
-The [source272 full-validation launches](handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
-target pushed `eb286e23`: Linux Rust/frozen are dispatched and macOS is queued
-behind the existing source270 full run. Launch does not establish a result.
-Read [HANDOVER.md](../HANDOVER.md) for live continuation state. All historical
-failures below remain failures; no performance parity or final completion is claimed.
+close 3,118 macOS / 3,130 Linux passes with two existing ignores each. Its
+[complete frozen audits](handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
+close 7,928 Linux matches and 7,915 macOS matches / six strict build-feature skip
+diagnostics; the latter remain failures. All raw outcomes and actual inputs are
+verified. Terminal validation continues. Read [HANDOVER.md](../HANDOVER.md) for
+live continuation state. No performance parity or final completion is claimed.
 
 ## Verified recovery
 
