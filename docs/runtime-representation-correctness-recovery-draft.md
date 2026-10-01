@@ -69,7 +69,8 @@ source236's Clippy failure and the failed initial audit/helper launch are retain
 
 ## Combined task checkpoint: source238
 
-The task checkpoint combines source237 with the reader/mapconcat repairs. The
+The task checkpoint, pushed as `a7e12de8bf4c9cf124e8982922c268f91e97aa6f`,
+combines source237 with the reader/mapconcat repairs. The
 same 446 inputs are frozen in
 `target/runtime-goal/recovered-2026-09-30/rx-repair/emaxx`. Its
 [focused audit and portable patch](handover/2026-09-30-shared-reader-draft/source238-focused-validation-manifest.json)
@@ -78,12 +79,26 @@ existing end-to-end ignores. This covers the 37 source234 controls, all TTY
 unit tests and the two new GNU fixtures. Exact test executable and post-run
 image are retained.
 
-Supervisor **30236** runs the complete macOS gate. Supervisor **27314** has
-finished focused validation and is building the ordinary executable/image;
-then both unchanged upstream rx runners execute against each editor. Helpers
-and receipts are under `target/runtime-goal/resume-2026-09-28`. Do not modify
-these candidates or their executing helpers/artifacts. Read live receipts before
-deciding whether a stage remains active; do not restart it.
+The [ordinary rx audit and full-run launches](handover/2026-09-30-shared-reader-draft/source238-rx-repair-and-complete-launch-manifest.json)
+verify **all 36 upstream rx tests pass** through ordinary ERT and the unchanged
+structured runner in both editors. Each of the four processes exits successfully;
+all raw names and verdicts are checked. Both original local rx failures are
+repaired. This closes their local reproduction, not the pending Linux frozen run.
+Supervisor **27314** has completed all five stages successfully.
+
+Supervisor **30236** runs the complete macOS gate, **31378** runs all 226 original
+terminal scenarios and **31379** runs 57 ordinary comparisons followed by focused
+and affected-module release tests. Linux
+[Rust 36812116311](https://github.com/rayfdj/emaxx/actions/runs/36812116311) and
+[frozen 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904)
+are active on exact runtime commit `a7e12de8`; their build/format/lint stages pass,
+but neither complete verdict is available yet. Publication and exact run heads
+are independently verified in the archive. Later documentation-only commits do
+not change those run identities.
+
+Helpers and receipts are under `target/runtime-goal/resume-2026-09-28`. Do not
+modify these candidates or their executing helpers/artifacts. Read live receipts
+before deciding whether a stage remains active; do not restart it.
 
 The two diagnosed mechanisms are:
 
@@ -104,9 +119,10 @@ Unicode command-line prefix under C locale; its original bytes/results are
 preserved separately. The final ASCII-only fixture constructs the prefix with
 `string`, so ordinary and internal evaluation receive the same character.
 
-Only the focused source238 runtime pass is established here. The report-writing error must remain
-visible unless independently resolved; a repaired rx suite alone does not prove
-arbitrary failure reports are correct. After selected validation, run the complete
-terminal and required platform/frozen gates on the final combined source, preserving
-all earlier failures. Continue to the full architecture/accounting/ownership and
-locked performance requirements only after recovering correctness.
+Focused source238 validation and the complete local rx file pass; complete Rust,
+terminal and Linux frozen results remain pending. The report-writing error must
+remain visible unless independently resolved; a repaired rx suite alone does not
+prove arbitrary failure reports are correct. Audit the running complete gates
+on this combined source, preserving all earlier failures. Continue to the full
+architecture/accounting/ownership and locked performance requirements only after
+recovering correctness.

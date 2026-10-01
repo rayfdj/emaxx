@@ -1,0 +1,370 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "rx_audit": {
+      "status": "all 36 upstream rx tests pass in both ordinary ERT and structured runners",
+      "source": "source238",
+      "original_repaired_tests": [
+        "rx-char-any-raw-byte",
+        "rx-charset-or"
+      ],
+      "test_names": [
+        "rx--interval-set-complement",
+        "rx--interval-set-intersection",
+        "rx--interval-set-union",
+        "rx-any",
+        "rx-atoms",
+        "rx-category",
+        "rx-char-any",
+        "rx-char-any-range-nl",
+        "rx-char-any-raw-byte",
+        "rx-charset-or",
+        "rx-compat",
+        "rx-constituents",
+        "rx-def-in-charset-or",
+        "rx-def-in-intersection",
+        "rx-def-in-not",
+        "rx-def-in-or",
+        "rx-define",
+        "rx-eval",
+        "rx-group",
+        "rx-intersection",
+        "rx-kleene",
+        "rx-let",
+        "rx-let-define",
+        "rx-let-eval",
+        "rx-let-pcase",
+        "rx-literal",
+        "rx-not",
+        "rx-or",
+        "rx-pcase",
+        "rx-redefine-builtin",
+        "rx-regexp",
+        "rx-repeat",
+        "rx-seq",
+        "rx-syntax",
+        "rx-to-string",
+        "rx-to-string-define"
+      ],
+      "processes": 4,
+      "qualification": "Each editor executes the unchanged upstream rx file and selector through normal -Q batch entry points and its own valid executable/image. All 36 raw ordinary ERT verdicts and all 36 structured outcomes pass for each editor. This closes the local reproduction of the source234 Linux failure; the fresh Linux frozen run remains required. Successful rx reporting does not establish that arbitrary failure reports containing unsupported characters work. GNU is source/native-ABI matched, not pinned Darwin. No timing claim."
+    },
+    "publication": {
+      "commit": "a7e12de8bf4c9cf124e8982922c268f91e97aa6f",
+      "ref": "refs/heads/runtime-char-tables",
+      "remote": "https://github.com/rayfdj/emaxx.git",
+      "raw": "a7e12de8bf4c9cf124e8982922c268f91e97aa6f\trefs/heads/runtime-char-tables"
+    },
+    "linux": {
+      "observed_at": "2026-10-01T03:47:33.126123+00:00",
+      "commit": "a7e12de8bf4c9cf124e8982922c268f91e97aa6f",
+      "branch": "runtime-char-tables",
+      "goal_complete": false,
+      "runs": [
+        {
+          "validation": "rust",
+          "id": 36812116311,
+          "status": "queued",
+          "headSha": "a7e12de8bf4c9cf124e8982922c268f91e97aa6f",
+          "url": "https://github.com/rayfdj/emaxx/actions/runs/36812116311",
+          "command": [
+            "gh",
+            "workflow",
+            "run",
+            "frozen-run.yml",
+            "--repo",
+            "rayfdj/emaxx",
+            "--ref",
+            "runtime-char-tables",
+            "-f",
+            "validation=rust"
+          ]
+        },
+        {
+          "validation": "frozen",
+          "id": 36812124904,
+          "status": "in_progress",
+          "headSha": "a7e12de8bf4c9cf124e8982922c268f91e97aa6f",
+          "url": "https://github.com/rayfdj/emaxx/actions/runs/36812124904",
+          "command": [
+            "gh",
+            "workflow",
+            "run",
+            "frozen-run.yml",
+            "--repo",
+            "rayfdj/emaxx",
+            "--ref",
+            "runtime-char-tables",
+            "-f",
+            "validation=frozen"
+          ]
+        }
+      ],
+      "qualification": "Both run heads verified against the independently verified pushed commit. Launches do not establish passing results."
+    },
+    "qualification": "Local unchanged upstream rx reproduction now passes all 36 tests through both runners in each editor. Exact source238 runtime a7e12de8 is pushed. Full macOS supervisor30236, full terminal31378, release/ordinary31379 and both fresh Linux runs are active. Launches are not completed passes. Arbitrary failure-report encoding, complete display-table review, pinned Darwin and performance remain open."
+  },
+  "archive": {
+    "path": "source238-rx-repair-and-complete-launch.tar.gz",
+    "bytes": 24302,
+    "sha256": "1b6a08ade53a9f2f32f093a2b0cf1f3749a52113bc536f3751c784a19b177fce"
+  },
+  "files": [
+    {
+      "path": "audit-source238-rx.py",
+      "bytes": 2234,
+      "sha256": "82797b3f4d16e1f27e8c15a5832230f7c5f98fb1a237829996758b01279f5d69"
+    },
+    {
+      "path": "commit-source238-checkpoint.py",
+      "bytes": 3444,
+      "sha256": "066399c72ef868791abb73644ea886c98dc459bead3d60e90fea19784b51aa0a"
+    },
+    {
+      "path": "launch-source238-linux.py",
+      "bytes": 2441,
+      "sha256": "1232af2f0e6e5b603c66bf41030703c63cdbcfcedbc56930cc48407f61815716"
+    },
+    {
+      "path": "package-source238-rx-and-launch.py",
+      "bytes": 2236,
+      "sha256": "1bea4b1d76103f72eca16d67d5bf870a5bbaa7b16e79da48d2e947f1ec404a2e"
+    },
+    {
+      "path": "run-source238-full-gate.py",
+      "bytes": 3782,
+      "sha256": "1eb2b8326698a033e3ce17553aab00f15f9cfded28a19bce8b5414a721f60a47"
+    },
+    {
+      "path": "run-source238-full-tty.py",
+      "bytes": 3617,
+      "sha256": "92fd3121675310e984ba270882fdc02bd86eb47b36a82c69eeaee5a2ca0b421d"
+    },
+    {
+      "path": "run-source238-ordinary.py",
+      "bytes": 2574,
+      "sha256": "16269f7c48118d34052b594c846d19fd81e3a876ddddab5961017d3dfdcd21ee"
+    },
+    {
+      "path": "run-source238-release-and-ordinary.py",
+      "bytes": 807,
+      "sha256": "797db92a9ac147f26eb28a8b9ab9c9c1907148e59f8bbf6e05c3659fe29bef6f"
+    },
+    {
+      "path": "source238-full-gate-launch.json",
+      "bytes": 60,
+      "sha256": "1ad13e9ce343b1e3bbe6cf02113b88174c7f6827a58ab0b36d8e7861819726bf"
+    },
+    {
+      "path": "source238-full-tty-launch.json",
+      "bytes": 59,
+      "sha256": "4a4e0ce022b1ca91ea56b29f7158325a1fc720b02189bac954b0571e2aa3f8ad"
+    },
+    {
+      "path": "source238-full-ttydiff-command.json",
+      "bytes": 8980,
+      "sha256": "a2b17e52ec4ead3f12c888d5cd1b3f952371bc04d6895b4c7fcf2f9f900afa6e"
+    },
+    {
+      "path": "source238-linux-frozen-dispatch.json",
+      "bytes": 353,
+      "sha256": "4b5a58f81d16c274dbcdc1c5adc6d470f70b75579cb5b3e6db4f8220d49e83a2"
+    },
+    {
+      "path": "source238-linux-frozen-initial-state.json",
+      "bytes": 5201,
+      "sha256": "3d44a01eb2c94551ab6d56847e276cd80b1ef492472c6b1343e1a7e8b02450ac"
+    },
+    {
+      "path": "source238-linux-launches.json",
+      "bytes": 1252,
+      "sha256": "895b48e4cd03af575fc7e641a06336f2830d945747cb4a203dab7289240cb483"
+    },
+    {
+      "path": "source238-linux-rust-dispatch.json",
+      "bytes": 351,
+      "sha256": "ff3952be8c02ba6160ea1cc82342bbef48be1144ea862c0b930866fd564aad98"
+    },
+    {
+      "path": "source238-linux-rust-initial-state.json",
+      "bytes": 502,
+      "sha256": "c71db09b5a0717271424552c356d00b234af2d594c2ca7a934473ef04ccb24e2"
+    },
+    {
+      "path": "source238-local-commit.json",
+      "bytes": 2083,
+      "sha256": "9fac8d5274575f1528b48ec59a5a3624105df0b107ea3dfc925df91a9302dbe5"
+    },
+    {
+      "path": "source238-ordinary-artifacts.json",
+      "bytes": 738,
+      "sha256": "d60fb4ee03cecafe0e17b7f0002069d353c38c72ae5b819df0f19e240bcadda5"
+    },
+    {
+      "path": "source238-ordinary-build-command.json",
+      "bytes": 993,
+      "sha256": "d661cd7fc748c96723f52f7e485dd644d45aa1ea5529d09a771d604b1d122dba"
+    },
+    {
+      "path": "source238-ordinary-build-result.json",
+      "bytes": 83,
+      "sha256": "ef6b5f866e3989c5d119bac4abf32598c78aec6db87204ddf68ce69a519de7e1"
+    },
+    {
+      "path": "source238-ordinary-build.log",
+      "bytes": 5069,
+      "sha256": "1eb94b1ee420e53b30da3282d267ddd54459f37a5c29ee9ba9e93acc16c35537"
+    },
+    {
+      "path": "source238-ordinary-image-command.json",
+      "bytes": 1016,
+      "sha256": "89ea1b1914e6dd31e7656e76d3f13fb3646e6aaac052058ede0da98a16d67646"
+    },
+    {
+      "path": "source238-ordinary-image-result.json",
+      "bytes": 89,
+      "sha256": "cd2c2048dddcdc0d6290cd48d3e164ad0192a172e2502a4a8b6661fdc969af05"
+    },
+    {
+      "path": "source238-ordinary-image.log",
+      "bytes": 6630,
+      "sha256": "b75992ef48052b1f74a3f197f1f8c82d8eb8ef0148e391f3550729a901dc3a29"
+    },
+    {
+      "path": "source238-pr-body.md",
+      "bytes": 2065,
+      "sha256": "ae57c887bcb8b7bd2012103778d5d41d9f5a667b069985053eed39043e044eaf"
+    },
+    {
+      "path": "source238-push-result.json",
+      "bytes": 332,
+      "sha256": "b5d691caee7ae67f4b3b7bb6d9e91fdbd968a430099653cf1716d0c3ad5d8207"
+    },
+    {
+      "path": "source238-release-and-ordinary-launch.json",
+      "bytes": 71,
+      "sha256": "58911d2a3b764f0e65a9b376286d5af381f572644802432a8b36ba5f6951d578"
+    },
+    {
+      "path": "source238-remote-head.json",
+      "bytes": 237,
+      "sha256": "96697d6c1a81e35b5ccd8c0943948f20aa0e02f04056f7e48ce81af368422dfb"
+    },
+    {
+      "path": "source238-rx-audit.json",
+      "bytes": 1530,
+      "sha256": "754927adcbfe7ebad4d115af804c463e461b691ede62779d02231930ac8581bc"
+    },
+    {
+      "path": "source238-rx-compat-emaxx-command.json",
+      "bytes": 2115,
+      "sha256": "1fc3455bfa53af5e72e62545d6759f1c00f72b9885e1dfe453236cbf37342770"
+    },
+    {
+      "path": "source238-rx-compat-emaxx-report.json",
+      "bytes": 7684,
+      "sha256": "bfe12094d7f5e18ca1ecedc1f875f26845dc0d2c79b0ba60ea2c7c3c5ae94ceb"
+    },
+    {
+      "path": "source238-rx-compat-emaxx-result.json",
+      "bytes": 82,
+      "sha256": "131eb205721ae25e514d81d4fa9a40b99513d3a7c7b93849e2b7ff524cb208fc"
+    },
+    {
+      "path": "source238-rx-compat-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-rx-compat-emaxx.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-rx-compat-gnu-command.json",
+      "bytes": 1997,
+      "sha256": "8905b631e944e4bf04cb88eb87e7a8e6032a253fbc1588bea9207def9a48d41c"
+    },
+    {
+      "path": "source238-rx-compat-gnu-report.json",
+      "bytes": 7660,
+      "sha256": "2af7b58dd18671869d4500435552e7b63adb0676b522629e78d17ecca25e2da3"
+    },
+    {
+      "path": "source238-rx-compat-gnu-result.json",
+      "bytes": 90,
+      "sha256": "48095aa4893fcfa81bd5b92bb564c935e557aa5230e1feb523f716e673e35821"
+    },
+    {
+      "path": "source238-rx-compat-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-rx-compat-gnu.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-emaxx-command.json",
+      "bytes": 1662,
+      "sha256": "3c41aa3e77dfbf84ffb31be544875d073f5e9c294c311b2abc9049eca761806a"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-emaxx-result.json",
+      "bytes": 82,
+      "sha256": "70ef30bf7ae2e45fb22136b97ba5c3aec3a79b1505024bc5a5b93fda21dcce0e"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-emaxx.stderr",
+      "bytes": 1883,
+      "sha256": "74c88da22dcc8769b61a4c302eba68f5109fc47b8217d345f5e4141874a88bdb"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-emaxx.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-gnu-command.json",
+      "bytes": 1548,
+      "sha256": "0003ccc8f4d6ba9bc66998d13c1912acdc2800a151f44e049f4e340dd87cf39c"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-gnu-result.json",
+      "bytes": 82,
+      "sha256": "53470834a31920408e3ea395b5a03cd6369f0571616be721aee0c086b2a772f0"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-gnu.stderr",
+      "bytes": 1883,
+      "sha256": "f8566a7dbd67eaa08344db5eb1f145a86ed90b2aec392f014eccfd015811ca96"
+    },
+    {
+      "path": "source238-rx-ordinary-ert-gnu.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-validation-result.json",
+      "bytes": 1337,
+      "sha256": "796f5f3644fe99c98d30d1e7bce51b4533837fcf551c72e3797f00a7e15b2e14"
+    },
+    {
+      "path": "source238-validation.log",
+      "bytes": 11445,
+      "sha256": "d14de6b2779673495821bac647df9eededcb0b6965c9019405df7a96476173a3"
+    },
+    {
+      "path": "test-source238-broad.py",
+      "bytes": 3080,
+      "sha256": "d34e79090fc5749b150b623a3b330d341dce3b2dd905d7573d981bf51c9888cb"
+    },
+    {
+      "path": "validate-source238-rx.py",
+      "bytes": 2297,
+      "sha256": "5133d34b524cbca2b361bdf3eb229eda176d1c3675239a3513233e69c9e0a77c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

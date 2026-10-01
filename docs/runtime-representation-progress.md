@@ -5,9 +5,14 @@ records complete source234 Rust passes (3,079 macOS / 3,091 Linux, two existing
 ignores each), 37/938 release passes, and 55 ordinary comparisons. Frozen Linux
 now matches Edebug but fails later at rx; 407 files remain unstarted. Source237
 repairs all seven original terminal divergences in the unchanged selected replay.
-The combined source238 checkpoint passes strict checks and 101 focused tests
-(two existing ignores); its complete and ordinary validation remain active. Restore complete correctness before further architecture
-changes; the full goal and performance criterion remain open.
+The combined source238 checkpoint, pushed as `a7e12de8`, passes strict checks and
+101 focused tests (two existing ignores). All 36 upstream rx tests now pass
+locally through ordinary ERT and the structured runner in both editors. The
+[raw audit and complete-run launches](handover/2026-09-30-shared-reader-draft/source238-rx-repair-and-complete-launch-manifest.json)
+retain those results and exact publication identities. Complete macOS, terminal,
+release/ordinary and fresh Linux Rust/frozen validation remain active. Restore
+complete correctness before further architecture changes; the full goal and
+performance criterion remain open.
 
 The full objective remains [unchanged](runtime-representation-goal.md). Continue
 from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-cons-roots-draft.md)

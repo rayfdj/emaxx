@@ -24,9 +24,18 @@ ignores. The display-only source237 also passes all **11 selected terminal
 scenarios / 39 comparisons**, including all seven original failures. This is
 component evidence, not a complete source238 terminal pass.
 
-Full macOS supervisor **30236** is active in the isolated rx-repair checkout.
-Supervisor **27314** is building the ordinary executable and then running the
-unchanged upstream rx tests; read their live receipts before acting. The
+The checkpoint is pushed as **`a7e12de8`**. Its unchanged upstream rx file now
+passes **all 36 tests** through ordinary ERT and the structured runner in each
+editor; supervisor **27314** has exited successfully. The
+[rx audit and complete-run launches](docs/handover/2026-09-30-shared-reader-draft/source238-rx-repair-and-complete-launch-manifest.json)
+retain all four processes, input identities and publication receipts.
+
+Full macOS supervisor **30236**, full terminal supervisor **31378** and
+release/ordinary supervisor **31379** are active in the isolated rx-repair
+checkout. Linux [Rust 36812116311](https://github.com/rayfdj/emaxx/actions/runs/36812116311)
+and [frozen 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904)
+are running on exact runtime commit `a7e12de8`. Read live receipts before acting;
+do not restart active jobs or edit their candidates or artifacts. The
 [recovery handover](docs/runtime-representation-correctness-recovery-draft.md)
 links the exact portable patches, failures and remaining display review.
 
