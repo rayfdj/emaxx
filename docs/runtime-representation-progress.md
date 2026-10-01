@@ -54,6 +54,17 @@ verifies all 28 paths. Runtime inputs, expected output, selectors, timeouts and
 comparison rules are unchanged. Read `source263-fixture-validation-*` and
 `source263-boundary-fixtures-*` for current state.
 
+The [empty/pure string baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+records six wrong source261 empty-identity rows among12 and57 wrong pure-storage
+rows among96, including28 operation/poststate differences. Seven whole rows newly
+differ from source249 and six improve; the seven regressions concern reuse of the
+ordinary empty unibyte singleton during `purecopy`. Source174/main and207 agree.
+The precise introducing source between249 and261 is unestablished. Earlier pure
+write-protection failures remain, and source263 does not address these storage gaps.
+Both failed probe setups remain excluded; raw and explicit-value fixtures overlap.
+The next storage work must follow GNU's distinct normal/pure allocation, empty
+multibyte singleton, empty clear behavior and pure-write/GC/dump contracts.
+
 The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
 zero-warning strict checks, 172 focused passes / two existing ignores and 955

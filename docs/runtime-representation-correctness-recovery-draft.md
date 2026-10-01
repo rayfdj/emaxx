@@ -1005,3 +1005,15 @@ uses the original `string-ordering-symbol-storage`; all 28 fixture paths are che
 Source, tests, expected bytes, selectors, timeouts and comparison rules are unchanged.
 Current receipts are `source263-fixture-validation-*` and
 `source263-boundary-fixtures-*`; all original helpers and waiting state remain.
+
+The [subsequent empty/pure storage baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+finds six wrong empty-identity rows among12 and57 wrong pure-storage rows among96
+on source261, including28 operation/poststate differences. Seven whole rows that
+matched GNU on source249 now differ; six other rows improve. The seven regressions
+all involve the first pure copy of an ordinary empty unibyte string, incorrectly
+returned by the shared normal constructor. The precise introducing source between249
+and261 is unestablished. Pure-string writes already differ in preceding checkpoints;
+source174/main and207 outputs match exactly. Original syntax/scope-invalid probes
+are preserved and excluded, as are any claims from their outcomes. Raw and explicit
+value pure fixtures overlap. Source263 is unchanged and does not repair these gaps;
+they must be addressed before claiming full correctness or advancing to main.

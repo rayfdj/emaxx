@@ -254,6 +254,33 @@ timeout or comparison rule changes. Read `source263-fixture-validation-*` and
 
 ## Remaining requirements
 
+The [current empty/pure storage baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+compares GNU and retained source174/main,207,249,261 executables. Source261 has six
+wrong rows among 12 empty-identity cases; all three earlier Rust checkpoints have
+twelve. It has 57 wrong rows among 96 pure-storage cases, including 28 operation and
+poststate differences. Source249 has 56 wrong whole rows: seven previously matching
+rows regress and six improve by261. All seven new whole-row differences concern
+the first pure copy of an ordinary empty unibyte string. Pure write protection and
+already-pure copy identity also fail in earlier checkpoints. The exact introducing
+source between249 and261 is not established; main and207 outputs agree exactly.
+
+GNU `make_clear_string`/`make_clear_multibyte_string` use two shared empty strings.
+`make_pure_string` allocates a distinct header even for zero bytes, while `purecopy`
+returns an already-pure object unchanged. The current pure-copy path incorrectly
+uses the normal constructor's empty unibyte singleton. `STRING_SET_UNIBYTE` replaces
+a zero-length local string value rather than changing the shared header; consequently
+ordinary `clear-string` leaves an empty multibyte object's flag unchanged. These
+actual C paths constrain the next storage change. Pure-write error ordering, both
+empty identities, GC survival/accounting and image restoration must remain explicit.
+
+The archive retains all 15 valid ordinary processes, including both raw output and
+an additional fixture that describes returned/error strings by flags, lengths and
+full character codes. The latter avoids lossy decoding of GNU's raw non-UTF8 error
+data; the original bytes remain. Both pure fixtures contain the same 96 cases, so
+their counts overlap. The first fixture's three syntax failures and the repaired
+fixture's three scope-invalid runs are retained and excluded. No storage repair is
+implemented by this baseline, and the frozen source263 candidate is unchanged.
+
 This unifies authority but does not yet supply GNU's 32-byte string header or
 sblock allocation. `RefCell`, `Vec` capacities, property vectors and vector arena
 overhead remain. Moving host keys grows `SymbolCell`; removing a separate key cell

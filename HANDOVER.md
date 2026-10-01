@@ -87,6 +87,20 @@ Read `source263-fixture-validation-*` and `source263-boundary-fixtures-*` for li
 state; the latter owns `audit-source263-selected-fixtures.py`. Original helpers
 and waiting states remain historical evidence.
 
+The [current empty/pure string baseline](docs/handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+finds **six wrong empty-identity rows among 12** and **57 wrong pure-storage rows
+among 96**, including 28 operation/poststate differences. Compared with source249,
+seven previously matching whole rows now differ and six now match. All seven new
+whole-row regressions involve `purecopy` reusing the ordinary empty unibyte string;
+the exact introducing source between249 and261 is not established. Nonempty pure
+writes already differ in earlier checkpoints. Source174/main and207 agree exactly.
+The original syntax/scope-invalid probes are preserved and excluded; the valid raw
+and explicit-value fixtures overlap and their counts must not be added together.
+Source263 does not repair these additional gaps. Subsequent string-storage work must
+restore distinct pure allocation and write protection, supply the empty multibyte
+singleton, and preserve GNU's empty `clear-string`, GC and dump behavior. A complete
+frozen pass alone cannot certify those contracts or make this branch main-ready.
+
 ## Preceding source249 validation
 
 The preceding **source249**, pushed as **`99e61fca`**, has **476 inputs** matching the isolated
