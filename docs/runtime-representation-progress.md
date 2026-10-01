@@ -1,4 +1,4 @@
-# Current goal status — 1 October 2026
+# Current goal status — 2 October 2026
 
 The task runtime is **source249**, pushed as `99e61fca`, with **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
@@ -6,23 +6,44 @@ zero-warning strict checks, 172 focused passes / two existing ignores and 955
 affected passes in each profile, plus fifteen ordinary GNU matches. The repair
 passes decoded character counts to post-read hooks and follows GNU's ASCII
 string early return. Its original negatives, failed setup run and unchanged
-executable replay remain preserved. The repair is applied to the root; complete
-source249 platform/frozen/terminal validation remains required.
+executable replay remain preserved. The repair is applied to the root.
 
-The [publication snapshot](handover/2026-09-30-shared-reader-draft/source249-publication-and-launches-manifest.json)
-records full Linux [Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484)
+The [closed Linux and Darwin frozen audit](handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
+verifies full Linux [Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484)
 and [frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495)
-running on exact `99e61fca`. Full rebuilt-oracle macOS Rust64326 is queued after
-frozen58661 exits. These are pending runs, not passing results.
+on exact `99e61fca`: **3,112 Rust passes / two existing ignores** and **519 files /
+7,928 matching frozen outcomes / 1,038 successful processes**. Each editor has
+7,670 passes, 47 expected failures and 211 skips. Every raw execution hash, paired
+outcome and actual retained GNU input is verified.
+
+The [complete macOS Rust and reference adoption](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+closes64326 with **3,100 passes / two existing ignores**, native artifact identity,
+all 3,003 raw library names and four retained artifacts verified. Complete
+terminal12347 is active with the exact gate executable/image from the frozen run.
 
 The [requested GNU rebuild](handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
 passes configuration/capability checks and byte comparison of regenerated native
 ABI, C primitive and DEFSYM manifests. Its executable is `29cfb20d…`, built from
-unchanged `636f166c` with the recorded Apple-libxml2 recipe. Local candidate
-`1c0898fc` holds the proposed pin; root's original Darwin lock is unchanged.
-Full macOS frozen retry58661 is active with the original inventory and rules.
+unchanged `636f166c` with the recorded Apple-libxml2 recipe. The task branch now
+adopts the pin tested in local candidate `1c0898fc`, preserving the old lock and
+local configuration. Fresh GNU discovery from all 519 full-run reports renders
+the original inventory byte for byte. MacOS frozen58661 remains a strict failure:
+**7,915 matching / six mismatching outcomes**, all files/processes complete. Both
+editors have 7,623 passes, 46 expected failures and 252 skips. Six skipped seccomp
+diagnostics contain different build-feature text, an existing disclosed platform
+difference. No feature string or comparison rule changes; no failure becomes a pass.
 The first launch failed before tests because its copied build directory lacked
-an ownership marker; that failure is retained and the retry uses an empty target.
+an ownership marker; that failure and its cache are retained.
+
+The separately packaged [common-string draft](runtime-representation-common-strings-draft.md)
+is **source256**, with 480 exactly replayed inputs and zero-warning strict checks.
+It removes the old string arena, binding conversions and VM text adapter, and
+repairs GNU `fillarray` byte-length/property behavior. Source255's focused run
+has 181 passes, one invalid Unicode bytecode fixture failure and two existing
+ignores; source256 corrects that fixture against an ordinary GNU probe while
+retaining all assertions. The failure remains archived. Queue17749 waits for
+terminal12347 before selected gate/release/broader/ordinary validation. This is
+unapplied work, not a runtime or performance certificate.
 
 The preceding **source248**, pushed as `fa7578ac`, is a correctness-recovery checkpoint
 with **472 frozen inputs**. Its two property repairs follow GNU C, pass the selected
@@ -315,8 +336,9 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 ## Full-goal requirements — current
 
-This map reflects runtime source248 (`fa7578ac`, 472 inputs). Source249 is an
-isolated post-read draft; its queued validation does not certify it. Historical
+This map reflects runtime source249 (`99e61fca`, 476 inputs) and the separately
+packaged common-string draft source256 (480 inputs). Queued source256 validation
+does not certify it. Historical
 failures remain in the linked evidence above. A green checkpoint does not close
 the architectural or performance requirements. The [current source review](handover/2026-09-30-shared-reader-draft/source248-current-requirement-review.json)
 records the inspected Rust/GNU hashes and verifies the locked suite is unchanged
@@ -325,17 +347,17 @@ from main. It is source review, not new runtime or timing evidence.
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately. Final corrected-baseline measurement and complete provenance remain required. |
-| 2. GNU architectural reference | Cons fields, shared closure slots, live bytecode, canonical string bytes and the subsequent correctness repairs have recorded C mappings. The source249 hook draft follows the actual character-count and ASCII-return paths. Final review of the complete implementation and every necessary deviation remains open. |
-| 3. Compact authoritative objects | Values are one word, ordinary cons payloads two words, and four-field closures use 40 inline bytes. Shared strings own actual GNU-encoded bytes. Plain `TextRef` strings still separately own Rust text, and `CodeBytes::legacy` adapts that old representation. Allocated-symbol authority, common string allocation, compact headers, property storage and removal of remaining adapters are unfinished. |
-| 4. Allocation, GC and ownership | The original census and suspended-root controls pass in the complete source248 macOS/Linux Rust gates. Earlier GNU reference variations remain preserved and unexplained. The seven category variables still initialize to zero and `memory-use-counts` is unsupported. GNU-shaped string charges do not establish actual Rust capacities or retained bytes. Non-Send words and the native activation lock do not establish ownership of every public Rust entry or borrowed-data lifetime. Real counters, physical accounting, ownership, survival/reclamation review and collection-cost explanations remain required. |
+| 2. GNU architectural reference | Cons fields, shared closure slots, live bytecode, canonical string bytes and correctness repairs have recorded C mappings. Source249 follows actual character-count/ASCII-return paths; source256's static review follows GNU string allocation, mutation, fill and bytecode construction. Final review of the complete implementation and every necessary deviation remains open. |
+| 3. Compact authoritative objects | Values are one word, ordinary cons payloads two words, and four-field closures use 40 inline bytes. Shared strings own actual GNU-encoded bytes. Unapplied source256 removes the separate `TextRef` arena, binding copies and `CodeBytes::legacy`; its runtime validation remains pending. Allocated-symbol authority, compact string headers, property storage and remaining adapters are unfinished. |
+| 4. Allocation, GC and ownership | Original census and suspended-root controls pass in complete source249 macOS/Linux Rust. Earlier GNU reference variations remain preserved and unexplained. Seven category variables still initialize to zero and `memory-use-counts` is unsupported. GNU-shaped charges do not establish physical Rust capacities or retained bytes. Source256 removes a host-key string cell but grows `SymbolCell`, with no measured net memory saving. Non-Send words/native activation locking do not establish ownership of every public entry or borrow lifetime. Real counters, physical accounting, ownership and collection-cost explanations remain required. |
 | 5. VM/function-call work | Direct bytecode fetch and actual shared closure fields remove decoded caches and duplicated mutable slots. The VM still reserves 256K value slots and keeps `BcFrame` storage separately; GNU reserves 512K words including frame headers. Its old comment still describes a two-word Value. Stack layout/capacity/accounting, remaining call bookkeeping and measured profiles after representation completion remain open. |
 | 6. Adversarial audit | Original evaluator, root and reporting controls remain. New repairs use identical-input GNU negatives and unchanged expected outputs; failed runs remain failed. The final audit must examine the actual final code, caches, startup/images, native loading, selection, comparison and reporting, including deliberate evidence corruption. Historical or selected audits do not satisfy that final review. |
-| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. No current GNU-parity result exists. Actual allocation counters, calibration, the required oracle identities, interleaved same-host samples, distributions and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source248 has zero-warning strict checks, selected gate/release passes, 70 ordinary GNU comparisons, all 177 original compiler tests in both editors, complete macOS/Linux Rust (3,098 / 3,110 passes, two existing ignores each), and pinned Linux frozen matching all 519 files / 7,928 outcomes. Each editor's 47 expected failures and 211 skips remain distinct from 7,670 passes. The unchanged terminal retry passes all 226 scenarios / 686 comparisons; the original GNU startup failure remains preserved and unexplained. Final-source platform/release/terminal validation after subsequent changes and pinned Darwin compatibility remain required. Source249 has no completed runtime validation in this map. |
-| 9. Independently checkable delivery | Portable patches, manifests, commands, raw results and reproduction helpers are committed. The source249 archive explicitly contains an unapplied draft and unexecuted validation plan. Final source, final evidence-chain review and satisfaction of every architectural/performance requirement remain outstanding. |
+| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. No current GNU-parity result exists. The requested Darwin rebuild and explicit replacement pin are recorded; actual counters, calibration, interleaved same-host samples, distributions and every per-workload criterion remain unresolved. |
+| 8. Complete validation | Source249 has zero-warning strict checks, selected gate/release passes, fifteen selected ordinary GNU comparisons, complete macOS/Linux Rust (3,100 / 3,112 passes, two existing ignores each), and pinned Linux frozen matching all 519 files / 7,928 outcomes. Rebuilt Darwin frozen completes all 519 files / 7,921 outcomes but six existing skip diagnostics differ; it remains failed. All 177 original compiler tests pass on both platforms. Full terminal12347 is active. Source256 has strict checks and a queued runtime plan; the source255 failure remains. Final-source platform/release/frozen/terminal validation is still required. |
+| 9. Independently checkable delivery | Portable patches, manifests, commands, raw results, failures and reproduction helpers are retained. Source256 is explicitly packaged as unfinished, unapplied work. Final source, final evidence-chain review and satisfaction of every architectural/performance requirement remain outstanding. |
 
-The next architectural work must remove the old string path and remaining
-symbol-cell indirection while preserving the recovered behavior. It must also
+The next architectural work validates the common-string migration and must remove
+remaining symbol-cell indirection while preserving the recovered behavior. It must also
 establish the runtime ownership boundary and actual allocator accounting before
 claiming performance gains. Additional feature repairs or repeated green gates
 cannot substitute for those requirements.

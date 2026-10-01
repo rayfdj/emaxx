@@ -6,6 +6,13 @@ published at `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`, with complete validatio
 running. This document records a verified remaining gap; it contains no counter
 implementation or accounting-completion claim.
 
+The [current common-string draft](runtime-representation-common-strings-draft.md)
+separately removes the plain-string arena and moves host lookup text into symbol
+cells. It does not resolve the physical-accounting requirements below: canonical
+headers/capacities and property vectors remain, symbol cells grow, and no net
+memory saving is measured. The historical source204 observations remain evidence;
+current checkpoint and validation status are in [HANDOVER.md](../HANDOVER.md).
+
 The [same-input negative baseline](handover/2026-09-30-shared-reader-draft/source204-allocation-counter-baseline-manifest.json)
 runs ordinary `-Q --batch` commands in source/ABI-matched GNU and source204 using
 the same Lisp program. Both exit zero with empty stderr and unchanged executable,

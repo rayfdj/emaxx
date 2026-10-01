@@ -122,6 +122,23 @@ Compiler and linker paths are machine-specific and are printed by the helper;
 the finished binary and source revision, rather than Homebrew path strings,
 are pinned by the harness.
 
+The requested rebuild on 2026-10-01 produced executable
+`29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5`.
+The [recorded adoption](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+replaces `591acf7b` explicitly, retaining the previous lock and local configuration.
+Source, configure/capability contract and Apple libxml2 are unchanged; regenerated
+native ABI, C primitive and DEFSYM files are byte-identical. The actual binary,
+dump, configuration and Makefile are retained and verified after validation.
+Fresh GNU discovery from all 519 full-run reports renders the existing canonical
+7,921-outcome inventory byte for byte. This uses the completed ordinary frozen
+run, not a separate `list` invocation. No inventory, selector or timeout changes.
+
+Source249's complete macOS Rust and native artifact identity checks pass against
+this reference. The full frozen comparison has 7,915 matching outcomes and six
+existing skip-message differences in build-feature reporting; those remain strict
+comparison failures. Rebuilding or repinning does not erase that evidence or
+establish completion of the runtime/performance goal.
+
 ## Linux build
 
 Install the build dependencies, including `liblcms2-dev`, from one recorded

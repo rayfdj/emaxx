@@ -864,3 +864,72 @@ the unchanged harness create an empty target. It is active; no inventory/frozen
 pass or full-goal completion is claimed by the rebuild archive.
 The [oracle build contract](oracle-build-contract.md#darwin-build) now directly
 documents the Apple-libxml2 recipe previously recorded in the frozen-run history.
+
+## Source249 completed Linux and rebuilt-GNU validation
+
+The [closed Linux and Darwin frozen archive](handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
+verifies both successful Linux workflows on exact runtime `99e61fca`.
+[Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484) has
+**3,112 passes / two existing ignores**: 3,009 library, 61 binary and 42 integration
+passes. All 3,011 raw library names/verdicts, native artifact identity, four retained
+inputs and all 476 published source inputs are verified. The actual GNU executable,
+dump, configuration and Makefile match the earlier census-failure runs; their
+historical -7/-9 variation remains unexplained.
+
+[Frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495) matches
+all **519 files / 7,928 outcomes**, with 1,038 successful processes. Each editor
+has 7,670 passes, 47 expected failures and 211 skips. All 177 original compiler
+tests pass. Every raw execution hash, paired name/status/expectation and GNU input
+is verified. All 5,204 original artifact members match the retained downloaded ZIP;
+all but the two large GNU executable/image files are portable. The original
+failures are not relabeled by these later passes.
+
+Rebuilt-GNU macOS frozen58661 finishes with **7,915 matching / six mismatching
+outcomes**, all 519 files and 1,038 processes complete. Both editors report 7,623
+passes, 46 expected failures and 252 skips, with no unexpected outcomes. All 177
+compiler tests pass. The six `emacs-tests/seccomp/*` tests skip in both editors,
+but their diagnostic strings include different `system-configuration-features`.
+Emaxx's existing disclosed capability policy deliberately avoids advertising GNU
+autoconf features it does not implement. No feature string or comparison rule is
+changed. This is a failed strict comparison; skipped tests are not passes. Raw
+unfavorable timings remain in the archive and are not locked-workload measurements.
+
+The [complete macOS Rust and reference adoption archive](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+closes64326 with **3,100 passes / two existing ignores**: 3,001 library, 60 binary
+and 39 integration passes. All 3,003 raw library names, native artifact identity
+and four retained inputs are verified. The validated checkout is clean `1c0898fc`;
+all 476 runtime inputs match published `99e61fca`.
+
+The task branch now adopts the requested rebuilt Darwin reference `29cfb20d…`,
+preserving the original `591acf7b…` lock and local configuration. Source revision,
+configuration/capabilities, Apple libxml2 and generated native/C manifests agree
+with the recorded contract. Fresh GNU discovery from all completed full-run
+reports renders the original canonical inventory byte for byte; no separate
+`list` command is claimed. The four actual GNU inputs are verified unchanged after
+Rust validation. Only the Darwin executable-hash field changes in the lock;
+Linux pin, runtime inputs, selectors and timeouts remain unchanged. The six
+diagnostic failures remain visible after repinning.
+
+Full terminal12347 is active using the exact source249 gate executable/image from
+the rebuilt-GNU frozen run, after local full Rust has exited. Its prepared auditor
+checks every original 226 scenario and 686 comparison labels. No terminal pass is
+claimed yet; read actual receipts before another launch.
+
+## Separate common-string continuation
+
+The [source256 draft](runtime-representation-common-strings-draft.md) removes the
+separate plain-string representation, binding/callback copies and VM text adapter.
+Two ordinary source249 probes expose lost mutation/identity/properties and incorrect
+`fillarray` behavior. Exact fixtures and GNU expected outputs remain unchanged;
+the probe does not establish these defects' historical origin.
+
+Source255's strict checks pass, followed by 181 focused passes, one bytecode fixture
+failure and two existing ignores. Both new GNU contracts pass. GNU confirms that
+the failing local fixture used Unicode text where `make-byte-code` requires actual
+unibyte storage. Source256 corrects construction, keeps every original assertion
+and adds rejection of the old Unicode form. All strict checks pass with zero
+warnings; all 480 inputs/modes replay exactly. Queue17749 waits for terminal12347,
+then runs both selected profiles, all 957 affected tests and seventeen ordinary
+comparisons. Source255's failed executable/image, all compiler/lint/helper failures
+and original negatives remain retained. The draft is unapplied; no physical-memory,
+ownership, performance or full-goal completion is claimed.

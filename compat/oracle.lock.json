@@ -4,7 +4,7 @@
   "emacs_repo_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
   "system_type": "darwin",
   "native_compilation": true,
-  "emacs_binary_sha256": "591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d",
+  "emacs_binary_sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
   "selector_default": "(not (or (tag :expensive-test) (tag :unstable)))",
   "selector_expensive": "(not (tag :unstable))",
   "selector_all": "t",

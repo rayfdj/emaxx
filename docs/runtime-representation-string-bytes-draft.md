@@ -3,7 +3,10 @@
 Read the [complete goal](runtime-representation-goal.md),
 [current handover](../HANDOVER.md) and
 [shared-closure continuation](runtime-representation-bytecode-draft.md).
-The full goal remains unfinished. **Source234** is the task checkpoint and matches
+The full goal remains unfinished. The current architectural continuation is the
+[common-string draft](runtime-representation-common-strings-draft.md); current
+published runtime and validation are in [HANDOVER.md](../HANDOVER.md).
+The historical checkpoint below was **source234**, matching
 all 442 inputs in the isolated `display-tables/emaxx` checkout. PR #79 remains
 draft and main remains source174. The checkout name does not indicate a renderer
 repair. Source232 remains frozen in `string-ops/emaxx` during its complete macOS

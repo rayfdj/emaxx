@@ -11,6 +11,8 @@ Read the [current cons continuation](docs/runtime-representation-cons-roots-draf
 [bytecode draft](docs/runtime-representation-bytecode-draft.md) and
 [string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
 [accounting continuation](docs/runtime-representation-accounting-draft.md).
+The latest architectural continuation is the separately packaged
+[common-string draft](docs/runtime-representation-common-strings-draft.md).
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
@@ -24,29 +26,58 @@ The post-read hook now receives decoded character counts. ASCII string decoding
 returns early, drops properties on a copied result and preserves NOCOPY identity,
 following GNU.
 The original negatives and the first checkout-setup failure remain retained.
-Complete source249 platform/frozen/terminal validation remains required; the
-preceding source248 results below do not certify this newer source.
+Complete source249 Linux/macOS Rust and Linux frozen results are now audited
+below; terminal validation is active. The preceding source248 results do not
+certify this newer source.
 
-The [publication and launch records](docs/handover/2026-09-30-shared-reader-draft/source249-publication-and-launches-manifest.json)
-verify that exact pushed commit and draft PR79. Full Linux
+The [closed Linux and Darwin frozen evidence](docs/handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
+verifies exact pushed runtime `99e61fca`. Full Linux
 [Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484) and
 [frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495) are
-running. Complete macOS Rust **64326** is queued after frozen **58661** exits,
-against the rebuilt GNU installation. Launches and queues are not passing results.
-Read current receipts before another launch; complete source249 terminal validation
-still needs to run. Main remains `21d20f0e` and the full goal remains open.
+complete: **3,112 Rust passes / two existing ignores**, and **519 files / 7,928
+matching frozen outcomes / 1,038 successful processes**. Each editor has 7,670
+passes, 47 expected failures and 211 skips. Raw verdicts, complete inventories,
+execution hashes and actual GNU inputs are verified; historical failures remain.
+
+The [complete macOS Rust and oracle adoption record](docs/handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+closes **64326** with **3,100 passes / two existing ignores**, native artifact
+identity, all 3,003 raw library names and four retained inputs verified. Complete
+terminal **12347** is active on the same source249 gate executable/image used by
+the rebuilt-oracle frozen comparison. Read current receipts before another launch.
+Main remains `21d20f0e`, PR79 is draft and the full goal remains open.
 
 GNU has been [rebuilt from the recorded recipe](docs/handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
 at pristine revision `636f166c`, with executable SHA-256 **`29cfb20d…`**.
 Capabilities and configure options match the retained source/ABI-matched build;
 fresh native ABI, C primitive and DEFSYM manifests are byte-identical to the
 committed files. The binary, dump, configuration and Makefile are retained.
-The proposed replacement pin is isolated in local candidate **`1c0898fc`**;
-the task branch's original Darwin lock remains unchanged. Frozen retry **58661**
-is active on that candidate with the unchanged 519-file / 7,921-outcome inventory.
-The first launch stopped before tests because its copied Cargo target lacked an
-ownership marker. That failure and cache are preserved; the retry lets the
-unchanged harness create its own empty target. Read current receipts before acting.
+The task branch now explicitly adopts **`29cfb20d…`**, as already tested in
+candidate **`1c0898fc`**. Its old pin and local configuration are retained.
+Fresh GNU discovery from all 519 completed full-run reports renders the original
+canonical inventory byte for byte. Runtime inputs, Linux pin, selectors and
+timeouts are unchanged. Frozen retry **58661 has exited with a strict failure**:
+**7,915 matching / six mismatching outcomes**, all 519 files and 1,038 processes
+complete. Both editors have 7,623 passes, 46 expected failures and 252 skips.
+The six differences are existing `system-configuration-features` text in skipped
+seccomp diagnostics. Emaxx deliberately reports only actual capabilities; no
+feature string or comparison rule was changed. All 177 original compiler tests
+pass in both editors. This result is not relabeled a complete frozen pass.
+The first launch's missing target-ownership marker failure and cache are preserved.
+
+Separately, **source256** is an unapplied common-string draft in
+`target/runtime-goal/recovered-2026-09-30/common-strings/emaxx`, with **480 inputs**.
+Its [portable patches and evidence](docs/handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)
+replay exactly from `b8e5ad20` and main. It removes the plain-string arena,
+binding/callback conversion copies and VM text adapter, and follows GNU's actual
+`fillarray` byte-length/property rules. Two ordinary source249 negatives and
+unchanged GNU expectations are retained. Source255's selected run has **181 passes,
+one invalid Unicode bytecode fixture failure and two existing ignores**. GNU
+confirms the fixture correction in source256; every original assertion remains,
+plus the rejected Unicode case. Source256 passes all strict checks with zero
+warnings. Queue **17749** waits for terminal12347, then runs selected gate/release,
+all 957 affected tests per profile and seventeen ordinary comparisons. It is a
+queue, not passing evidence. Compact string headers, symbol authority, physical
+accounting, ownership and measured performance remain unfinished.
 
 The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
