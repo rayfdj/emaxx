@@ -79,8 +79,11 @@ artifact identity is audited. The first broad-audit helper stopped on an incorre
 562-input assertion; its separate corrected helper checks all 462 inputs without
 rerunning or changing tests. The failed audit remains preserved.
 
-Selected supervisors **53531** and **54143** have exited. Complete macOS
-**55867**, release **55868**, and full terminal **55869** are active. The
+Selected supervisors **53531** and **54143** have exited. The
+[complete release audit](docs/handover/2026-09-30-shared-reader-draft/source243-release-complete-manifest.json)
+also closes **55868**: **165 focused passes / two existing ignores** and all
+**948 affected passes** in each profile, with exact artifacts and every raw
+verdict verified. Complete macOS **55867** and full terminal **55869** remain active. The
 [closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
 on source243. Linux [Rust 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)

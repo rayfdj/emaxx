@@ -296,3 +296,12 @@ matches all 462 source243 inputs; main remains source174. Source238's
 complete frozen result does not certify these later changes. The full Linux GNU
 census failure and all architecture, accounting, ownership and performance
 requirements remain open.
+
+The [completed source243 release audit](handover/2026-09-30-shared-reader-draft/source243-release-complete-manifest.json)
+now closes supervisor **55868**. It verifies **165 focused release passes / two
+existing ignores**, all **948 affected release passes**, every raw name/verdict
+and the retained release executable/image. The only gate/release inventory
+difference is the pre-existing debug-only file-descriptor ownership control.
+This completes the same selected coverage in both profiles; complete macOS,
+terminal and Linux results remain pending. The archive includes prepared Mac
+auditors, which have not run yet. No complete-platform result is inferred.
