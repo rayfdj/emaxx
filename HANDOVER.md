@@ -78,6 +78,12 @@ warnings. Queue **17749** waits for terminal12347, then runs selected gate/relea
 all 957 affected tests per profile and seventeen ordinary comparisons. It is a
 queue, not passing evidence. Compact string headers, symbol authority, physical
 accounting, ownership and measured performance remain unfinished.
+The [new comparison negative](docs/handover/2026-09-30-shared-reader-draft/source249-string-comparison-gaps-manifest.json)
+finds six wrong results in a 64-pair string matrix. The same fixture had twelve
+wrong results on source174/main and source207, with no newly wrong result in
+source249. The remaining `string-equal`/`equal-including-properties` projection
+errors are still present in source256; their C mechanisms and next repair are
+recorded in the common-string continuation. Do not edit its queued inputs.
 
 The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.

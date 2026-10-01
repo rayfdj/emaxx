@@ -67,3 +67,20 @@ runtime ownership, actual cumulative allocation counters, physical accounting,
 VM stack layout, final platform validation and adversarial review remain open.
 No speedup, memory saving or GNU performance parity has been measured. All sixteen
 locked workloads and the 3% ceiling still apply.
+
+The [subsequent comparison probe](handover/2026-09-30-shared-reader-draft/source249-string-comparison-gaps-manifest.json)
+confirms six wrong results among a fixed matrix of 64 string pairs: four
+`equal-including-properties` results conflate unibyte bytes with multibyte byte8,
+and two `string-equal` results conflate byte8 with actual private-use Unicode.
+Ordinary `equal` is correct throughout this matrix. The same fixture on recorded
+source174/main and source207 executable/image pairs has twelve wrong boolean
+results; source249 fixes six and introduces none in this matrix. This does not
+excuse other recorded regressions or establish general correctness.
+
+GNU `fns.c:Fstring_equal` and `internal_equal` compare character counts, byte counts
+and actual storage bytes. The affected Rust paths still compare transient text
+projections; the including-properties path must compare actual contents before
+its existing interval comparison. Symbol arguments to `string-equal` must use
+their actual Lisp name objects, including GNU's positioned-symbol policy, rather
+than host lookup text. This repair is not implemented in frozen source256. Keep
+the original negatives and all queued source256 inputs unchanged while validating.

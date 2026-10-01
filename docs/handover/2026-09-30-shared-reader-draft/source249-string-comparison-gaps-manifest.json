@@ -1,0 +1,440 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "negative": {
+      "status": "confirmed source249 negative",
+      "fixture": "string-equality-storage.el",
+      "fixture_sha256": "f441bf1aa339cef2f83232616d3f444e3aa694569db9f245e400dd1491e20d93",
+      "pairs": 64,
+      "columns": [
+        "equal",
+        "equal-including-properties",
+        "string-equal"
+      ],
+      "differences": [
+        {
+          "left": "unibyte-128",
+          "right": "byte8-128",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "t",
+            "nil"
+          ]
+        },
+        {
+          "left": "unibyte-255",
+          "right": "byte8-255",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "t",
+            "nil"
+          ]
+        },
+        {
+          "left": "byte8-128",
+          "right": "unibyte-128",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "t",
+            "nil"
+          ]
+        },
+        {
+          "left": "byte8-128",
+          "right": "private-use-128",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "nil",
+            "t"
+          ]
+        },
+        {
+          "left": "byte8-255",
+          "right": "unibyte-255",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "t",
+            "nil"
+          ]
+        },
+        {
+          "left": "private-use-128",
+          "right": "byte8-128",
+          "gnu": [
+            "nil",
+            "nil",
+            "nil"
+          ],
+          "emaxx": [
+            "nil",
+            "nil",
+            "t"
+          ]
+        }
+      ],
+      "qualification": "Ordinary same-input rebuilt GNU and retained source249 release. All processes/inputs verified. fns.c:Fstring_equal and internal_equal require matching character counts, byte counts and storage bytes. Rust projection text collapses these distinct cases in the two affected paths. The separate source256 draft remains frozen; no repair or historical origin is inferred."
+    },
+    "history": {
+      "status": "specific historical gap confirmed",
+      "records": [
+        {
+          "baseline": 174,
+          "paired_cases": 64,
+          "boolean_comparisons": 192,
+          "baseline_wrong": 12,
+          "source249_wrong": 6,
+          "remaining": [
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 2
+            },
+            {
+              "pair": [
+                "byte8-128",
+                "unibyte-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "byte8-255",
+                "unibyte-255"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 2
+            },
+            {
+              "pair": [
+                "unibyte-128",
+                "byte8-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "unibyte-255",
+                "byte8-255"
+              ],
+              "column": 1
+            }
+          ],
+          "fixed": [
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 0
+            },
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 0
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "unibyte-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "unibyte-128",
+                "private-use-128"
+              ],
+              "column": 1
+            }
+          ],
+          "new_wrong": []
+        },
+        {
+          "baseline": 207,
+          "paired_cases": 64,
+          "boolean_comparisons": 192,
+          "baseline_wrong": 12,
+          "source249_wrong": 6,
+          "remaining": [
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 2
+            },
+            {
+              "pair": [
+                "byte8-128",
+                "unibyte-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "byte8-255",
+                "unibyte-255"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 2
+            },
+            {
+              "pair": [
+                "unibyte-128",
+                "byte8-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "unibyte-255",
+                "byte8-255"
+              ],
+              "column": 1
+            }
+          ],
+          "fixed": [
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 0
+            },
+            {
+              "pair": [
+                "byte8-128",
+                "private-use-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 0
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "byte8-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "private-use-128",
+                "unibyte-128"
+              ],
+              "column": 1
+            },
+            {
+              "pair": [
+                "unibyte-128",
+                "private-use-128"
+              ],
+              "column": 1
+            }
+          ],
+          "new_wrong": []
+        }
+      ],
+      "qualification": "This exact 64-pair/192-boolean matrix has twelve wrong comparisons in both recorded source174/main and source207 and six in source249, with no newly wrong comparison. The six remaining mismatches predate the later migrations. This is not a general correctness score or an excuse for separately recorded regressions."
+    },
+    "qualification": "Newly confirmed comparison gaps; no runtime repair is included. Both recorded main/source174 and source207 have twelve wrong comparisons in this 64-pair matrix, and source249 has six, with none newly wrong. Source256 remains frozen during queued validation. This limited evidence neither explains nor excuses other historical regressions."
+  },
+  "archive": {
+    "path": "source249-string-comparison-gaps.tar.gz",
+    "bytes": 9322,
+    "sha256": "69e05bcfd63b57df883054be13f38d5f7293ccfb4208e0835f6d0a7a9e19422a"
+  },
+  "files": [
+    {
+      "path": "audit-string-equality-history.py",
+      "bytes": 2557,
+      "sha256": "eb420b2b39e7e2e3c560513a58cd142830dd10f6d9d9d22ba56bee72254fd324"
+    },
+    {
+      "path": "audit-string-equality-storage-negative.py",
+      "bytes": 2391,
+      "sha256": "883cafb0261cb8116474d7563faf383272d7b2cf6f11643c21cafda36ec801dc"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "probe-string-equality-history.py",
+      "bytes": 3080,
+      "sha256": "d62b7553e9d9ed847dcf289acf42c6c6366c8ee6eed7179940d3bac0e31d9a3b"
+    },
+    {
+      "path": "probe-string-equality-storage-source249.py",
+      "bytes": 2879,
+      "sha256": "59edd96c10a1e3bf589737117c203ab50e51e753945ca2a36cdd5210f861706c"
+    },
+    {
+      "path": "source174-string-equality-storage-original-location-command.json",
+      "bytes": 2349,
+      "sha256": "5a4fbd39357a16bb832d2c651b03ca6b1e5bca29d4c32975fb53ee7d1885d611"
+    },
+    {
+      "path": "source174-string-equality-storage-original-location-result.json",
+      "bytes": 335,
+      "sha256": "719c4ab19987d37e9ee28cf5566514e6c6bbd804b7974c9022c0f639ebfd2386"
+    },
+    {
+      "path": "source174-string-equality-storage-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source174-string-equality-storage-original-location.stdout",
+      "bytes": 2445,
+      "sha256": "f56ee6e667e222d4046e3752e391a146aed64b9c77578fd164e5c83e3ff852ce"
+    },
+    {
+      "path": "source207-string-equality-storage-original-location-command.json",
+      "bytes": 2358,
+      "sha256": "6e63d91c84064958b16d8f3c5ab74bb6ca4a6e3425e9fd335fc95340531d5d82"
+    },
+    {
+      "path": "source207-string-equality-storage-original-location-result.json",
+      "bytes": 343,
+      "sha256": "4d60b4641292836969dfd9cd2506f8856aea4657118b24349b42cde7101886d4"
+    },
+    {
+      "path": "source207-string-equality-storage-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-string-equality-storage-original-location.stdout",
+      "bytes": 2445,
+      "sha256": "f56ee6e667e222d4046e3752e391a146aed64b9c77578fd164e5c83e3ff852ce"
+    },
+    {
+      "path": "source249-string-equality-storage-comparison.json",
+      "bytes": 624,
+      "sha256": "9ac628e5205d4951b07133ba3e389d6b0db0a76816451098a64413eda9a093ed"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx-command.json",
+      "bytes": 3083,
+      "sha256": "30269dfcecb77064108bb28f0ba13950d9a82fd8dc2d77fb7b7e50cc9af74e5d"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "b1ca2f338191b29525765bc3c4ec14a06b41b55b797adae00cdce8ffbc6ec257"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx.stdout",
+      "bytes": 2457,
+      "sha256": "5a5956c135dc163420a8950bd4152835f4e8308b1f62a7866d05b5cddcd7ac71"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu-command.json",
+      "bytes": 3036,
+      "sha256": "1553ce7143f6de6116d7e24e4a22dc129c78a1e18bdc704db4196af779c90cde"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu-result.json",
+      "bytes": 229,
+      "sha256": "f9f54c81ac76c0a6bc98c9a5c1874e65903602451d62065a076179d9c10a89f4"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu.stdout",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "source249-string-equality-storage-negative-audit.json",
+      "bytes": 1929,
+      "sha256": "c3263e06ac7c32b4a52ff4bd9841c454c3975d7fcac1491dca69890e2d02a7b9"
+    },
+    {
+      "path": "string-equality-storage-history-audit.json",
+      "bytes": 1116,
+      "sha256": "b68defca68f4ab5b62ba0bf2a21632103223aac1170d07bfa3375094a765fb1b"
+    },
+    {
+      "path": "string-equality-storage-history-verdict-audit.json",
+      "bytes": 3984,
+      "sha256": "1f5af5de273df3d4053ba326cb299969bf4c86daf101805af6b12f4e4c9a9b7a"
+    },
+    {
+      "path": "string-equality-storage.el",
+      "bytes": 983,
+      "sha256": "f441bf1aa339cef2f83232616d3f444e3aa694569db9f245e400dd1491e20d93"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
