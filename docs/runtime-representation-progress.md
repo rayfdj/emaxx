@@ -1,6 +1,6 @@
 # Current goal status — 2 October 2026
 
-The current runtime is **source272**, with 510 verified inputs and
+The current runtime is **source272** (`eb286e23`), with 510 verified inputs and
 [closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):
 zero-warning strict checks, **206 focused passes / two existing ignores** and
 **1,062 affected passes in each profile**, retaining all original tests/fixtures.
@@ -9,7 +9,10 @@ guard losing its property child. Source272 roots shared guards before the
 weak-table fixed point and rejects exclusive guards before any mark/sweep work.
 Survival and reclamation controls pass; the original negative is retained.
 The GC scan's cost remains unmeasured, and broader public ownership is unfinished.
-Full source272 validation is prepared, not yet launched at this checkpoint.
+The [full-validation launches](handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
+target exact `eb286e23`: macOS supervisor27731 waits for the existing source270
+full run; Linux Rust36937044662/frozen36937049816 are dispatched. No full
+source272 outcome is inferred. Read HANDOVER.md and the retained live receipts.
 
 The [closed source270 full Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
 verify 3,118 macOS / 3,130 Linux passes, two existing ignores each, all raw library

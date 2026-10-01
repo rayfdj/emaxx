@@ -21,7 +21,9 @@ passing those fixtures did not establish it. Broader public ownership remains op
 The preceding source270 [complete Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
 close 3,118 macOS / 3,130 Linux passes with two existing ignores each, all raw names,
 native identity and retained inputs. Its frozen/terminal runs remain separate.
-Full source272 validation is prepared but not launched at this checkpoint.
+The [source272 full-validation launches](handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
+target pushed `eb286e23`: Linux Rust/frozen are dispatched and macOS is queued
+behind the existing source270 full run. Launch does not establish a result.
 Read [HANDOVER.md](../HANDOVER.md) for live continuation state. All historical
 failures below remain failures; no performance parity or final completion is claimed.
 

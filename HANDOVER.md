@@ -18,12 +18,12 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The task runtime is **source272**, with **510 verified inputs**. Its
+The task runtime is **source272**, pushed as **`eb286e23`**, with **510 verified inputs**. Its
 [closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
 verifies zero-warning strict checks, **206 focused passes / two existing ignores**
 and **1,062 affected passes in each profile**. Every original selector, test,
 GNU fixture and expected byte is preserved. Both portable repair patches and
-the preceding test-only negative replay all 510 bytes/modes exactly.
+the preceding test-only negative replay all 510 inputs and file modes exactly.
 
 Source271 exposed a Rust ownership defect outside the frozen Lisp fixtures:
 an off-stack shared string guard kept its header alive while its cons property
@@ -38,10 +38,14 @@ have not been timed; broader public ownership/serialization remains open.
 
 The selected checkout `target/runtime-goal/recovered-2026-09-30/string-borrow-roots/emaxx`
 is frozen. Receipts/helpers are under `target/runtime-goal/resume-2026-09-28`.
-Full source272 validation is prepared but not yet launched at this checkpoint:
-`setup-source272-full-macos.py` requires the published commit and waits for the
-existing source270 full supervisor before starting complete Rust, frozen and
-terminal stages; `dispatch-source272-linux.py` uses the existing Rust/frozen CI.
+The [full-validation launch receipts](docs/handover/2026-09-30-shared-reader-draft/source272-publication-launch-manifest.json)
+record macOS supervisor **27731** in the clean exact-commit checkout
+`target/runtime-goal/recovered-2026-09-30/string-borrow-full/emaxx`, waiting for
+source270 supervisor **3079** to finish before full Rust, frozen and terminal
+validation. Linux [Rust36937044662](https://github.com/rayfdj/emaxx/actions/runs/36937044662)
+and [frozen36937049816](https://github.com/rayfdj/emaxx/actions/runs/36937049816)
+are dispatched on exact `eb286e23`. Read `source272-full-*` and the exact CI runs
+for live state; keep both source272 checkouts unchanged.
 No full source272 result, standalone GNU comparison or performance claim follows
 from these selected checks. Main remains `21d20f0e`, PR79 remains draft, and the
 full architectural/performance goal is active and incomplete.
