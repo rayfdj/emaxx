@@ -832,6 +832,14 @@ test. Original fixture and expected-output bytes are unchanged. No runtime,
 expectation, selector or timeout changed for the setup replay. All 476 validated
 inputs are now applied to the root. Complete source249 validation remains open.
 
+The [publication and launch snapshot](handover/2026-09-30-shared-reader-draft/source249-publication-and-launches-manifest.json)
+verifies pushed runtime `99e61fca`, all 476 inputs and draft PR79. Full Linux
+[Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484) and
+[frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495) target
+that exact commit. Their results remain pending. Full macOS Rust64326 is queued
+after rebuilt-oracle frozen58661, against the same isolated runtime inputs and
+new GNU installation. Complete source249 terminal validation remains unstarted.
+
 ## Recorded Darwin oracle rebuild
 
 The user requested rebuilding the GNU reference from the recorded recipe.

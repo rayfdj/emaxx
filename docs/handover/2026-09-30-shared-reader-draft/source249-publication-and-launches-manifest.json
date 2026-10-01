@@ -1,0 +1,176 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "observed_at": "2026-10-01T14:55:28.610181+00:00",
+    "runtime_commit": "99e61fca563a8c2f597b20fc56a539cdd1c2f575",
+    "inputs_verified": 476,
+    "linux": {
+      "rust": {
+        "conclusion": "",
+        "headSha": "99e61fca563a8c2f597b20fc56a539cdd1c2f575",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/36879095484"
+      },
+      "frozen": {
+        "conclusion": "",
+        "headSha": "99e61fca563a8c2f597b20fc56a539cdd1c2f575",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/36879103495"
+      }
+    },
+    "mac_frozen_launch": {
+      "pid": 58661,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/retry-rebuilt-oracle-frozen-empty-target.py"
+      ],
+      "helper_sha256": "9684771f64c1d20dfe43820251ec345929b3dbd525f58d08fc769120c849b2cf"
+    },
+    "mac_rust_launch": {
+      "pid": 64326,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source249-rebuilt-full-gate.py"
+      ],
+      "helper_sha256": "e253cf2f7b57aa3149ad01ec130b2c3568101868597ab1c9cc4c10c8dcfe4939",
+      "qualification": "Queued after the active macOS frozen comparison; not a validation result."
+    },
+    "mac_rust_state": {
+      "status": "waiting for the rebuilt-oracle frozen process to exit",
+      "prior_pid": 58661,
+      "goal_complete": false
+    },
+    "goal_complete": false,
+    "qualification": "Publication and launch snapshot only. Linux run states and the queued macOS gate are not passing results. The rebuilt-GNU comparison uses isolated candidate 1c0898fc with the same 476 runtime inputs; original Darwin pin remains on the task branch. Full source249 terminal validation, final audit and the architecture/performance requirements remain open."
+  },
+  "archive": {
+    "path": "source249-publication-and-launches.tar.gz",
+    "bytes": 38268,
+    "sha256": "6110be60ad7a55ec3aff4b5e6134a3ae979f15903ee06a3b469f5a3e049c0342"
+  },
+  "files": [
+    {
+      "path": "dispatch-source249-linux.py",
+      "bytes": 1956,
+      "sha256": "9667851ba7c064b563ebc3918dc3c9f10b5eb924e9c5f7cd8beecbd4f29dc667"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source249-publication-and-launches.py",
+      "bytes": 2974,
+      "sha256": "f9c73c5201bbb2c101bebc9f11e74c1a4f1b3629b5692964186b25b20182b5aa"
+    },
+    {
+      "path": "publish-source249-applied.py",
+      "bytes": 4086,
+      "sha256": "1281c3c475a513a5251a236dfe8a4fc3e6594e4e0007088363180bee1c17a6ad"
+    },
+    {
+      "path": "queue-source249-rebuilt-full-gate.py",
+      "bytes": 4573,
+      "sha256": "e253cf2f7b57aa3149ad01ec130b2c3568101868597ab1c9cc4c10c8dcfe4939"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-command.json",
+      "bytes": 457,
+      "sha256": "0720a384fdfa073a9b19fb0127bc94d898b4f4b6d5e4c631c2bc0d211a59c748"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-launch.json",
+      "bytes": 314,
+      "sha256": "a3e03f68e1b692e0610640675829406c5ea0002cdbd1c50476c11f60efd06822"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-setup.json",
+      "bytes": 731,
+      "sha256": "0c2af9c12319eb7082e52acf145841c2f71fbd0db682f907c06e6d343df87710"
+    },
+    {
+      "path": "retry-rebuilt-oracle-frozen-empty-target.py",
+      "bytes": 3286,
+      "sha256": "9684771f64c1d20dfe43820251ec345929b3dbd525f58d08fc769120c849b2cf"
+    },
+    {
+      "path": "source249-applied-commit.json",
+      "bytes": 1953,
+      "sha256": "e72a606b1718d9b2686e1bb2d38a5dde4d1e9bad5b2ead5adb6556cdf0b0c11a"
+    },
+    {
+      "path": "source249-applied-push.json",
+      "bytes": 299,
+      "sha256": "b5c111953c2804a87a9742e75a8c185bb5f1c4f7d6ae7ec1fa7f5014e666066b"
+    },
+    {
+      "path": "source249-linux-frozen-dispatch.json",
+      "bytes": 353,
+      "sha256": "bb7d52f4b45b0476507b3955ac011d26647480e82bec7df4970de031da40e40b"
+    },
+    {
+      "path": "source249-linux-frozen-launch.json",
+      "bytes": 750,
+      "sha256": "b2b53e9d95ba15f0888b3293cf733af8bf786bdbfd921375c252d5a0fcfa85bb"
+    },
+    {
+      "path": "source249-linux-rust-dispatch.json",
+      "bytes": 351,
+      "sha256": "7a5f11600ad0ce200e30cede2c2c646fa558b690b0ba9a9531a04de6da1b02ad"
+    },
+    {
+      "path": "source249-linux-rust-launch.json",
+      "bytes": 750,
+      "sha256": "e4996cf338f577bb05df9ee858e569e55ddb8ddea15a792725e4f23bc59cfa33"
+    },
+    {
+      "path": "source249-manifest.json",
+      "bytes": 54595,
+      "sha256": "9055fe6d69d95ee12aaa55a76bf4d075a929cb778d9f9545e3438ea2a6be9daa"
+    },
+    {
+      "path": "source249-pr-body.md",
+      "bytes": 3189,
+      "sha256": "d3b8acf70e0911fafc75f6f9e26fb5f8bf8c0b15ac278f650ca807655809f56e"
+    },
+    {
+      "path": "source249-pr-payload.json",
+      "bytes": 3293,
+      "sha256": "294d0823183a27d0cd4a90d2369d4a279307e458cb78db906f11aefc44f988a8"
+    },
+    {
+      "path": "source249-pr-update.json",
+      "bytes": 20645,
+      "sha256": "c14011d5c80c058aacba3934b3b8f55761a84a9dd90eff82b01d0a7d1d784de0"
+    },
+    {
+      "path": "source249-pr-verified.json",
+      "bytes": 20645,
+      "sha256": "c14011d5c80c058aacba3934b3b8f55761a84a9dd90eff82b01d0a7d1d784de0"
+    },
+    {
+      "path": "source249-publication-state.json",
+      "bytes": 1933,
+      "sha256": "091733d418ce37d35406abac66f8226b586613e5b5d9f9f6968d5e2e55aebab8"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-launch.json",
+      "bytes": 403,
+      "sha256": "e199ada76cf6ed9962a0f9c3147aa6f45a0eef69aa29848e9322d167fca78af9"
+    },
+    {
+      "path": "source249-root-application.json",
+      "bytes": 616,
+      "sha256": "2682cdec1fc6764bff044ce73dcdefe473968de1b5a9dd7f8f3653a51f345435"
+    },
+    {
+      "path": "update-source249-pr.py",
+      "bytes": 4295,
+      "sha256": "b8f84495f6ec07cd1c50dca036bfc51104946021a9262286508e0959ce649b6a"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,6 +1,6 @@
 # Current goal status — 1 October 2026
 
-The task runtime is **source249**, with **476 frozen inputs** and
+The task runtime is **source249**, pushed as `99e61fca`, with **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
 zero-warning strict checks, 172 focused passes / two existing ignores and 955
 affected passes in each profile, plus fifteen ordinary GNU matches. The repair
@@ -8,6 +8,12 @@ passes decoded character counts to post-read hooks and follows GNU's ASCII
 string early return. Its original negatives, failed setup run and unchanged
 executable replay remain preserved. The repair is applied to the root; complete
 source249 platform/frozen/terminal validation remains required.
+
+The [publication snapshot](handover/2026-09-30-shared-reader-draft/source249-publication-and-launches-manifest.json)
+records full Linux [Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484)
+and [frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495)
+running on exact `99e61fca`. Full rebuilt-oracle macOS Rust64326 is queued after
+frozen58661 exits. These are pending runs, not passing results.
 
 The [requested GNU rebuild](handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
 passes configuration/capability checks and byte comparison of regenerated native

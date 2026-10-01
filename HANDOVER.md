@@ -16,7 +16,7 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The task runtime is now **source249**, with **476 inputs** matching the isolated
+The task runtime is now **source249**, pushed as **`99e61fca`**, with **476 inputs** matching the isolated
 `coding-post-read/emaxx` candidate. Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json)
 verifies zero-warning strict checks, **172 focused passes / two existing ignores**
 and **955 affected passes in each profile**, plus **fifteen ordinary GNU matches**.
@@ -26,6 +26,15 @@ following GNU.
 The original negatives and the first checkout-setup failure remain retained.
 Complete source249 platform/frozen/terminal validation remains required; the
 preceding source248 results below do not certify this newer source.
+
+The [publication and launch records](docs/handover/2026-09-30-shared-reader-draft/source249-publication-and-launches-manifest.json)
+verify that exact pushed commit and draft PR79. Full Linux
+[Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484) and
+[frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495) are
+running. Complete macOS Rust **64326** is queued after frozen **58661** exits,
+against the rebuilt GNU installation. Launches and queues are not passing results.
+Read current receipts before another launch; complete source249 terminal validation
+still needs to run. Main remains `21d20f0e` and the full goal remains open.
 
 GNU has been [rebuilt from the recorded recipe](docs/handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
 at pristine revision `636f166c`, with executable SHA-256 **`29cfb20d…`**.
