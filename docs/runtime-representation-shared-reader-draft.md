@@ -1,5 +1,10 @@
 # Shared command reader draft — 30 September 2026
 
+This is the historical reader/allocator development record. Read
+[HANDOVER.md](../HANDOVER.md) and the [requirement map](runtime-representation-progress.md)
+for the current source272 runtime and validation state. Earlier running/pending
+labels below describe their original checkpoints, not the current task branch.
+
 The [source204 cons repair](runtime-representation-cons-roots-draft.md) now occupies
 the task branch on top of the reader/macro and source201 allocator changes.
 Its strict checks, 596 gate / 596 release controls, 39 ordinary batch comparisons

@@ -3866,7 +3866,13 @@ impl Interpreter {
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
+        // Check exclusive Rust string borrows before advancing the epoch.
+        // Shared guards are roots even when held off the scanned stacks.
+        let borrowed_strings = crate::lisp::alloc::borrowed_string_roots();
         let mut marked = LispReachability::default();
+        for value in borrowed_strings {
+            marked.mark(self, &value);
+        }
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);

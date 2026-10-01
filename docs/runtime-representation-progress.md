@@ -1,6 +1,26 @@
 # Current goal status — 2 October 2026
 
-The task runtime is **source270**, pushed as **`0ecf6e11`**, with **510 verified inputs**.
+The current runtime is **source272**, with 510 verified inputs and
+[closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):
+zero-warning strict checks, **206 focused passes / two existing ignores** and
+**1,062 affected passes in each profile**, retaining all original tests/fixtures.
+An unchanged source271 diagnostic first showed a live off-stack Rust string
+guard losing its property child. Source272 roots shared guards before the
+weak-table fixed point and rejects exclusive guards before any mark/sweep work.
+Survival and reclamation controls pass; the original negative is retained.
+The GC scan's cost remains unmeasured, and broader public ownership is unfinished.
+Full source272 validation is prepared, not yet launched at this checkpoint.
+
+The [closed source270 full Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
+verify 3,118 macOS / 3,130 Linux passes, two existing ignores each, all raw library
+names and retained inputs. Frozen/terminal are separate. Main remains 21d20f0e,
+PR79 is draft, and the full goal—including sblocks, actual intervals, symbol
+authority, physical accounting, VM profiling and the locked 16-workload 3% ceiling—
+remains active. [HANDOVER.md](../HANDOVER.md) contains the current continuation.
+
+## Historical storage checkpoint: source270
+
+The preceding storage runtime **source270** was pushed as **`0ecf6e11`**, with **510 verified inputs**.
 The [closed selected evidence and full-validation launches](handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
 verify zero-warning strict checks, **203 focused passes / two existing ignores**
 and **1,059 affected passes in each profile**, plus **33 ordinary GNU matches**.
@@ -17,7 +37,8 @@ Full macOS supervisor 3079 runs in a clean exact-commit checkout, after selected
 re-audit, idle-cache cloning and GNU capture. Linux
 [Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
 [frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are launched
-on exact 0ecf6e11. Full results are pending. Main remains 21d20f0e, PR79 stays draft,
+on exact 0ecf6e11. Its complete Rust results are now closed: **3,118 macOS / 3,130 Linux passes**,
+with two existing ignores each; frozen/terminal outcomes remain separate. Main remains 21d20f0e, PR79 stays draft,
 and every architectural/performance completion criterion remains in force.
 
 The preceding runtime **source261** was pushed as `eddfe782`, with **488 verified inputs**.

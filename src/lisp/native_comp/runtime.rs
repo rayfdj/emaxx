@@ -11397,6 +11397,315 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_string_properties_survive_off_stack_guards_and_are_reclaimed_after_release() {
+        type Guard = Box<dyn std::ops::Deref<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn make_guard() -> (Guard, [usize; 3]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "borrowed".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 8,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            // Keep the public borrow alive in a Rust allocation, whose payload
+            // the conservative stack walker does not scan. The stable owner
+            // is reclaimed after the guard below; no Lisp pointer escapes raw.
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn verify_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 3]) {
+            let string = heap
+                .decode(hidden[0] ^ HIDE)
+                .expect("borrowed header survives");
+            let child = heap
+                .decode(hidden[1] ^ HIDE)
+                .expect("a string borrow also retains its property values");
+            assert_eq!(child.car().expect("property cons"), Value::Integer(73));
+            assert_eq!(guard.props[0].props[0].1.word(), child.word());
+            assert_eq!(string.as_string().expect("borrowed text"), "borrowed");
+            drop(guard);
+            // SAFETY: make_guard leaked this one Box to provide a stable
+            // borrow owner. Its sole guard is now dropped, and the copyable
+            // handle owns no GC allocation or other Rust resources.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[2] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = make_guard();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        verify_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert!(heap.decode(hidden[0] ^ HIDE).is_err(), "released string");
+        assert!(
+            heap.decode(hidden[1] ^ HIDE).is_err(),
+            "released property child"
+        );
+    }
+
+    #[test]
+    fn off_stack_string_borrows_enter_the_weak_table_fixed_point() {
+        type Guard = Box<dyn std::ops::Deref<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn build(interpreter: &mut Interpreter, environment: &Env) -> (Guard, [usize; 5]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "borrowed".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 8,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let values = [
+                Value::cons(Value::Integer(81), Value::Nil),
+                Value::cons(Value::Integer(82), Value::Nil),
+            ];
+            let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
+            let Kind::HashTable(table_ref) = table.kind() else {
+                panic!("weak table")
+            };
+            table_ref.set_weakness(1);
+            assert!(interpreter.equal_hash_put(table_ref, string, values[0], environment));
+            assert!(interpreter.equal_hash_put(table_ref, child, values[1], environment));
+            interpreter.set_global_binding("borrowed-string-weak-keys", table);
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    values[0].word() ^ HIDE,
+                    values[1].word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn check_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 5]) {
+            for word in &hidden[..4] {
+                heap.decode(word ^ HIDE).expect("borrowed weak-key graph");
+            }
+            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            drop(guard);
+            // SAFETY: build leaked this owner; its only guard is now gone.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[4] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = build(&mut interpreter, &environment);
+        let Kind::HashTable(table) = interpreter
+            .global_binding_value("borrowed-string-weak-keys")
+            .expect("rooted table")
+            .kind()
+        else {
+            panic!("weak table")
+        };
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(
+            table.count(),
+            2,
+            "both borrowed keys participate in marking"
+        );
+        check_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(
+            table.count(),
+            0,
+            "weak entries disappear after borrow release"
+        );
+        for word in &hidden[..4] {
+            assert!(heap.decode(word ^ HIDE).is_err(), "released weak-key graph");
+        }
+    }
+
+    #[test]
+    fn exclusive_string_borrows_reject_gc_before_marking_or_sweeping() {
+        type Guard = Box<dyn std::ops::DerefMut<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn build() -> (Guard, [usize; 4]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let unrelated = Value::cons(Value::Integer(99), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "exclusive".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 9,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow_mut());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    unrelated.word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn check_and_release(heap: &mut NativeHeap, mut guard: Guard, hidden: [usize; 4]) {
+            for word in &hidden[..3] {
+                heap.decode(word ^ HIDE)
+                    .expect("rejected collection preserves every allocation");
+            }
+            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            guard.props[0].props[0].1 = Value::Integer(74);
+            drop(guard);
+            // SAFETY: build leaked this owner; its only guard is now gone.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[3] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        fn rejected_collection(
+            heap: &mut NativeHeap,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_marker: *const NativeWord,
+        ) {
+            let epoch = crate::lisp::types::current_mark_epoch();
+            let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                heap.collect(stack_marker, &[], interpreter, environment);
+            }));
+            let error = rejected.expect_err("exclusive borrow must prohibit collection");
+            assert_eq!(
+                error.downcast_ref::<&str>(),
+                Some(&"cannot collect while a string is mutably borrowed")
+            );
+            assert_eq!(
+                crate::lisp::types::current_mark_epoch(),
+                epoch,
+                "rejected before the mark epoch starts"
+            );
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = build();
+        crate::lisp::alloc::clobber_stack();
+        rejected_collection(
+            &mut heap,
+            &mut interpreter,
+            &environment,
+            std::ptr::from_ref(&stack_marker),
+        );
+        check_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for word in &hidden[..3] {
+            assert!(
+                heap.decode(word ^ HIDE).is_err(),
+                "released exclusive-borrow graph"
+            );
+        }
+        for multibyte in [false, true] {
+            let object = crate::lisp::alloc::allocate_string(
+                crate::lisp::types::SharedStringState::from_storage(Vec::new(), 0, multibyte)
+                    .expect("empty string"),
+                false,
+            );
+            let guard = object.borrow_mut();
+            rejected_collection(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+            );
+            drop(guard);
+        }
+    }
+
+    #[test]
     fn pure_string_headers_survive_unrooted_gc_outside_the_ordinary_census() {
         #[inline(never)]
         fn make_pure_strings() -> [usize; 3] {

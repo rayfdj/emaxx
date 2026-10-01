@@ -2,9 +2,12 @@
 
 Read the [complete goal](runtime-representation-goal.md), [current handover](../HANDOVER.md)
 and [correctness recovery](runtime-representation-correctness-recovery-draft.md).
-The full goal is active and incomplete. The task runtime is now source261, pushed
-as `eddfe782`, with 488 inputs and [closed selected validation](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json).
-The earlier separately packaged drafts and failures remain historical evidence.
+The full goal is active and incomplete. The current task runtime is source272,
+with 510 inputs and [closed borrow-root repair validation](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json).
+It retains source270's direct string header/storage fixes and repairs off-stack
+Rust borrow tracing; broader ownership, sblocks and actual intervals remain open.
+The source256/source261 development record below preserves its original failures
+and bounded results. Use HANDOVER.md for current execution/publication state.
 Main remains `21d20f0e`.
 
 The [portable draft](handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)

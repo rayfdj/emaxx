@@ -31,7 +31,8 @@ pub(crate) use finalizers::FinalizerList;
 pub use finalizers::{FinalizerRef, FinalizerState};
 pub use strings::StringObjectRef;
 pub(crate) use strings::{
-    allocate_restored_string, allocate_string, live_string_object_census, sweep_strings,
+    allocate_restored_string, allocate_string, borrowed_string_roots, live_string_object_census,
+    sweep_strings,
 };
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};

@@ -1,0 +1,809 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "negative": {
+      "status": "confirmed negative",
+      "source_inputs_verified": 510,
+      "test_only": true,
+      "production_source": "source270",
+      "counts": {
+        "passed": 2,
+        "failed": 1,
+        "ignored": 0
+      },
+      "failing_test": "lisp::native_comp::runtime::tests::borrowed_string_properties_survive_off_stack_guards_and_are_reclaimed_after_release",
+      "binary": {
+        "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source271-gate-libtest",
+        "sha256": "24bd836faab6c1dd28df239208f33163952cd42bb313d621e0af839c3311f322",
+        "built_artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-borrow-roots/emaxx/target/string-borrow-validation/gate/deps/emaxx-2172bc5d2c1706ff"
+      },
+      "log_sha256": "4b7d80380ef353062dc9521785cc6b60932bd0d3c466c3b4c4ba1d246d7ed2c5",
+      "patch_sha256": "4c9db9b9c640370b37aad2f4cc3135355c728e5c81eb41e383a172043f93c7d8",
+      "c_reference": "alloc.c:mark_objects marks a reached string and its interval tree before weak-table processing and sweeping (rebuilt GNU revision636f166c, alloc.c7255ff).",
+      "diagnosis": "sweep_strings retains borrowed headers, but no mark-phase root traces an off-stack Rust borrow. The checked native decoder rejects its freed cons property value; no freed child is dereferenced by this diagnostic.",
+      "qualification": "This confirms one Rust ownership defect outside the frozen Lisp fixtures. Published source270 and both full-validation checkouts remain unchanged. Existing test names, expectations and failure evidence are preserved; no GNU/performance parity or complete ownership claim follows."
+    },
+    "selected": {
+      "status": "passed",
+      "source_inputs_verified": 510,
+      "profiles": {
+        "gate": {
+          "focused_passes": 206,
+          "existing_ignores": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "affected_passes": 1062,
+          "complete_inventory": 3024,
+          "binary_sha256": "5cc046ccfcf3fda4c482891cf0b312ed99472dde5a2046509dd130408d1584bb"
+        },
+        "release": {
+          "focused_passes": 206,
+          "existing_ignores": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "affected_passes": 1062,
+          "complete_inventory": 3023,
+          "binary_sha256": "51cdfb0ba41c1ada05a7650edabd54db09aaf136e916d65e0dde826e49438148"
+        }
+      },
+      "diagnostic_controls": 5,
+      "added_tests": [
+        "lisp::native_comp::runtime::tests::borrowed_string_properties_survive_off_stack_guards_and_are_reclaimed_after_release",
+        "lisp::native_comp::runtime::tests::exclusive_string_borrows_reject_gc_before_marking_or_sweeping",
+        "lisp::native_comp::runtime::tests::off_stack_string_borrows_enter_the_weak_table_fixed_point"
+      ],
+      "original_negative_preserved": true,
+      "original_tests_and_fixtures_preserved": true,
+      "patch_replay": {
+        "status": "exact",
+        "replays": [
+          {
+            "patch": "source271-test-only.patch",
+            "base": "0c58c4d43bd52f1ac455abd2a8e845c8523dda6c",
+            "inputs": 510,
+            "sha256": "4c9db9b9c640370b37aad2f4cc3135355c728e5c81eb41e383a172043f93c7d8",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source272-portable-incremental.patch",
+            "base": "0c58c4d43bd52f1ac455abd2a8e845c8523dda6c",
+            "inputs": 510,
+            "sha256": "78bccfa8a62151e5bb88e32021304605ecad43d3cb3ff8e8dc9936a508f8dd0c",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source272-portable-complete.patch",
+            "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+            "inputs": 510,
+            "sha256": "b1253dc77e7e65c075b6d1aa150f4dd5d363c3bfd89286193b02e918bae906c4",
+            "bytes_and_modes": "exact"
+          }
+        ],
+        "original_runtime_tests": "byte-identical",
+        "qualification": "The test-only failing source271 and both source272 repair patches reproduce all510 inputs and modes. All original tests/fixtures/expected outputs remain unchanged. Selected runtime validation is separate; public ownership, sblocks/intervals, accounting, VM and performance requirements remain open."
+      },
+      "strict_checks": "zero-warning pass",
+      "goal_complete": false,
+      "qualification": "The unchanged source271 negative now passes: off-stack shared string guards retain the header and property graph; weak-key values survive only while borrowed and are reclaimed afterward. Exclusive guards reject collection before advancing its mark epoch or sweeping, including both empty singletons. Existing 205 focused selectors,1059 affected selectors and all fixture bytes are preserved in each profile. The three expected panic messages are caught contract checks, with final successful verdicts. Source270 full-platform results remain separate; no source272 full-platform, standalone GNU, timing, memory or complete public-ownership claim follows."
+    },
+    "reference": {
+      "source": "source272",
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "gnu_alloc_sha256": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+      "c_paths": [
+        {
+          "path": "src/alloc.c",
+          "mechanism": "mark_objects: Lisp_String marks the header and interval tree before sweeping",
+          "line": 7255
+        },
+        {
+          "path": "src/alloc.c",
+          "mechanism": "mark_interval_tree_1 marks each property plist",
+          "line": 1523
+        },
+        {
+          "path": "src/alloc.c",
+          "mechanism": "sweep_strings keeps marked headers and accounts for their data",
+          "line": 2093
+        }
+      ],
+      "rust_constraint": "A Rust string borrow can reside in an ordinary Rust heap allocation that conservative stack scanning does not visit. A live shared borrow must retain both its header and property Values. A live exclusive borrow may expose &mut SharedStringState, so reading its payload during tracing would violate exclusivity.",
+      "repair": "Collect existing checked-borrow metadata before beginning the mark epoch. Feed shared-borrow roots into the normal property tracer and weak-table fixed point. Reject an exclusive-borrow conflict before any epoch advance or reclamation. Sweep only marked headers. The two permanent empty roots participate in the preflight.",
+      "cost": "One traversal of allocated string blocks and the two initialized empty roots per reachability pass. blocks_of builds a temporary block-list Vec for this scan; a second root Vec allocates only when shared borrows are present. No new per-access lookup, global borrow counter, payload mirror, retained registry or collection deferral. Timing/physical allocation cost has not been measured and remains required by the full goal.",
+      "limits": "This repairs one confirmed guard-rooting defect. Arbitrary public unrooted Value/StringObjectRef ownership and process-wide serialization remain separate open requirements. Sblock relocation must also respect live byte references; current data is still individually boxed. No performance parity or full ownership/soundness audit completion is claimed.",
+      "source_inputs_verified": 510
+    },
+    "full_preparation": {
+      "status": "prepared, not launched",
+      "helpers": {
+        "audit-source272-selected-for-full.py": "a0b305ec3d659288cc6e4f73b9de9a13a6371abf532b4bc20549ca3180c97785",
+        "queue-source272-full-macos.py": "e036ea247d19670893ecea2a0c4384f2c2d313b87f438e628e2bcbdba90e517c",
+        "setup-source272-full-macos.py": "00463d5ff18aa55376c4290e6dc3f45d3317807461ef87b4de08f12bc3bc20e5",
+        "dispatch-source272-linux.py": "0ebc2a4af57a5d00e4d78bf94a7487ab72fe7f9374a61bf6db50c599129cf76f"
+      },
+      "goal_complete": false,
+      "qualification": "Requires successful closed source272 selected results and validated publication. Full macOS uses a clean exact-commit checkout, re-verifies all source/selected inputs and waits for existing source270 full validation to exit before cloning the idle selected272 cache. Complete Rust,519 frozen files,226 terminal scenarios and final GNU verification are unchanged. Linux uses the existing exact-commit Rust/frozen workflow. No source272 full run has yet started."
+    },
+    "qualification": "Preserves the unmodified source271 test-only failure, raw logs/commands, all510 input manifests and exact incremental/complete replay patches. Source272 closes that property-root negative and adds weak-key retention/reclamation plus pre-mark exclusive-borrow rejection, with zero-warning strict checks and206 focused/1062 affected passes in each profile; two existing ignores remain. Every original selector, test and GNU fixture byte remains. Full source272 validation is prepared but has not launched. Source270 complete Rust results are separate. Sblocks, real intervals, symbol authority, physical accounting, broader public ownership, VM/profile work and the locked16-workload3% criterion remain incomplete."
+  },
+  "archive": {
+    "path": "source272-string-borrow-selected.tar.gz",
+    "bytes": 1162824,
+    "sha256": "36df49c083b0dae4b7b6466ea092247b966cc5c8dd1b1e19b3635f13aef8bb4b"
+  },
+  "files": [
+    {
+      "path": "apply-source272-selected.py",
+      "bytes": 12300,
+      "sha256": "bafd9e7b091c7b37e824d7c38696cd456d2ee20ed763ad56d18991cb9ed1d9d6"
+    },
+    {
+      "path": "audit-source270-selected.py",
+      "bytes": 10666,
+      "sha256": "396c5f50990ed0686a7270defec93d026d07eac3557e6a5599d66aa47629ac43"
+    },
+    {
+      "path": "audit-source271-borrow-negative.py",
+      "bytes": 3447,
+      "sha256": "ddc7c1fa7203585ce91c198878b487876810011976d09fe6d879e6d9925daaed"
+    },
+    {
+      "path": "audit-source272-borrow-selected.py",
+      "bytes": 6178,
+      "sha256": "72eee02a11307037980188d291b68ea4b885e37f9cf0a2db88f8921687b21db9"
+    },
+    {
+      "path": "audit-source272-selected-for-full.py",
+      "bytes": 6247,
+      "sha256": "a0b305ec3d659288cc6e4f73b9de9a13a6371abf532b4bc20549ca3180c97785"
+    },
+    {
+      "path": "audit-string-borrow-focused.py",
+      "bytes": 3821,
+      "sha256": "1fbf7987404dbc7b576d7487bbd4eb48eee692ae6edda5bbaf6696820c8be752"
+    },
+    {
+      "path": "audit-string-borrow-release.py",
+      "bytes": 4670,
+      "sha256": "b09dc44a6a34a050150177e85298d2c69e2b9ddf018380f50f0d339e1aa94eef"
+    },
+    {
+      "path": "commit-source272-selected.py",
+      "bytes": 3206,
+      "sha256": "4bfb98490ab6de4ef2974251984451ecc6daf8755b53f59c9768fc39569f8591"
+    },
+    {
+      "path": "dispatch-source272-linux.py",
+      "bytes": 2081,
+      "sha256": "0ebc2a4af57a5d00e4d78bf94a7487ab72fe7f9374a61bf6db50c599129cf76f"
+    },
+    {
+      "path": "freeze-source272-borrow-patches.py",
+      "bytes": 4133,
+      "sha256": "d825f6cbee343e5374e66b613570259cd210da704b2a540ac7a21e7e3092fc7a"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source272-borrow-selected.py",
+      "bytes": 4067,
+      "sha256": "369fbb586abb1d80ade00920cecaa4a72e0c36547b6e10081e16df83d3702188"
+    },
+    {
+      "path": "prepare-source272-borrow-validation.py",
+      "bytes": 2632,
+      "sha256": "8a872804fd335eece47b48ac5e29d46e77c413394fcbd8f6a696be457339b558"
+    },
+    {
+      "path": "prepare-source272-full-validation.py",
+      "bytes": 4936,
+      "sha256": "667de19bb4c592818d492a75526704ded09f3df5e4869e4955c7a76ff637beb9"
+    },
+    {
+      "path": "prepare-string-borrow-probe.py",
+      "bytes": 2536,
+      "sha256": "5bc7d6f3fdb24f0e1bc159093752cff29d6b962e6ea86675dbb14dbd53f0015f"
+    },
+    {
+      "path": "prepare-string-borrow-selected.py",
+      "bytes": 3132,
+      "sha256": "1e0172996394675c30d61081c238716307fe72733c5fb6750bc0dab73dd891b5"
+    },
+    {
+      "path": "queue-source272-borrow-selected.py",
+      "bytes": 2759,
+      "sha256": "4ddef443be344f74c859338cb0ee3170cd0c531fe4477e6a00f56d0e39fb98a0"
+    },
+    {
+      "path": "queue-source272-full-macos.py",
+      "bytes": 11231,
+      "sha256": "e036ea247d19670893ecea2a0c4384f2c2d313b87f438e628e2bcbdba90e517c"
+    },
+    {
+      "path": "run-source271-borrow-probe.py",
+      "bytes": 5303,
+      "sha256": "817cde0451dc3525bf752d65df77d159c9af79c0eabc1b59711afd6ba7226c65"
+    },
+    {
+      "path": "run-source272-borrow-repair.py",
+      "bytes": 6030,
+      "sha256": "606109e610aaeec2add7f64d1ce7aa7a1646d9630bdd65c3604ec9b7b0c85c47"
+    },
+    {
+      "path": "run-string-borrow-focused.py",
+      "bytes": 6759,
+      "sha256": "f85ee1c0d491c82ed91c5985457913b34676924c62224484e20f794a2a99e070"
+    },
+    {
+      "path": "run-string-borrow-release.py",
+      "bytes": 7296,
+      "sha256": "49b985d9a7ec1e4878954eeb59df952755bdea9539263c49b8e54048fc9b15fc"
+    },
+    {
+      "path": "setup-source272-full-macos.py",
+      "bytes": 2712,
+      "sha256": "00463d5ff18aa55376c4290e6dc3f45d3317807461ef87b4de08f12bc3bc20e5"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source261-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "7adbd58e55a5a6b05c9dd28c5bfbe533c0f44b29277cb386c7cce251cefa24f2"
+    },
+    {
+      "path": "source261-release-broad-command.json",
+      "bytes": 175733,
+      "sha256": "c2750e75f52ebeaa290732068ea967b02bae255df5667d7b8159de5aa3b36985"
+    },
+    {
+      "path": "source263-gate-broad-command.json",
+      "bytes": 195634,
+      "sha256": "6ff0cda4824794d5de8ed3528b4489f71b1c920e24dae06cb848b53069bcffe4"
+    },
+    {
+      "path": "source270-gate-broad-command.json",
+      "bytes": 196783,
+      "sha256": "7fdff01296da1f1a84d1efdfadb32af22adda2ec0ab993b4a07165f2608b5133"
+    },
+    {
+      "path": "source270-gate-controls-command.json",
+      "bytes": 36982,
+      "sha256": "31e0ddcefac6615de33eb8ccb9264dcf513abb62ba30adba5ecebea0f2a01a3f"
+    },
+    {
+      "path": "source270-gate-inventory.log",
+      "bytes": 266762,
+      "sha256": "234116f80ecb22f47d6cbd9d7de0617aa6b8c417721c1e5362decd341ae46f6b"
+    },
+    {
+      "path": "source270-manifest.json",
+      "bytes": 58772,
+      "sha256": "590e81465e9b4d20cef78f67c4eef01560fe4fcfd8d5c37c29f6eddfaddf48b7"
+    },
+    {
+      "path": "source270-raw-report-adversarial-audit.json",
+      "bytes": 1572,
+      "sha256": "a2d74a57eb75d7239e3ff392d25294f9ab9573dab9c5e1a562a49bb6ebc8423b"
+    },
+    {
+      "path": "source270-release-broad-command.json",
+      "bytes": 196786,
+      "sha256": "eb3a568d1135616fd32c21063698972baeb7d9e747a271cb14c55dca5023cf52"
+    },
+    {
+      "path": "source270-release-controls-command.json",
+      "bytes": 36985,
+      "sha256": "a53cace30ff8dcea8080da92393f0e05b8b6168d010bbafb8eb8a7f391732c78"
+    },
+    {
+      "path": "source270-release-inventory.log",
+      "bytes": 266673,
+      "sha256": "f7a740471694dd81288d8b6fa17972fc0f2e82652978e5b2e7149551c5daacda"
+    },
+    {
+      "path": "source270-selected-audit.json",
+      "bytes": 7064,
+      "sha256": "11d159efd1f0ac7e59515b5f236e1810b92f1a61309ac26c7a643a8ea8c4d80a"
+    },
+    {
+      "path": "source270-string-borrow-review.json",
+      "bytes": 1714,
+      "sha256": "e6375acff4ee83266e314c7ed7833f30acbbef1defd2f2189632270aa53b09cb"
+    },
+    {
+      "path": "source271-binary.json",
+      "bytes": 375,
+      "sha256": "7052b75230855527d85253c34ae20b21b1eebe01f0132d831e92312ea708eaf6"
+    },
+    {
+      "path": "source271-borrow-negative-audit.json",
+      "bytes": 1611,
+      "sha256": "b456fd3b6b99b765b7f27b660b6019a8e6a198ffe6fd166bfe44a58f552bf516"
+    },
+    {
+      "path": "source271-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source271-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source271-gate-build-command.json",
+      "bytes": 1140,
+      "sha256": "bb6390a076946b57f98b1c5d6e5abc74e8fe3c2afd3297d4cf693bfee61dc0df"
+    },
+    {
+      "path": "source271-gate-build-result.json",
+      "bytes": 152,
+      "sha256": "39dbd6c603c166c05d864aaac53c63869e3dbaf50802834b9ce720a57062bc7a"
+    },
+    {
+      "path": "source271-gate-build.log",
+      "bytes": 220791,
+      "sha256": "d0fffbf54b17ca3bbac650e9c225c1f8249b0f242964d0f245edcb57543dc9d1"
+    },
+    {
+      "path": "source271-gate-inventory-command.json",
+      "bytes": 1114,
+      "sha256": "5c08ad69556cdbbb8f39012c04a903275796ec749afb102a8a2ba04909953463"
+    },
+    {
+      "path": "source271-gate-inventory-result.json",
+      "bytes": 156,
+      "sha256": "e388f0ee9b24a5b62157c50c9ee206c03ddfd76e73f722deba7574b654481eae"
+    },
+    {
+      "path": "source271-gate-inventory.log",
+      "bytes": 266887,
+      "sha256": "80f984e84fd89575be0b390e4404922cbd23b190a842b64bdd0ecfaae59b1ab8"
+    },
+    {
+      "path": "source271-gate-probe-command.json",
+      "bytes": 1469,
+      "sha256": "17d5f5d3fb4549f27345388272be99603ceffe6e0903b537e6ea2c53830da392"
+    },
+    {
+      "path": "source271-gate-probe-result.json",
+      "bytes": 155,
+      "sha256": "6c4446ce4352304faebdd2afb88326baab2deec746c535e7247ab84f2f1b089a"
+    },
+    {
+      "path": "source271-gate-probe.log",
+      "bytes": 986,
+      "sha256": "4b7d80380ef353062dc9521785cc6b60932bd0d3c466c3b4c4ba1d246d7ed2c5"
+    },
+    {
+      "path": "source271-launch.json",
+      "bytes": 219,
+      "sha256": "9fa3250815f1de2e770ffbdbf6d5789c5a3eed9b34ca2d98d0c8a59998d19762"
+    },
+    {
+      "path": "source271-manifest.json",
+      "bytes": 58772,
+      "sha256": "0169b35bd1cbee94c740062a1dba262d2b8afd7b9b745cbabb5ffaeb812447cc"
+    },
+    {
+      "path": "source271-probe-result.json",
+      "bytes": 1224,
+      "sha256": "7b0161073b4d5a48ea1aaa48cbcc7e6e1b2b7f66d1358e75deb3049277ff24ff"
+    },
+    {
+      "path": "source271-probe-state.json",
+      "bytes": 1225,
+      "sha256": "9b4dae49dcb86972f0f015eefdf0234ffbbe5ea9fc19c53e6d4fce496e33d7c4"
+    },
+    {
+      "path": "source271-supervisor.log",
+      "bytes": 1057,
+      "sha256": "c2cde76a832d10b3763b2cb443e4475753977e389114812ce65d071ff8fdc4df"
+    },
+    {
+      "path": "source271-test-only.patch",
+      "bytes": 4009,
+      "sha256": "4c9db9b9c640370b37aad2f4cc3135355c728e5c81eb41e383a172043f93c7d8"
+    },
+    {
+      "path": "source271-unformatted.patch",
+      "bytes": 3853,
+      "sha256": "e4d1c5af9816ee231182f514ef081d76d28bfd7c93fb1d7aef4acb8c2e154a43"
+    },
+    {
+      "path": "source272-binary.json",
+      "bytes": 375,
+      "sha256": "037a9f95871cd2920cceafe5ac2b95d44bcd71dba72ac656d34636d560d57808"
+    },
+    {
+      "path": "source272-borrow-patch-replay-audit.json",
+      "bytes": 1187,
+      "sha256": "79be055a21c5d15a1980d53ef18e366b465cbffdba0b55bc9352e40db40e3ca7"
+    },
+    {
+      "path": "source272-borrow-selected-audit.json",
+      "bytes": 3196,
+      "sha256": "90183cc016196977226ab31ea796df90caf5770b2f8b3fe30f8b3d194b2e403d"
+    },
+    {
+      "path": "source272-c-and-ownership-review.json",
+      "bytes": 2146,
+      "sha256": "b70f5548152fbfdbbf94f61f4307b5e209fb8ea1b325226bfc652f0ff7bf7716"
+    },
+    {
+      "path": "source272-check-command.json",
+      "bytes": 1056,
+      "sha256": "3a51a1b523eae4d73b63aa7e5a7f15ce5e1d728ee0b35d45c3f8d6df727feb83"
+    },
+    {
+      "path": "source272-check-result.json",
+      "bytes": 147,
+      "sha256": "e7f6e44c6fb10e3db6de0f42e73c5500f1f888b3e522ebfa1f70c40ba5a55b8a"
+    },
+    {
+      "path": "source272-check.log",
+      "bytes": 201,
+      "sha256": "f3c6a5743ebac5fc28cf1deb9ba6014645dc5df39ffe1d3bb3e88b9c553e0ccc"
+    },
+    {
+      "path": "source272-clippy-command.json",
+      "bytes": 1093,
+      "sha256": "5275d67b254fdd524e65154626435ff9979f83da0b16d826d8919cd37945d17b"
+    },
+    {
+      "path": "source272-clippy-result.json",
+      "bytes": 148,
+      "sha256": "4807ff9799ab23418dea49ce6068a9e4549793aee9b73fdaa8f83a82bf469d86"
+    },
+    {
+      "path": "source272-clippy.log",
+      "bytes": 201,
+      "sha256": "1de7379006500cf30a89ff37f596bd551e7ffd40c223ff48f8b90c9fcc630fe8"
+    },
+    {
+      "path": "source272-diff-command.json",
+      "bytes": 1009,
+      "sha256": "0a6d9cef52b0a49010e8ef12daa8e7a0729a8707fa4ab1512e114cdff4ab5e4d"
+    },
+    {
+      "path": "source272-diff-result.json",
+      "bytes": 146,
+      "sha256": "9e46eb404684ae71970a9dc39bb0e93e591360725e27b887de658795f00bd9bb"
+    },
+    {
+      "path": "source272-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source272-fmt-command.json",
+      "bytes": 1023,
+      "sha256": "db5226f9c485294b10eeab0f3bd6f6c5d0fa4921f7b3f9d70aa8e83c4bffed42"
+    },
+    {
+      "path": "source272-fmt-result.json",
+      "bytes": 138,
+      "sha256": "ed1a24ef4dcb7d23e086fd9f329cd48ce8676c4566acab21bfab2cafb4e7b5b4"
+    },
+    {
+      "path": "source272-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source272-focused-audit.json",
+      "bytes": 20696,
+      "sha256": "97a0364d3650612bed036465dd222ea767335df0dff405f5e64462662517f371"
+    },
+    {
+      "path": "source272-focused-inventory.json",
+      "bytes": 18321,
+      "sha256": "ab85bc6aac46ed4a3bd29dc0c221f4a4cc05adc2a61c226b1a3e7e6a75631dbf"
+    },
+    {
+      "path": "source272-focused-retained-inputs.json",
+      "bytes": 971,
+      "sha256": "3b6cd86576646d78b2d428236bb8122fb2a65c32bf6e69f62ef14359721567b8"
+    },
+    {
+      "path": "source272-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source272-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source272-freeze.json",
+      "bytes": 608,
+      "sha256": "49204e7066273b93c6e83af73edcb813b491ea4c472b84d54caddfa63078eb08"
+    },
+    {
+      "path": "source272-full-validation-preparation.json",
+      "bytes": 993,
+      "sha256": "e3b29f17131d5ed375045ba5108188446b75a9d43c81a3ec63af6ecc8b76aefa"
+    },
+    {
+      "path": "source272-gate-broad-command.json",
+      "bytes": 197327,
+      "sha256": "6725930b5aeeb29d4b0c5b47acf8ebbbba15e6512b9252ed1422f9036c935286"
+    },
+    {
+      "path": "source272-gate-broad-result.json",
+      "bytes": 85,
+      "sha256": "cfa0cc4b4e399d08e912c9d793a8341289b7d181c9429013f6d7868e11d2984a"
+    },
+    {
+      "path": "source272-gate-broad.log",
+      "bytes": 108784,
+      "sha256": "4a9178ba6187c91ff19b0c56c430653db93204382bb16d532473e59ec6006dec"
+    },
+    {
+      "path": "source272-gate-build-command.json",
+      "bytes": 1140,
+      "sha256": "b49a08ef03038306e91b633196d973a243a316f7b2fe6122d647f31a10058470"
+    },
+    {
+      "path": "source272-gate-build-result.json",
+      "bytes": 152,
+      "sha256": "9339699a1fa85c8536ba28c8aa9eb06b2962c17f3130d8456c61240d827654d0"
+    },
+    {
+      "path": "source272-gate-build.log",
+      "bytes": 220790,
+      "sha256": "9c9986b692b6c836fb582bbf4215e204f7e13afc03d8744c3ca0cd81a45d7045"
+    },
+    {
+      "path": "source272-gate-controls-command.json",
+      "bytes": 37651,
+      "sha256": "8d8a63b116e5bf289a11861f807d7d6f02af67ad1dd94098cd4fba756c64421c"
+    },
+    {
+      "path": "source272-gate-controls-result.json",
+      "bytes": 89,
+      "sha256": "b4f4e446b87d65c0e41d72200e5bae5ccc4cb53d438241849e0dbf196fb33b44"
+    },
+    {
+      "path": "source272-gate-controls.log",
+      "bytes": 21585,
+      "sha256": "9ea6de5329b8103b19a9153e5af50f0e3cf5f7badc465385a157997a9ef5fbd5"
+    },
+    {
+      "path": "source272-gate-inventory-command.json",
+      "bytes": 1114,
+      "sha256": "7ba4edf9a1afbbbc3053aa5ef3e57430646ff759215994d3b46a736b700722c5"
+    },
+    {
+      "path": "source272-gate-inventory-result.json",
+      "bytes": 156,
+      "sha256": "93d03efa9dce57199cea6343dd68745b27df4816dc9a1f5573e5eade19151f52"
+    },
+    {
+      "path": "source272-gate-inventory.log",
+      "bytes": 267089,
+      "sha256": "9579039eddf823116e863864d3ccb9ad16d95ac246997a1009e1b233152504b3"
+    },
+    {
+      "path": "source272-gate-probe-command.json",
+      "bytes": 1673,
+      "sha256": "8544e0038b8a3b12a8a663841cca02a64112279ac7642c25e58213fb7beaa139"
+    },
+    {
+      "path": "source272-gate-probe-result.json",
+      "bytes": 154,
+      "sha256": "5abb8804b1a17cadb5323ef3bfbc367e164acb01c54c3d7703453496374de670"
+    },
+    {
+      "path": "source272-gate-probe.log",
+      "bytes": 1402,
+      "sha256": "aa2c25b58192346e4c84384446ca15f2d9ea3a0ccae88948d86c31e3c7a34f24"
+    },
+    {
+      "path": "source272-launch.json",
+      "bytes": 220,
+      "sha256": "c8b7455b51c9ce416714d5ac1ae70a9bcb1144dcc3d1e8a4f1523c1e94be5f36"
+    },
+    {
+      "path": "source272-manifest.json",
+      "bytes": 58772,
+      "sha256": "619584248a7dd3cfd461f2bf3383cd8515f0cf17bf66419124a6dcdbe783bed7"
+    },
+    {
+      "path": "source272-portable-complete.patch",
+      "bytes": 1104228,
+      "sha256": "b1253dc77e7e65c075b6d1aa150f4dd5d363c3bfd89286193b02e918bae906c4"
+    },
+    {
+      "path": "source272-portable-incremental.patch",
+      "bytes": 17737,
+      "sha256": "78bccfa8a62151e5bb88e32021304605ecad43d3cb3ff8e8dc9936a508f8dd0c"
+    },
+    {
+      "path": "source272-probe-result.json",
+      "bytes": 2126,
+      "sha256": "ca77847e161a281d0b5b0b990f1999489ee1934189cc2c3839358c6c1e71c05b"
+    },
+    {
+      "path": "source272-probe-state.json",
+      "bytes": 2127,
+      "sha256": "e904b0ac73a94865250583d19df218e47795a1316ba46b1d8eeabb6530595a76"
+    },
+    {
+      "path": "source272-release-broad-command.json",
+      "bytes": 197330,
+      "sha256": "4d2b65b43b2d15462cf38e1ee65fa008c49fa33b5a7bc0cf03615bcf89dd377a"
+    },
+    {
+      "path": "source272-release-broad-result.json",
+      "bytes": 85,
+      "sha256": "4db5d24c2dd9f5b42bcd52ec09f06a9b2d468bc45252432fdcb2a3e7e125d2ed"
+    },
+    {
+      "path": "source272-release-broad.log",
+      "bytes": 108784,
+      "sha256": "008249b6130f67cf1b01e082809bceca96c26b246f477d4e93db265f422744fe"
+    },
+    {
+      "path": "source272-release-build-command.json",
+      "bytes": 1305,
+      "sha256": "f7125a673ad2c816bc80a2e2734ba12147c0bd771ba2ee3a98707e14f2742e5d"
+    },
+    {
+      "path": "source272-release-build-result.json",
+      "bytes": 84,
+      "sha256": "e9608e94d63b6ad315b0950309ca3da8c10e3d7e485bb7b0a73b59b18b8f3c9e"
+    },
+    {
+      "path": "source272-release-build.log",
+      "bytes": 222480,
+      "sha256": "25826241217052cf965f985b57be672eeaf7da3490e83ae622c9adb641cc1c7d"
+    },
+    {
+      "path": "source272-release-controls-command.json",
+      "bytes": 37654,
+      "sha256": "6c69e373cfa9792a2d9dc879fd9e118a0ed330ef98a7ec75da6289a688f04bbb"
+    },
+    {
+      "path": "source272-release-controls-result.json",
+      "bytes": 89,
+      "sha256": "563680c97ac7d2fdb23647dee1afdca4b56f7ecd8e261d538671e329c977b862"
+    },
+    {
+      "path": "source272-release-controls.log",
+      "bytes": 21585,
+      "sha256": "4d31cbb2f8c8de970ce3d7a90ee0a7eb6af7b885f8c6dffb949d8d83e14e19dd"
+    },
+    {
+      "path": "source272-release-focused-audit.json",
+      "bytes": 21357,
+      "sha256": "bab9dbf85c1107ddc726a9050d3719414b275919b72a44c9381f006a2368cfd2"
+    },
+    {
+      "path": "source272-release-focused-inventory.json",
+      "bytes": 18321,
+      "sha256": "94cf1fede939de540cc0694af54699e15269a385940fe67c0c22dde2f3e643cc"
+    },
+    {
+      "path": "source272-release-focused-retained-inputs.json",
+      "bytes": 1423,
+      "sha256": "ff5cd0c54a7a0f2beb8db52267101cf8ebcfce1bda0c736da30483c872e474e2"
+    },
+    {
+      "path": "source272-release-inventory-command.json",
+      "bytes": 1279,
+      "sha256": "acdacd9f8aed13a73937aa47dafde0b1db73e42c8337f3ad1be61268fab0db59"
+    },
+    {
+      "path": "source272-release-inventory-result.json",
+      "bytes": 88,
+      "sha256": "9d895e8f22e9649ed735632de9cec4a9ccbe701a752b99c91210e70db570201f"
+    },
+    {
+      "path": "source272-release-inventory.log",
+      "bytes": 267000,
+      "sha256": "a775d46c00e2ec8decffd383e5f75dcbb0f62fa8f56f787c1726ae63a34baddb"
+    },
+    {
+      "path": "source272-repair.patch",
+      "bytes": 17737,
+      "sha256": "78bccfa8a62151e5bb88e32021304605ecad43d3cb3ff8e8dc9936a508f8dd0c"
+    },
+    {
+      "path": "source272-selected-launch.json",
+      "bytes": 224,
+      "sha256": "6fd34192e46aebadd6cb713c58a40fb26753c0de53eec1803abd8de92d3e26b1"
+    },
+    {
+      "path": "source272-selected-result.json",
+      "bytes": 4026,
+      "sha256": "282bcbadf882ee220564893b823981949765005f047da218f58ce6c24d11b634"
+    },
+    {
+      "path": "source272-selected-state.json",
+      "bytes": 4027,
+      "sha256": "7ffbd6b92caed75cf57d7b7d7c2db28a143f03a42a3888e0ba5ceefdffadc1b9"
+    },
+    {
+      "path": "source272-selected-supervisor.log",
+      "bytes": 6974,
+      "sha256": "c2b8f14545b4372da2044ae92c8a4f21211140ba40aa5aab15910b2740385c86"
+    },
+    {
+      "path": "source272-supervisor.log",
+      "bytes": 1791,
+      "sha256": "99b5d43f4f0ac0efb6b4695842ba1fc54beb9e0e8530920967ac4bf540de6cfb"
+    },
+    {
+      "path": "source272-unformatted.patch",
+      "bytes": 16860,
+      "sha256": "b677f7387b14b39d82198743d78e5e7f86327c99c20112b0221014daf1262274"
+    },
+    {
+      "path": "source272-validation-preparation.json",
+      "bytes": 523,
+      "sha256": "9f69d2eeddecd49d2ad782f8fab18d70b45cbb5738418039ecd7a42ffc4285c1"
+    },
+    {
+      "path": "string-borrow-probe-cache-clone.json",
+      "bytes": 515,
+      "sha256": "658b8a8efcda9e6f1fae8552a440a75a675d8c99a84622848afd35b516053a46"
+    },
+    {
+      "path": "string-borrow-probe-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "string-borrow-probe-checkout-command.json",
+      "bytes": 1957,
+      "sha256": "9cead15ed6c5023ce2617f0f346e4c0021fb99c7c3ace73975075b7fbccf7038"
+    },
+    {
+      "path": "string-borrow-probe-checkout.json",
+      "bytes": 453,
+      "sha256": "065233c572906a762fe89061912f86e04d345128ec1da1f7f7fdb4996f7541c8"
+    },
+    {
+      "path": "string-borrow-selected-preparation.json",
+      "bytes": 1040,
+      "sha256": "dbc212a68b781fdbc11c19bfe94e64b3914e80e089850997563e9d832e65fef0"
+    },
+    {
+      "path": "test-string-borrow-broad.py",
+      "bytes": 4227,
+      "sha256": "386c79fed4afb588ebb212123d15907e3791f1aa8263bd1a15de59dc783340ec"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -18,8 +18,38 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
-The task runtime is **source270**, pushed as **`0ecf6e11`**, with **510 verified
-inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
+The task runtime is **source272**, with **510 verified inputs**. Its
+[closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
+verifies zero-warning strict checks, **206 focused passes / two existing ignores**
+and **1,062 affected passes in each profile**. Every original selector, test,
+GNU fixture and expected byte is preserved. Both portable repair patches and
+the preceding test-only negative replay all 510 bytes/modes exactly.
+
+Source271 exposed a Rust ownership defect outside the frozen Lisp fixtures:
+an off-stack shared string guard kept its header alive while its cons property
+was reclaimed. Its original **two passes / one failure** remains preserved.
+Source272 scans the existing borrow metadata before marking, traces shared
+guards through the ordinary property graph and weak-table fixed point, and
+rejects an exclusive guard before advancing the epoch or sweeping anything.
+Controls verify survival, weak-key retention, reclamation after release and
+exclusive-borrow rejection, including both permanent empty roots. No per-access
+lookup or retained registry is added. The extra GC scan and temporary vectors
+have not been timed; broader public ownership/serialization remains open.
+
+The selected checkout `target/runtime-goal/recovered-2026-09-30/string-borrow-roots/emaxx`
+is frozen. Receipts/helpers are under `target/runtime-goal/resume-2026-09-28`.
+Full source272 validation is prepared but not yet launched at this checkpoint:
+`setup-source272-full-macos.py` requires the published commit and waits for the
+existing source270 full supervisor before starting complete Rust, frozen and
+terminal stages; `dispatch-source272-linux.py` uses the existing Rust/frozen CI.
+No full source272 result, standalone GNU comparison or performance claim follows
+from these selected checks. Main remains `21d20f0e`, PR79 remains draft, and the
+full architectural/performance goal is active and incomplete.
+
+## Preceding storage checkpoint: source270
+
+The preceding storage runtime **source270** was pushed as **`0ecf6e11`**, with
+**510 verified inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
 verify zero-warning strict checks, **203 focused passes / two existing ignores**
 and **1,059 affected passes in each profile**, plus **33 ordinary exact GNU matches**.
 All original controls and expected bytes remain, including all 12,600 prefix rows.
@@ -35,15 +65,17 @@ Comparison and casing follow actual GNU C paths and live tables. Data still uses
 individual boxes; sblocks, real intervals, symbol authority, physical accounting,
 public ownership, VM stack/profiling and the locked performance criteria remain open.
 
-Full macOS supervisor **3079** runs in the clean exact-commit checkout
-`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`. It has completed
-selected re-audit, idle-cache cloning and GNU artifact capture, and now runs the
-full Rust gate before frozen and terminal validation. Linux
-[Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
-[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are dispatched
-on exact `0ecf6e11`. Read `source270-full-*` and the exact Linux runs for live state.
-Keep both source270 checkouts unchanged. No full-run result, memory saving, speedup
-or GNU performance parity is inferred. Main remains `21d20f0e`; PR79 stays draft.
+The [complete Rust audits on both platforms](docs/handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
+verify **3,118 macOS / 3,130 Linux passes**, with **two existing ignores each**,
+all 3,021/3,029 library names, native artifact identity and retained Rust/GNU inputs.
+Linux [Rust36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705)
+is complete on exact `0ecf6e11`. Full macOS supervisor **3079** continues frozen
+then terminal validation in the clean checkout
+`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`; Linux
+[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) remains
+separate. Read `source270-full-*` and the exact run for live state. Keep both
+source270 checkouts unchanged. Rust passes do not close the separately exposed
+borrow-root defect or certify source272, frozen/terminal, memory or performance.
 
 ## Preceding source261 checkpoint and storage development
 

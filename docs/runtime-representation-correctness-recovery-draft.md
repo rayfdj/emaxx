@@ -7,6 +7,24 @@ frozen checkpoint; those historical results do not certify later shared-closure,
 canonical-string and direct-bytecode changes. Main remains source174 at
 `21d20f0e`. Do not merge the unfinished branch or declare the performance goal met.
 
+## Current checkpoint: source272
+
+The [borrow-root repair](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
+passes 206 focused controls and 1,062 affected controls in each profile, retaining
+two existing ignores and every original test/fixture. The preserved source271
+negative shows an off-stack Rust string guard retaining its header but losing a
+cons property. The repair traces that root before weak tables/sweeping and rejects
+exclusive guards before starting an epoch. New controls verify survival and
+reclamation. This host-ownership case was outside the earlier frozen fixtures;
+passing those fixtures did not establish it. Broader public ownership remains open.
+
+The preceding source270 [complete Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
+close 3,118 macOS / 3,130 Linux passes with two existing ignores each, all raw names,
+native identity and retained inputs. Its frozen/terminal runs remain separate.
+Full source272 validation is prepared but not launched at this checkpoint.
+Read [HANDOVER.md](../HANDOVER.md) for live continuation state. All historical
+failures below remain failures; no performance parity or final completion is claimed.
+
 ## Verified recovery
 
 Source234, commit `df42fda2a31144ecb25cd5102385a8a3660c173a`, now has complete

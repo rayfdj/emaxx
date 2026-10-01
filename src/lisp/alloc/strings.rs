@@ -110,6 +110,9 @@ impl StringObjectRef {
         StringBorrow(cell)
     }
 
+    /// Collection cannot run while this guard is alive: tracing would alias
+    /// its exclusive access to the string state. The collector checks this
+    /// before starting a mark epoch or reclaiming any object.
     pub fn borrow_mut(&self) -> StringBorrowMut<'_> {
         let cell = self.cell();
         assert!(!cell.pure, "pure string cannot be mutably borrowed");
@@ -298,6 +301,47 @@ pub(super) unsafe fn live_string_holding(start: usize, address: usize) -> Option
     (unsafe { (*cell).mark.raw() } != FREE_MARK).then_some(cell)
 }
 
+/// A Rust borrow may live in host storage outside the conservative stack.
+/// Return those roots before alloc.c's mark/weak-table/sweep sequence so the
+/// ordinary string tracer also retains their property values. No registry or
+/// lookup is added to string access; this scan belongs to collection.
+///
+/// A live exclusive guard may expose an `&mut SharedStringState`. Reject the
+/// collection before its mark epoch begins instead of reading through that
+/// reference or discovering the conflict after other objects were swept.
+pub(crate) fn borrowed_string_roots() -> Vec<Value> {
+    let mut roots = Vec::new();
+    let mut inspect = |cell: *mut StringCell| {
+        // SAFETY: block mark words are initialized even in free cells. The
+        // remaining metadata is read only for allocated cells; no string
+        // payload is accessed while checking for an exclusive borrow.
+        unsafe {
+            if (*cell).mark.raw() != FREE_MARK {
+                let count = (*cell).borrows.get();
+                assert!(
+                    count >= 0,
+                    "cannot collect while a string is mutably borrowed"
+                );
+                if count > 0 {
+                    roots.push(Value::StringObject(StringObjectRef::from_raw(cell)));
+                }
+            }
+        }
+    };
+    for start in blocks_of(BlockKind::String) {
+        for index in 0..STRINGS_PER_BLOCK {
+            inspect((start + index * STRING_CELL_SIZE) as *mut StringCell);
+        }
+    }
+    for &address in [EMPTY_UNIBYTE.get(), EMPTY_MULTIBYTE.get()]
+        .into_iter()
+        .flatten()
+    {
+        inspect(address as *mut StringCell);
+    }
+    roots
+}
+
 /// alloc.c:sweep_strings runs after symbol names are no longer needed.
 pub(crate) fn sweep_strings(epoch: u32) {
     let mut free_list = std::ptr::null_mut();
@@ -323,9 +367,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
                     if (*cell).pure {
                         continue;
                     }
-                    // A live borrow is itself a root, even if a compiler keeps
-                    // its pointer out of the conservative stack snapshot.
-                    if mark == epoch || (*cell).borrows.get() != 0 {
+                    if mark == epoch {
                         let handle = StringObjectRef::from_raw(cell);
                         let state = handle.borrow();
                         strings += 1;
@@ -333,6 +375,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         spans += state.props.len();
                         continue;
                     }
+                    debug_assert_eq!((*cell).borrows.get(), 0, "unmarked string borrow");
                     std::ptr::drop_in_place((*cell).state.get());
                     (*cell).mark.set_raw(FREE_MARK);
                 }
