@@ -83,7 +83,11 @@ Selected supervisors **53531** and **54143** have exited. The
 [complete release audit](docs/handover/2026-09-30-shared-reader-draft/source243-release-complete-manifest.json)
 also closes **55868**: **165 focused passes / two existing ignores** and all
 **948 affected passes** in each profile, with exact artifacts and every raw
-verdict verified. Complete macOS **55867** and full terminal **55869** remain active. The
+verdict verified. The [complete macOS audit](docs/handover/2026-09-30-shared-reader-draft/source243-complete-macos-manifest.json)
+now closes **55867**: **3,093 passes / two existing ignores**, native artifact
+identity, every one of 2,996 raw library names/verdicts and four retained input
+hashes verified. The frozen checkout matches all 462 published runtime inputs.
+Full terminal **55869** remains active. The
 [closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
 verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
 on source243. Linux [Rust 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
@@ -91,6 +95,13 @@ and [full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822
 are dispatched on exact `8d4fcd39`. No complete result is inferred from launch;
 read the current `source243-*` receipts before acting. Do not edit executing
 candidates or helpers. Root runtime exactly matches all 462 candidate inputs.
+The same macOS archive preserves nine GNU-only workflow-environment probes and
+nine GNU-only smoke probes of `tools/diagnose_gnu_census.py`; all match locally.
+They do not resolve the Linux GNU reference failure. The new optional
+`gnu-census` workflow mode holds the Rust controls' selector environment constant
+and runs the original single test, complete primitives group and single test
+again, retaining failures and GNU executable/image identities. Its Linux execution
+is still pending in this record; it is diagnostic coverage, not a full gate.
 **Main is unchanged; complete correctness and the full
 architecture/performance goal remain unfinished.**
 

@@ -305,3 +305,22 @@ difference is the pre-existing debug-only file-descriptor ownership control.
 This completes the same selected coverage in both profiles; complete macOS,
 terminal and Linux results remain pending. The archive includes prepared Mac
 auditors, which have not run yet. No complete-platform result is inferred.
+
+The [subsequent complete macOS audit](handover/2026-09-30-shared-reader-draft/source243-complete-macos-manifest.json)
+now closes **55867** with **3,093 passes / two existing ignores**: 2,994 library,
+60 binary and 39 integration passes, including native artifact identity. Every
+one of 2,996 raw library names/verdicts, four retained executable/image hashes
+and all 462 source inputs are verified against published `8d4fcd39`. This closes
+the prepared auditors above; terminal and Linux results remain separate and pending.
+
+Nine GNU-only macOS probes vary the recorded full/single/group workflow selector
+variables over three interleaved rounds. All match the original census fixture.
+The new bounded `tools/diagnose_gnu_census.py` repeats that matrix before and after
+the unchanged Rust single/group/single controls; all Rust processes hold those
+selector variables constant at the full-run values. It retains GNU executable,
+image and configuration identity, every raw output and intermediate Emaxx image,
+and continues after a failed group to obtain the after-controls. Any failed
+process keeps its failure status and yields a nonzero diagnostic exit.
+Its nine GNU-only smoke probes also match on macOS; the Rust branch and Linux
+diagnosis have not yet executed in this record. Both macOS probe sets are in the
+archive. They cannot clear the Linux failure or establish its retaining root.
