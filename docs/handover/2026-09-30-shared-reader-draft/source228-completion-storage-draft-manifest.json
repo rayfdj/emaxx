@@ -1,0 +1,117 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated completion repair; validation running",
+    "source_inputs": 429,
+    "supervisor": 82531,
+    "qualification": "GNU minibuf.c Ftry_completion selects a best candidate and returns its substring or the original unchanged input. This draft preserves the chosen encoding, copied properties and extended characters, and removes the obsolete materialized common-prefix helper. Source226 retained that unused helper; source227 accidentally removed the neighboring filter helper too; both are unexecuted drafts. Source228 restores that unchanged neighbor. All three complete patches and file modes replay exactly. This bundle assigns no compiler, runtime, full-platform or performance verdict. Source225 complete failures remain preserved; no draft runtime is published."
+  },
+  "archive": {
+    "path": "source228-completion-storage-draft.tar.gz",
+    "bytes": 407381,
+    "sha256": "5623359b933592637f4d7b16a1aee0bf4f64d85ae9b89e69b880bcedb882308c"
+  },
+  "files": [
+    {
+      "path": "audit-source226-through228-patches.py",
+      "bytes": 2822,
+      "sha256": "90d86bd177280b453c7f53b9407267432921a10428be26dbd6f05a923dc748e5"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "completion-result-storage.el",
+      "bytes": 2094,
+      "sha256": "c66bab8ad4232fcad549b4f8529f229af815260c7495bbaaf6795b607c0871d2"
+    },
+    {
+      "path": "freeze-string-candidate.py",
+      "bytes": 2065,
+      "sha256": "b19f48ad33d0250c62a2e646815f0caedcb60fbd25a2e4839c91cca1572864e6"
+    },
+    {
+      "path": "package-source225-failure-and228-draft.py",
+      "bytes": 3291,
+      "sha256": "65376f35b34efd37a3c0435ea17c1a00fd7b1ad57b506072eef3811a5e7bb971"
+    },
+    {
+      "path": "run-string-validation228.py",
+      "bytes": 1342,
+      "sha256": "17a824c2ba939a6b1e4bdaf6f1f99fe5a15bf8857e1757ef63c25ffe08ca5afe"
+    },
+    {
+      "path": "source226-base.json",
+      "bytes": 1559,
+      "sha256": "4c278a3c90f46f9724f44ed4011a96fb37acec5be857ea6cc13840b3b04a10b2"
+    },
+    {
+      "path": "source226-complete.patch",
+      "bytes": 499489,
+      "sha256": "5c56ec5cb051e57fcfd8475bc68eba8b5fd3bf906d1c0806df19cd9e130b941c"
+    },
+    {
+      "path": "source226-manifest.json",
+      "bytes": 48802,
+      "sha256": "1d0ba8f55de2791af7a35212d7db4edc5811120efdc23ca4607df1d4d5d52ede"
+    },
+    {
+      "path": "source226-through228-patch-replay-and-modes-audit.json",
+      "bytes": 1382,
+      "sha256": "cc83622990174caf93de45272501c05e26fc3dc3261d869d094252ff9b2bac8e"
+    },
+    {
+      "path": "source227-base.json",
+      "bytes": 1535,
+      "sha256": "c873fedd395860d8da509aa60ea363f1d61f92c6a0629462f0b839fb592ac546"
+    },
+    {
+      "path": "source227-complete.patch",
+      "bytes": 503327,
+      "sha256": "9598a623dacb2341737f8621c8c3c61fe4ace57250091c07a9e5e256a57e51cb"
+    },
+    {
+      "path": "source227-manifest.json",
+      "bytes": 48802,
+      "sha256": "db73ffcb43868a6eeaa3bb1c93a2291d0af230178cc8ff42064b2e7e29f2e6e6"
+    },
+    {
+      "path": "source228-base.json",
+      "bytes": 1566,
+      "sha256": "76ffbc0907e56753789caf42c915bdd591e0c8bf2f4db5d19d8d7aacc3680253"
+    },
+    {
+      "path": "source228-complete.patch",
+      "bytes": 501056,
+      "sha256": "5cd7fdf496d5e808047fbcad101be27bfbdee174c9a7122215cb7b587ad9522e"
+    },
+    {
+      "path": "source228-launch.json",
+      "bytes": 513,
+      "sha256": "fe9e63a2d250368aa062733181e099ae88ccc5b4325a23c329d7c22bea6dd70c"
+    },
+    {
+      "path": "source228-manifest.json",
+      "bytes": 48802,
+      "sha256": "8607e31176e78cc9ef8bb8eda43445f794304ef0c35fc3832355feebacbb25ab"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls228.py",
+      "bytes": 4740,
+      "sha256": "eda9d2f4ff0cea22466d08a57859a2b0b1c7c22f08c848705ea668a6089835d3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,0 +1,233 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated control-flow repair; runtime validation running",
+    "source_inputs": 427,
+    "strict_checks": "passed with zero warnings",
+    "supervisor": 77913,
+    "qualification": "Only actual PC fetches check code boundaries; untaken branch and unentered handler destinations do not signal early. A fetched instruction crosses fast/slow dispatch without a second decode. GNU same-input reference and Rust error/frame cleanup controls are permanent, but this draft assigns no runtime verdict. A separate ordinary source207 probe preserves a still-open stack-capacity mismatch: GNU accepts 262144/393216 declared slots while Emaxx overflows. Current Rust reserves 256K Lisp words and separate frames; GNU reserves 512K words including frames. No physical-accounting, complete-validation or performance claim."
+  },
+  "archive": {
+    "path": "source225-control-flow-draft.tar.gz",
+    "bytes": 142293,
+    "sha256": "6cdb8da48e59a9502de9bd5b578e2a2f2e315f0c65a95b6a426ff4cc4fc7986b"
+  },
+  "files": [
+    {
+      "path": "bytecode-unused-destinations-gnu-command.json",
+      "bytes": 2271,
+      "sha256": "dd9dcc023bd92f9b329a8a50b1c0cf2e7c6408baffe101a369db78ba75498b0c"
+    },
+    {
+      "path": "bytecode-unused-destinations-gnu-result.json",
+      "bytes": 223,
+      "sha256": "024ecb917a7bf6f58c1c9fbf005b83f31604a37ebb09beac48909656b7259275"
+    },
+    {
+      "path": "bytecode-unused-destinations-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "bytecode-unused-destinations-gnu.stdout",
+      "bytes": 53,
+      "sha256": "27f3c3afad1d3a344f02a8e0e23aeab6e747792123454c5371ef6cdba6cc1a23"
+    },
+    {
+      "path": "bytecode-unused-destinations.el",
+      "bytes": 590,
+      "sha256": "d20572c381b3f1de8f5751e997a4be6b08fcd36b62a635762463dae6b863eabf"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "freeze-string-candidate.py",
+      "bytes": 2065,
+      "sha256": "b19f48ad33d0250c62a2e646815f0caedcb60fbd25a2e4839c91cca1572864e6"
+    },
+    {
+      "path": "package-source223-results-through225.py",
+      "bytes": 4371,
+      "sha256": "d6fc0760e75f9184b143f8118bebe4ff28ba04ddcaac42d68f0ba4ef12b080ca"
+    },
+    {
+      "path": "prepare-source225-branch-fetch.py",
+      "bytes": 3812,
+      "sha256": "523467d6ef79938f9e035a878752af6e38b9cd2821b6804fbdeaf46ba44b2b3f"
+    },
+    {
+      "path": "probe-vm-stack-capacity.py",
+      "bytes": 2644,
+      "sha256": "f624656fb6ca3699e4b7dc20280b6a1f27bc1b0cbef8c9bb8e85d73d9d4e1404"
+    },
+    {
+      "path": "refine-source225-fast-fetch.py",
+      "bytes": 2204,
+      "sha256": "d1e45fbc8446b08ec6dca44b3bbf14df41c97dc6b05d311fb553417701e44e8e"
+    },
+    {
+      "path": "run-bytecode-unused-destinations-reference.py",
+      "bytes": 1823,
+      "sha256": "62e0c80d341f8047e3b857e9e0c8ce8a3a9b6f079673d1c51fef89f1f2c35e32"
+    },
+    {
+      "path": "run-string-validation225.py",
+      "bytes": 1342,
+      "sha256": "55a5bc038b5d15c77f62a4ae249482f02794315e39e36648c794156607db789f"
+    },
+    {
+      "path": "source224-through225-patch-replay-and-modes-audit.json",
+      "bytes": 987,
+      "sha256": "e9f97c058b7c8b72f451a2d2b44a9d35ab645f9a48fe1b9fe3ba9528cc2b0480"
+    },
+    {
+      "path": "source225-base.json",
+      "bytes": 1468,
+      "sha256": "26c0c6d98bddce76df733538e28c060c8ae777063078cb5d83d8b75333bc77d1"
+    },
+    {
+      "path": "source225-check-command.json",
+      "bytes": 477,
+      "sha256": "26deb8c71b45f50a1caaa4f887365bc9c9f679c24517cae8c93c6001731c2d88"
+    },
+    {
+      "path": "source225-check-result.json",
+      "bytes": 89,
+      "sha256": "031267fd22d0a327d4282ff90b260d32ee490d9ac7056c5abeaa3bd9a4372ee4"
+    },
+    {
+      "path": "source225-check.log",
+      "bytes": 193,
+      "sha256": "67bb29a334eb954bfa9eeb3f0f59ff59518c691e4be757925376ffd250fe0880"
+    },
+    {
+      "path": "source225-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source225-clippy-result.json",
+      "bytes": 83,
+      "sha256": "584880d9944a6df7eee50bf8dc3dbb1ae37f72cbb77d6d7f57d90b5f0c2f8136"
+    },
+    {
+      "path": "source225-clippy.log",
+      "bytes": 194,
+      "sha256": "9f71b1eb4265bed074d31341f4a43e18e20f9d34531a58451dcbf5eed5a01bbd"
+    },
+    {
+      "path": "source225-complete.patch",
+      "bytes": 491140,
+      "sha256": "2d139cd2bcc9b9f532ad0808ee0253b8594380bba7158bf350c4bbb6a2871fa2"
+    },
+    {
+      "path": "source225-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source225-diff-result.json",
+      "bytes": 90,
+      "sha256": "7fb96790a8df951208ff11820a2f24803ccd0c73d554c5cb476eccbd71c8b19f"
+    },
+    {
+      "path": "source225-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source225-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source225-fmt-result.json",
+      "bytes": 82,
+      "sha256": "2e5a74f0abe217f1355a65aa24d0f775a337b0709a3ad6455b61915224687ac3"
+    },
+    {
+      "path": "source225-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source225-launch.json",
+      "bytes": 431,
+      "sha256": "93bfaf608f65349244aa027bf556d6c1e617f5a653ba8e0c6a865c6a9c886b95"
+    },
+    {
+      "path": "source225-manifest.json",
+      "bytes": 48562,
+      "sha256": "cbc04f4498d3e077cd52c44df87607e85abf836e2deb0531640c74212900f86f"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls225.py",
+      "bytes": 4435,
+      "sha256": "b5dc968e4dae4b8cbd1eb966a3f097daa2e7713748ced9ebfac618d739085967"
+    },
+    {
+      "path": "vm-stack-capacity-audit.json",
+      "bytes": 951,
+      "sha256": "db3568dd5781193fc8a4b590de07076aee6f4c9a00c00935a0939e795bafd5ed"
+    },
+    {
+      "path": "vm-stack-capacity-emaxx207-command.json",
+      "bytes": 1269,
+      "sha256": "af2752d6f8a05102deb26880f1ede35621d977517a7394bfd2c2224b50934268"
+    },
+    {
+      "path": "vm-stack-capacity-emaxx207-result.json",
+      "bytes": 246,
+      "sha256": "8fa0a06d7b0b491cb5dd5e5df36bc42ce033382980d72dfcd78ace35b47656bc"
+    },
+    {
+      "path": "vm-stack-capacity-emaxx207.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "vm-stack-capacity-emaxx207.stdout",
+      "bytes": 93,
+      "sha256": "1b1b12ac3bc2210ae155d490b9d6231e1d021dfdfd40197d7aaa6a3af698d701"
+    },
+    {
+      "path": "vm-stack-capacity-gnu-command.json",
+      "bytes": 1128,
+      "sha256": "cdab8fd6d0694531a03f180bcfc5fe3e9d8d6f2355f880c682afa2705ac4a61d"
+    },
+    {
+      "path": "vm-stack-capacity-gnu-result.json",
+      "bytes": 241,
+      "sha256": "3dcd52424ee8dc0f35cf06c39b8faa549fd1d1b9381ef656d5b27e9c4ecfd65c"
+    },
+    {
+      "path": "vm-stack-capacity-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "vm-stack-capacity-gnu.stdout",
+      "bytes": 49,
+      "sha256": "a169c27ed0918eed90500c26ec38c20836c881575305742f0c0ebc662d3011c3"
+    },
+    {
+      "path": "vm-stack-capacity.el",
+      "bytes": 214,
+      "sha256": "d1e57eaeda2075d57dd5544110d6df839957d8ed817fe1b534324379d5c20653"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

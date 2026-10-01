@@ -22,6 +22,14 @@ remains separate from the unfinished task branch.
 
 The task branch is **runtime-char-tables**, [PR #79](https://github.com/rayfdj/emaxx/pull/79),
 now **ready for review** after the complete source207 checkpoint audits.
+The **published runtime remains source207**. The local task worktree and isolated
+string checkout contain **uncommitted source229**. Both selected profiles and
+fifty ordinary comparisons pass, but full Rust fails at an old host-record
+assertion and the full terminal comparison has a help-text divergence. A separate
+**source230** in `target/runtime-goal/recovered-2026-09-30/string-ops/emaxx` repairs
+three GNU-confirmed substring failures and that assertion; strict checks pass and
+runtime validation is running. No new runtime has been pushed or Linux run
+dispatched for sources225–230.
 Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
 The current **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
 adds direct evaluator words and a separate cold error
@@ -156,7 +164,7 @@ retained. These are gate-profile results, not complete or release validation.
 Earlier failures and every intermediate patch remain preserved.
 No bytecode repair is applied to the task branch.
 
-The [current source223 string-byte and direct-VM draft](docs/runtime-representation-string-bytes-draft.md)
+The [current source229 string-byte and direct-VM draft](docs/runtime-representation-string-bytes-draft.md)
 continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`.
 Shared strings hold actual GNU bytes. Source221 repairs full-range `string`,
 `make-string` and `char-to-string` construction without Rust-char conversion.
@@ -174,14 +182,86 @@ strict checks pass with zero warnings. The
 [focused audit](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-focused-manifest.json)
 verifies **17 gate passes**,
 including the original active-call mutation failure and new GNU-confirmed
-width/operand/branch/GC/suspended-caller cases. Supervisor **73057** is running
-all **930 affected-module tests**. Supervisor **73532** runs release controls
-and the same broader inventory. Preserve the checkout and helpers until both
-and their children exit. Audit each outcome; a launch is not a pass.
+width/operand/branch/GC/suspended-caller cases. Its
+[completed gate/release audit](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-results-manifest.json)
+verifies **17 focused passes and 929/930 broader passes per profile**. The same
+old raw-byte-code fixture fails in both; GNU proves its Unicode input does not
+contain the intended opcodes. Supervisors **73057 and 73532 have exited**.
+The [source224 repair](docs/handover/2026-09-30-shared-reader-draft/source224-raw-bytecode-fixture-repair-manifest.json)
+changes only that test's inputs/comment, preserving both assertions and every
+production byte. Strict checks and **18 focused tests per profile pass**;
+supervisor **77687 has exited**. Earlier broader failures remain preserved.
 Source222's strict obsolete-helper failure remains preserved, with no runtime
 tests. A temporary non-ASCII plain-string Rust API byte adapter remains.
-Plain-string migration, compact headers, physical accounting, complete validation
-and the full performance goal remain open. No draft runtime is applied to the branch.
+The [source225 control-flow draft](docs/handover/2026-09-30-shared-reader-draft/source225-control-flow-draft-manifest.json)
+repairs eager checking of unused branch/handler destinations, following a new
+ordinary GNU probe. It checks actual fetched byte offsets and carries each
+instruction across fast/slow dispatch without decoding it twice. All **427 inputs
+and modes** replay exactly; strict checks pass with zero warnings. Its
+[audited selected results](docs/handover/2026-09-30-shared-reader-draft/source225-bytecode-string-selected-validation-manifest.json)
+pass **20 focused and 932 affected-module tests per profile**, zero ignores,
+and 48 distinct ordinary comparisons. The first ordinary wrapper run retains
+44 passes/four failures from printing already self-printing fixtures twice;
+four separate unchanged-fixture replays pass without that redundant print.
+Supervisors **77913, 79760, 80241 and 81339 have exited**.
+
+The [complete source225 failures](docs/handover/2026-09-30-shared-reader-draft/source225-complete-validation-failure-manifest.json)
+retain **161 Rust passes followed by a native-call abort** in the original Tramp
+test. The remaining 224 tests in that first group, every later group and both
+Cargo stages did not run. The terminal comparison matches seven scenarios,
+then aborts opening Org; 218 scenarios never start. Supervisors **82034 and
+82035 have exited**. The Rust trace and a same-input ordinary probe diagnose
+`try-completion` forcing non-byte characters into an unibyte result. The
+terminal capture shows a related native `regexp-opt-group` panic but omits its
+initial message. These are real failed runs, not complete validation.
+
+The [source228 completion draft](docs/handover/2026-09-30-shared-reader-draft/source228-completion-storage-draft-manifest.json)
+follows GNU's selected candidate and substring rules for encoding, properties,
+extended characters and unchanged-input identity. All **429 inputs and modes**
+replay exactly; strict checks pass with zero warnings. Its
+[audited results](docs/handover/2026-09-30-shared-reader-draft/source228-completion-results-manifest.json)
+retain **24/25 focused passes and 932/933 broader passes**, zero ignores.
+The original Tramp test passes; the new completion fixture still fails because
+`concat` loses extended characters before completion sees them. Supervisor
+**82531 has exited**. The failed executable, image and original assertion remain.
+
+The [source229 concat draft](docs/handover/2026-09-30-shared-reader-draft/source229-canonical-concat-draft-manifest.json)
+follows `fns.c:concat_to_string`, copying actual encoded string bytes and
+validating list/vector character codes over GNU's full range. It removes the
+intermediate Rust-text concatenation. All **432 inputs and modes** replay exactly;
+strict checks pass. Its [closed selected and full-Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source229-selected-and-rust-failure-manifest.json)
+verifies **26 focused / 934 affected tests per profile**, fifty ordinary controls,
+zero ignores and exact source/artifact identities. Full Rust records **680 passes /
+one failure**: an internal assertion still requires `Kind::Record` for quoted
+bytecode, while unchanged ordinary GNU/source229 both show a callable four-slot
+closure. The remaining 2,297 library tests and both Cargo stages never run.
+Supervisors **84949, 86489, 86490 and 87395 have exited**. Terminal supervisor
+**89147 remains active**: Org startup now matches; `hscroll-disabled` differs in
+quote rendering. No complete terminal pass is claimed.
+
+The same archive retains three additional ordinary substring failures: extended
+character loss, incorrect array/index error contracts, and a host abort for
+reversed bounds. The [source230 draft](docs/handover/2026-09-30-shared-reader-draft/source230-substring-draft-manifest.json)
+uses actual substring bytes and vector fields, validates GNU's index types before
+their joint range, and shares the canonical slice with completion. The old quoted
+bytecode test now checks the actual closure and GNU-confirmed fields/execution;
+its original name and macro assertion remain. All **440 inputs and modes** replay
+exactly. Strict checks pass. The [focused result and proposed setup correction](docs/handover/2026-09-30-shared-reader-draft/source230-focused-failure-and-proposal-manifest.json)
+retain **30 passes / one failure**: the added normal-GNU fixture calls `cadr` in
+an intentionally bare interpreter. All three substring controls pass; the
+original quoted-reader and closure-kind assertions pass before that setup error.
+Proposed source231 supplies the normal GNU batch preload only for the additional
+fixture, preserving its inputs and expected output; it is not applied or tested.
+Supervisors **90596** and **93555** run all 937 affected-module tests and a fresh
+ordinary executable/image with 54 GNU comparisons. Keep both isolated checkouts
+frozen while their associated children run. Root runtime inputs remain source229. Sources226/227 are
+unexecuted intermediate drafts; their patch history remains preserved.
+The bundle also preserves an ordinary source207 capacity mismatch: GNU accepts
+262144/393216 declared slots, but Emaxx overflows. Rust still reserves 256K words
+with separate frames versus GNU's 512K words including frames. This remains open.
+Plain-string migration, compact headers, stack layout/accounting, complete
+validation and performance remain open. Draft228 is present locally but no
+draft runtime is committed or published.
 
 The preserved **source208** carries evaluator207
 and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)

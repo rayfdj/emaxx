@@ -47,10 +47,31 @@ tests. Source221 repairs constructors with direct full-range encoded bytes;
 all 928 affected tests yield 927 passes/one active-call failure. Source223 now
 uses a direct VM byte cursor, removing decoded caches and heap activations.
 Its strict checks pass with zero warnings, all 425 inputs/modes replay exactly,
-and all seventeen focused gate controls pass, including the two original
-failures. Its 930-test broader gate and release controls/inventory are running.
+and all seventeen focused controls pass in both profiles, including the two
+original failures. Both 930-test broader runs retain 929 passes and one GNU-invalid
+raw-byte-code fixture failure. Source224 corrects only that fixture and passes
+eighteen focused controls in each profile. Source225's actual-control-flow repair
+and single fetch pass 20 focused/932 affected tests per profile and 48 distinct
+ordinary comparisons, with the original redundant-print wrapper failures retained.
+Full Rust then aborts after 161 passes in the original Tramp test; full terminal
+matches seven scenarios before an Org-startup native panic. Source228 repairs
+completion's forced-unibyte result and GNU candidate selection. Its closed runs
+retain 24/25 focused and 932/933 broader passes; concat still loses extended
+characters. Source229 uses the actual encoded bytes and full-range list/vector
+characters. Strict checks, all 26 focused/934 affected tests per profile and
+fifty ordinary comparisons pass. Full Rust retains 680 passes/one old host-record
+assertion failure, with 2,297 later library tests and both Cargo stages unexecuted.
+Its live terminal run has a quote-rendering difference after matching Org startup.
+Three additional substring probes retain character loss, wrong validation and a
+reversed-bounds abort. Separate source230 repairs these and the old internal
+assertion; its 440 inputs replay exactly and strict checks pass. Thirty of 31
+focused tests pass, including all three substring regressions. The added bytecode
+fixture needs GNU's `cadr`, absent in its bare interpreter; an unexecuted setup
+correction is preserved. The 937-test broader run and 54 ordinary comparisons run.
+The local task runtime remains uncommitted source229;
+published runtime207 remains unchanged.
 Plain-string migration, compact headers, complete validation and measured
-performance remain required. No draft runtime is applied to the task branch.
+performance remain required.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
@@ -60,10 +81,10 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 | 2. GNU architectural reference | Current cons and vector changes trace to GNU's allocation, field access and conservative-root rules. Per-change handovers preserve other references and deviations; final complete-path review remains open. |
 | 3. Compact authoritative objects | Values are one word and ordinary cons payloads two words. The isolated bytecode draft reduces the four-field closure from 88 detached bytes to 40 inline bytes, with native writes and tracing verified. Broader closure validation, authoritative allocated symbols/strings and remaining adapter removal stay open. |
 | 4. Allocation, GC and ownership | Source207's original census and suspended-root controls pass on complete macOS/Linux Rust. Source215 repairs its separate vector-copy census omission, with its new twenty-case control passing. Real category counters, honest physical totals, remaining ownership/retention review and collection-cost explanations stay open. |
-| 5. VM/function-call work | Source223 fetches authoritative canonical bytes and removes decoded caches/heap activations; focused live-mutation, operand-width and suspended-caller controls pass. Broader/release validation, plain-string adapter removal, final instruction/allocation profiles and equivalent-work timing remain required. |
+| 5. VM/function-call work | Source225 passes 20 focused/932 affected tests in both profiles, including live mutation, suspended callers and actual control-flow destinations. Its full runs fail in completion; source229 passes 26 focused/934 affected tests per profile and fifty ordinary comparisons, then fails an old host-record assertion in full Rust. Source230 repairs that assertion and canonical substring errors; runtime checks are running. An ordinary source207 probe confirms the 256K-versus-512K stack-capacity gap. Frame layout/accounting, plain-string adapter removal, complete validation, profiles and equivalent-work timing remain required. |
 | 6. Adversarial audit | Earlier evaluator, ownership and reporting repairs retain controls and failed runs. New selected audits reject five corrupt-log cases. A final review of actual final code, caches, images, modes, selection and the entire evidence chain remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The new source204 probe confirms unavailable counters. Calibration, pinned Darwin identity, complete interleaved samples and every per-workload criterion remain unresolved. |
-| 8. Complete validation | Source207 passes complete macOS/Linux Rust, all 226 terminal scenarios and all 519 Linux frozen files. Its bytecode successor remains an isolated partial draft. Final-source Linux/macOS, pinned Darwin compatibility, release and zero-warning requirements remain open. |
+| 8. Complete validation | Published source207 passes complete macOS/Linux Rust, all 226 terminal scenarios and all 519 Linux frozen files. Source225 full macOS/terminal failures are preserved; source229 selected/ordinary passes and full-Rust failure are preserved; its terminal run has a divergence. Isolated source230 passes strict checks and 30/31 focused controls; its added fixture setup failure is preserved while broader/ordinary validation runs. Final-source Linux/macOS, pinned Darwin compatibility, release and zero-warning requirements remain open. |
 | 9. Independently checkable delivery | Portable patches, source hashes, commands and raw evidence are committed. Checkpoint validation does not establish final architectural completion, final audit or performance acceptance. |
 
 # Historical record — 27 September 2026

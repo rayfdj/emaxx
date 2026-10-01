@@ -1,0 +1,230 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "both complete runs failed",
+    "goal_complete": false,
+    "inputs_verified": 427,
+    "rust": {
+      "passed_before_abort": 161,
+      "aborted_test": "lisp::eval::tests::eval_01::file_remote_p_parses_tramp_style_names",
+      "raw_exit": -6,
+      "scheduled_first_group": 386,
+      "unstarted_first_group": 224,
+      "later_groups_and_cargo_stages": "not executed"
+    },
+    "terminal": {
+      "matched_scenarios": 7,
+      "aborted_scenario": "org-open",
+      "unstarted_scenarios": 218
+    },
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source225-full-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source225-full-failure-inputs/source225-full-gate-libtest",
+        "sha256": "39f62a62a8506aa14601fce3b1980a24b10a06c649b3ff82f33446a1f293bcf2",
+        "bytes": 29201488
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx/target/grouped-gate/fixture-images/loadup-39f62a62-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source225-full-failure-inputs/loadup-39f62a62-44409a21.pdmp",
+        "sha256": "31cddf1730e0c84c0a1f8580518743ba8321b992893873f7a99c7de52a6c5a3c",
+        "bytes": 22341512
+      }
+    ],
+    "ordinary_artifacts": {
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx/target/frame-validation/release/emaxx": {
+        "sha256": "289d7325616c5ff66f9468ca7f93a204ec92cb086d37a50c1e462d2939a4a518",
+        "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source225-ordinary-emaxx",
+        "bytes": 13261584
+      },
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx/target/frame-validation/release/emaxx.pdmp": {
+        "sha256": "805cf24831b217dc631ce4b239da073888b9d677c9118e59a8e42ba706a9982f",
+        "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source225-ordinary-emaxx.pdmp",
+        "bytes": 22347312
+      }
+    },
+    "supervisors_exited": [
+      82034,
+      82035
+    ],
+    "diagnosis": "The full Rust trace reaches try_completion from native regexp-opt-group and panics while encoding U+5BC6 into a result incorrectly marked unibyte. The terminal failure is a native regexp-opt-group non-unwinding panic; its screen capture does not preserve the original panic message. No full validation, Linux run or runtime publication is claimed."
+  },
+  "archive": {
+    "path": "source225-complete-validation-failure.tar.gz",
+    "bytes": 221493,
+    "sha256": "efaac7ff19994f45691dffd877e8e34988bc454a4bc1a47277fd4378c945981d"
+  },
+  "files": [
+    {
+      "path": "audit-source225-full-failure-v2.py",
+      "bytes": 4181,
+      "sha256": "e629fd19d0cdcca94cf97ac889a145a5b9a68c62af3364ec5387f051b3559f04"
+    },
+    {
+      "path": "audit-source225-full-failure.py",
+      "bytes": 4182,
+      "sha256": "9b1f3cad3462eea1d96c7ccb7c561ef7dabdcc1531546c84dcf3bcf421f2da7a"
+    },
+    {
+      "path": "completion-result-storage-emaxx225.command.json",
+      "bytes": 3367,
+      "sha256": "d4fb2b57a109b452a1592fb4fc12ed2b2a30f3c39bc05f08a6567bdfaf161f0f"
+    },
+    {
+      "path": "completion-result-storage-emaxx225.result.json",
+      "bytes": 257,
+      "sha256": "70f62f1b150a56be191c53073aa670b56ac8640bb71cdd87a4c6af73a3776581"
+    },
+    {
+      "path": "completion-result-storage-emaxx225.stderr",
+      "bytes": 2716,
+      "sha256": "10c02c91e00b7941f55ad14e9c7668ad0700d20b590bdcece31c0c5e5af2ce6d"
+    },
+    {
+      "path": "completion-result-storage-emaxx225.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "completion-result-storage-gnu.command.json",
+      "bytes": 3244,
+      "sha256": "21199d47257bf41e2aa75bcac937d03de8f3e63f251f7a359f2b52a01413871a"
+    },
+    {
+      "path": "completion-result-storage-gnu.result.json",
+      "bytes": 254,
+      "sha256": "e1c4e5429d07d08757c20335721c1346acaf66c98224a50dd1179b0f978ae63e"
+    },
+    {
+      "path": "completion-result-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "completion-result-storage-gnu.stdout",
+      "bytes": 473,
+      "sha256": "09bbcb999b45b99dc72dd4c34f1cd61bfa01530ec41e005f881e6721654cd4ec"
+    },
+    {
+      "path": "completion-result-storage.el",
+      "bytes": 2094,
+      "sha256": "c66bab8ad4232fcad549b4f8529f229af815260c7495bbaaf6795b607c0871d2"
+    },
+    {
+      "path": "full-gate-source225/build.log",
+      "bytes": 214290,
+      "sha256": "d76f02dbe2a7242e1070d39c484ff5c9bad191d141ea7031b021dc09035fc5fa"
+    },
+    {
+      "path": "full-gate-source225/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source225/inventory.txt",
+      "bytes": 262507,
+      "sha256": "e4bd82619e55d5c4b2aa7510e14192f08d48b11edb94f4881042ed60da8b9d84"
+    },
+    {
+      "path": "full-gate-source225/repeat-01-eval_01.json",
+      "bytes": 563,
+      "sha256": "6cb4d6af7671db180080efd3a747b5baf2f7497934d1d322eaac670bfcdec46a"
+    },
+    {
+      "path": "full-gate-source225/repeat-01-eval_01.log",
+      "bytes": 64603,
+      "sha256": "46baf56c5f652532d68c60458194d9b1c9369801805f5e36d7d1cb936d68afe3"
+    },
+    {
+      "path": "full-gate-source225/summary.json",
+      "bytes": 2038,
+      "sha256": "43a105c2bf76af02b8d7451d4fa7ac43f71ccd0c3bfbf5f01b4e5b5f10122a9d"
+    },
+    {
+      "path": "package-source225-failure-and228-draft.py",
+      "bytes": 3291,
+      "sha256": "65376f35b34efd37a3c0435ea17c1a00fd7b1ad57b506072eef3811a5e7bb971"
+    },
+    {
+      "path": "run-source225-full-gate.py",
+      "bytes": 3448,
+      "sha256": "c70f20552e1e670a69ec747ec81fa079941dab07299f98aaee70757061276134"
+    },
+    {
+      "path": "run-source225-full-tty.py",
+      "bytes": 3488,
+      "sha256": "f8c4e596bb1bd37a662dd5a1c0a3a7c5b857f03c83773ac7947f5cf53aac3117"
+    },
+    {
+      "path": "source225-complete-validation-launch.json",
+      "bytes": 1189,
+      "sha256": "50963b5f9f10f537f678506471434b5745a8b205164e4e4a104a4bee1ab4fcbc"
+    },
+    {
+      "path": "source225-complete.patch",
+      "bytes": 491140,
+      "sha256": "2d139cd2bcc9b9f532ad0808ee0253b8594380bba7158bf350c4bbb6a2871fa2"
+    },
+    {
+      "path": "source225-full-failure-audit-attempt1.json",
+      "bytes": 457,
+      "sha256": "2aa18f0b4af97c93cbd8806350cdaa4097b3aa1e196e845b9fdaf558cb35972f"
+    },
+    {
+      "path": "source225-full-failure-audit.json",
+      "bytes": 2566,
+      "sha256": "2f0a633eee155f64b09ded9b59694639ce8b38677a01e8fb008626f00842bdae"
+    },
+    {
+      "path": "source225-full-gate-command.json",
+      "bytes": 1503,
+      "sha256": "155e1ee49b548cca0121bb168e269e6a014412dea08bd22f2575e8e55753d461"
+    },
+    {
+      "path": "source225-full-gate-result.json",
+      "bytes": 2525,
+      "sha256": "714d3d6a4eff958e8255021575843651101eaccd048b1fd2efe42cc634eb01b1"
+    },
+    {
+      "path": "source225-full-gate.log",
+      "bytes": 322,
+      "sha256": "6a488cc9f5185aa27c47648ee2cf49e50e25fecd9a4eaf5ce5b8650f0bfb80d3"
+    },
+    {
+      "path": "source225-full-rust-driver.log",
+      "bytes": 285,
+      "sha256": "ddd11d0f2059b1f8a4ca81d260c4acc9b2a9f25c8fe19b2b5ddf8411d059daeb"
+    },
+    {
+      "path": "source225-full-terminal-driver.log",
+      "bytes": 2232,
+      "sha256": "74455377039475d12b17c01c46f77f3711dccae520ff64833b785ac69330b211"
+    },
+    {
+      "path": "source225-full-ttydiff-command.json",
+      "bytes": 8904,
+      "sha256": "7ce9e9037341bd359bde7b60d5e0cb74f3a1a752bdab6baee5d085920d1494ad"
+    },
+    {
+      "path": "source225-full-ttydiff-result.json",
+      "bytes": 2257,
+      "sha256": "93923baf7f0589fdc2c3a4475fb86325dac2be98c5b8f23e3a3bbf0ebb2c5324"
+    },
+    {
+      "path": "source225-full-ttydiff.log",
+      "bytes": 3329,
+      "sha256": "11c745918375f053124286ea3a34bf7d6417e2ee9a5104f547ffd9d86dcd1962"
+    },
+    {
+      "path": "source225-manifest.json",
+      "bytes": 48562,
+      "sha256": "cbc04f4498d3e077cd52c44df87607e85abf836e2deb0531640c74212900f86f"
+    },
+    {
+      "path": "source225-ordinary-artifacts.json",
+      "bytes": 744,
+      "sha256": "d7e80cd238f79d51d45052b829c1ddacad3238544db6c46697b59787ccc0d7ce"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

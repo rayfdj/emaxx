@@ -1,0 +1,147 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "strict checks pass; focused and affected-module gate validation running",
+    "source_inputs": 440,
+    "supervisor": 90596,
+    "qualification": "Separate worktree copies canonical substring bytes and vector fields, validates both GNU index types before joint range checks, shares the canonical substring path with completion, and updates the old quoted-bytecode internal-record assertion with actual closure fields/execution confirmed by ordinary GNU. The three unchanged failing substring fixtures become permanent controls. No runtime, release, full-platform or performance pass is assigned. Source229 remains frozen for its complete terminal run."
+  },
+  "archive": {
+    "path": "source230-substring-draft.tar.gz",
+    "bytes": 151576,
+    "sha256": "9ec3e5919295826be0efd238342f3414ef1d46ad22aaa08bf66541772d470ef1"
+  },
+  "files": [
+    {
+      "path": "audit-source230-patches.py",
+      "bytes": 2787,
+      "sha256": "7768fbea5722a77c0d57b9152c666d8ccc224869c8bf6a3781de3a2709fd462e"
+    },
+    {
+      "path": "check-string230.py",
+      "bytes": 2020,
+      "sha256": "7eb91c41a71bc719e88d2f526ade847ca639d4e8f5dde57ec0ffac9fd542e81a"
+    },
+    {
+      "path": "freeze-string-ops-candidate.py",
+      "bytes": 2063,
+      "sha256": "2eec49659575b58f06577f804a10ae0b99acf9d2ea2c15e683e1415ecced71fe"
+    },
+    {
+      "path": "package-source229-results-and230-draft.py",
+      "bytes": 4476,
+      "sha256": "8e8a50be07b6242d90dad15e6d49a7e9eb903803d66e9c6c31de44d628143d22"
+    },
+    {
+      "path": "run-string-validation230.py",
+      "bytes": 1342,
+      "sha256": "6bb954e032d342630dcee7b7f246f8c9d431a5121c689ab97aad033c2fb60968"
+    },
+    {
+      "path": "source230-base.json",
+      "bytes": 5412,
+      "sha256": "e318e0c86daad34b8b0e56eba8a7cd5481c9fe3faf3153be232474dd4e0a70ec"
+    },
+    {
+      "path": "source230-check-command.json",
+      "bytes": 473,
+      "sha256": "c6bc8f4285dd5945246732b973e31e717d9212c3776ac75fef98100981cc6274"
+    },
+    {
+      "path": "source230-check-result.json",
+      "bytes": 84,
+      "sha256": "1ae3e6c9678143169068a2404e3c7773421cfd46bc234345ea3456bd3b15e5d7"
+    },
+    {
+      "path": "source230-check.log",
+      "bytes": 5118,
+      "sha256": "c9158092c69e3a443874fc18fadec322e4e65ec7855d44393912f7e17545d6f6"
+    },
+    {
+      "path": "source230-clippy-command.json",
+      "bytes": 461,
+      "sha256": "cd785ec5b32ed1749daa373e34ff5acebcbbbbb32ef72a2ed2622a9abb963a75"
+    },
+    {
+      "path": "source230-clippy-result.json",
+      "bytes": 89,
+      "sha256": "1bb3b59dd528f2a44163d836990964921164d2b765cb5aa843aa16c25677b0cb"
+    },
+    {
+      "path": "source230-clippy.log",
+      "bytes": 192,
+      "sha256": "7991837e1a8ed01714842482dfe5e66fcef0980f54101f40b9d4f9395b7b78f4"
+    },
+    {
+      "path": "source230-complete.patch",
+      "bytes": 539257,
+      "sha256": "37670985a05d2f91b34c1793382d8681fe873b3d2f3784ccf80c0531a808390f"
+    },
+    {
+      "path": "source230-diff-command.json",
+      "bytes": 377,
+      "sha256": "3675709fc316fb4558b380b9c81e411dea0e8aef143852569696884a414741a2"
+    },
+    {
+      "path": "source230-diff-result.json",
+      "bytes": 81,
+      "sha256": "3b3ca301ce5d52a76cffb0b24638ba24a78b7c2ab980dc064c962d8724e9fb2d"
+    },
+    {
+      "path": "source230-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source230-fmt-command.json",
+      "bytes": 401,
+      "sha256": "6b71bc9e812cdaf7ffed3064ece55dea6ca1583e26b7996b4fee1111c7d5b866"
+    },
+    {
+      "path": "source230-fmt-result.json",
+      "bytes": 82,
+      "sha256": "38b5d8b07032c799cdfb73d19b2f327c851867e57721d37ffc79bbfa4833e395"
+    },
+    {
+      "path": "source230-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source230-launch.json",
+      "bytes": 622,
+      "sha256": "bcc45d1863e4ff21b8aba058edc065e6ebdbc1f5cd6100971d7c28c5329c5926"
+    },
+    {
+      "path": "source230-manifest.json",
+      "bytes": 50132,
+      "sha256": "eddf8d029d486aa80d259dc5727cb8eda08e4a7d7d16391902b2bf9b5c24fb06"
+    },
+    {
+      "path": "source230-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "4ff22e643d255e67eea9b5250fb8118421c36ec8df8a0f8d0ec2cbc88a0197f2"
+    },
+    {
+      "path": "static-string230.py",
+      "bytes": 1545,
+      "sha256": "1bc35a44b3e4339e52b19f735f03034ac3dc9d4aea5dcb7e7ca2e408c63709bc"
+    },
+    {
+      "path": "string-ops-checkout-created.json",
+      "bytes": 497,
+      "sha256": "55e99e5895c4b35d5a00d0f83064feb31684a3698e6fdb1b3cca53969020db56"
+    },
+    {
+      "path": "test-string-broad230.py",
+      "bytes": 3055,
+      "sha256": "1df3cf816a4018987aa32ac9c2e3b507170ece39c3f99df01aadbf364d3b22a2"
+    },
+    {
+      "path": "test-string-controls230.py",
+      "bytes": 5113,
+      "sha256": "08c424650559611c676aa900eb0e2cf69c0042cc867c05ec1467db196e17210e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

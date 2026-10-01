@@ -2,16 +2,33 @@
 
 Read the [complete goal](runtime-representation-goal.md) and
 [current cons continuation](runtime-representation-cons-roots-draft.md).
-This is a separate unfinished draft, **not an applied task-branch repair**.
+This is an unfinished draft, **not a published task-branch repair**. The local
+worktree now carries uncommitted source229; published runtime207 is unchanged.
 The next [canonical string-byte draft](runtime-representation-string-bytes-draft.md)
 continues from source216 in a separate checkout.
 
-That continuation is now **source223**: canonical byte storage and full-character
+That continuation now has frozen **source229** and separate **source230**: canonical byte storage and full-character
 constructors are implemented, and the VM fetches current bytes with byte-offset
-cursors rather than decoded-program caches. All seventeen focused gate controls
-pass, including the original active-call failure; broader gate and release
-validation are running. The linked string-byte handover is authoritative for
-those jobs and remaining plain-string/header/accounting limitations. The
+cursors rather than decoded-program caches. Source224 passes eighteen focused
+controls in both profiles after a GNU-backed fixture correction; source223's
+broader runs each retain 929 passes and that one invalid-fixture failure.
+Source225 checks only actual control-flow destinations and removes duplicate
+fetching across fast/slow dispatch. Both profiles pass all 932 affected tests and
+20 focused controls, but full Rust/terminal runs abort in native completion.
+Source228 repairs the completion crash but retains a concat character-loss
+failure (24/25 focused and 932/933 broader passes). Source229 copies canonical
+concat bytes directly and passes strict checks plus all 26 focused gate controls;
+both profiles pass all 934 affected tests and fifty ordinary comparisons pass.
+Full Rust later fails the old quoted-bytecode `Kind::Record` assertion, while
+ordinary GNU/source229 confirm the shared closure's fields and execution. The
+terminal run has a quote-rendering divergence. Separate source230 repairs three
+substring failures and that internal assertion; strict checks and all three
+substring controls pass. Its 31 focused controls retain one added-fixture setup
+failure (bare interpreter lacks GNU `cadr`); the unexecuted source231 proposal
+loads GNU only for that additional contract. Broader and ordinary validation run.
+The linked
+string-byte handover is authoritative for that job and the remaining
+plain-string/header/stack-capacity/accounting limitations. The
 source216 results below remain a preserved closure-only baseline.
 
 ## Current source216

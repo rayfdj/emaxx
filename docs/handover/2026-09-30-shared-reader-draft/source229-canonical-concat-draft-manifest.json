@@ -1,0 +1,241 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "strict checks and all 26 focused gate controls pass; broader, release and ordinary validation running",
+    "source_inputs": 432,
+    "focused_result": {
+      "exit_code": 0,
+      "elapsed_seconds": 17.701942083000006,
+      "source_unchanged": true
+    },
+    "supervisors": {
+      "": 84949,
+      "release-": 86489,
+      "ordinary-": 86490
+    },
+    "qualification": "Following fns.c concat_to_string, canonical strings copy actual encoded bytes and validate list/vector characters over the full GNU range. The original completion character-loss assertion and a new mixed-encoding/property/sequence/GC fixture pass. Patch and modes replay exactly; no full, release, Linux, pinned compatibility or performance certification is assigned. Source228 failures and full source225 aborts remain preserved. Active-stage logs and images are excluded."
+  },
+  "archive": {
+    "path": "source229-canonical-concat-draft.tar.gz",
+    "bytes": 221466,
+    "sha256": "d84e2675000c81f8b7dc98a31ae526f7df3af1d498ac5a09ee2f7449fdb4358b"
+  },
+  "files": [
+    {
+      "path": "audit-source229-patches.py",
+      "bytes": 2787,
+      "sha256": "2f787e3f53b1ab8cdb85c827a82f70bb13cf17f98ba2adfce05de6f20c7fbc1a"
+    },
+    {
+      "path": "build-string225.py",
+      "bytes": 2442,
+      "sha256": "8e81d9c72a034f15a18cfd486c1d511ac4b73f886a540cd0e33f4cb936047f52"
+    },
+    {
+      "path": "canonical-concat-storage-gnu.command.json",
+      "bytes": 3542,
+      "sha256": "9c7b13ba8b5b95756617ca54111b364b6f94cdad65ed1791dae25d8c4b17f85d"
+    },
+    {
+      "path": "canonical-concat-storage-gnu.result.json",
+      "bytes": 256,
+      "sha256": "a30a4f1e2fd53bb4b1babcf5aa40fe5127563fae98cf4c676731b3fd141e4e90"
+    },
+    {
+      "path": "canonical-concat-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "canonical-concat-storage-gnu.stdout",
+      "bytes": 1872,
+      "sha256": "1665d875283697bc3d83d7938310b31ac69c4720ecb6f68f85dac75d4abbab0a"
+    },
+    {
+      "path": "canonical-concat-storage.el",
+      "bytes": 2121,
+      "sha256": "f3fea6b0357f3c541f7299a9ba5435f368862efb7635dd5c4360c56eb8afc66d"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "compare-source229-fixtures.py",
+      "bytes": 3930,
+      "sha256": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3"
+    },
+    {
+      "path": "package-source228-results-and229-draft.py",
+      "bytes": 3425,
+      "sha256": "66eaff61d9276d6c8b19d4a95638558ee8e1002cd52aadd0a9ee62084e779b85"
+    },
+    {
+      "path": "run-source229-build-and-ordinary.py",
+      "bytes": 865,
+      "sha256": "451054629307157f37a2f595e02c2b21bb482290691951462734183644ca49bf"
+    },
+    {
+      "path": "run-source229-ordinary.py",
+      "bytes": 2294,
+      "sha256": "96b87db842f1eb194da790fc758d6abe9eebd6b5e881313d0794702f17a25e9b"
+    },
+    {
+      "path": "run-source229-release.py",
+      "bytes": 993,
+      "sha256": "f683cf0a8e82d35c64ad27b246d47c5d9c2f63fc0dc419b3373926fac9a4ea34"
+    },
+    {
+      "path": "run-string-validation229.py",
+      "bytes": 1342,
+      "sha256": "ea52ada22920e126cef189755974e574b9434fcd15e753392287847fa2c0794c"
+    },
+    {
+      "path": "source229-base.json",
+      "bytes": 1781,
+      "sha256": "44e8670f3b4aec69872b7a0a195c4fb97f6613d43d203a60750ed306fc568b70"
+    },
+    {
+      "path": "source229-check-command.json",
+      "bytes": 477,
+      "sha256": "ec473ad26fa7e8a82f1f4e41b5ffaad9363ed3c952101a29cf2f8c1c1f9b65d7"
+    },
+    {
+      "path": "source229-check-result.json",
+      "bytes": 84,
+      "sha256": "84773e740ca9741f6fa9a9dd1e363d464d9576430e1f4cdecb400f22433ed532"
+    },
+    {
+      "path": "source229-check.log",
+      "bytes": 194,
+      "sha256": "7bb068f84dfbf9f76193ab0c16bdaf5611d19f9b96ba83da8aeeab09928d5e83"
+    },
+    {
+      "path": "source229-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source229-clippy-result.json",
+      "bytes": 83,
+      "sha256": "398156c77291dc6e8f935f57bd42a1c6c24c958a174f16f92215f3f4139f374a"
+    },
+    {
+      "path": "source229-clippy.log",
+      "bytes": 194,
+      "sha256": "a53e7bad4c2b933d1880cf014f9af5ecf5c756c791798918766cd486d2271d2a"
+    },
+    {
+      "path": "source229-complete.patch",
+      "bytes": 521385,
+      "sha256": "c9b9e3dd6bc05cac7ea19d8ff556dbad852efa4c4f1b7fca73bdfba768485b93"
+    },
+    {
+      "path": "source229-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source229-diff-result.json",
+      "bytes": 89,
+      "sha256": "392e2e9d8d00a44e68ed1fc37a805be18132cb28740d54a4cdeda0d4c6d69986"
+    },
+    {
+      "path": "source229-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source229-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source229-fmt-result.json",
+      "bytes": 89,
+      "sha256": "b8401f565072d13c798b0bfe09450b1a9a90635df22db1fc0a1eccdd4547bf7a"
+    },
+    {
+      "path": "source229-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source229-gate-build-command.json",
+      "bytes": 1152,
+      "sha256": "c465940ac3d3aa1e70025e3fa98e650b7dfb69e990fd80bb497d5b8138e506d3"
+    },
+    {
+      "path": "source229-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "c40924052c235aca3ca8ff01bc54d6b9f8d094fce1dc15f32579edcb44d0e01f"
+    },
+    {
+      "path": "source229-gate-build.log",
+      "bytes": 214391,
+      "sha256": "7a276df7dc3b8f5246b370e471b2b6c2f68a1e2e07c28ec243590b100fa4e93c"
+    },
+    {
+      "path": "source229-gate-controls-command.json",
+      "bytes": 6182,
+      "sha256": "aa01dc8fe7985ec61f36f03f2875eee72176c4e5d8425d14a22e5128eea78142"
+    },
+    {
+      "path": "source229-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "15350c12c7996aa7f183b6e3b365f95acf2cc7281304d59393c51abfb1989ee7"
+    },
+    {
+      "path": "source229-gate-controls.log",
+      "bytes": 2711,
+      "sha256": "59ccdd17ca5de0bddc810f9e17f90265e4fe0b954fa240966340230a3e34f5c7"
+    },
+    {
+      "path": "source229-gate-inventory.txt",
+      "bytes": 262702,
+      "sha256": "5af6975c71f98d703a0c8d26be0a36645ed61e3f1d369ac9a38ad67df639d908"
+    },
+    {
+      "path": "source229-launch.json",
+      "bytes": 535,
+      "sha256": "0a91878a85bbcb11a770160bd4efa8174b622b05c5338995b7a058570d526228"
+    },
+    {
+      "path": "source229-manifest.json",
+      "bytes": 49150,
+      "sha256": "962f4a27e58f9ec194391b9ef38dac324789d6d459a7fa178c6930bb1ff9533e"
+    },
+    {
+      "path": "source229-ordinary-launch.json",
+      "bytes": 553,
+      "sha256": "aa097ed7350cd94ca9e41a10e0d2d92d207e1f041ba48e9acc4a7a415e19b883"
+    },
+    {
+      "path": "source229-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "7e512b9996756c9178af240fabec736f9f334970352ad1dffdb5050e236a00ee"
+    },
+    {
+      "path": "source229-release-launch.json",
+      "bytes": 542,
+      "sha256": "b66f00eb9ed709dc1210d7af7ef033d6e0d6c70793cac4aa265a0c6cc71c6864"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls229.py",
+      "bytes": 4812,
+      "sha256": "7d7bca5dba76d477e8ecd3bfbf57cebad4ae509ff5a2f69c5d2682e039a269fe"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

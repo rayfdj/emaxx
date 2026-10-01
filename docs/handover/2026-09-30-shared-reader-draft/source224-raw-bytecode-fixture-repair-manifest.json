@@ -1,0 +1,275 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "GNU-backed fixture correction passes in both profiles",
+    "inputs_verified": 425,
+    "production_runtime_unchanged_from": "source223",
+    "strict_checks": "passed with zero warnings",
+    "groups": [
+      {
+        "profile": "gate",
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0,
+        "inventory_verified": 18
+      },
+      {
+        "profile": "release",
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0,
+        "inventory_verified": 18
+      }
+    ],
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-retained-inputs/source224-gate-libtest",
+        "sha256": "1168bb6319bf183b45b7cbf958c0d32f02233175f0f963ab591c5f189eb77fa2",
+        "bytes": 29467648
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-release-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-retained-inputs/source224-release-libtest",
+        "sha256": "14b3b9f26f0cc7d17c6eed1299d42125f37c04c903da36f455f8d45067f0a46b",
+        "bytes": 22258912
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source224/loadup-1168bb63-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-retained-inputs/loadup-1168bb63-44409a21.pdmp",
+        "sha256": "8115933921100f100604853db68df6899dc770d3db7ef04e777f3daf3e70d3a1",
+        "bytes": 22344896
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source224/loadup-14b3b9f2-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source224-retained-inputs/loadup-14b3b9f2-44409a21.pdmp",
+        "sha256": "1aef57b32e53e5b884d37d40e0dbc4c36fcf020bacfca1c8dcc4e6f4fb55a2d4",
+        "bytes": 22344904
+      }
+    ],
+    "qualification": "Only the old raw byte-code test inputs and explanatory comment change. Both original result assertions are byte-for-byte preserved. All 18 controls pass in each fresh profile. Source223 broader failures remain recorded under source223, not relabeled as a passing source224 run. A separate review found eager destination validation on untaken branches; source225 is prepared to repair it. Stack capacity/accounting and the full goal remain open."
+  },
+  "archive": {
+    "path": "source224-raw-bytecode-fixture-repair.tar.gz",
+    "bytes": 283414,
+    "sha256": "415d344959063e9b9354045b4586c3276daa2fd56f01cd3f3373276af516d3f0"
+  },
+  "files": [
+    {
+      "path": "audit-source224-results.py",
+      "bytes": 4485,
+      "sha256": "df25c90bb32359ae12279918eafbd04900adfd32360ba9fc0175278517a7eb31"
+    },
+    {
+      "path": "audit-source224-through225-patches.py",
+      "bytes": 2810,
+      "sha256": "6deaebc53070bc94ef2efd8f49caeacc2d892efdf7cf76bdb230f412bff95840"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "freeze-string-candidate.py",
+      "bytes": 2065,
+      "sha256": "b19f48ad33d0250c62a2e646815f0caedcb60fbd25a2e4839c91cca1572864e6"
+    },
+    {
+      "path": "package-source223-results-through225.py",
+      "bytes": 4371,
+      "sha256": "d6fc0760e75f9184b143f8118bebe4ff28ba04ddcaac42d68f0ba4ef12b080ca"
+    },
+    {
+      "path": "prepare-source224-raw-fixture.py",
+      "bytes": 1867,
+      "sha256": "cb4ec777f03753aa1733828592218649076ba1866d144f19e8fd6a7e50ba1e49"
+    },
+    {
+      "path": "run-source224-validation.py",
+      "bytes": 1013,
+      "sha256": "557f4fb71ddd666bf9f722e78db877321e2eda852358bdfaed310e8a89b6d1a0"
+    },
+    {
+      "path": "source224-base.json",
+      "bytes": 1289,
+      "sha256": "18b72f6bf50d49d24b711114cc381cbcf95f9eb6d9b097bc9a33e8264031e5ed"
+    },
+    {
+      "path": "source224-check-command.json",
+      "bytes": 477,
+      "sha256": "a306b165454b7c79f6438ace3eebb10161a006fc786c2a27ee9e7721db68e4cd"
+    },
+    {
+      "path": "source224-check-result.json",
+      "bytes": 83,
+      "sha256": "a62e685b2d6d0a07d1e0a03fe24f66cac1722c9792dd958ec6b18f81e9bb3e57"
+    },
+    {
+      "path": "source224-check.log",
+      "bytes": 193,
+      "sha256": "71b78c0e902945e56e7d94b4759fee42383e0a3d0bb49d8f6736d065696e3a08"
+    },
+    {
+      "path": "source224-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source224-clippy-result.json",
+      "bytes": 83,
+      "sha256": "a4f13dd8c910f623ad53a849a4a757a74c93272e6b8d5b2274de32fead83a211"
+    },
+    {
+      "path": "source224-clippy.log",
+      "bytes": 194,
+      "sha256": "b3e720b1d995b09559e5d67412700afd850347cc1076c1573dc4558810e0afa6"
+    },
+    {
+      "path": "source224-complete.patch",
+      "bytes": 487256,
+      "sha256": "6882aa5ea13327243e65348d2ae020efc4b8f1d1fa7352f3d6bc47a7e6e7fdde"
+    },
+    {
+      "path": "source224-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source224-diff-result.json",
+      "bytes": 89,
+      "sha256": "3d234637a4ec3466efc11f559086b3d22904e4ae0e6d5cf5da3df572a47aeeff"
+    },
+    {
+      "path": "source224-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source224-driver.log",
+      "bytes": 5534,
+      "sha256": "e65c193d058c9f546fd29215bf64ab06f2ad11efa46eeb347aa8ccd3d0fc959f"
+    },
+    {
+      "path": "source224-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source224-fmt-result.json",
+      "bytes": 82,
+      "sha256": "596deeadeda5b178f43fa20132f9c9e03c8770d8f665e766a03454158a92efa3"
+    },
+    {
+      "path": "source224-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source224-gate-build-command.json",
+      "bytes": 1152,
+      "sha256": "61bc5fd5e2c3e2d0a52e91733dd1179e5f0047de3e6ae63f6fb803f0fbb12af5"
+    },
+    {
+      "path": "source224-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "a76253e3bec199adc9c188d7ba7c3d7d410cdc305927f30249ee74239e9b760a"
+    },
+    {
+      "path": "source224-gate-build.log",
+      "bytes": 214391,
+      "sha256": "a182e05d919d9f4ccc6571d2d62f4f3ef265cd9145ba20d33548ae32c50dedcb"
+    },
+    {
+      "path": "source224-gate-controls-command.json",
+      "bytes": 4718,
+      "sha256": "23e4d7649867a9af712c88e1fa4d5a606452c0835e13e252656ef1ee3f9b070d"
+    },
+    {
+      "path": "source224-gate-controls-result.json",
+      "bytes": 89,
+      "sha256": "76ba14add6783d9097e6d7d5de25266eabbe0cd1f37f15bdd632dbc00b3cecdd"
+    },
+    {
+      "path": "source224-gate-controls.log",
+      "bytes": 1939,
+      "sha256": "a7063d7a7f24ef11f9ac2b7b5757c5d2d3213273acf61ca12fe3c743c9862a84"
+    },
+    {
+      "path": "source224-gate-inventory.txt",
+      "bytes": 262325,
+      "sha256": "b45c3c2e460c4ebf82f9dbdfc710e06d05ef00ed73911bcba8cef9016e21093f"
+    },
+    {
+      "path": "source224-launch.json",
+      "bytes": 426,
+      "sha256": "1a7544c2ff295517abb849857db93b2ff9dee246bbc8e5a30516beec71b570e2"
+    },
+    {
+      "path": "source224-manifest.json",
+      "bytes": 48316,
+      "sha256": "bb4f5a3ead71540e2f9e0e4a39c71f697f743fcf08796922f0e7d2aeaa58111f"
+    },
+    {
+      "path": "source224-release-build-command.json",
+      "bytes": 1155,
+      "sha256": "a370d654ff66673a5fb706ea6c3a7e5ede4d0f85bc138547d04cc692c8b01627"
+    },
+    {
+      "path": "source224-release-build-result.json",
+      "bytes": 90,
+      "sha256": "63756ee16715f00ae4b42e4ab743418fbb28b9552dca8296223b993c9b73d537"
+    },
+    {
+      "path": "source224-release-build.log",
+      "bytes": 216080,
+      "sha256": "18b94553ca0b62bc2f27e266c172fd98b5fed67ee40be93ff023d2d20af12bba"
+    },
+    {
+      "path": "source224-release-controls-command.json",
+      "bytes": 4721,
+      "sha256": "dd9afa1d6b08a1f22d27f3ebea47b2dbe261b8f6fd9bca635f63f54b02b4d349"
+    },
+    {
+      "path": "source224-release-controls-result.json",
+      "bytes": 89,
+      "sha256": "550e82a64b08452c056f58b2f53ebe852bf7f50d911bda2a7604c3af6ef10ea9"
+    },
+    {
+      "path": "source224-release-controls.log",
+      "bytes": 1938,
+      "sha256": "5efdd325b22b33903cdb6b61cb404f29be62f98144177c3d6e6cb9bdd7d0d05d"
+    },
+    {
+      "path": "source224-release-inventory.txt",
+      "bytes": 262236,
+      "sha256": "3ac27d313685d1f62e5973df3c2198ddfb1bbc3553d18827aa5e3f9c5c094269"
+    },
+    {
+      "path": "source224-results-audit.json",
+      "bytes": 2552,
+      "sha256": "bb89df80c050d5b863664d50a3d0d66add733fdbdbee0ee0d27476863a2acd59"
+    },
+    {
+      "path": "source224-through225-patch-replay-and-modes-audit.json",
+      "bytes": 987,
+      "sha256": "e9f97c058b7c8b72f451a2d2b44a9d35ab645f9a48fe1b9fe3ba9528cc2b0480"
+    },
+    {
+      "path": "source224-validation-result.json",
+      "bytes": 1029,
+      "sha256": "81fcba3fafe3bd8d82a4d8c978c6fc1937382e9fb7722d2fd2e37e49ff4056c9"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-controls224.py",
+      "bytes": 4302,
+      "sha256": "556949d650b699743775a017ac048d2bfe64a8fc75d83d24fd0398ac475ed4e1"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
