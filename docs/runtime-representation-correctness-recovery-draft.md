@@ -910,10 +910,13 @@ Rust validation. Only the Darwin executable-hash field changes in the lock;
 Linux pin, runtime inputs, selectors and timeouts remain unchanged. The six
 diagnostic failures remain visible after repinning.
 
-Full terminal12347 is active using the exact source249 gate executable/image from
-the rebuilt-GNU frozen run, after local full Rust has exited. Its prepared auditor
-checks every original 226 scenario and 686 comparison labels. No terminal pass is
-claimed yet; read actual receipts before another launch.
+The [closed full terminal archive](handover/2026-09-30-shared-reader-draft/source249-complete-rebuilt-terminal-manifest.json)
+verifies all **226 scenarios / 686 comparisons** on the exact source249 gate
+executable/image from the rebuilt-GNU frozen run. Every original label, all 658
+screen and 28 filesystem matches, 476 source inputs and ten execution inputs are
+checked. Supervisor12347 has exited after local full Rust. No divergence or
+unexecuted comparison remains. The six strict macOS frozen diagnostic mismatches
+remain failures; this terminal result does not certify the subsequent drafts.
 
 ## Separate common-string continuation
 
@@ -928,8 +931,10 @@ failure and two existing ignores. Both new GNU contracts pass. GNU confirms that
 the failing local fixture used Unicode text where `make-byte-code` requires actual
 unibyte storage. Source256 corrects construction, keeps every original assertion
 and adds rejection of the old Unicode form. All strict checks pass with zero
-warnings; all 480 inputs/modes replay exactly. Queue17749 waits for terminal12347,
-then runs both selected profiles, all 957 affected tests and seventeen ordinary
-comparisons. Source255's failed executable/image, all compiler/lint/helper failures
+warnings; all 480 inputs/modes replay exactly. Queue17749 now runs both selected
+profiles, all 957 affected tests and seventeen ordinary comparisons. Its focused
+gate run [passes 182 tests / two existing ignores](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json), with all 184 selectors and
+retained inputs audited. Broader/release/ordinary stages remain separate pending
+results. Source255's failed executable/image, all compiler/lint/helper failures
 and original negatives remain retained. The draft is unapplied; no physical-memory,
 ownership, performance or full-goal completion is claimed.

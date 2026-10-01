@@ -18,8 +18,12 @@ outcome and actual retained GNU input is verified.
 
 The [complete macOS Rust and reference adoption](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
 closes64326 with **3,100 passes / two existing ignores**, native artifact identity,
-all 3,003 raw library names and four retained artifacts verified. Complete
-terminal12347 is active with the exact gate executable/image from the frozen run.
+all 3,003 raw library names and four retained artifacts verified. The
+[closed terminal audit](handover/2026-09-30-shared-reader-draft/source249-complete-rebuilt-terminal-manifest.json)
+verifies **226 scenarios / 686 matching comparisons**, comprising 658 screen and
+28 filesystem comparisons. Supervisor12347 has exited; all original labels, 476
+source inputs and ten execution inputs are checked against the exact frozen-run
+gate executable/image. No source249 validation supervisor remains active.
 
 The [requested GNU rebuild](handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
 passes configuration/capability checks and byte comparison of regenerated native
@@ -41,9 +45,19 @@ It removes the old string arena, binding conversions and VM text adapter, and
 repairs GNU `fillarray` byte-length/property behavior. Source255's focused run
 has 181 passes, one invalid Unicode bytecode fixture failure and two existing
 ignores; source256 corrects that fixture against an ordinary GNU probe while
-retaining all assertions. The failure remains archived. Queue17749 waits for
-terminal12347 before selected gate/release/broader/ordinary validation. This is
-unapplied work, not a runtime or performance certificate.
+retaining all assertions. The failure remains archived. Queue17749 is now running:
+[focused gate passes](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json)
+**182 tests / two existing ignores**, with all 184 selectors
+and retained inputs audited. Broader/release/ordinary stages remain pending.
+
+The subsequent [source259 comparison/hash draft](handover/2026-09-30-shared-reader-draft/source259-string-comparison-draft-manifest.json)
+has 488 replayed inputs and zero-warning strict checks. It uses actual bytes/name
+objects, GNU's positioned-symbol policy and ordinary equality/hash semantics for
+interval values, with four GNU negative fixtures and extended dump coverage.
+Queue22381 follows17749 with 190 focused selectors, 962 affected tests per profile
+and 21 ordinary comparisons. Source257's compiler failure and source258's withdrawn
+queue remain explicit. Both drafts are unapplied; full runtime validation, physical
+accounting, ownership and measured performance remain unfinished.
 
 The preceding **source248**, pushed as `fa7578ac`, is a correctness-recovery checkpoint
 with **472 frozen inputs**. Its two property repairs follow GNU C, pass the selected

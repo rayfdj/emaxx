@@ -3,7 +3,8 @@
 Read the [complete goal](runtime-representation-goal.md), [current handover](../HANDOVER.md)
 and [correctness recovery](runtime-representation-correctness-recovery-draft.md).
 The full goal is active and incomplete. The task runtime remains source249
-(`99e61fca`); source256 is separate, unapplied work. Main remains `21d20f0e`.
+(`99e61fca`); source256 and the subsequent source259 repair are separate, unapplied
+work. Main remains `21d20f0e`.
 
 The [portable draft](handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)
 contains all 480 source/test input hashes, incremental and complete patches,
@@ -46,11 +47,61 @@ all original assertions and adds rejection of the Unicode form. The failed
 source255 executable, image and raw verdicts remain retained.
 
 Source256 passes formatting, all-target checking, strict Clippy and diff checks
-with zero warnings. **Queue17749** waits for source249 terminal12347, then runs
-all 184 focused selectors, all 957 affected tests, both gate/release profiles and
-seventeen ordinary comparisons. The 174 preceding focused selectors and all 955
-preceding affected tests remain included. Read current receipts before another
-launch. The archived queue is not passing runtime evidence.
+with zero warnings. Source249 terminal12347 has now exited with all 226 scenarios /
+686 comparisons matching. **Queue17749** is running source256 validation. Its
+[focused gate result](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json)
+is audited: **182 passes / two existing ignores**, with all 184 selectors
+and both retained executable/image inputs verified. All 957 affected tests, release
+and seventeen ordinary comparisons remain separate pending stages. The 174 preceding
+focused selectors and all 955 preceding affected tests remain included. Read current
+receipts before another launch; the original archived queue is not passing evidence.
+
+## Subsequent comparison and hash repair
+
+The [source259 portable draft](handover/2026-09-30-shared-reader-draft/source259-string-comparison-draft-manifest.json)
+replays all **488 inputs and Git checkout modes** from `3d7dd8f9` and main. Its
+checkout is `target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx`.
+It builds on source256 without changing that queued checkout.
+
+GNU `fns.c:Fstring_equal` and `internal_equal` compare character counts, byte counts
+and actual storage bytes. Source259 shares that direct contents path across the
+Rust handles/values and Lisp equality primitives. `string-equal` reads a symbol's
+actual Lisp name object and follows `lisp.h:SYMBOLP` for positioned symbols. The
+including-properties path borrows the actual spans after checking identity and
+contents; it no longer clones decoded text and its properties for comparison.
+
+GNU `intervals.c:intervals_equal_1(..., true)` uses ordinary `Fequal` on property
+values. GNU `fns.c:hash_interval` likewise uses ordinary `sxhash_obj`. The repair
+uses that same relation for comparison and hashing, so nested string properties
+do not change an equivalent key. String hashing reads actual bytes instead of
+allocating a Rust text projection and extended-character list. The existing hash
+mixing algorithm remains; GNU hash algorithm or cost parity is not established.
+The dumper stores key/value pairs and reconstructs hashes after relocation. Its
+existing test gains unibyte, byte8 and private-use keys while retaining all assertions.
+
+Four exact ordinary GNU fixtures are preserved. Source249 has six wrong booleans
+in the 64-pair storage matrix, 92 wrong results in the 512-row symbol/name matrix,
+eight wrong property-matrix results plus three mutation observations, and thirteen
+wrong hash/table observations. The symbol fixture's initial nonexistent-constructor
+error is retained separately; its corrected fixture uses GNU `position-symbol`.
+The property tests cover nested values, mutation, GC, interval segmentation and
+custom table lookup/replacement/removal. No historical origin is inferred for the
+newly probed symbol/property/hash gaps.
+
+Source257 failed checking on eight missing-import diagnostics in the new Rust test;
+source258 fixed only those imports and passed strict checks. C review then exposed
+the related hash requirement before runtime execution. Its waiting queue21849 was
+explicitly withdrawn, preserving the source and receipts. This is not a claimed
+runtime failure or pass. Source259 includes the hash repair and passes formatting,
+all-target checking, strict Clippy and diff checks with zero warnings. Both packaging
+helper setup failures remain recorded too.
+
+**Queue22381** waits for17749, then validates source259 with all **190 focused
+selectors**, all **962 affected tests** in gate and release, and **21 ordinary GNU
+comparisons**. Every preceding 184/957 common-string control is retained. The archive
+contains its immutable launch and a labeled snapshot, excluding active runtime logs.
+Keep its 488 inputs unchanged. No runtime pass, measured saving or full-goal completion
+is implied by the strict checks or portable patch.
 
 ## Remaining requirements
 
@@ -77,10 +128,7 @@ source174/main and source207 executable/image pairs has twelve wrong boolean
 results; source249 fixes six and introduces none in this matrix. This does not
 excuse other recorded regressions or establish general correctness.
 
-GNU `fns.c:Fstring_equal` and `internal_equal` compare character counts, byte counts
-and actual storage bytes. The affected Rust paths still compare transient text
-projections; the including-properties path must compare actual contents before
-its existing interval comparison. Symbol arguments to `string-equal` must use
-their actual Lisp name objects, including GNU's positioned-symbol policy, rather
-than host lookup text. This repair is not implemented in frozen source256. Keep
-the original negatives and all queued source256 inputs unchanged while validating.
+Those projection repairs are absent from frozen source256 and implemented separately
+in source259 above. Keep the original negatives and both queued input sets unchanged
+while validating. String ordering and version comparison still use host text; neither
+the comparison repair nor the common-string draft completes the architecture.

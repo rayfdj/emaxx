@@ -26,8 +26,8 @@ The post-read hook now receives decoded character counts. ASCII string decoding
 returns early, drops properties on a copied result and preserves NOCOPY identity,
 following GNU.
 The original negatives and the first checkout-setup failure remain retained.
-Complete source249 Linux/macOS Rust and Linux frozen results are now audited
-below; terminal validation is active. The preceding source248 results do not
+Complete source249 Linux/macOS Rust, Linux frozen and terminal results are now audited
+below. The preceding source248 results do not
 certify this newer source.
 
 The [closed Linux and Darwin frozen evidence](docs/handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
@@ -41,9 +41,12 @@ execution hashes and actual GNU inputs are verified; historical failures remain.
 
 The [complete macOS Rust and oracle adoption record](docs/handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
 closes **64326** with **3,100 passes / two existing ignores**, native artifact
-identity, all 3,003 raw library names and four retained inputs verified. Complete
-terminal **12347** is active on the same source249 gate executable/image used by
-the rebuilt-oracle frozen comparison. Read current receipts before another launch.
+identity, all 3,003 raw library names and four retained inputs verified. The
+[complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source249-complete-rebuilt-terminal-manifest.json)
+closes **12347** with **226 scenarios / 686 matching comparisons**: 658 screen and
+28 filesystem comparisons, every original label, 476 source inputs and ten execution
+inputs verified. It uses the same gate executable/image as the rebuilt-oracle frozen
+comparison. No source249 validation supervisor remains running.
 Main remains `21d20f0e`, PR79 is draft and the full goal remains open.
 
 GNU has been [rebuilt from the recorded recipe](docs/handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
@@ -74,16 +77,29 @@ unchanged GNU expectations are retained. Source255's selected run has **181 pass
 one invalid Unicode bytecode fixture failure and two existing ignores**. GNU
 confirms the fixture correction in source256; every original assertion remains,
 plus the rejected Unicode case. Source256 passes all strict checks with zero
-warnings. Queue **17749** waits for terminal12347, then runs selected gate/release,
-all 957 affected tests per profile and seventeen ordinary comparisons. It is a
-queue, not passing evidence. Compact string headers, symbol authority, physical
+warnings. Queue **17749** now runs selected gate/release, all 957 affected tests
+per profile and seventeen ordinary comparisons. Its [focused gate result](docs/handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json) is audited:
+**182 passes / two existing ignores**, all 184 selectors and retained executable/image
+verified. Broader/release/ordinary stages remain pending. Compact string headers, symbol authority, physical
 accounting, ownership and measured performance remain unfinished.
 The [new comparison negative](docs/handover/2026-09-30-shared-reader-draft/source249-string-comparison-gaps-manifest.json)
 finds six wrong results in a 64-pair string matrix. The same fixture had twelve
 wrong results on source174/main and source207, with no newly wrong result in
 source249. The remaining `string-equal`/`equal-including-properties` projection
-errors are still present in source256; their C mechanisms and next repair are
-recorded in the common-string continuation. Do not edit its queued inputs.
+errors are still present in source256.
+
+The [separate source259 comparison/hash draft](docs/handover/2026-09-30-shared-reader-draft/source259-string-comparison-draft-manifest.json)
+has **488 exactly replayed inputs** and zero-warning strict checks. It compares
+actual string bytes/counts, uses actual Lisp symbol names and GNU's positioned-symbol
+policy, and compares/hashes interval values with ordinary equality. String hashing
+also reads bytes directly. Four unchanged GNU fixtures retain the storage, symbol,
+property and hash-table negatives; an existing dump test gains byte-distinct keys.
+Source257's missing-test-import failure and source258's withdrawal before runtime
+execution are retained. Queue **22381** follows17749, then runs **190 focused
+selectors / 962 affected tests per profile / 21 ordinary comparisons**. This is
+unapplied work; no runtime, memory or performance pass is inferred. Both candidate
+input sets must remain unchanged while their queues run. See the common-string
+continuation for C references, exact limits and remaining requirements.
 
 The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.

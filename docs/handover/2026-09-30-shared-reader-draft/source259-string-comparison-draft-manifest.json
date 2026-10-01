@@ -1,0 +1,1080 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source": "source259",
+    "inputs": 488,
+    "strict_checks": "zero-warning pass",
+    "freeze": {
+      "inputs": 488,
+      "patches": {
+        "portable-incremental": {
+          "base": "3d7dd8f95803efdba97b3f0e51266fb70e8eebba",
+          "sha256": "569dc74fee4440d5a0e87c091d950aed06859b46b1e35f820e4bdd6f03c815f9",
+          "bytes": 195149
+        },
+        "portable-complete": {
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "sha256": "40036ab17cce28827b000d6a6bafe061231303637a07256feb3ea90de68d101f",
+          "bytes": 859644
+        }
+      },
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx",
+      "goal_complete": false,
+      "qualification": "Isolated string comparison repair atop common-string source256. The affected equality paths compare actual canonical bytes and character counts. Symbol arguments read their Lisp name objects under the positioned-symbol policy; interval values use ordinary equality in both comparison and hashing. String hashing reads actual bytes and the existing dump contract is extended to verify byte-distinct keys after hash-index reconstruction. Four exact ordinary GNU fixtures and a Rust Value contract are added. Read the distinct strict/runtime results for this source; this freeze makes no passing, architecture completion or performance claim."
+    },
+    "patch_replay": {
+      "status": "exact",
+      "replays": [
+        {
+          "source": "source259",
+          "patch": "portable-incremental",
+          "inputs": 488,
+          "base": "3d7dd8f95803efdba97b3f0e51266fb70e8eebba",
+          "patch_sha256": "569dc74fee4440d5a0e87c091d950aed06859b46b1e35f820e4bdd6f03c815f9",
+          "bytes_and_git_checkout_modes": "exact"
+        },
+        {
+          "source": "source259",
+          "patch": "portable-complete",
+          "inputs": 488,
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "patch_sha256": "40036ab17cce28827b000d6a6bafe061231303637a07256feb3ea90de68d101f",
+          "bytes_and_git_checkout_modes": "exact"
+        }
+      ],
+      "qualification": "Both incremental and complete patches reproduce all 488 inputs and Git checkout modes. Separate comparison/hash repair; source259 strict checks pass, selected runtime validation is queued, and the source249/source256 checkouts remain unchanged. Earlier draft patches, failed checks and source258 queue withdrawal remain separate."
+    },
+    "c_reference": {
+      "source": "source259",
+      "source_inputs": 488,
+      "unchanged_prior_source": "source256",
+      "prior_inputs": 480,
+      "changed_prior_files": [
+        "src/lisp/primitives/dispatch/numeric.rs",
+        "src/lisp/primitives/pdumper/tests.rs",
+        "src/lisp/primitives/strings.rs",
+        "src/lisp/primitives/tests.rs",
+        "src/lisp/primitives/values.rs",
+        "src/lisp/types.rs",
+        "src/lisp/types/string_data.rs"
+      ],
+      "new_fixtures": [
+        "string-equality-storage",
+        "string-equality-symbol-names-positioned",
+        "string-equality-property-values",
+        "string-equality-property-hashes"
+      ],
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "gnu_references": {
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "DEFUN (\"string-equal\"": 340,
+            "internal_equal (Lisp_Object o1": 2826,
+            "case Lisp_String:\n      return (SCHARS": 2974,
+            "sxhash_obj (Lisp_Object obj, int depth)\n{": 5505,
+            "hash_interval (INTERVAL interval, void *arg)": 5580
+          }
+        },
+        "src/lisp.h": {
+          "sha256": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+          "anchors": {
+            "SYMBOLP (Lisp_Object x)": 1114,
+            "maybe_remove_pos_from_symbol (Lisp_Object x)": 1142
+          }
+        },
+        "src/data.c": {
+          "sha256": "3c75a20c99ae0f5c809bc7f5a17401e85ba471d671a3de4ab70500a4ef49a179",
+          "anchors": {
+            "DEFUN (\"symbol-name\"": 818,
+            "DEFUN (\"position-symbol\"": 868
+          }
+        },
+        "src/intervals.c": {
+          "sha256": "310d8e9edc750d7fbf58286f1e2d0bcb2c32330d7c97b7245bc07c4e0c371d45",
+          "anchors": {
+            "intervals_equal_1 (": 172,
+            "compare_string_intervals (Lisp_Object s1": 2285
+          }
+        }
+      },
+      "implementation": [
+        "SharedStringState::contents_equal compares character counts and actual stored bytes. SharedText and Value equality, ordinary Lisp equality and string-equal use this canonical contents path without decoded Rust text copies.",
+        "Fstring_equal normalization reads the actual Lisp name of bare symbols, nil and t. Positioned-symbol names are accepted only when the forwarded GNU policy flag is enabled. Wrong-type checks retain argument order and the original offending object.",
+        "Equal-including-properties checks object identity and canonical contents before comparing intervals by character position. It borrows existing spans rather than cloning text and properties.",
+        "intervals_equal_1(..., true) compares property values with Fequal. Emaxx now uses ordinary equality for those values, preserving their contents while ignoring nested string properties. Existing interval-boundary and property-order comparison remains.",
+        "String hashing reads actual storage bytes directly, removing the decoded text and extended-character allocations. Property-value hashing uses ordinary equality, as hash_interval does.",
+        "The dumper writes key/value entries rather than cached hashes; load.rs reconstructs every standard hash after relocation. The existing dump/thaw contract now also checks unibyte, byte8 and private-use keys without removing an old assertion.",
+        "The exact four ordinary GNU fixture inputs and expected output bytes are retained. Together they cover storage distinctions, symbol names and position policy, bad arguments, nested properties, mutation, collection, differing interval segmentation and custom hash-table lookup/replacement/removal."
+      ],
+      "failures_preserved": [
+        "Source249 has six wrong booleans in the storage matrix, 92 wrong symbol/name observations, and eight property matrix plus three mutation observations, and thirteen hash/table observations. The original negative executables and images are retained.",
+        "The initial symbol-name fixture called nonexistent make-symbol-with-pos; both processes exited255 before comparisons. The corrected distinct fixture uses actual GNU position-symbol.",
+        "Source257 failed all-target checking with eight missing-import diagnostics in its new Rust test. Source258 changes only those test imports; no runtime validation occurred on source257.",
+        "Static review caught the remaining nested-property hash inconsistency in source258 before runtime execution. Its waiting queue was explicitly withdrawn; the immutable strict results and patches remain. This is not a claimed runtime regression or test failure.",
+        "The first portable-freeze helper failed on Python Path addition before opening patch/result outputs. Its executed source and observed error are preserved, with the corrected helper kept separately."
+      ],
+      "remaining": [
+        "Source258 strict checks pass; selected gate/release and twenty-one ordinary comparisons are queued. No runtime success is inferred.",
+        "The common-string draft still lacks GNU compact string headers/sblock allocation, complete symbol-cell authority, physical allocation accounting, actual cumulative counters and a public ownership boundary.",
+        "String ordering/version operations and other consumers still use transient host text. Host raw-byte/private-use construction remains. Empty multibyte canonicalization and pure-string write protection are unfinished.",
+        "Hash mixing remains the existing Emaxx algorithm. This change removes projection allocations and aligns the equality relation; GNU hash algorithm/cost parity is not established.",
+        "No throughput, retained-memory, allocation saving or performance parity is measured. The locked sixteen-workload criterion, 3% ceiling and final platform/adversarial validation remain required."
+      ],
+      "goal_complete": false,
+      "qualification": "Static C mechanism review, immutable negative evidence and exact strict/patch input verification. It does not certify all comparison, representation, GC, ownership or performance behavior."
+    },
+    "source258_queue_withdrawal": {
+      "pid": 21849,
+      "signal": "SIGTERM",
+      "status": "waiting queue withdrawn before runtime stages started",
+      "source_inputs_verified": 486,
+      "completed_runtime_stages": 0,
+      "reason": "GNU C review found that property-value hashing must use ordinary equality as well. The immutable source258 patches and strict checks are preserved; the next source will include that correction and its ordinary GNU hash-table fixture.",
+      "previous_queue_state_sha256": "3ddb1cabdfdb61e196366c4c0dbbbb564d0d8def5069b77f930d2859c1d30291",
+      "helper_sha256": "2f088a43e3a8029695b48dee786c884b00f123abe4eb0af7b75bc8e115a3e8cb",
+      "no_other_supervisor_signaled": true,
+      "goal_complete": false
+    },
+    "queue_launch": {
+      "pid": 22381,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-comparison259-validation.py"
+      ],
+      "helper_sha256": "b4dce589f00e05c04f48e12bad13b5500d1366fc462c36aec098d9df1fce2d47",
+      "status": "waiting for source256 validation; source258 queue was explicitly withdrawn before runtime stages",
+      "goal_complete": false
+    },
+    "qualification": "Unapplied comparison/hash repair atop separately packaged source256. Four ordinary source249 negatives, exact GNU fixtures, source257 missing-import failure and source258 withdrawal remain preserved. Source259 checks pass and patches replay all 488 inputs. Queue22381 follows source256, then runs 190 focused selectors, 962 affected tests in each profile and 21 ordinary GNU comparisons. Active runtime logs are excluded; no runtime pass, physical-memory saving, measured speedup or full-goal completion is claimed."
+  },
+  "archive": {
+    "path": "source259-string-comparison-draft.tar.gz",
+    "bytes": 1199323,
+    "sha256": "1b54f430aa20de4276a797bae1e7097a478fa50a1b96699cdeff6628124e2faf"
+  },
+  "files": [
+    {
+      "path": "audit-source257-source258-patches.py",
+      "bytes": 2978,
+      "sha256": "8335ce6c4d31bced1cfb5a44135ef40f7e1dc4709a6a23961c65927cf252eaff"
+    },
+    {
+      "path": "audit-source259-patches.py",
+      "bytes": 3026,
+      "sha256": "df7e7e46ef6aaa51efa28025d6ae0bffd6906fed24ba156518b342de26bf8209"
+    },
+    {
+      "path": "audit-string-comparison-c-reference.py",
+      "bytes": 7235,
+      "sha256": "4eae8240e9a227fcade0eea7f8fadf971dece3cef9229cf4778f669ee748359d"
+    },
+    {
+      "path": "audit-string-comparison-focused.py",
+      "bytes": 3806,
+      "sha256": "8c2bc1dc0c1f0603233b69c548a70585c35d358ac1218f34ade5712cbbfd77bb"
+    },
+    {
+      "path": "audit-string-comparison-hashes-c-reference.py",
+      "bytes": 8750,
+      "sha256": "97bc16926ffa8a39de2b61e6315884bb70a26164b1d6d3ab8f2bb6fea6c195a9"
+    },
+    {
+      "path": "audit-string-comparison-hashes-focused.py",
+      "bytes": 3806,
+      "sha256": "34a8e5f93db670094154d22e718ef3fe0a00f42540a8ba0a5a9d4550ad12caea"
+    },
+    {
+      "path": "audit-string-comparison-hashes-release.py",
+      "bytes": 3834,
+      "sha256": "5d7ef8413f53ef68f55c397f83f914040784d413f9deb9b207877195f1eae82b"
+    },
+    {
+      "path": "audit-string-comparison-release.py",
+      "bytes": 3834,
+      "sha256": "f93c40e51038e2d07932d451d54f64a0c6fb9705df2694190f73c21179d2e399"
+    },
+    {
+      "path": "audit-string-equality-history.py",
+      "bytes": 2557,
+      "sha256": "eb420b2b39e7e2e3c560513a58cd142830dd10f6d9d9d22ba56bee72254fd324"
+    },
+    {
+      "path": "audit-string-equality-property-hashes-negative.py",
+      "bytes": 2534,
+      "sha256": "1bf837a9938d117c3d0fad9de46cb2dd3f2952b11e885430a458d738102ab44d"
+    },
+    {
+      "path": "audit-string-equality-property-values-negative.py",
+      "bytes": 2870,
+      "sha256": "2b82f4ea164a4d4e2c911eaba29b7e752f11d932161e62fdd0fe0b1b48baa9dc"
+    },
+    {
+      "path": "audit-string-equality-storage-negative.py",
+      "bytes": 2391,
+      "sha256": "883cafb0261cb8116474d7563faf383272d7b2cf6f11643c21cafda36ec801dc"
+    },
+    {
+      "path": "audit-string-equality-symbol-names-positioned-negative.py",
+      "bytes": 3276,
+      "sha256": "66994784ab8813948438adc4f7e683c3d3c332853aa47a4d28c4b8314076f889"
+    },
+    {
+      "path": "build-string-comparison-ordinary.py",
+      "bytes": 2485,
+      "sha256": "37faae1a7fa6636717487e8e6382fa9851929b157e9ca34b2c8b8b66bbfdffd3"
+    },
+    {
+      "path": "check-string-comparison-draft.py",
+      "bytes": 2766,
+      "sha256": "01edc12405b4f1f65c2e19a23cdfe9105c9e71c59b3a9b4d0c5fbf92a08946bb"
+    },
+    {
+      "path": "check-string-comparison-hashes-draft.py",
+      "bytes": 2801,
+      "sha256": "01ed44701a14bb1d8f6c85343ce3c22ca5f076c85f8509b5f6b96b9dbc91715a"
+    },
+    {
+      "path": "compare-string-comparison-fixtures.py",
+      "bytes": 4042,
+      "sha256": "83aa0082ddc2899bff6cd216682a27e3dc7d2ee245ffb1ac80f9a130080b3bfe"
+    },
+    {
+      "path": "freeze-string-comparison-hashes.py",
+      "bytes": 2756,
+      "sha256": "4dccc51f2cfd733f53a7ddb213ee6923cec6e480ddd332c96eab6da8393252da"
+    },
+    {
+      "path": "freeze-string-comparison-repaired.py",
+      "bytes": 2587,
+      "sha256": "3e1da24c800a19f947a3db4b41c470595f5d5fa455a2b9f3178b0ea449fc29a9"
+    },
+    {
+      "path": "freeze-string-comparison.py",
+      "bytes": 2583,
+      "sha256": "64b3d1fbdce52e96008c3c40819ce338e1fb77bcb100bb90759e16d978dacc76"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-string-comparison259-draft-repaired.py",
+      "bytes": 4170,
+      "sha256": "8408fa5ad34044bf82417d3012fb61fe8fe2a14b9f3ce82739b328463c5f458c"
+    },
+    {
+      "path": "package-string-comparison259-draft.py",
+      "bytes": 4169,
+      "sha256": "8678610910ea7a5f8bd281fb3711abc4e41295f4240b80ac7011604238ff4139"
+    },
+    {
+      "path": "probe-string-equality-history.py",
+      "bytes": 3080,
+      "sha256": "d62b7553e9d9ed847dcf289acf42c6c6366c8ee6eed7179940d3bac0e31d9a3b"
+    },
+    {
+      "path": "probe-string-equality-property-hashes-source249.py",
+      "bytes": 2903,
+      "sha256": "ebf9978acad8f415a5b28086d0316c16aa537bc9050d4349540af1c5aae77294"
+    },
+    {
+      "path": "probe-string-equality-property-values-source249.py",
+      "bytes": 2903,
+      "sha256": "f2dce229ce6e9f2816275d9ea6771b28e5325217e1a8b4515efe117b58c0c97a"
+    },
+    {
+      "path": "probe-string-equality-storage-source249.py",
+      "bytes": 2879,
+      "sha256": "59edd96c10a1e3bf589737117c203ab50e51e753945ca2a36cdd5210f861706c"
+    },
+    {
+      "path": "probe-string-equality-symbol-names-positioned-source249.py",
+      "bytes": 2927,
+      "sha256": "aefa79724e5465f469b68f7c6d3fae283e58f6b7be773e17fb3c460dc724220a"
+    },
+    {
+      "path": "probe-string-equality-symbol-names-source249.py",
+      "bytes": 2894,
+      "sha256": "d99c7230c793d0ca0694d27cd98a3ed8f34c7fc96784c50be2ea21970636e99c"
+    },
+    {
+      "path": "queue-string-comparison258-validation.py",
+      "bytes": 5022,
+      "sha256": "2f088a43e3a8029695b48dee786c884b00f123abe4eb0af7b75bc8e115a3e8cb"
+    },
+    {
+      "path": "queue-string-comparison259-validation.py",
+      "bytes": 5099,
+      "sha256": "b4dce589f00e05c04f48e12bad13b5500d1366fc462c36aec098d9df1fce2d47"
+    },
+    {
+      "path": "run-string-comparison-focused.py",
+      "bytes": 5888,
+      "sha256": "3d439a64759c33d48a8d13627a5a41779e6b39a52c6a9154a0315f7442959fd6"
+    },
+    {
+      "path": "run-string-comparison-hashes-focused.py",
+      "bytes": 6027,
+      "sha256": "aecc80b74eea568267802082ffae9aae732d7acf7575f4eec8970fbc5bb9b7f9"
+    },
+    {
+      "path": "run-string-comparison-hashes-release.py",
+      "bytes": 6072,
+      "sha256": "5bdc64a73072fd18d2a9b4c4524a3f3eb84367461b8bda37de2a6b2af23c7759"
+    },
+    {
+      "path": "run-string-comparison-release.py",
+      "bytes": 5933,
+      "sha256": "8d221bb758030512612a6fdc883aae28d03e48bdc2b3c460425c6655e3dc40e2"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-manifest.json",
+      "bytes": 54595,
+      "sha256": "9055fe6d69d95ee12aaa55a76bf4d075a929cb778d9f9545e3438ea2a6be9daa"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source249-release-controls-command.json",
+      "bytes": 31109,
+      "sha256": "76e1a1d798de1c56d13d17a88c095a9df8e6b45226d5ccf139490165828a6724"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-comparison.json",
+      "bytes": 632,
+      "sha256": "abe9182c572eb2c5d219e92071a2aba8198f0d62d2dada7d45b9785bcde3897e"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-emaxx-command.json",
+      "bytes": 4433,
+      "sha256": "f235c9479fa1e2b998cbe3d0514f3b4cd11fc5344788531613627d53c02d01c0"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "03f07e67436341e101173b75f228d47ba936f49225f687dfdbaf40db5eab449a"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-emaxx.stdout",
+      "bytes": 176,
+      "sha256": "9341ecf1903ef218fe309a6fdfbb78529b44563c94469381d59fd5f086c511b2"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-gnu-command.json",
+      "bytes": 4386,
+      "sha256": "c2e05022aa01cf9c45b66a780bd3b499db44098fb0233d35a5c0f2e1f2079737"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-gnu-result.json",
+      "bytes": 237,
+      "sha256": "9df5127fdc23d8045673170d180046467b088aa2553b74d22acf0a2421c44aea"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-gnu.stdout",
+      "bytes": 157,
+      "sha256": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07"
+    },
+    {
+      "path": "source249-string-equality-property-hashes-negative-audit.json",
+      "bytes": 1691,
+      "sha256": "f2243074d5c2695a56589f764000a37ed2389e15d4d31fdb1502c663c2dd2d18"
+    },
+    {
+      "path": "source249-string-equality-property-values-comparison.json",
+      "bytes": 632,
+      "sha256": "896a8ab321a80e9ac8da4038f7a67da12f8fa5e24d48b98f1c7d0586250d5737"
+    },
+    {
+      "path": "source249-string-equality-property-values-emaxx-command.json",
+      "bytes": 4308,
+      "sha256": "40ef73d093eb79126c33c703fb6f0d3260c8e8f024978de800eaf6e9d1917b8c"
+    },
+    {
+      "path": "source249-string-equality-property-values-emaxx-result.json",
+      "bytes": 237,
+      "sha256": "3ee56612449e0ef936bcb20089e72a72c02f5c5c44dd8c022978eda8f6bb0606"
+    },
+    {
+      "path": "source249-string-equality-property-values-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-property-values-emaxx.stdout",
+      "bytes": 2354,
+      "sha256": "c66fa23c5a1523e2dda9227b8932d3039f6f51e520448597d5016f0269fb9e48"
+    },
+    {
+      "path": "source249-string-equality-property-values-gnu-command.json",
+      "bytes": 4261,
+      "sha256": "563e1614147fefbc0949c9b5b061aa6c17098e3b2d27fd4004db073fa6c8a466"
+    },
+    {
+      "path": "source249-string-equality-property-values-gnu-result.json",
+      "bytes": 229,
+      "sha256": "38d6c6f312bbbda29f5bf9c5cc35ad2350b0e3a8bd0973eb14a9221095ec4881"
+    },
+    {
+      "path": "source249-string-equality-property-values-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-property-values-gnu.stdout",
+      "bytes": 2340,
+      "sha256": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7"
+    },
+    {
+      "path": "source249-string-equality-property-values-negative-audit.json",
+      "bytes": 2476,
+      "sha256": "e459df7330d384dad07350c3f4d7bf91c93c2f644d4c8fd87b51439af0ff00c9"
+    },
+    {
+      "path": "source249-string-equality-storage-comparison.json",
+      "bytes": 624,
+      "sha256": "9ac628e5205d4951b07133ba3e389d6b0db0a76816451098a64413eda9a093ed"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx-command.json",
+      "bytes": 3083,
+      "sha256": "30269dfcecb77064108bb28f0ba13950d9a82fd8dc2d77fb7b7e50cc9af74e5d"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "b1ca2f338191b29525765bc3c4ec14a06b41b55b797adae00cdce8ffbc6ec257"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-storage-emaxx.stdout",
+      "bytes": 2457,
+      "sha256": "5a5956c135dc163420a8950bd4152835f4e8308b1f62a7866d05b5cddcd7ac71"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu-command.json",
+      "bytes": 3036,
+      "sha256": "1553ce7143f6de6116d7e24e4a22dc129c78a1e18bdc704db4196af779c90cde"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu-result.json",
+      "bytes": 229,
+      "sha256": "f9f54c81ac76c0a6bc98c9a5c1874e65903602451d62065a076179d9c10a89f4"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-storage-gnu.stdout",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "source249-string-equality-storage-negative-audit.json",
+      "bytes": 1929,
+      "sha256": "c3263e06ac7c32b4a52ff4bd9841c454c3975d7fcac1491dca69890e2d02a7b9"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-comparison.json",
+      "bytes": 627,
+      "sha256": "a9417b9112a039d3a155eb8685419655935d9090d78e06dec2450762a3aa59dd"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-emaxx-command.json",
+      "bytes": 3726,
+      "sha256": "4e47e86a6881854c1e80ce61fc047b13752cfa631a34d10a20be0eed1c01de87"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-emaxx-result.json",
+      "bytes": 231,
+      "sha256": "b201f1643efb488f1216ed7a23f3cb799ea2211196221e32a99afc87e1fc5a04"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-emaxx.stderr",
+      "bytes": 59,
+      "sha256": "b35a6ef2f0bb7b09c3fbe285f6908809ed332f2eaaf21f1ebe1eb7f201a648d9"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-emaxx.stdout",
+      "bytes": 5933,
+      "sha256": "7eef65b4246d8a13885a422f2d2197b7a667128bdb3be92e2bf3bfad9db91aec"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-gnu-command.json",
+      "bytes": 3679,
+      "sha256": "025fc5fabd57f0da6f797574d3621e26a3b980308a9e40e2815393296cef52a5"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-gnu-result.json",
+      "bytes": 231,
+      "sha256": "0a8b5bc993630aa93a24bcda78a6bfeea2a7244d2eca0d133aaa3807f84c65fc"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-gnu.stderr",
+      "bytes": 59,
+      "sha256": "b35a6ef2f0bb7b09c3fbe285f6908809ed332f2eaaf21f1ebe1eb7f201a648d9"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-gnu.stdout",
+      "bytes": 5933,
+      "sha256": "7eef65b4246d8a13885a422f2d2197b7a667128bdb3be92e2bf3bfad9db91aec"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-comparison.json",
+      "bytes": 624,
+      "sha256": "a82eac1d36e14ec01547bfa5fcfd1e5cc5e19407fb914d24f8aaf03c6ae713df"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-emaxx-command.json",
+      "bytes": 3738,
+      "sha256": "a13363e59c88f86637e13fcf6cde09a67b0e001defd05c2d35761d30118806c7"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "0759565690b552fbfc891c9117a4805e15470ac8e76aef00b682f29b9da75828"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-emaxx.stdout",
+      "bytes": 24657,
+      "sha256": "bb6575b28e3cee5b8064b1e7b211e5a03ee2ad966b612b6bf8e5bcb319c659cf"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-gnu-command.json",
+      "bytes": 3691,
+      "sha256": "0c7af0d3a0e27f9bd5699fdfb56bd8e15e493b81bed7f385d260debcd4534036"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-gnu-result.json",
+      "bytes": 229,
+      "sha256": "092aaf8879c9e341004f71d01a1a2bc0f8b8597a8842529501452a56cac7d1db"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-gnu.stdout",
+      "bytes": 23041,
+      "sha256": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2"
+    },
+    {
+      "path": "source249-string-equality-symbol-names-positioned-negative-audit.json",
+      "bytes": 21335,
+      "sha256": "6c46f402834e3806f99680a17480cde71ab93a2c4a98a0f1cf6fc8bbb8997c36"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source256-manifest.json",
+      "bytes": 55069,
+      "sha256": "2fd88741a0ac36f71742be4baa88a99b3a9a7f85960e0d29165b1899e7242731"
+    },
+    {
+      "path": "source257-check-command.json",
+      "bytes": 566,
+      "sha256": "4080d58184d1b3927256260d3abb3cca1d2a774337e1956b7672000979b983dc"
+    },
+    {
+      "path": "source257-check-result.json",
+      "bytes": 85,
+      "sha256": "51cb29bd3f8d50e39c5d28edbcbea13ebb9b956a5be5d510ba7333ebf32a3241"
+    },
+    {
+      "path": "source257-check.log",
+      "bytes": 3582,
+      "sha256": "9de85c2a512c5cbc9ee69b92ad969a72f6b08d2aec56ea282fd7a908342bb2a9"
+    },
+    {
+      "path": "source257-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source257-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source257-freeze.json",
+      "bytes": 1072,
+      "sha256": "13c7bc93d679efcc3efe16e6a5b85d3eacfb365b28189b7566e73f8cf578618d"
+    },
+    {
+      "path": "source257-incremental.patch",
+      "bytes": 149134,
+      "sha256": "e0da8b81337ea4e827785627304fdfe484ee581b47ac953cc1de5a32e5a398f5"
+    },
+    {
+      "path": "source257-manifest.json",
+      "bytes": 55825,
+      "sha256": "2841b61c80db364bd48dae7b6d2b8394172ded4938c78d1744d15d0a8a111584"
+    },
+    {
+      "path": "source257-portable-complete.patch",
+      "bytes": 852980,
+      "sha256": "d8bbaf745fef5b670c6b61789826b9f87b93c0b165e617caade8267be4a0ee1e"
+    },
+    {
+      "path": "source257-portable-incremental.patch",
+      "bytes": 188088,
+      "sha256": "091682635d9c1cd40eba9383395a7b476d5eb0dbabb082eb6cfbe35927fda6bd"
+    },
+    {
+      "path": "source257-strict-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source257-strict-launch.json",
+      "bytes": 396,
+      "sha256": "359b48c9436485c26deb59e692ded81be0bd4f4d055746d4689eba1270317993"
+    },
+    {
+      "path": "source257-unformatted.patch",
+      "bytes": 149147,
+      "sha256": "5044c2976e10bdd9067390c1374a4defdeb2377f5f9b4e744503eb2252a684b6"
+    },
+    {
+      "path": "source258-c-reference-audit.json",
+      "bytes": 4658,
+      "sha256": "d9ffd63c3d3b5b4c3f054c43c09299c0338f129458e4ff67992140e02834c4b1"
+    },
+    {
+      "path": "source258-check-command.json",
+      "bytes": 566,
+      "sha256": "c8c4d10851a3fd2511792a18af1e036c94951f5922c1eeafd26ff282e205e7cf"
+    },
+    {
+      "path": "source258-check-result.json",
+      "bytes": 89,
+      "sha256": "07241a11852855536954ec446290196cf0d4267de00ae9f0e7de5d750a21ed4b"
+    },
+    {
+      "path": "source258-check.log",
+      "bytes": 200,
+      "sha256": "ab7c79c9f9b7835632708335eb50d1b2158703fa50c7c16bb30df627992b998b"
+    },
+    {
+      "path": "source258-clippy-command.json",
+      "bytes": 603,
+      "sha256": "25c6c9b40ef1c7b77046aa606b256ca51b871993a36d776252739428aa7cb016"
+    },
+    {
+      "path": "source258-clippy-result.json",
+      "bytes": 83,
+      "sha256": "272fb70508c74cc853b97e1911c8460d4ee6e8db66a34e9e45d78fa673e2363b"
+    },
+    {
+      "path": "source258-clippy.log",
+      "bytes": 200,
+      "sha256": "303ca9ff20dd7c2452b8f6c2041d8a68a07d1ded4a2dd9c6175291d4b59c4260"
+    },
+    {
+      "path": "source258-diff-command.json",
+      "bytes": 519,
+      "sha256": "faf364b91adcc3f980dc3dedb622ff7b273507b621cc69ae2e9e3ab4321ad389"
+    },
+    {
+      "path": "source258-diff-result.json",
+      "bytes": 89,
+      "sha256": "94d8fd156faec638adbc81bb9a43734c2d288f1509844f8c37ff865f5ca8f629"
+    },
+    {
+      "path": "source258-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source258-fmt-command.json",
+      "bytes": 543,
+      "sha256": "ecd1a0c77412f02a7f19d5aaceaa8662993fd96c72cf374f1d2897e0dae9e4de"
+    },
+    {
+      "path": "source258-fmt-result.json",
+      "bytes": 89,
+      "sha256": "233cc72f6533348fe3d6caa413c21cdb91cd7afd1c073c4ea6daf448f7f0d333"
+    },
+    {
+      "path": "source258-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source258-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source258-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source258-freeze.json",
+      "bytes": 1072,
+      "sha256": "ab936d0efb03cb56f97dd0fd1ae7376e41f45e8ac275fad170f11fb2964ba6c6"
+    },
+    {
+      "path": "source258-incremental.patch",
+      "bytes": 149767,
+      "sha256": "7c79a4fcec7197b6f9af2d5b8cb34ee428438dfd44ce78fc4c94c5a278833585"
+    },
+    {
+      "path": "source258-manifest.json",
+      "bytes": 55825,
+      "sha256": "14d2a6c34dc26f9946c23f8fb68f27ba15f1051f66eabe96a5760d223547921b"
+    },
+    {
+      "path": "source258-patch-replay-audit.json",
+      "bytes": 1511,
+      "sha256": "025afb937b21b1ba8c033e09db6354aecda579410c480c69589e9e585dcdebab"
+    },
+    {
+      "path": "source258-portable-complete.patch",
+      "bytes": 853613,
+      "sha256": "776ef2bfd28fe361e2b299a79026a613c9a56a1a7ef9894df5e1b1de26da60bf"
+    },
+    {
+      "path": "source258-portable-incremental.patch",
+      "bytes": 188721,
+      "sha256": "6279149347ceb440393c9ef43a4204bc613caa163fd9d838a5f991238f3b9136"
+    },
+    {
+      "path": "source258-strict-driver.log",
+      "bytes": 33,
+      "sha256": "d05a369b150fe80e25c8db0e504a6047fcd55999bd9b94cd8afa9d483060b01c"
+    },
+    {
+      "path": "source258-strict-launch.json",
+      "bytes": 465,
+      "sha256": "2583919620f84267f745ae5b3da8284a2d707a9df1b43f15ada3144d888f692c"
+    },
+    {
+      "path": "source258-unformatted.patch",
+      "bytes": 149767,
+      "sha256": "7c79a4fcec7197b6f9af2d5b8cb34ee428438dfd44ce78fc4c94c5a278833585"
+    },
+    {
+      "path": "source258-validation-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source258-validation-queue-launch.json",
+      "bytes": 411,
+      "sha256": "571ec1e63a6662c72a7775609f6c8da8ecfabad1efe9fe70d32a5fb3753027d3"
+    },
+    {
+      "path": "source258-validation-queue-state.json",
+      "bytes": 2935,
+      "sha256": "3ddb1cabdfdb61e196366c4c0dbbbb564d0d8def5069b77f930d2859c1d30291"
+    },
+    {
+      "path": "source258-validation-withdrawal.json",
+      "bytes": 679,
+      "sha256": "3cc8c50a0e4330a6a616d6788e20bd387d2dc33ef60b4a51c057ceb04d34d73b"
+    },
+    {
+      "path": "source259-c-reference-audit.json",
+      "bytes": 5841,
+      "sha256": "9e4f2fc56f75a73561cad4d39bb5b92d2655f11d555b0af5e0637ccefd8046a5"
+    },
+    {
+      "path": "source259-check-command.json",
+      "bytes": 566,
+      "sha256": "4678881049dc3d88809f66645e71f87c3b584ea5ecf5d6e37d58da327af5dc56"
+    },
+    {
+      "path": "source259-check-result.json",
+      "bytes": 88,
+      "sha256": "addb359b6b138e1568fdcd2496c102d4c2d882647b35c44ade121c14e32fa067"
+    },
+    {
+      "path": "source259-check.log",
+      "bytes": 199,
+      "sha256": "e3106217e6dd7a604c59f0837e300d4bd1d69272e1ec5017a3ba98278773f7ec"
+    },
+    {
+      "path": "source259-clippy-command.json",
+      "bytes": 603,
+      "sha256": "556a77bb24527f9ca0094b0c8914fe36bd65d70362ade394626df83df950df72"
+    },
+    {
+      "path": "source259-clippy-result.json",
+      "bytes": 89,
+      "sha256": "9db00f51042a84f7eb0fbd1a4f36b0b4895b51a2c0fdea36b2f9b6592a04189c"
+    },
+    {
+      "path": "source259-clippy.log",
+      "bytes": 200,
+      "sha256": "3c91307058253f67450b88206792be1d6b1c6a68503062c47950aa97626cc927"
+    },
+    {
+      "path": "source259-diff-command.json",
+      "bytes": 519,
+      "sha256": "103368c7bb07d031c7f3ec37887a7ed3f5fe3931de6b39be219dc1df5f5d8267"
+    },
+    {
+      "path": "source259-diff-result.json",
+      "bytes": 89,
+      "sha256": "cea429322f16a8f5961f6b8fd6b72c1b0b9d7c1dca342b0e3974b023477a449a"
+    },
+    {
+      "path": "source259-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source259-draft-status-snapshot.json",
+      "bytes": 8422,
+      "sha256": "b0894b64b24016875dc02f23ce80ca1de5b9df4fee059acac7c6c423055c03dc"
+    },
+    {
+      "path": "source259-fixtures/string-equality-property-hashes.el",
+      "bytes": 2280,
+      "sha256": "047d25ab3dab3513db4f99838e36a11c556d3659e0eddd209e8f168319a51d6f"
+    },
+    {
+      "path": "source259-fixtures/string-equality-property-hashes.expected",
+      "bytes": 157,
+      "sha256": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07"
+    },
+    {
+      "path": "source259-fixtures/string-equality-property-values.el",
+      "bytes": 2147,
+      "sha256": "07e0174f44d2cf66e89b665e80071507b3bc6025395f5493ce386a89cdd4ea01"
+    },
+    {
+      "path": "source259-fixtures/string-equality-property-values.expected",
+      "bytes": 2340,
+      "sha256": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7"
+    },
+    {
+      "path": "source259-fixtures/string-equality-storage.el",
+      "bytes": 983,
+      "sha256": "f441bf1aa339cef2f83232616d3f444e3aa694569db9f245e400dd1491e20d93"
+    },
+    {
+      "path": "source259-fixtures/string-equality-storage.expected",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "source259-fixtures/string-equality-symbol-names-positioned.el",
+      "bytes": 1591,
+      "sha256": "989216ba00f261be2267c141207d6eb146fc32928f2e8fa17dcef5ab06cf2a6c"
+    },
+    {
+      "path": "source259-fixtures/string-equality-symbol-names-positioned.expected",
+      "bytes": 23041,
+      "sha256": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2"
+    },
+    {
+      "path": "source259-fmt-command.json",
+      "bytes": 543,
+      "sha256": "6c74cad18a70941c4f9b965c08ed1046d74ca234000b7d43d8c0f151d7c5dc59"
+    },
+    {
+      "path": "source259-fmt-result.json",
+      "bytes": 89,
+      "sha256": "4190f40ed7a48f5402a15cce269b4601f9a1827d4e6ca818dc3b072b54c55f46"
+    },
+    {
+      "path": "source259-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source259-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source259-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source259-freeze.json",
+      "bytes": 1241,
+      "sha256": "118bae0a20aa054f02489ae6efea31c54cfc63b2233483e7d7b162d25084ac36"
+    },
+    {
+      "path": "source259-incremental.patch",
+      "bytes": 153173,
+      "sha256": "ed725825b7f7ff062a804927066af5c3570e7f3cb9bb86aa138590a58999f792"
+    },
+    {
+      "path": "source259-manifest.json",
+      "bytes": 56077,
+      "sha256": "0eeb6189d9110fb073457fd6d2a343604b680d94b814b7469cbda208f66de86b"
+    },
+    {
+      "path": "source259-patch-replay-audit.json",
+      "bytes": 983,
+      "sha256": "55c01649a2852131e239d9fbed73949760ee79c5867aa0acc86e3b59968c772f"
+    },
+    {
+      "path": "source259-portable-complete.patch",
+      "bytes": 859644,
+      "sha256": "40036ab17cce28827b000d6a6bafe061231303637a07256feb3ea90de68d101f"
+    },
+    {
+      "path": "source259-portable-incremental.patch",
+      "bytes": 195149,
+      "sha256": "569dc74fee4440d5a0e87c091d950aed06859b46b1e35f820e4bdd6f03c815f9"
+    },
+    {
+      "path": "source259-strict-launch.json",
+      "bytes": 434,
+      "sha256": "d3095a76e7c69e54913572122a018831c95adc4c3edf4b6a4172ecf8b6dddcc4"
+    },
+    {
+      "path": "source259-unformatted.patch",
+      "bytes": 153173,
+      "sha256": "ed725825b7f7ff062a804927066af5c3570e7f3cb9bb86aa138590a58999f792"
+    },
+    {
+      "path": "source259-validation-queue-launch.json",
+      "bytes": 449,
+      "sha256": "3fbaa548d6052cab04b5d532c12a64f4ddfbb1051a87fa00bbc15d7732aa3dad"
+    },
+    {
+      "path": "string-comparison-cache-copy-command.json",
+      "bytes": 464,
+      "sha256": "adc849b73611bcfdaedd7cd8bdcc2350ef12cc764363b9387faf62104ebeccda"
+    },
+    {
+      "path": "string-comparison-cache-copy-result.json",
+      "bytes": 61,
+      "sha256": "a1232100288c565658eed08121cf6cdafbf8a34644130bc7f19125263ef0f533"
+    },
+    {
+      "path": "string-comparison-cache-copy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "string-comparison-draft-checkout.json",
+      "bytes": 591,
+      "sha256": "6f6063b1bc00d21d6533db85f46bfc96d7d223c69e514f6d1fadbecf66686cfa"
+    },
+    {
+      "path": "string-comparison-fixture-copy.json",
+      "bytes": 1263,
+      "sha256": "47576f9abbb96f1fe592a9eb8ecaf750b4a71d2c54457dfb17cfa0949ff93f88"
+    },
+    {
+      "path": "string-comparison-freeze-setup-failure.json",
+      "bytes": 446,
+      "sha256": "8b78c2e451098a67dbb299a9fa37f458356b80b3b174fb5c74cc1327559d705a"
+    },
+    {
+      "path": "string-comparison-package-setup-failure.json",
+      "bytes": 493,
+      "sha256": "3ae3358292e4bde98cc584023a643d60eaf91e19e1564ae3a25865a588ee7f99"
+    },
+    {
+      "path": "string-comparison-property-fixture-copy.json",
+      "bytes": 556,
+      "sha256": "d11bbf185c12aaeb80b283b85393bb14123cd06ebe2a27abb2bf852a46e7dc1d"
+    },
+    {
+      "path": "string-equality-property-hashes.el",
+      "bytes": 2280,
+      "sha256": "047d25ab3dab3513db4f99838e36a11c556d3659e0eddd209e8f168319a51d6f"
+    },
+    {
+      "path": "string-equality-property-values.el",
+      "bytes": 2147,
+      "sha256": "07e0174f44d2cf66e89b665e80071507b3bc6025395f5493ce386a89cdd4ea01"
+    },
+    {
+      "path": "string-equality-storage-history-audit.json",
+      "bytes": 1116,
+      "sha256": "b68defca68f4ab5b62ba0bf2a21632103223aac1170d07bfa3375094a765fb1b"
+    },
+    {
+      "path": "string-equality-storage-history-verdict-audit.json",
+      "bytes": 3984,
+      "sha256": "1f5af5de273df3d4053ba326cb299969bf4c86daf101805af6b12f4e4c9a9b7a"
+    },
+    {
+      "path": "string-equality-storage.el",
+      "bytes": 983,
+      "sha256": "f441bf1aa339cef2f83232616d3f444e3aa694569db9f245e400dd1491e20d93"
+    },
+    {
+      "path": "string-equality-symbol-names-positioned.el",
+      "bytes": 1591,
+      "sha256": "989216ba00f261be2267c141207d6eb146fc32928f2e8fa17dcef5ab06cf2a6c"
+    },
+    {
+      "path": "string-equality-symbol-names-setup-failure.json",
+      "bytes": 468,
+      "sha256": "783e80d86ce2d93f78dc891441d2c38b96c9da2120b5bdbda46fc2b597a90b1a"
+    },
+    {
+      "path": "string-equality-symbol-names.el",
+      "bytes": 1601,
+      "sha256": "fb0d3312857e6aa545632741b98c65cf883d4be1cf8ef02c57b9c87741e6530f"
+    },
+    {
+      "path": "test-string-comparison-broad.py",
+      "bytes": 3768,
+      "sha256": "ff7f323a71ba793acc735cde98e1226835453693156769330975774deefe666f"
+    },
+    {
+      "path": "test-string-comparison-hashes-broad.py",
+      "bytes": 3851,
+      "sha256": "4a01fe67a370a1040115d02d956719b6a294711ef2f9379818b4222fb0c4ddea"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
