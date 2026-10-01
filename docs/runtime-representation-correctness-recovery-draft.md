@@ -502,3 +502,16 @@ translation-symbol or overriding-plist-environment behavior also need review.
 Main remains unchanged; complete correctness, all remaining architecture/
 accounting/ownership requirements, final pinned Darwin/adversarial validation
 and the locked 16-workload/3% performance criterion remain open.
+
+
+The [source246 ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+close all 57 preceding ordinary comparisons: **68 distinct comparisons** match,
+with every process, input and output verified. The checkpoint is pushed as
+**`aaf31ce70abc920f9fc3395c01db7ffc57328f81`**. Complete Linux
+[Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567) and
+[frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
+are dispatched on that exact source. The raw launch receipts' final narrative
+sentence mislabeled source246 selected counts as source244; their machine fields
+identify the correct source and commit. A supplemental correction preserves both
+original receipts without changing any result. Full macOS/release/terminal remain
+active; read actual receipts before acting. Main and the full goal are unchanged.

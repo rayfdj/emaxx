@@ -1,6 +1,6 @@
 # Current goal status — 1 October 2026
 
-The task runtime is **source246**, an incomplete correctness-recovery checkpoint.
+The task runtime is **source246**, pushed as `aaf31ce7`, an incomplete correctness-recovery checkpoint.
 Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
 existing ignores**, **951 affected passes**, **eleven ordinary GNU comparisons**
@@ -20,7 +20,11 @@ on scenario 81, after 80 matching scenarios/comparisons; 606 comparisons never r
 These failures remain failures; the GNU causes are unresolved.
 
 Full source246 macOS 86467, release/ordinary 86468 and terminal 86469 are active;
-Linux dispatch follows the checkpoint push. The CI retention improvement captures
+[Linux Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
+and [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
+are dispatched on that exact commit. The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+also closes all 57 preceding comparisons, for **68 distinct ordinary matches**.
+The CI retention improvement captures
 GNU executable/dump/configuration/Makefile and checks unchanged bytes without
 altering tests. Real-GNU capture and six synthetic rejection controls pass.
 Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining

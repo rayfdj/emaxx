@@ -17,7 +17,7 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 The immediate priority is to restore complete correctness before further architecture work.
-The task runtime is now **source246**, with **468 inputs** matching the frozen
+The task runtime is now **source246**, pushed as **`aaf31ce7`**, with **468 inputs** matching the frozen
 `target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
 Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
 retain source244's same-input negative probes and source245's four compiler
@@ -30,8 +30,11 @@ compiler tests in both editors** are audited. All preceding assertions remain.
 
 Complete macOS **86467**, release plus 57 preceding ordinary comparisons
 **86468**, and full terminal **86469** are active. Read `source246-*` receipts;
-do not edit executing candidates or helpers. Linux dispatch is the next step
-after this validated checkpoint is pushed. Launch does not imply a pass.
+do not edit executing candidates or helpers. The [ordinary audit and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+close all 57 preceding ordinary comparisons too: **68 distinct comparisons**
+match. Linux [Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
+and [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
+are dispatched on exact `aaf31ce7`. Launch does not imply a pass.
 The separately validated CI change retains GNU's executable, dump, configuration
 and Makefile before future Rust/frozen runs and verifies their bytes afterward.
 Six synthetic corruption/overwrite controls reject invalid evidence; runtime
